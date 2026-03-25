@@ -25,10 +25,13 @@ def place_poles(
         x = -1
         while x < width + POLE_SPACING:
             if (x, y) not in occupied:
-                entities.append(PlacedEntity(
-                    name="medium-electric-pole",
-                    x=x, y=y,
-                ))
+                entities.append(
+                    PlacedEntity(
+                        name="medium-electric-pole",
+                        x=x,
+                        y=y,
+                    )
+                )
             x += POLE_SPACING
         y += POLE_SPACING
 

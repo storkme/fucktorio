@@ -1,11 +1,14 @@
 """Tests for the recipe solver."""
 
 import math
-import pytest
+
 from src.solver import solve
 from src.solver.recipe_db import (
-    get_recipe, find_recipe_for_item, get_crafting_speed,
-    machine_for_recipe, recipe_has_fluid,
+    find_recipe_for_item,
+    get_crafting_speed,
+    get_recipe,
+    machine_for_recipe,
+    recipe_has_fluid,
 )
 
 
@@ -39,7 +42,8 @@ class TestRecipeDB:
 class TestSolver:
     def test_electronic_circuit(self):
         result = solve(
-            "electronic-circuit", 30,
+            "electronic-circuit",
+            30,
             available_inputs={"iron-plate", "copper-plate"},
         )
         # Should have 2 machine specs: electronic-circuit and copper-cable
@@ -63,7 +67,8 @@ class TestSolver:
 
     def test_external_inputs(self):
         result = solve(
-            "electronic-circuit", 30,
+            "electronic-circuit",
+            30,
             available_inputs={"iron-plate", "copper-plate"},
         )
         ext = {f.item: f.rate for f in result.external_inputs}
@@ -74,7 +79,8 @@ class TestSolver:
 
     def test_single_recipe(self):
         result = solve(
-            "iron-gear-wheel", 10,
+            "iron-gear-wheel",
+            10,
             available_inputs={"iron-plate"},
         )
         assert len(result.machines) == 1
@@ -87,7 +93,8 @@ class TestSolver:
     def test_fluid_recipe_uses_chemical_plant(self):
         """Chemistry recipes should auto-select chemical-plant."""
         result = solve(
-            "plastic-bar", 10,
+            "plastic-bar",
+            10,
             available_inputs={"petroleum-gas", "coal"},
         )
         assert len(result.machines) == 1
@@ -101,7 +108,8 @@ class TestSolver:
     def test_fluid_inputs_marked(self):
         """Fluid external inputs should have is_fluid=True."""
         result = solve(
-            "plastic-bar", 10,
+            "plastic-bar",
+            10,
             available_inputs={"petroleum-gas", "coal"},
         )
         ext = {f.item: f for f in result.external_inputs}
@@ -120,7 +128,8 @@ class TestSolver:
     def test_sulfuric_acid(self):
         """Sulfuric acid: fluid output recipe."""
         result = solve(
-            "sulfuric-acid", 50,
+            "sulfuric-acid",
+            50,
             available_inputs={"sulfur", "iron-plate", "water"},
         )
         m = result.machines[0]
@@ -131,7 +140,8 @@ class TestSolver:
     def test_processing_unit_mixed(self):
         """Processing unit uses assembler (electronics-with-fluid category)."""
         result = solve(
-            "processing-unit", 1,
+            "processing-unit",
+            1,
             available_inputs={"iron-plate", "copper-plate", "plastic-bar", "sulfuric-acid"},
         )
         pu = next(m for m in result.machines if m.recipe == "processing-unit")
@@ -144,7 +154,8 @@ class TestSolver:
     def test_basic_oil_processing(self):
         """Basic oil processing should use oil-refinery."""
         result = solve(
-            "petroleum-gas", 10,
+            "petroleum-gas",
+            10,
             available_inputs={"crude-oil"},
         )
         assert len(result.machines) == 1
@@ -169,7 +180,8 @@ class TestSolver:
     def test_oil_external_inputs_fluid(self):
         """Oil recipe external inputs should be marked as fluid."""
         result = solve(
-            "petroleum-gas", 10,
+            "petroleum-gas",
+            10,
             available_inputs={"crude-oil"},
         )
         ext = {f.item: f for f in result.external_inputs}

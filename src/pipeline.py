@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import math
 
-from .solver import solve
-from .layout import layout
 from .blueprint import build_blueprint
-from .models import SolverResult, LayoutResult
+from .layout import layout
+from .solver import solve
 
 
 def produce(
@@ -50,8 +49,10 @@ def produce(
         m = recipe_to_spec[recipe]
         prefix = "  │ " * depth + "  ├─" if depth > 0 else "  "
         count_str = f"{m.count:.1f}" if m.count != math.ceil(m.count) else str(int(m.count))
-        machine_label = "chemical-plant" if m.entity == "chemical-plant" else (
-            "oil-refinery" if m.entity == "oil-refinery" else "asm3"
+        machine_label = (
+            "chemical-plant"
+            if m.entity == "chemical-plant"
+            else ("oil-refinery" if m.entity == "oil-refinery" else "asm3")
         )
         print(f"{prefix} {m.recipe}  ×{count_str} {machine_label}")
         # Show inputs — recurse into intermediate recipes, list externals inline
@@ -87,6 +88,7 @@ def produce(
     # 4. Generate HTML visualization if requested
     if visualize:
         from .visualize import visualize as viz
+
         viz(bp_string, solver_result=solver_result, open_browser=open_browser)
 
     return bp_string
@@ -94,10 +96,13 @@ def produce(
 
 if __name__ == "__main__":
     import sys
+
     use_html = "--html" in sys.argv
     bp = produce(
-        "electronic-circuit", rate=30,
+        "electronic-circuit",
+        rate=30,
         inputs=["iron-plate", "copper-plate"],
-        visualize=use_html, open_browser=False,
+        visualize=use_html,
+        open_browser=False,
     )
     print(f"\n{bp}")

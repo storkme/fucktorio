@@ -1,21 +1,25 @@
 """Tests for the layout engine."""
 
 import math
-from src.solver import solve
+
 from src.layout import layout
+from src.solver import solve
 
 
 class TestLayout:
     def test_no_overlaps(self):
         result = solve(
-            "electronic-circuit", target_rate=30,
+            "electronic-circuit",
+            target_rate=30,
             available_inputs={"iron-plate", "copper-plate"},
         )
         lr = layout(result)
 
         # Collect all occupied tiles
         _3x3 = {
-            "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+            "assembling-machine-1",
+            "assembling-machine-2",
+            "assembling-machine-3",
             "chemical-plant",
         }
         occupied: dict[tuple[int, int], str] = {}
@@ -26,14 +30,13 @@ class TestLayout:
                 tiles = [(ent.x, ent.y)]
 
             for tile in tiles:
-                assert tile not in occupied, (
-                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                )
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
 
     def test_has_entities(self):
         result = solve(
-            "iron-gear-wheel", target_rate=10,
+            "iron-gear-wheel",
+            target_rate=10,
             available_inputs={"iron-plate"},
         )
         lr = layout(result)
@@ -44,13 +47,16 @@ class TestLayout:
     def test_inserters_aligned_with_machines(self):
         """Each inserter should be adjacent to a machine tile."""
         result = solve(
-            "electronic-circuit", target_rate=5,
+            "electronic-circuit",
+            target_rate=5,
             available_inputs={"iron-plate", "copper-plate"},
         )
         lr = layout(result)
 
         _3x3 = {
-            "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+            "assembling-machine-1",
+            "assembling-machine-2",
+            "assembling-machine-3",
             "chemical-plant",
         }
         machine_tiles: set[tuple[int, int]] = set()
@@ -68,14 +74,13 @@ class TestLayout:
                 for dx in range(-1, 2):
                     for dy in range(-2, 3):
                         nearby.add((ent.x + dx, ent.y + dy))
-                assert nearby & machine_tiles, (
-                    f"Inserter at ({ent.x}, {ent.y}) not near any machine"
-                )
+                assert nearby & machine_tiles, f"Inserter at ({ent.x}, {ent.y}) not near any machine"
 
     def test_no_overlaps_fluid(self):
         """Fluid recipe layouts should have no overlapping entities."""
         result = solve(
-            "plastic-bar", target_rate=10,
+            "plastic-bar",
+            target_rate=10,
             available_inputs={"petroleum-gas", "coal"},
         )
         lr = layout(result)
@@ -89,15 +94,14 @@ class TestLayout:
                 tiles = [(ent.x, ent.y)]
 
             for tile in tiles:
-                assert tile not in occupied, (
-                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                )
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
 
     def test_fluid_layout_has_pipes(self):
         """Fluid recipes should produce pipe entities."""
         result = solve(
-            "plastic-bar", target_rate=10,
+            "plastic-bar",
+            target_rate=10,
             available_inputs={"petroleum-gas", "coal"},
         )
         lr = layout(result)
@@ -107,7 +111,8 @@ class TestLayout:
     def test_fluid_layout_has_chemical_plant(self):
         """Chemistry recipes should use chemical-plant entities."""
         result = solve(
-            "sulfuric-acid", target_rate=50,
+            "sulfuric-acid",
+            target_rate=50,
             available_inputs={"sulfur", "iron-plate", "water"},
         )
         lr = layout(result)
@@ -117,7 +122,8 @@ class TestLayout:
     def test_bus_uses_underground_belts(self):
         """Bus lanes should use underground belts to tunnel through rows."""
         result = solve(
-            "electronic-circuit", target_rate=30,
+            "electronic-circuit",
+            target_rate=30,
             available_inputs={"iron-plate", "copper-plate"},
         )
         lr = layout(result)
@@ -131,7 +137,8 @@ class TestLayout:
     def test_bus_uses_pipe_to_ground(self):
         """Fluid bus lanes should use pipe-to-ground to tunnel through rows."""
         result = solve(
-            "plastic-bar", target_rate=10,
+            "plastic-bar",
+            target_rate=10,
             available_inputs={"petroleum-gas", "coal"},
         )
         lr = layout(result)
@@ -148,7 +155,9 @@ class TestOilRefineryLayout:
         """Helper: verify no tile overlaps, accounting for 5x5 refineries."""
         _5x5 = {"oil-refinery"}
         _3x3 = {
-            "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+            "assembling-machine-1",
+            "assembling-machine-2",
+            "assembling-machine-3",
             "chemical-plant",
         }
         occupied: dict[tuple[int, int], str] = {}
@@ -161,15 +170,14 @@ class TestOilRefineryLayout:
                 tiles = [(ent.x, ent.y)]
 
             for tile in tiles:
-                assert tile not in occupied, (
-                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                )
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
 
     def test_refinery_no_overlaps(self):
         """Oil refinery 5x5 entities should not overlap with anything."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -178,7 +186,8 @@ class TestOilRefineryLayout:
     def test_refinery_entity_present(self):
         """Layout should contain oil-refinery entities."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -188,11 +197,11 @@ class TestOilRefineryLayout:
     def test_refinery_correct_count(self):
         """Layout should have the right number of refinery entities."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
-        import math
         expected_count = math.ceil(result.machines[0].count)
         refinery_count = sum(1 for e in lr.entities if e.name == "oil-refinery")
         assert refinery_count == expected_count
@@ -200,7 +209,8 @@ class TestOilRefineryLayout:
     def test_refinery_has_pipes(self):
         """Oil refinery layout should have pipe entities for fluid IO."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -210,14 +220,17 @@ class TestOilRefineryLayout:
     def test_refinery_inserter_alignment(self):
         """Each inserter should be adjacent to an oil-refinery tile."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
 
         _5x5 = {"oil-refinery"}
         _3x3 = {
-            "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+            "assembling-machine-1",
+            "assembling-machine-2",
+            "assembling-machine-3",
             "chemical-plant",
         }
         machine_tiles: set[tuple[int, int]] = set()
@@ -237,14 +250,13 @@ class TestOilRefineryLayout:
                 for dx in range(-2, 3):
                     for dy in range(-2, 3):
                         nearby.add((ent.x + dx, ent.y + dy))
-                assert nearby & machine_tiles, (
-                    f"Inserter at ({ent.x}, {ent.y}) not near any machine"
-                )
+                assert nearby & machine_tiles, f"Inserter at ({ent.x}, {ent.y}) not near any machine"
 
     def test_refinery_bus_pipe_to_ground(self):
         """Fluid bus lanes for oil recipes should use pipe-to-ground."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -255,7 +267,8 @@ class TestOilRefineryLayout:
     def test_refinery_recipe_set(self):
         """Oil refinery entities should have the correct recipe set."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -266,7 +279,8 @@ class TestOilRefineryLayout:
     def test_refinery_wider_spacing(self):
         """Oil refineries (5x5) should be spaced wider than 3x3 machines."""
         result = solve(
-            "petroleum-gas", target_rate=10,
+            "petroleum-gas",
+            target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
@@ -276,6 +290,4 @@ class TestOilRefineryLayout:
             refineries.sort(key=lambda e: e.x)
             spacing = refineries[1].x - refineries[0].x
             # Must be at least 6 (5-wide + 1-gap) to avoid overlap
-            assert spacing >= 6, (
-                f"Refinery spacing {spacing} too narrow for 5x5 machines"
-            )
+            assert spacing >= 6, f"Refinery spacing {spacing} too narrow for 5x5 machines"

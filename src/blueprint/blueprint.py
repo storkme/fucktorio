@@ -6,8 +6,7 @@ from draftsman.blueprintable import Blueprint
 from draftsman.constants import Direction
 from draftsman.entity import new_entity
 
-from ..models import LayoutResult, EntityDirection
-
+from ..models import EntityDirection, LayoutResult
 
 _DIR_MAP = {
     EntityDirection.NORTH: Direction.NORTH,

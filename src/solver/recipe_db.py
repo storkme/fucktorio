@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from draftsman.data import recipes as _recipes
+
 from draftsman.data import entities as _entities
+from draftsman.data import recipes as _recipes
 
 
 @dataclass
@@ -26,7 +27,7 @@ class Product:
 class Recipe:
     name: str
     category: str
-    energy: float          # crafting time in seconds
+    energy: float  # crafting time in seconds
     ingredients: list[Ingredient]
     products: list[Product]
 
@@ -119,7 +120,4 @@ def recipe_has_fluid(recipe: Recipe) -> bool:
     for ing in recipe.ingredients:
         if ing.type == "fluid":
             return True
-    for prod in recipe.products:
-        if prod.type == "fluid":
-            return True
-    return False
+    return any(prod.type == "fluid" for prod in recipe.products)

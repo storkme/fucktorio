@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from ..models import SolverResult, LayoutResult
+from ..models import LayoutResult, SolverResult
 from .placer import place_rows
-from .router import route_bus
 from .poles import place_poles
+from .router import route_bus
 
 
 def _bus_width(solver_result: SolverResult) -> int:
@@ -36,7 +36,9 @@ def layout(solver_result: SolverResult) -> LayoutResult:
     # 3. Collect occupied tiles
     occupied: set[tuple[int, int]] = set()
     _3x3_ENTITIES = {
-        "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+        "assembling-machine-1",
+        "assembling-machine-2",
+        "assembling-machine-3",
         "chemical-plant",
     }
     _5x5_ENTITIES = {"oil-refinery"}
