@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from ..models import MachineSpec, PlacedEntity
-from .templates import single_input_row, dual_input_row, fluid_row
+from .templates import single_input_row, dual_input_row, fluid_row, refinery_row
 
 
 def _has_fluid(spec: MachineSpec) -> bool:
@@ -42,7 +42,16 @@ def place_rows(
         count = max(1, math.ceil(spec.count))
         num_solid_inputs = sum(1 for f in spec.inputs if not f.is_fluid)
 
-        if _has_fluid(spec):
+        if spec.entity == "oil-refinery":
+            row_ents, row_h = refinery_row(
+                recipe=spec.recipe,
+                machine_entity=spec.entity,
+                machine_count=count,
+                y_offset=y_cursor,
+                x_offset=bus_width,
+                inputs=spec.inputs,
+            )
+        elif _has_fluid(spec):
             row_ents, row_h = fluid_row(
                 recipe=spec.recipe,
                 machine_entity=spec.entity,
@@ -69,7 +78,8 @@ def place_rows(
             )
 
         entities.extend(row_ents)
-        row_width = bus_width + count * 4
+        machine_pitch = 6 if spec.entity == "oil-refinery" else 4
+        row_width = bus_width + count * machine_pitch
         max_width = max(max_width, row_width)
         y_cursor += row_h + 1  # 1-tile gap between rows
 
