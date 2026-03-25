@@ -58,8 +58,13 @@ def verify(bp_string: str, verbose: bool = True) -> bool:
             print(f"   {count:4d}x {name}")
 
     # 4. Recipe check
-    crafting_entities = {"assembling-machine-1", "assembling-machine-2",
-                        "assembling-machine-3", "chemical-plant", "oil-refinery"}
+    crafting_entities = {
+        "assembling-machine-1",
+        "assembling-machine-2",
+        "assembling-machine-3",
+        "chemical-plant",
+        "oil-refinery",
+    }
     missing_recipe = []
     recipe_counts: Counter = Counter()
     for e in bp.entities:
@@ -113,8 +118,7 @@ def _print_ascii_map(bp) -> None:
         print("   (empty)")
         return
 
-    _3x3 = {"assembling-machine-1", "assembling-machine-2",
-             "assembling-machine-3", "chemical-plant"}
+    _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
     _5x5 = {"oil-refinery"}
     _crafting = _3x3 | _5x5
 
@@ -147,8 +151,8 @@ def _print_ascii_map(bp) -> None:
     recipe_y_positions: dict[str, list[int]] = {}  # recipe → list of machine y positions
 
     for e in bp.entities:
-        tx = int(e.tile_position.x) if hasattr(e.tile_position, 'x') else int(e.tile_position[0])
-        ty = int(e.tile_position.y) if hasattr(e.tile_position, 'y') else int(e.tile_position[1])
+        tx = int(e.tile_position.x) if hasattr(e.tile_position, "x") else int(e.tile_position[0])
+        ty = int(e.tile_position.y) if hasattr(e.tile_position, "y") else int(e.tile_position[1])
 
         if e.name in _crafting:
             s = recipe_to_sym.get(e.recipe, "?")
@@ -227,4 +231,4 @@ if __name__ == "__main__":
     verify(bp_str)
 
     if use_html:
-        print(f"\nHTML visualization written to blueprint_viz.html")
+        print("\nHTML visualization written to blueprint_viz.html")

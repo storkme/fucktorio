@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
 import pytest
-
 
 VIZ_DIR = Path("test_viz")
 
@@ -47,8 +45,8 @@ def viz(request: pytest.FixtureRequest):
         out_path = str(out_dir / f"{safe_name}.html")
 
         from src.visualize import visualize
-        visualize(bp_string, output_path=out_path, open_browser=False,
-                  solver_result=solver_result)
+
+        visualize(bp_string, output_path=out_path, open_browser=False, solver_result=solver_result)
 
     return _save
 

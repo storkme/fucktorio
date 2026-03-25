@@ -2,8 +2,8 @@
 
 from draftsman.blueprintable import get_blueprintable_from_string
 
-from src.models import PlacedEntity, LayoutResult, EntityDirection
 from src.blueprint import build_blueprint
+from src.models import EntityDirection, LayoutResult, PlacedEntity
 
 
 class TestBlueprint:
@@ -43,8 +43,10 @@ class TestBlueprint:
     def test_end_to_end(self, viz):
         """Full pipeline produces a re-importable blueprint."""
         from src.pipeline import produce
+
         bp_str = produce(
-            "electronic-circuit", rate=30,
+            "electronic-circuit",
+            rate=30,
             inputs=["iron-plate", "copper-plate"],
         )
         viz(bp_str, "electronic-circuit-30s")
@@ -70,13 +72,15 @@ class TestBlueprint:
         solid bus lanes, and pipe-to-ground for the fluid bus lane.
         """
         import math
+
+        from src.layout import layout
         from src.pipeline import produce
         from src.solver import solve
-        from src.layout import layout
 
         # --- Solver checks ---
         result = solve(
-            "advanced-circuit", 5,
+            "advanced-circuit",
+            5,
             available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
         )
 
@@ -124,9 +128,7 @@ class TestBlueprint:
             else:
                 tiles = [(ent.x, ent.y)]
             for tile in tiles:
-                assert tile not in occupied, (
-                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                )
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
 
         # Underground belts come in matched input/output pairs
@@ -145,7 +147,8 @@ class TestBlueprint:
 
         # --- Blueprint round-trip ---
         bp_str = produce(
-            "advanced-circuit", rate=5,
+            "advanced-circuit",
+            rate=5,
             inputs=["iron-plate", "copper-plate", "petroleum-gas", "coal"],
         )
         viz(bp_str, "advanced-circuit-5s", solver_result=result)
@@ -175,14 +178,14 @@ class TestBlueprint:
         the 3x3 assemblers and chemical plants. This tests the full pipeline
         handling the larger machine footprint correctly.
         """
-        import math
+        from src.layout import layout
         from src.pipeline import produce
         from src.solver import solve
-        from src.layout import layout
 
         # --- Solver checks ---
         result = solve(
-            "petroleum-gas", 10,
+            "petroleum-gas",
+            10,
             available_inputs={"crude-oil"},
         )
         m = result.machines[0]
@@ -208,14 +211,13 @@ class TestBlueprint:
             else:
                 tiles = [(ent.x, ent.y)]
             for tile in tiles:
-                assert tile not in occupied, (
-                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                )
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
 
         # --- Blueprint round-trip ---
         bp_str = produce(
-            "petroleum-gas", rate=10,
+            "petroleum-gas",
+            rate=10,
             inputs=["crude-oil"],
         )
         viz(bp_str, "petroleum-gas-10s", solver_result=result)
