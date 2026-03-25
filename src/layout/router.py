@@ -6,10 +6,10 @@ without collisions.
 
 from __future__ import annotations
 
-from ..models import PlacedEntity, EntityDirection, SolverResult, MachineSpec
+from ..models import EntityDirection, MachineSpec, PlacedEntity, SolverResult
 
 # Max underground distance (tiles between entry and exit, exclusive)
-_UG_BELT_REACH = 5   # underground-belt: entry + 4 gap + exit
+_UG_BELT_REACH = 5  # underground-belt: entry + 4 gap + exit
 _UG_PIPE_REACH = 10  # pipe-to-ground: entry + 9 gap + exit
 
 
@@ -22,7 +22,6 @@ def _find_row_spans(
 
     Mirrors the logic in placer.place_rows to know where rows land.
     """
-    import math
 
     spans: list[tuple[int, int, bool]] = []
     y_cursor = 0
@@ -121,30 +120,39 @@ def _route_belt_lane(
     underground_ys: set[int] = set()
     for entry_y, exit_y in underground_segments:
         # Entry: underground-belt input facing SOUTH
-        entities.append(PlacedEntity(
-            name="underground-belt",
-            x=x, y=entry_y,
-            direction=EntityDirection.SOUTH,
-            io_type="input",
-        ))
+        entities.append(
+            PlacedEntity(
+                name="underground-belt",
+                x=x,
+                y=entry_y,
+                direction=EntityDirection.SOUTH,
+                io_type="input",
+            )
+        )
         # Exit: underground-belt output facing SOUTH
-        entities.append(PlacedEntity(
-            name="underground-belt",
-            x=x, y=exit_y,
-            direction=EntityDirection.SOUTH,
-            io_type="output",
-        ))
+        entities.append(
+            PlacedEntity(
+                name="underground-belt",
+                x=x,
+                y=exit_y,
+                direction=EntityDirection.SOUTH,
+                io_type="output",
+            )
+        )
         for y in range(entry_y, exit_y + 1):
             underground_ys.add(y)
 
     # Fill remaining positions with surface belts
     for y in range(total_height):
         if y not in underground_ys:
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=x, y=y,
-                direction=EntityDirection.SOUTH,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=x,
+                    y=y,
+                    direction=EntityDirection.SOUTH,
+                )
+            )
 
 
 def _route_fluid_lane(
@@ -159,27 +167,36 @@ def _route_fluid_lane(
     underground_ys: set[int] = set()
     for entry_y, exit_y in underground_segments:
         # pipe-to-ground entry (facing SOUTH = fluid enters going south)
-        entities.append(PlacedEntity(
-            name="pipe-to-ground",
-            x=x, y=entry_y,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=x,
+                y=entry_y,
+                direction=EntityDirection.SOUTH,
+            )
+        )
         # pipe-to-ground exit (facing NORTH = fluid exits going south)
-        entities.append(PlacedEntity(
-            name="pipe-to-ground",
-            x=x, y=exit_y,
-            direction=EntityDirection.NORTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=x,
+                y=exit_y,
+                direction=EntityDirection.NORTH,
+            )
+        )
         for y in range(entry_y, exit_y + 1):
             underground_ys.add(y)
 
     # Fill remaining with surface pipes
     for y in range(total_height):
         if y not in underground_ys:
-            entities.append(PlacedEntity(
-                name="pipe",
-                x=x, y=y,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="pipe",
+                    x=x,
+                    y=y,
+                )
+            )
 
 
 def _plan_underground_segments(

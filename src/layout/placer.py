@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from ..models import MachineSpec, PlacedEntity
-from .templates import single_input_row, dual_input_row, fluid_row, refinery_row
+from .templates import dual_input_row, fluid_row, refinery_row, single_input_row
 
 
 def _has_fluid(spec: MachineSpec) -> bool:

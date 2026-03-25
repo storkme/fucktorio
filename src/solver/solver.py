@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import math
-from collections import OrderedDict
-
 from ..models import ItemFlow, MachineSpec, SolverResult
 from .recipe_db import find_recipe_for_item, get_crafting_speed, machine_for_recipe
 
@@ -27,7 +24,7 @@ def solve(
         available_inputs = set()
 
     machines: list[MachineSpec] = []
-    external_inputs: dict[str, float] = {}   # item → total rate
+    external_inputs: dict[str, float] = {}  # item → total rate
     external_inputs_fluid: dict[str, bool] = {}  # item → is_fluid
     dependency_order: list[str] = []
 
@@ -104,8 +101,7 @@ def solve(
     _resolve(target_item, target_rate)
 
     ext_in = [
-        ItemFlow(item=k, rate=v, is_fluid=external_inputs_fluid.get(k, False))
-        for k, v in external_inputs.items()
+        ItemFlow(item=k, rate=v, is_fluid=external_inputs_fluid.get(k, False)) for k, v in external_inputs.items()
     ]
     ext_out = [ItemFlow(item=target_item, rate=target_rate)]
 
