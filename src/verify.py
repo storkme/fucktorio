@@ -103,7 +103,12 @@ def verify(bp_string: str, verbose: bool = True) -> bool:
 
 
 def _print_ascii_map(bp) -> None:
-    """Print a compact ASCII visualization of the blueprint."""
+    """Print a compact ASCII visualization of the blueprint.
+
+    Machines are numbered by recipe so you can tell production rows apart.
+    A legend is printed below the map explaining what each number means.
+    Row annotations appear on the right margin showing recipe names.
+    """
     if not bp.entities:
         print("   (empty)")
         return
@@ -111,41 +116,51 @@ def _print_ascii_map(bp) -> None:
     _3x3 = {"assembling-machine-1", "assembling-machine-2",
              "assembling-machine-3", "chemical-plant"}
     _5x5 = {"oil-refinery"}
+    _crafting = _3x3 | _5x5
 
-    # Symbol map
-    sym = {
+    # Base symbol map (non-machine entities)
+    base_sym = {
         "transport-belt": "═",
         "underground-belt": "⇓",
         "inserter": "↓",
-        "assembling-machine-1": "A",
-        "assembling-machine-2": "A",
-        "assembling-machine-3": "A",
-        "chemical-plant": "C",
-        "oil-refinery": "R",
         "pipe": "│",
         "pipe-to-ground": "⇣",
         "medium-electric-pole": "╋",
         "splitter": "S",
     }
 
+    # Assign each recipe a unique digit/letter for machine symbols
+    recipe_labels: list[str] = []  # ordered list of unique recipes
+    _digits = "123456789abcdefghijklmnopqrstuvwxyz"
+    recipe_to_sym: dict[str, str] = {}
+    for e in bp.entities:
+        if e.name in _crafting and e.recipe and e.recipe not in recipe_to_sym:
+            idx = len(recipe_labels)
+            sym_char = _digits[idx] if idx < len(_digits) else "?"
+            recipe_to_sym[e.recipe] = sym_char
+            recipe_labels.append(e.recipe)
+
+    # Build grid and track row annotations (recipe label at the right edge)
     grid: dict[tuple[int, int], str] = {}
+    # For row annotations: map y-ranges to recipe names
+    # Track the vertical center of each recipe's machine group
+    recipe_y_positions: dict[str, list[int]] = {}  # recipe → list of machine y positions
 
     for e in bp.entities:
-        # Get tile position — draftsman stores position as center
-        # tile_position is top-left for multi-tile entities
         tx = int(e.tile_position.x) if hasattr(e.tile_position, 'x') else int(e.tile_position[0])
         ty = int(e.tile_position.y) if hasattr(e.tile_position, 'y') else int(e.tile_position[1])
-        s = sym.get(e.name, "?")
 
-        if e.name in _3x3:
-            for dx in range(3):
-                for dy in range(3):
+        if e.name in _crafting:
+            s = recipe_to_sym.get(e.recipe, "?")
+            size = 5 if e.name in _5x5 else 3
+            for dx in range(size):
+                for dy in range(size):
                     grid[(tx + dx, ty + dy)] = s
-        elif e.name in _5x5:
-            for dx in range(5):
-                for dy in range(5):
-                    grid[(tx + dx, ty + dy)] = s
+            # Track y center for row annotation
+            if e.recipe:
+                recipe_y_positions.setdefault(e.recipe, []).append(ty + size // 2)
         else:
+            s = base_sym.get(e.name, "?")
             grid[(tx, ty)] = s
 
     if not grid:
@@ -157,30 +172,59 @@ def _print_ascii_map(bp) -> None:
     min_y = min(y for x, y in grid)
     max_y = max(y for x, y in grid)
 
+    # Build row annotations: pick the median y for each recipe group
+    row_annotations: dict[int, str] = {}  # y → "1: recipe-name"
+    for recipe, y_positions in recipe_y_positions.items():
+        median_y = sorted(y_positions)[len(y_positions) // 2]
+        label = f" ← {recipe_to_sym[recipe]}: {recipe}"
+        # Avoid collisions — shift down if taken
+        y = median_y
+        while y in row_annotations:
+            y += 1
+        row_annotations[y] = label
+
     # Limit display size
     w = max_x - min_x + 1
     h = max_y - min_y + 1
-    if h > 60:
-        print(f"   ({w}×{h} tiles — too tall, showing first 60 rows)")
-        max_y = min_y + 59
+    if h > 80:
+        print(f"   ({w}×{h} tiles — too tall, showing first 80 rows)")
+        max_y = min_y + 79
 
-    # Print with coordinate labels
-    print(f"   x: {min_x} → {max_x}  y: {min_y} → {max_y}")
+    # Print map with coordinate labels and row annotations
+    print(f"   x: {min_x} → {max_x}  y: {min_y} → {max_y}  ({w}×{h} tiles)")
+    print()
     for y in range(min_y, max_y + 1):
         row = ""
         for x in range(min_x, max_x + 1):
             row += grid.get((x, y), "·")
-        print(f"   {y:3d} {row}")
+        annotation = row_annotations.get(y, "")
+        print(f"   {y:3d} │{row}│{annotation}")
+
+    # Print legend
+    print()
+    print("   Legend:")
+    print("     Machines:")
+    for recipe in recipe_labels:
+        print(f"       {recipe_to_sym[recipe]} = {recipe}")
+    print("     Infrastructure:")
+    print("       ═ belt  ⇓ underground-belt  ↓ inserter  │ pipe  ⇣ pipe-to-ground  ╋ pole  S splitter")
 
 
 if __name__ == "__main__":
     from src.pipeline import produce
 
-    item = sys.argv[1] if len(sys.argv) > 1 else "advanced-circuit"
-    rate = float(sys.argv[2]) if len(sys.argv) > 2 else 5
-    inputs = sys.argv[3].split(",") if len(sys.argv) > 3 else ["iron-plate", "copper-plate", "petroleum-gas", "coal"]
+    # Parse --html flag
+    args = [a for a in sys.argv[1:] if a != "--html"]
+    use_html = "--html" in sys.argv
+
+    item = args[0] if len(args) > 0 else "advanced-circuit"
+    rate = float(args[1]) if len(args) > 1 else 5
+    inputs = args[2].split(",") if len(args) > 2 else ["iron-plate", "copper-plate", "petroleum-gas", "coal"]
 
     print(f"Generating: {item} @ {rate}/s from {inputs}\n")
-    bp_str = produce(item, rate=rate, inputs=inputs)
+    bp_str = produce(item, rate=rate, inputs=inputs, visualize=use_html, open_browser=False)
     print()
     verify(bp_str)
+
+    if use_html:
+        print(f"\nHTML visualization written to blueprint_viz.html")
