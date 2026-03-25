@@ -140,3 +140,48 @@ class TestSolver:
         # Has fluid input
         fluid_inputs = [f for f in pu.inputs if f.is_fluid]
         assert len(fluid_inputs) > 0
+
+    def test_basic_oil_processing(self):
+        """Basic oil processing should use oil-refinery."""
+        result = solve(
+            "petroleum-gas", 10,
+            available_inputs={"crude-oil"},
+        )
+        assert len(result.machines) == 1
+        m = result.machines[0]
+        assert m.entity == "oil-refinery"
+        assert m.recipe == "basic-oil-processing"
+        # oil-refinery speed=1.0, energy=5s → crafts/s=0.2, output=45*0.2=9/s per machine
+        # 10/9 ≈ 1.111
+        assert math.isclose(m.count, 10 / 9, rel_tol=1e-6)
+
+    def test_oil_recipe_multi_output(self):
+        """Advanced oil processing produces multiple fluid outputs."""
+        r = get_recipe("advanced-oil-processing")
+        assert machine_for_recipe(r) == "oil-refinery"
+        assert recipe_has_fluid(r) is True
+        # Should have 3 products
+        product_names = {p.name for p in r.products}
+        assert "heavy-oil" in product_names
+        assert "light-oil" in product_names
+        assert "petroleum-gas" in product_names
+
+    def test_oil_external_inputs_fluid(self):
+        """Oil recipe external inputs should be marked as fluid."""
+        result = solve(
+            "petroleum-gas", 10,
+            available_inputs={"crude-oil"},
+        )
+        ext = {f.item: f for f in result.external_inputs}
+        assert "crude-oil" in ext
+        assert ext["crude-oil"].is_fluid is True
+
+    def test_coal_liquefaction_uses_refinery(self):
+        """Coal liquefaction (oil-processing category) should use oil-refinery."""
+        r = get_recipe("simple-coal-liquefaction")
+        assert machine_for_recipe(r) == "oil-refinery"
+        # Has both solid and fluid inputs
+        solid_ings = [i for i in r.ingredients if i.type == "item"]
+        fluid_ings = [i for i in r.ingredients if i.type == "fluid"]
+        assert len(solid_ings) > 0
+        assert len(fluid_ings) > 0

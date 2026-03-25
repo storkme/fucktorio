@@ -237,3 +237,91 @@ def fluid_row(
             entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 8))
 
     return entities, ROW_HEIGHT
+
+
+def refinery_row(
+    recipe: str,
+    machine_entity: str,
+    machine_count: int,
+    y_offset: int,
+    x_offset: int = 0,
+    inputs: list[ItemFlow] | None = None,
+) -> tuple[list[PlacedEntity], int]:
+    """Lay out a row for oil-refinery (5x5) recipes.
+
+    Uses pipes for fluid inputs/outputs and inserters+belts for solid items.
+
+    Layout:
+        y+0  : fluid input pipes (5 tiles wide to match machine)
+        y+1  : item input belt (EAST) — for solid ingredients
+        y+2  : item input inserter (SOUTH)
+        y+3..y+7 : machine (5x5)
+        y+8  : item output inserter (SOUTH)
+        y+9  : item output belt (EAST) — for solid products
+        y+10 : fluid output pipes
+    """
+    entities: list[PlacedEntity] = []
+
+    if inputs is None:
+        inputs = []
+    has_solid_input = any(not f.is_fluid for f in inputs)
+
+    ROW_HEIGHT = 11
+    MACHINE_WIDTH = 5
+    MACHINE_PITCH = 6  # 5-wide machine + 1-tile gap
+
+    for i in range(machine_count):
+        mx = x_offset + i * MACHINE_PITCH
+
+        # Fluid input pipe row — pipes across machine width + gap pipe to next
+        for dx in range(MACHINE_WIDTH):
+            entities.append(PlacedEntity(name="pipe", x=mx + dx, y=y_offset))
+        if i < machine_count - 1:
+            entities.append(PlacedEntity(name="pipe", x=mx + MACHINE_WIDTH, y=y_offset))
+
+        # Item input belt (5 tiles wide to match machine)
+        for dx in range(MACHINE_WIDTH):
+            entities.append(PlacedEntity(
+                name="transport-belt",
+                x=mx + dx, y=y_offset + 1,
+                direction=EntityDirection.EAST,
+            ))
+
+        # Item input inserter (only if solid ingredients exist)
+        if has_solid_input:
+            entities.append(PlacedEntity(
+                name="inserter",
+                x=mx + 2, y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+            ))
+
+        # Machine (5x5, tile_position = top-left)
+        entities.append(PlacedEntity(
+            name=machine_entity,
+            x=mx, y=y_offset + 3,
+            direction=EntityDirection.NORTH,
+            recipe=recipe,
+        ))
+
+        # Item output inserter
+        entities.append(PlacedEntity(
+            name="inserter",
+            x=mx + 2, y=y_offset + 8,
+            direction=EntityDirection.SOUTH,
+        ))
+
+        # Item output belt (5 tiles wide)
+        for dx in range(MACHINE_WIDTH):
+            entities.append(PlacedEntity(
+                name="transport-belt",
+                x=mx + dx, y=y_offset + 9,
+                direction=EntityDirection.EAST,
+            ))
+
+        # Fluid output pipe row
+        for dx in range(MACHINE_WIDTH):
+            entities.append(PlacedEntity(name="pipe", x=mx + dx, y=y_offset + 10))
+        if i < machine_count - 1:
+            entities.append(PlacedEntity(name="pipe", x=mx + MACHINE_WIDTH, y=y_offset + 10))
+
+    return entities, ROW_HEIGHT
