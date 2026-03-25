@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import math
-
-from ..models import EntityDirection, PlacedEntity, ItemFlow
+from ..models import EntityDirection, ItemFlow, PlacedEntity
 
 
 def single_input_row(
@@ -34,41 +32,56 @@ def single_input_row(
 
         # Input belt tiles (3 tiles wide to match machine)
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Input inserter (centre of machine width)
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 1, y=y_offset + 1,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 1,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Assembling machine (3×3, tile_position = top-left)
-        entities.append(PlacedEntity(
-            name=machine_entity,
-            x=mx, y=y_offset + 2,
-            direction=EntityDirection.NORTH,
-            recipe=recipe,
-        ))
+        entities.append(
+            PlacedEntity(
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
+            )
+        )
 
         # Output inserter
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 1, y=y_offset + 5,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 5,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Output belt tiles
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 6,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 6,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
     return entities, ROW_HEIGHT
 
@@ -98,56 +111,77 @@ def dual_input_row(
 
         # Input belt 1
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Input belt 2
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 1,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Inserter 1 at x+0 (picks from belt 2 at y+1, drops into machine at y+3)
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx, y=y_offset + 2,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Inserter 2 at x+2
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 2, y=y_offset + 2,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 2,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Assembler (3×3)
-        entities.append(PlacedEntity(
-            name=machine_entity,
-            x=mx, y=y_offset + 3,
-            direction=EntityDirection.NORTH,
-            recipe=recipe,
-        ))
+        entities.append(
+            PlacedEntity(
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 3,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
+            )
+        )
 
         # Output inserter
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 1, y=y_offset + 6,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 6,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Output belt
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 7,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 7,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
     return entities, ROW_HEIGHT
 
@@ -193,42 +227,57 @@ def fluid_row(
 
         # Item input belt
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 1,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Item input inserter (only if solid ingredients exist)
         if has_solid_input:
-            entities.append(PlacedEntity(
-                name="inserter",
-                x=mx + 1, y=y_offset + 2,
-                direction=EntityDirection.SOUTH,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="inserter",
+                    x=mx + 1,
+                    y=y_offset + 2,
+                    direction=EntityDirection.SOUTH,
+                )
+            )
 
         # Machine (3×3)
-        entities.append(PlacedEntity(
-            name=machine_entity,
-            x=mx, y=y_offset + 3,
-            direction=EntityDirection.NORTH,
-            recipe=recipe,
-        ))
+        entities.append(
+            PlacedEntity(
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 3,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
+            )
+        )
 
         # Item output inserter
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 1, y=y_offset + 6,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 6,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Item output belt
         for dx in range(3):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 7,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 7,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Fluid output pipe row
         for dx in range(3):
@@ -281,42 +330,57 @@ def refinery_row(
 
         # Item input belt (5 tiles wide to match machine)
         for dx in range(MACHINE_WIDTH):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 1,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Item input inserter (only if solid ingredients exist)
         if has_solid_input:
-            entities.append(PlacedEntity(
-                name="inserter",
-                x=mx + 2, y=y_offset + 2,
-                direction=EntityDirection.SOUTH,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="inserter",
+                    x=mx + 2,
+                    y=y_offset + 2,
+                    direction=EntityDirection.SOUTH,
+                )
+            )
 
         # Machine (5x5, tile_position = top-left)
-        entities.append(PlacedEntity(
-            name=machine_entity,
-            x=mx, y=y_offset + 3,
-            direction=EntityDirection.NORTH,
-            recipe=recipe,
-        ))
+        entities.append(
+            PlacedEntity(
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 3,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
+            )
+        )
 
         # Item output inserter
-        entities.append(PlacedEntity(
-            name="inserter",
-            x=mx + 2, y=y_offset + 8,
-            direction=EntityDirection.SOUTH,
-        ))
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 2,
+                y=y_offset + 8,
+                direction=EntityDirection.SOUTH,
+            )
+        )
 
         # Item output belt (5 tiles wide)
         for dx in range(MACHINE_WIDTH):
-            entities.append(PlacedEntity(
-                name="transport-belt",
-                x=mx + dx, y=y_offset + 9,
-                direction=EntityDirection.EAST,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name="transport-belt",
+                    x=mx + dx,
+                    y=y_offset + 9,
+                    direction=EntityDirection.EAST,
+                )
+            )
 
         # Fluid output pipe row
         for dx in range(MACHINE_WIDTH):

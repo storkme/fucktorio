@@ -1,1 +1,1 @@
-from .blueprint import build_blueprint
+from .blueprint import build_blueprint as build_blueprint

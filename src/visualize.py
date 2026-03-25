@@ -20,7 +20,6 @@ from pathlib import Path
 
 from draftsman.blueprintable import get_blueprintable_from_string
 
-
 # Distinct, colorblind-friendly palette for recipes
 _RECIPE_COLORS = [
     "#4e79a7",  # steel blue
@@ -62,8 +61,10 @@ _INFRA_LABELS = {
 }
 
 _3x3 = {
-    "assembling-machine-1", "assembling-machine-2",
-    "assembling-machine-3", "chemical-plant",
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
 }
 _5x5 = {"oil-refinery"}
 _CRAFTING = _3x3 | _5x5
@@ -87,6 +88,7 @@ def visualize(
         Path to the generated HTML file.
     """
     import warnings
+
     from draftsman.warning import DraftsmanWarning
 
     with warnings.catch_warnings(record=True):
@@ -127,11 +129,18 @@ def visualize(
             size = 5 if e.name in _5x5 else 3
             color = recipe_colors.get(e.recipe, "#888")
             tooltip = f"{e.name}\\n{e.recipe}"
-            tiles.append({
-                "x": tx, "y": ty, "w": size, "h": size,
-                "color": color, "entity": e.name,
-                "recipe": e.recipe or "", "tooltip": tooltip,
-            })
+            tiles.append(
+                {
+                    "x": tx,
+                    "y": ty,
+                    "w": size,
+                    "h": size,
+                    "color": color,
+                    "entity": e.name,
+                    "recipe": e.recipe or "",
+                    "tooltip": tooltip,
+                }
+            )
         else:
             color = _INFRA_COLORS.get(e.name, "#666")
             label = _INFRA_LABELS.get(e.name, e.name)
@@ -140,11 +149,18 @@ def visualize(
                 io = getattr(e, "io_type", None)
                 if io:
                     tooltip += f" ({io})"
-            tiles.append({
-                "x": tx, "y": ty, "w": 1, "h": 1,
-                "color": color, "entity": e.name,
-                "recipe": "", "tooltip": tooltip,
-            })
+            tiles.append(
+                {
+                    "x": tx,
+                    "y": ty,
+                    "w": 1,
+                    "h": 1,
+                    "color": color,
+                    "entity": e.name,
+                    "recipe": "",
+                    "tooltip": tooltip,
+                }
+            )
 
     # Bounding box
     if not tiles:
@@ -166,33 +182,40 @@ def visualize(
         for recipe in recipe_order:
             spec = recipe_to_spec.get(recipe)
             if spec:
-                rows.append({
-                    "recipe": recipe,
-                    "entity": spec.entity,
-                    "count": f"{spec.count:.1f}",
-                    "placed": str(math.ceil(spec.count)),
-                    "inputs": [
-                        {"item": f.item, "rate": f"{f.rate * spec.count:.1f}/s", "fluid": f.is_fluid}
-                        for f in spec.inputs
-                    ],
-                    "outputs": [
-                        {"item": f.item, "rate": f"{f.rate * spec.count:.1f}/s", "fluid": f.is_fluid}
-                        for f in spec.outputs
-                    ],
-                })
+                rows.append(
+                    {
+                        "recipe": recipe,
+                        "entity": spec.entity,
+                        "count": f"{spec.count:.1f}",
+                        "placed": str(math.ceil(spec.count)),
+                        "inputs": [
+                            {"item": f.item, "rate": f"{f.rate * spec.count:.1f}/s", "fluid": f.is_fluid}
+                            for f in spec.inputs
+                        ],
+                        "outputs": [
+                            {"item": f.item, "rate": f"{f.rate * spec.count:.1f}/s", "fluid": f.is_fluid}
+                            for f in spec.outputs
+                        ],
+                    }
+                )
         solver_info = json.dumps(rows)
 
     # Build legend data
-    legend_recipes = json.dumps([
-        {"recipe": r, "color": recipe_colors[r], "count": recipe_counts[r]}
-        for r in recipe_order
-    ])
-    legend_infra = json.dumps([
-        {"entity": name, "label": _INFRA_LABELS.get(name, name),
-         "color": _INFRA_COLORS.get(name, "#666"), "count": entity_counts[name]}
-        for name in sorted(entity_counts.keys())
-        if name not in _CRAFTING
-    ])
+    legend_recipes = json.dumps(
+        [{"recipe": r, "color": recipe_colors[r], "count": recipe_counts[r]} for r in recipe_order]
+    )
+    legend_infra = json.dumps(
+        [
+            {
+                "entity": name,
+                "label": _INFRA_LABELS.get(name, name),
+                "color": _INFRA_COLORS.get(name, "#666"),
+                "count": entity_counts[name],
+            }
+            for name in sorted(entity_counts.keys())
+            if name not in _CRAFTING
+        ]
+    )
 
     label = html.escape(bp.label or "Blueprint")
     total_entities = len(bp.entities)
