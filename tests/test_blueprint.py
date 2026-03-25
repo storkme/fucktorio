@@ -165,3 +165,62 @@ class TestBlueprint:
         assert len(bp_ug) > 0
         bp_ptg = [e for e in bp.entities if e.name == "pipe-to-ground"]
         assert len(bp_ptg) > 0
+
+    def test_oil_refinery_end_to_end(self):
+        """Oil refinery: solve → layout → blueprint round-trip.
+
+        basic-oil-processing uses oil-refinery (5x5), which is larger than
+        the 3x3 assemblers and chemical plants. This tests the full pipeline
+        handling the larger machine footprint correctly.
+        """
+        import math
+        from src.pipeline import produce
+        from src.solver import solve
+        from src.layout import layout
+
+        # --- Solver checks ---
+        result = solve(
+            "petroleum-gas", 10,
+            available_inputs={"crude-oil"},
+        )
+        m = result.machines[0]
+        assert m.entity == "oil-refinery"
+        assert m.recipe == "basic-oil-processing"
+
+        # --- Layout checks ---
+        lr = layout(result)
+        entity_names = [e.name for e in lr.entities]
+        assert "oil-refinery" in entity_names
+        assert "pipe" in entity_names
+        assert "pipe-to-ground" in entity_names
+
+        # No tile overlaps (5x5 refineries)
+        _5x5 = {"oil-refinery"}
+        _3x3 = {"assembling-machine-3", "chemical-plant"}
+        occupied: dict[tuple[int, int], str] = {}
+        for ent in lr.entities:
+            if ent.name in _5x5:
+                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
+            elif ent.name in _3x3:
+                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
+            else:
+                tiles = [(ent.x, ent.y)]
+            for tile in tiles:
+                assert tile not in occupied, (
+                    f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
+                )
+                occupied[tile] = ent.name
+
+        # --- Blueprint round-trip ---
+        bp_str = produce(
+            "petroleum-gas", rate=10,
+            inputs=["crude-oil"],
+        )
+        bp = get_blueprintable_from_string(bp_str)
+        assert len(bp.entities) > 10
+
+        # Verify oil-refinery entities with recipe survived round-trip
+        bp_refs = [e for e in bp.entities if e.name == "oil-refinery"]
+        assert len(bp_refs) > 0
+        for ref in bp_refs:
+            assert ref.recipe == "basic-oil-processing"
