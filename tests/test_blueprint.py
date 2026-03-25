@@ -40,13 +40,14 @@ class TestBlueprint:
         names = [e.name for e in bp.entities]
         assert names.count("transport-belt") == 2
 
-    def test_end_to_end(self):
+    def test_end_to_end(self, viz):
         """Full pipeline produces a re-importable blueprint."""
         from src.pipeline import produce
         bp_str = produce(
             "electronic-circuit", rate=30,
             inputs=["iron-plate", "copper-plate"],
         )
+        viz(bp_str, "electronic-circuit-30s")
         bp = get_blueprintable_from_string(bp_str)
         assert len(bp.entities) > 50
 
@@ -56,7 +57,7 @@ class TestBlueprint:
         for asm in asms:
             assert asm.recipe is not None
 
-    def test_advanced_circuit_full_chain(self):
+    def test_advanced_circuit_full_chain(self, viz):
         """Advanced circuit: deep recipe chain with fluid intermediates.
 
         advanced-circuit needs:
@@ -147,6 +148,7 @@ class TestBlueprint:
             "advanced-circuit", rate=5,
             inputs=["iron-plate", "copper-plate", "petroleum-gas", "coal"],
         )
+        viz(bp_str, "advanced-circuit-5s", solver_result=result)
         bp = get_blueprintable_from_string(bp_str)
         assert len(bp.entities) > 100
 
@@ -166,7 +168,7 @@ class TestBlueprint:
         bp_ptg = [e for e in bp.entities if e.name == "pipe-to-ground"]
         assert len(bp_ptg) > 0
 
-    def test_oil_refinery_end_to_end(self):
+    def test_oil_refinery_end_to_end(self, viz):
         """Oil refinery: solve → layout → blueprint round-trip.
 
         basic-oil-processing uses oil-refinery (5x5), which is larger than
@@ -216,6 +218,7 @@ class TestBlueprint:
             "petroleum-gas", rate=10,
             inputs=["crude-oil"],
         )
+        viz(bp_str, "petroleum-gas-10s", solver_result=result)
         bp = get_blueprintable_from_string(bp_str)
         assert len(bp.entities) > 10
 

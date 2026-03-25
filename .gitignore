@@ -8,3 +8,4 @@ dist/
 build/
 *.blueprint
 blueprint_viz.html
+test_viz/
