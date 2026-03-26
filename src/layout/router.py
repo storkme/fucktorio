@@ -39,8 +39,12 @@ def _find_row_spans(
         has_fluid = any(f.is_fluid for f in spec.inputs + spec.outputs)
         num_solid = sum(1 for f in spec.inputs if not f.is_fluid)
 
-        if has_fluid:
-            row_h = 9
+        is_refinery = spec.entity == "oil-refinery"
+
+        if is_refinery:
+            row_h = 8
+        elif has_fluid:
+            row_h = 7
         elif num_solid <= 1:
             row_h = 7
         else:
