@@ -36,9 +36,7 @@ def _row_height(spec: MachineSpec) -> int:
 
     if spec.entity == "oil-refinery":
         return 8
-    elif has_fluid:
-        return 7
-    elif num_solid <= 1:
+    elif has_fluid or num_solid <= 1:
         return 7
     else:
         return 8
