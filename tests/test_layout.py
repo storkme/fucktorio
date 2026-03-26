@@ -140,15 +140,11 @@ class TestLayout:
             # Check input ports (north side) have adjacent pipes
             for dx in (0, 2):
                 expected = (mx + dx, my - 1)
-                assert expected in pipe_tiles, (
-                    f"Chemical plant at ({mx},{my}): missing input pipe at {expected}"
-                )
+                assert expected in pipe_tiles, f"Chemical plant at ({mx},{my}): missing input pipe at {expected}"
             # Check output ports (south side) have adjacent pipes
             for dx in (0, 2):
                 expected = (mx + dx, my + 3)
-                assert expected in pipe_tiles, (
-                    f"Chemical plant at ({mx},{my}): missing output pipe at {expected}"
-                )
+                assert expected in pipe_tiles, f"Chemical plant at ({mx},{my}): missing output pipe at {expected}"
 
     def test_bus_uses_underground_belts(self):
         """Bus lanes should use underground belts to tunnel through rows."""
@@ -175,9 +171,7 @@ class TestLayout:
         lr = layout(result)
 
         # Find the fluid bus lane x (petroleum-gas lane)
-        fluid_idx = next(
-            i for i, f in enumerate(result.external_inputs) if f.item == "petroleum-gas"
-        )
+        fluid_idx = next(i for i, f in enumerate(result.external_inputs) if f.item == "petroleum-gas")
         bus_x = fluid_idx * 2
 
         # The bus should have surface pipes at bus_x
@@ -187,10 +181,7 @@ class TestLayout:
         # There should be horizontal tap-off pipes between bus and row
         # (pipes at x positions between bus_x and bus_width)
         bus_width = max(2, len(result.external_inputs) * 2 + 1)
-        tap_pipes = [
-            e for e in lr.entities
-            if e.name == "pipe" and bus_x < e.x < bus_width
-        ]
+        tap_pipes = [e for e in lr.entities if e.name == "pipe" and bus_x < e.x < bus_width]
         assert len(tap_pipes) > 0, "Should have horizontal tap-off pipes"
 
 
@@ -308,9 +299,7 @@ class TestOilRefineryLayout:
         lr = layout(result)
 
         # Find the fluid bus lane x (crude-oil lane)
-        fluid_idx = next(
-            i for i, f in enumerate(result.external_inputs) if f.item == "crude-oil"
-        )
+        fluid_idx = next(i for i, f in enumerate(result.external_inputs) if f.item == "crude-oil")
         bus_x = fluid_idx * 2
 
         # The bus should have surface pipes
@@ -319,10 +308,7 @@ class TestOilRefineryLayout:
 
         # There should be horizontal tap-off pipes
         bus_width = max(2, len(result.external_inputs) * 2 + 1)
-        tap_pipes = [
-            e for e in lr.entities
-            if e.name == "pipe" and bus_x < e.x < bus_width
-        ]
+        tap_pipes = [e for e in lr.entities if e.name == "pipe" and bus_x < e.x < bus_width]
         assert len(tap_pipes) > 0, "Should have horizontal tap-off pipes"
 
     def test_refinery_recipe_set(self):
@@ -358,15 +344,11 @@ class TestOilRefineryLayout:
             # Check input ports (south side) have adjacent pipes
             for dx in (1, 3):
                 expected = (mx + dx, my + 5)
-                assert expected in pipe_tiles, (
-                    f"Refinery at ({mx},{my}): missing input pipe at {expected}"
-                )
+                assert expected in pipe_tiles, f"Refinery at ({mx},{my}): missing input pipe at {expected}"
             # Check output ports (north side) have adjacent pipes
             for dx in (0, 2, 4):
                 expected = (mx + dx, my - 1)
-                assert expected in pipe_tiles, (
-                    f"Refinery at ({mx},{my}): missing output pipe at {expected}"
-                )
+                assert expected in pipe_tiles, f"Refinery at ({mx},{my}): missing output pipe at {expected}"
 
     def test_refinery_wider_spacing(self):
         """Oil refineries (5x5) should be spaced wider than 3x3 machines."""
