@@ -119,6 +119,37 @@ class TestLayout:
         chem_count = sum(1 for e in lr.entities if e.name == "chemical-plant")
         assert chem_count > 0, "Should have chemical plants"
 
+    def test_chemical_plant_pipes_adjacent_to_ports(self):
+        """Pipes must be placed adjacent to chemical-plant fluid ports."""
+        result = solve(
+            "plastic-bar",
+            target_rate=10,
+            available_inputs={"petroleum-gas", "coal"},
+        )
+        lr = layout(result)
+
+        # chemical-plant ports (relative to tile_position):
+        #   input:  (0, 0) north, (2, 0) north → pipe at (0, -1), (2, -1)
+        #   output: (0, 2) south, (2, 2) south → pipe at (0, 3), (2, 3)
+        pipe_tiles = {(e.x, e.y) for e in lr.entities if e.name == "pipe"}
+
+        for ent in lr.entities:
+            if ent.name != "chemical-plant":
+                continue
+            mx, my = ent.x, ent.y
+            # Check input ports (north side) have adjacent pipes
+            for dx in (0, 2):
+                expected = (mx + dx, my - 1)
+                assert expected in pipe_tiles, (
+                    f"Chemical plant at ({mx},{my}): missing input pipe at {expected}"
+                )
+            # Check output ports (south side) have adjacent pipes
+            for dx in (0, 2):
+                expected = (mx + dx, my + 3)
+                assert expected in pipe_tiles, (
+                    f"Chemical plant at ({mx},{my}): missing output pipe at {expected}"
+                )
+
     def test_bus_uses_underground_belts(self):
         """Bus lanes should use underground belts to tunnel through rows."""
         result = solve(
@@ -275,6 +306,37 @@ class TestOilRefineryLayout:
         refineries = [e for e in lr.entities if e.name == "oil-refinery"]
         for ref in refineries:
             assert ref.recipe == "basic-oil-processing"
+
+    def test_refinery_pipes_adjacent_to_ports(self):
+        """Pipes must be placed adjacent to oil-refinery fluid ports."""
+        result = solve(
+            "petroleum-gas",
+            target_rate=10,
+            available_inputs={"crude-oil"},
+        )
+        lr = layout(result)
+
+        # Oil refinery ports (relative to tile_position):
+        #   input:  (1, 4) south, (3, 4) south → pipe at (1, 5), (3, 5)
+        #   output: (0, 0) north, (2, 0) north, (4, 0) north → pipe at (0, -1), (2, -1), (4, -1)
+        pipe_tiles = {(e.x, e.y) for e in lr.entities if e.name == "pipe"}
+
+        for ent in lr.entities:
+            if ent.name != "oil-refinery":
+                continue
+            mx, my = ent.x, ent.y
+            # Check input ports (south side) have adjacent pipes
+            for dx in (1, 3):
+                expected = (mx + dx, my + 5)
+                assert expected in pipe_tiles, (
+                    f"Refinery at ({mx},{my}): missing input pipe at {expected}"
+                )
+            # Check output ports (north side) have adjacent pipes
+            for dx in (0, 2, 4):
+                expected = (mx + dx, my - 1)
+                assert expected in pipe_tiles, (
+                    f"Refinery at ({mx},{my}): missing output pipe at {expected}"
+                )
 
     def test_refinery_wider_spacing(self):
         """Oil refineries (5x5) should be spaced wider than 3x3 machines."""
