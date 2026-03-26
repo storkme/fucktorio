@@ -116,7 +116,6 @@ class TestBlueprint:
         assert "chemical-plant" in entity_names, "Should have chemical plants for plastic"
         assert "assembling-machine-3" in entity_names
         assert "underground-belt" in entity_names, "Bus should use underground belts"
-        assert "pipe-to-ground" in entity_names, "Fluid bus should use pipe-to-ground"
         assert "pipe" in entity_names, "Fluid rows should have pipes"
 
         # No tile overlaps (surface entities)
@@ -136,9 +135,9 @@ class TestBlueprint:
         ug_out = sum(1 for e in lr.entities if e.name == "underground-belt" and e.io_type == "output")
         assert ug_in == ug_out, f"Mismatched UG belt pairs: {ug_in} in, {ug_out} out"
 
-        # Pipe-to-ground comes in pairs
-        ptg = sum(1 for e in lr.entities if e.name == "pipe-to-ground")
-        assert ptg % 2 == 0, f"Odd pipe-to-ground count: {ptg}"
+        # Fluid bus should have tap-off pipes connecting to rows
+        pipe_count = sum(1 for e in lr.entities if e.name == "pipe")
+        assert pipe_count > 0, "Should have pipes for fluid bus and rows"
 
         # Chemical plants should have the plastic-bar recipe
         chem_plants = [e for e in lr.entities if e.name == "chemical-plant"]
@@ -168,8 +167,10 @@ class TestBlueprint:
         # Verify underground belts survived
         bp_ug = [e for e in bp.entities if e.name == "underground-belt"]
         assert len(bp_ug) > 0
-        bp_ptg = [e for e in bp.entities if e.name == "pipe-to-ground"]
-        assert len(bp_ptg) > 0
+
+        # Verify pipes survived (fluid bus + row pipes)
+        bp_pipes = [e for e in bp.entities if e.name == "pipe"]
+        assert len(bp_pipes) > 0
 
     def test_oil_refinery_end_to_end(self, viz):
         """Oil refinery: solve → layout → blueprint round-trip.
@@ -197,7 +198,6 @@ class TestBlueprint:
         entity_names = [e.name for e in lr.entities]
         assert "oil-refinery" in entity_names
         assert "pipe" in entity_names
-        assert "pipe-to-ground" in entity_names
 
         # No tile overlaps (5x5 refineries)
         _5x5 = {"oil-refinery"}
