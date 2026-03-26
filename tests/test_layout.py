@@ -165,18 +165,33 @@ class TestLayout:
         outputs = sum(1 for e in lr.entities if e.name == "underground-belt" and e.io_type == "output")
         assert inputs == outputs, f"Mismatched UG belt pairs: {inputs} in, {outputs} out"
 
-    def test_bus_uses_pipe_to_ground(self):
-        """Fluid bus lanes should use pipe-to-ground to tunnel through rows."""
+    def test_fluid_bus_tap_off(self):
+        """Fluid bus lanes should have horizontal tap-off pipes into consuming rows."""
         result = solve(
             "plastic-bar",
             target_rate=10,
             available_inputs={"petroleum-gas", "coal"},
         )
         lr = layout(result)
-        ptg_count = sum(1 for e in lr.entities if e.name == "pipe-to-ground")
-        assert ptg_count > 0, "Fluid bus should use pipe-to-ground"
-        # Should come in pairs
-        assert ptg_count % 2 == 0, f"Odd number of pipe-to-ground: {ptg_count}"
+
+        # Find the fluid bus lane x (petroleum-gas lane)
+        fluid_idx = next(
+            i for i, f in enumerate(result.external_inputs) if f.item == "petroleum-gas"
+        )
+        bus_x = fluid_idx * 2
+
+        # The bus should have surface pipes at bus_x
+        bus_pipes = {e.y for e in lr.entities if e.name == "pipe" and e.x == bus_x}
+        assert len(bus_pipes) > 0, "Fluid bus should have surface pipes"
+
+        # There should be horizontal tap-off pipes between bus and row
+        # (pipes at x positions between bus_x and bus_width)
+        bus_width = max(2, len(result.external_inputs) * 2 + 1)
+        tap_pipes = [
+            e for e in lr.entities
+            if e.name == "pipe" and bus_x < e.x < bus_width
+        ]
+        assert len(tap_pipes) > 0, "Should have horizontal tap-off pipes"
 
 
 class TestOilRefineryLayout:
@@ -283,17 +298,32 @@ class TestOilRefineryLayout:
                         nearby.add((ent.x + dx, ent.y + dy))
                 assert nearby & machine_tiles, f"Inserter at ({ent.x}, {ent.y}) not near any machine"
 
-    def test_refinery_bus_pipe_to_ground(self):
-        """Fluid bus lanes for oil recipes should use pipe-to-ground."""
+    def test_refinery_fluid_bus_tap_off(self):
+        """Fluid bus lanes for oil recipes should tap off into the refinery row."""
         result = solve(
             "petroleum-gas",
             target_rate=10,
             available_inputs={"crude-oil"},
         )
         lr = layout(result)
-        ptg_count = sum(1 for e in lr.entities if e.name == "pipe-to-ground")
-        assert ptg_count > 0, "Oil refinery bus should use pipe-to-ground"
-        assert ptg_count % 2 == 0, f"Odd pipe-to-ground count: {ptg_count}"
+
+        # Find the fluid bus lane x (crude-oil lane)
+        fluid_idx = next(
+            i for i, f in enumerate(result.external_inputs) if f.item == "crude-oil"
+        )
+        bus_x = fluid_idx * 2
+
+        # The bus should have surface pipes
+        bus_pipes = {e.y for e in lr.entities if e.name == "pipe" and e.x == bus_x}
+        assert len(bus_pipes) > 0, "Fluid bus should have surface pipes"
+
+        # There should be horizontal tap-off pipes
+        bus_width = max(2, len(result.external_inputs) * 2 + 1)
+        tap_pipes = [
+            e for e in lr.entities
+            if e.name == "pipe" and bus_x < e.x < bus_width
+        ]
+        assert len(tap_pipes) > 0, "Should have horizontal tap-off pipes"
 
     def test_refinery_recipe_set(self):
         """Oil refinery entities should have the correct recipe set."""
