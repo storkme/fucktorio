@@ -59,6 +59,15 @@ jobs:
         with:
           name: test-visualizations
           path: site/
+      - name: Generate index.html
+        run: |
+          cd site
+          echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Test Visualizations</title><style>body{font-family:sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem}a{display:block;padding:.3rem 0}</style></head><body><h1>Test Visualizations</h1><ul>' > index.html
+          for f in *.html; do
+            [ "$f" = "index.html" ] && continue
+            echo "<li><a href=\"$f\">$f</a></li>" >> index.html
+          done
+          echo '</ul></body></html>' >> index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
