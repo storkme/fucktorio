@@ -185,16 +185,27 @@ def _path_to_entities(
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
+    edge_targets: dict[int, tuple[int, int]] | None = None,
+    reserved_tiles: set[tuple[int, int]] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using BFS pathfinding.
 
+    Args:
+        edge_targets: Optional mapping from edge index (in graph.edges) to
+            a specific belt tile that the route must reach. Used when inserter
+            positions are pre-assigned.
+        reserved_tiles: Pre-occupied tiles (e.g. reserved inserter positions)
+            that the router must avoid.
+
     Returns a RoutingResult with entities, occupied tiles, and any failed edges.
     """
+    if edge_targets is None:
+        edge_targets = {}
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
 
-    # Build initial obstacle set from machine footprints
-    occupied: set[tuple[int, int]] = set()
+    # Build initial obstacle set from machine footprints + reserved tiles
+    occupied: set[tuple[int, int]] = set(reserved_tiles) if reserved_tiles else set()
     for node in graph.nodes:
         x, y = positions[node.id]
         size = machine_size(node.spec.entity)
@@ -216,11 +227,19 @@ def route_connections(
         tx, ty = positions[edge.to_node]
         return abs(fx - tx) + abs(fy - ty)
 
-    sorted_edges = sorted(graph.edges, key=_edge_sort_key)
+    sorted_edge_indices = sorted(range(len(graph.edges)), key=lambda i: _edge_sort_key(graph.edges[i]))
 
-    for edge in sorted_edges:
-        # Determine start and goal tiles
-        start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+    for edge_idx in sorted_edge_indices:
+        edge = graph.edges[edge_idx]
+
+        # Use pre-assigned target if available, otherwise compute from endpoints
+        if edge_idx in edge_targets:
+            target = edge_targets[edge_idx]
+            # For assigned targets, start from the other end's belt tiles
+            start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+            goal_tiles = {target}
+        else:
+            start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
         if not start_tiles or not goal_tiles:
             continue
