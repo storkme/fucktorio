@@ -16,6 +16,8 @@ _3x3_ENTITIES = {
 _5x5_ENTITIES = {"oil-refinery"}
 _MACHINE_ENTITIES = _3x3_ENTITIES | _5x5_ENTITIES
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
+_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
+_INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
 
 
 @dataclass
@@ -57,6 +59,7 @@ def validate(
     issues.extend(check_pipe_isolation(layout_result))
     issues.extend(check_fluid_port_connectivity(layout_result, layout_style=layout_style))
     issues.extend(check_inserter_chains(layout_result, solver_result))
+    issues.extend(check_belt_connectivity(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -409,6 +412,162 @@ def check_inserter_chains(
             )
 
     return issues
+
+
+def check_belt_connectivity(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check that every machine with solid I/O is connected to belts via inserters.
+
+    Verifies two things:
+    1. Each machine has at least one inserter whose non-machine side touches a belt.
+    2. That belt is part of a connected belt network that reaches another machine's
+       inserter or the edge of the layout (external input/output).
+
+    Machines with only fluid I/O are skipped (they use pipes, not belts).
+    """
+    issues: list[ValidationIssue] = []
+
+    # Identify fluid-only recipes to skip
+    fluid_only_recipes: set[str] = set()
+    if solver_result is not None:
+        for spec in solver_result.machines:
+            has_solid = any(not f.is_fluid for f in spec.inputs + spec.outputs)
+            if not has_solid:
+                fluid_only_recipes.add(spec.recipe)
+
+    # Build tile maps
+    belt_tiles: set[tuple[int, int]] = set()
+    inserter_positions: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_tiles.add((e.x, e.y))
+        elif e.name in _INSERTER_ENTITIES:
+            inserter_positions.add((e.x, e.y))
+
+    if not belt_tiles:
+        # No belts at all — if there are machines needing solid I/O, that's bad
+        has_solid_machine = any(
+            e.name in _MACHINE_ENTITIES and e.recipe not in fluid_only_recipes
+            for e in layout_result.entities
+            if e.name in _MACHINE_ENTITIES
+        )
+        if has_solid_machine:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-connectivity",
+                    message="No belts in layout but machines require solid item transport",
+                )
+            )
+        return issues
+
+    # Build machine tile sets for lookup
+    machine_entities = [e for e in layout_result.entities if e.name in _MACHINE_ENTITIES]
+    machine_tile_map: dict[tuple[int, int], PlacedEntity] = {}
+    for e in machine_entities:
+        size = _machine_size(e.name)
+        for dx in range(size):
+            for dy in range(size):
+                machine_tile_map[(e.x + dx, e.y + dy)] = e
+
+    # For each machine with solid I/O, check inserter-to-belt connectivity
+    checked_machines: set[tuple[int, int]] = set()
+    for e in machine_entities:
+        if (e.x, e.y) in checked_machines:
+            continue
+        checked_machines.add((e.x, e.y))
+
+        if e.recipe in fluid_only_recipes:
+            continue
+
+        size = _machine_size(e.name)
+        machine_tiles = {
+            (e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)
+        }
+
+        # Find inserters adjacent to this machine
+        adjacent_inserters: list[tuple[int, int]] = []
+        for dx in range(-1, size + 1):
+            for dy in range(-1, size + 1):
+                pos = (e.x + dx, e.y + dy)
+                if pos in inserter_positions and pos not in machine_tiles:
+                    adjacent_inserters.append(pos)
+
+        # Check if any inserter has a belt on its non-machine side
+        has_belt_connection = False
+        for ix, iy in adjacent_inserters:
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nb = (ix + dx, iy + dy)
+                if nb in belt_tiles and nb not in machine_tiles:
+                    has_belt_connection = True
+                    break
+            if has_belt_connection:
+                break
+
+        if not has_belt_connection:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-connectivity",
+                    message=(
+                        f"{e.name} at ({e.x},{e.y}): no inserter connects to a belt "
+                        f"(inserters exist but none touch a belt tile)"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
+            continue
+
+        # Check that at least one connected belt network reaches beyond this
+        # machine — i.e., connects to another machine's inserter or extends
+        # to the layout boundary (external I/O)
+        start_belt_tiles: set[tuple[int, int]] = set()
+        for ix, iy in adjacent_inserters:
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nb = (ix + dx, iy + dy)
+                if nb in belt_tiles and nb not in machine_tiles:
+                    start_belt_tiles.add(nb)
+
+        belt_network = _bfs_belt_reach(start_belt_tiles, belt_tiles)
+
+        if len(belt_network) <= 1:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-connectivity",
+                    message=(
+                        f"{e.name} at ({e.x},{e.y}): belt adjacent to inserter "
+                        f"is isolated (single tile, not connected to anything)"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
+
+    return issues
+
+
+def _bfs_belt_reach(
+    starts: set[tuple[int, int]],
+    belt_tiles: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    """BFS flood-fill through adjacent belt tiles from start positions."""
+    visited: set[tuple[int, int]] = set()
+    queue = deque(starts)
+    visited.update(starts)
+
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nb = (x + dx, y + dy)
+            if nb in belt_tiles and nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+
+    return visited
 
 
 def check_power_coverage(layout_result: LayoutResult) -> list[ValidationIssue]:
