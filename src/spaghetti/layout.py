@@ -103,8 +103,9 @@ def _attempt_layout(
     # 3. Pre-assign inserter positions (reserves border tiles)
     assignments = assign_inserter_positions(graph, positions, occupied)
 
-    # 4. Build edge→belt_tile mapping for the router
+    # 4. Build edge→belt_tile mapping and per-edge exclusions for the router
     edge_targets: dict[int, tuple[int, int]] = {}
+    edge_exclusions: dict[int, set[tuple[int, int]]] = {}
     for assignment in assignments:
         # Find the edge index in graph.edges
         for i, edge in enumerate(graph.edges):
@@ -113,8 +114,10 @@ def _attempt_layout(
                 if assignment.edge.to_node == assignment.node_id:
                     # This is an input inserter — route goal is the belt tile
                     edge_targets[i] = assignment.belt_tile
-                # For output inserters, the route starts from this belt tile
-                # (handled by _edge_endpoints using from_node's belt tiles)
+                # Allow this edge (and only this edge) to use its own belt tile
+                if i not in edge_exclusions:
+                    edge_exclusions[i] = set()
+                edge_exclusions[i].add(assignment.belt_tile)
                 break
 
     # 5. Place machine entities
@@ -131,9 +134,17 @@ def _attempt_layout(
         )
 
     # 6. Route connections (belts + pipes) to assigned belt tiles
-    #    Pass reserved inserter tiles so the router avoids them
-    reserved = {a.border_tile for a in assignments}
-    routing = route_connections(graph, positions, edge_targets=edge_targets, reserved_tiles=reserved)
+    #    Reserve both border tiles (inserters) and belt tiles (route endpoints)
+    #    so other routes don't steal them. Each edge gets its own belt tile
+    #    unblocked via edge_exclusions.
+    reserved = {a.border_tile for a in assignments} | {a.belt_tile for a in assignments}
+    routing = route_connections(
+        graph,
+        positions,
+        edge_targets=edge_targets,
+        reserved_tiles=reserved,
+        edge_exclusions=edge_exclusions,
+    )
     entities.extend(routing.entities)
 
     # 7. Place inserters from pre-assignments

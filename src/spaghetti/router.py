@@ -187,20 +187,20 @@ def route_connections(
     positions: dict[int, tuple[int, int]],
     edge_targets: dict[int, tuple[int, int]] | None = None,
     reserved_tiles: set[tuple[int, int]] | None = None,
+    edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using BFS pathfinding.
 
     Args:
-        edge_targets: Optional mapping from edge index (in graph.edges) to
-            a specific belt tile that the route must reach. Used when inserter
-            positions are pre-assigned.
-        reserved_tiles: Pre-occupied tiles (e.g. reserved inserter positions)
-            that the router must avoid.
-
-    Returns a RoutingResult with entities, occupied tiles, and any failed edges.
+        edge_targets: Mapping from edge index to a specific belt tile target.
+        reserved_tiles: Pre-occupied tiles the router must avoid.
+        edge_exclusions: Per-edge tiles to temporarily unblock from obstacles.
+            Maps edge index → set of tiles that only this edge may use.
     """
     if edge_targets is None:
         edge_targets = {}
+    if edge_exclusions is None:
+        edge_exclusions = {}
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
 
@@ -232,6 +232,11 @@ def route_connections(
     for edge_idx in sorted_edge_indices:
         edge = graph.edges[edge_idx]
 
+        # Temporarily unblock tiles reserved for this specific edge
+        exclusions = edge_exclusions.get(edge_idx, set())
+        if exclusions:
+            occupied -= exclusions
+
         # Use pre-assigned target if available, otherwise compute from endpoints
         if edge_idx in edge_targets:
             target = edge_targets[edge_idx]
@@ -242,6 +247,8 @@ def route_connections(
             start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
         if not start_tiles or not goal_tiles:
+            if exclusions:
+                occupied |= exclusions
             continue
 
         # Try BFS from each start tile until one works
@@ -252,6 +259,10 @@ def route_connections(
             path = _bfs_path(start, goal_tiles - occupied, occupied, max_extent)
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
+
+        # Re-block the exclusion tiles (they stay unblocked only if this route used them)
+        if exclusions:
+            occupied |= exclusions
 
         if best_path is None:
             failed_edges.append(edge)
