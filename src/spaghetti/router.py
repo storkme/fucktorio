@@ -1,8 +1,7 @@
-"""Belt/pipe routing via BFS pathfinding on the tile grid."""
+"""Belt/pipe routing via A* pathfinding on the tile grid."""
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity
@@ -93,54 +92,72 @@ def _machine_belt_tiles(x: int, y: int, size: int) -> list[tuple[int, int]]:
     return tiles
 
 
-def _bfs_path(
+def _astar_path(
     start: tuple[int, int],
     goals: set[tuple[int, int]],
     obstacles: set[tuple[int, int]],
     max_extent: int = 200,
 ) -> list[tuple[int, int]] | None:
-    """BFS shortest path from start to any tile in goals, avoiding obstacles.
+    """A* pathfinding with Manhattan heuristic.
 
-    Returns the path as a list of (x, y) tiles (inclusive of start and goal),
-    or None if no path exists.
+    Produces shorter, more direct paths than BFS by using A* with
+    a Manhattan distance heuristic. Tie-breaking favors straight lines.
     """
+    import heapq
+
     if start in goals:
         return [start]
 
-    visited: set[tuple[int, int]] = {start}
-    parent: dict[tuple[int, int], tuple[int, int]] = {}
-    queue: deque[tuple[int, int]] = deque([start])
+    if not goals:
+        return None
 
-    while queue:
-        cx, cy = queue.popleft()
+    # Pick a single goal for the heuristic (nearest by Manhattan)
+    goal_list = list(goals)
+    sx, sy = start
+
+    def _h(x: int, y: int) -> int:
+        return min(abs(x - gx) + abs(y - gy) for gx, gy in goal_list)
+
+    counter = 0
+    # (f_score, counter, x, y)
+    open_set: list[tuple[int, int, int, int]] = []
+    heapq.heappush(open_set, (_h(sx, sy), counter, sx, sy))
+    counter += 1
+
+    g_score: dict[tuple[int, int], int] = {start: 0}
+    parent: dict[tuple[int, int], tuple[int, int]] = {}
+
+    while open_set:
+        _, _, cx, cy = heapq.heappop(open_set)
+
+        if (cx, cy) in goals:
+            path = [(cx, cy)]
+            cur = (cx, cy)
+            while cur in parent:
+                cur = parent[cur]
+                path.append(cur)
+            path.reverse()
+            return path
+
+        cur_g = g_score.get((cx, cy), 0)
 
         for dx, dy in _DIRECTIONS:
             nx, ny = cx + dx, cy + dy
 
-            # Bounds check
-            if nx < -5 or ny < -5 or nx > max_extent or ny > max_extent:
+            if nx < -10 or ny < -10 or nx > max_extent or ny > max_extent:
                 continue
-
-            if (nx, ny) in visited:
-                continue
-
-            if (nx, ny) in goals:
-                # Found it — reconstruct path
-                path = [(nx, ny)]
-                cur = (cx, cy)
-                while cur != start:
-                    path.append(cur)
-                    cur = parent[cur]
-                path.append(start)
-                path.reverse()
-                return path
-
             if (nx, ny) in obstacles:
                 continue
 
-            visited.add((nx, ny))
+            new_g = cur_g + 1
+            if (nx, ny) in g_score and g_score[(nx, ny)] <= new_g:
+                continue
+
+            g_score[(nx, ny)] = new_g
             parent[(nx, ny)] = (cx, cy)
-            queue.append((nx, ny))
+            f = new_g + _h(nx, ny)
+            heapq.heappush(open_set, (f, counter, nx, ny))
+            counter += 1
 
     return None
 
@@ -232,6 +249,12 @@ def route_connections(
     for edge_idx in sorted_edge_indices:
         edge = graph.edges[edge_idx]
 
+        # Skip external output edges — no useful destination to route to.
+        # The output inserter still drops items onto the belt tile; the player
+        # extends the belt from there.
+        if edge.to_node is None:
+            continue
+
         # Temporarily unblock tiles reserved for this specific edge
         exclusions = edge_exclusions.get(edge_idx, set())
         if exclusions:
@@ -256,7 +279,7 @@ def route_connections(
         for start in start_tiles:
             if start in occupied:
                 continue
-            path = _bfs_path(start, goal_tiles - occupied, occupied, max_extent)
+            path = _astar_path(start, goal_tiles - occupied, occupied, max_extent)
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
@@ -305,11 +328,45 @@ def _edge_endpoints(
         for bx, by in _machine_belt_tiles(fx, fy, size):
             start_tiles.add((bx, by))
     else:
-        # External input — start from left edge of grid
-        min_y = min(y for _, y in positions.values()) if positions else 0
-        max_y = max(y for _, y in positions.values()) + 5 if positions else 10
-        for y in range(min_y - 2, max_y + 3):
-            start_tiles.add((0, y))
+        # External input — start from the nearest grid edge to the target machine
+        if edge.to_node is not None and edge.to_node in {n.id for n in graph.nodes}:
+            tx, ty = positions[edge.to_node]
+            dst_size = machine_size(next(n for n in graph.nodes if n.id == edge.to_node).spec.entity)
+            # Find grid bounds
+            all_x = [x for x, _ in positions.values()]
+            all_y = [y for _, y in positions.values()]
+            min_gx, max_gx = min(all_x) - 3, max(all_x) + dst_size + 3
+            min_gy, max_gy = min(all_y) - 3, max(all_y) + dst_size + 3
+            # Center of target machine
+            cx, cy = tx + dst_size // 2, ty + dst_size // 2
+            # Distance to each edge
+            edges_dist = [
+                (cx - min_gx, "left"),
+                (max_gx - cx, "right"),
+                (cy - min_gy, "top"),
+                (max_gy - cy, "bottom"),
+            ]
+            edges_dist.sort(key=lambda d: d[0])
+            _, nearest = edges_dist[0]
+            # Place start tiles along that edge
+            if nearest == "left":
+                for y in range(min_gy, max_gy + 1):
+                    start_tiles.add((min_gx, y))
+            elif nearest == "right":
+                for y in range(min_gy, max_gy + 1):
+                    start_tiles.add((max_gx, y))
+            elif nearest == "top":
+                for x in range(min_gx, max_gx + 1):
+                    start_tiles.add((x, min_gy))
+            else:  # bottom
+                for x in range(min_gx, max_gx + 1):
+                    start_tiles.add((x, max_gy))
+        else:
+            # Fallback: left edge
+            min_y = min(y for _, y in positions.values()) if positions else 0
+            max_y = max(y for _, y in positions.values()) + 5 if positions else 10
+            for y in range(min_y - 3, max_y + 4):
+                start_tiles.add((min(x for x, _ in positions.values()) - 3, y))
 
     if edge.to_node is not None:
         tx, ty = positions[edge.to_node]

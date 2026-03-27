@@ -21,7 +21,7 @@ def machine_size(entity: str) -> int:
     return _MACHINE_SIZE.get(entity, _DEFAULT_SIZE)
 
 
-def place_machines(graph: ProductionGraph, spacing: int = 5) -> dict[int, tuple[int, int]]:
+def place_machines(graph: ProductionGraph, spacing: int = 4) -> dict[int, tuple[int, int]]:
     """Place machine nodes on the grid using simple grid layout.
 
     Arranges machines in rows with *spacing* tiles between them
