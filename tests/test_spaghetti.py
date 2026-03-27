@@ -91,6 +91,17 @@ class TestSpaghettiPhase1:
         belts = [e for e in lr.entities if e.name in belt_types]
         assert len(belts) > 0, "Should have belts for item transport"
 
+    def test_has_inserters(self):
+        """Layout must contain inserters to move items between belts and machines."""
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+
+        inserters = [e for e in lr.entities if "inserter" in e.name]
+        machines = [e for e in lr.entities if e.name == "assembling-machine-3"]
+        assert len(inserters) > 0, "Should have inserters"
+        # Each machine needs at least one inserter
+        assert len(inserters) >= len(machines), f"Should have at least {len(machines)} inserters, got {len(inserters)}"
+
     def test_no_overlaps(self):
         """No entities should overlap."""
         result = solve("iron-gear-wheel", target_rate=2, available_inputs={"iron-plate"})

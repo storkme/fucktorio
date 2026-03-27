@@ -60,6 +60,28 @@ def _machine_border_tiles(x: int, y: int, size: int) -> list[tuple[int, int, int
     return borders
 
 
+def _machine_belt_tiles(x: int, y: int, size: int) -> list[tuple[int, int]]:
+    """Tiles 2 away from machine — where belts should end (inserter goes between).
+
+    The border tile (1 away) is reserved for the inserter.
+    The belt tile (2 away) is where the belt terminates.
+    """
+    tiles = []
+    # Top (y - 2)
+    for dx in range(size):
+        tiles.append((x + dx, y - 2))
+    # Bottom (y + size + 1)
+    for dx in range(size):
+        tiles.append((x + dx, y + size + 1))
+    # Left (x - 2)
+    for dy in range(size):
+        tiles.append((x - 2, y + dy))
+    # Right (x + size + 1)
+    for dy in range(size):
+        tiles.append((x + size + 1, y + dy))
+    return tiles
+
+
 def _bfs_path(
     start: tuple[int, int],
     goals: set[tuple[int, int]],
@@ -226,10 +248,10 @@ def _edge_endpoints(
 ) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
     """Determine start and goal tile sets for routing an edge.
 
-    For internal edges: start = border tiles of source machine,
-    goal = border tiles of destination machine.
-    For external inputs: start = edge of grid, goal = machine border.
-    For external outputs: start = machine border, goal = edge of grid.
+    For internal edges: start/goal = belt tiles (2 tiles from machine),
+    leaving the border tile free for an inserter.
+    For external inputs: start = edge of grid, goal = belt tiles of dest.
+    For external outputs: start = belt tiles of source, goal = edge of grid.
     """
     start_tiles: set[tuple[int, int]] = set()
     goal_tiles: set[tuple[int, int]] = set()
@@ -238,7 +260,7 @@ def _edge_endpoints(
         fx, fy = positions[edge.from_node]
         src_node = next(n for n in graph.nodes if n.id == edge.from_node)
         size = machine_size(src_node.spec.entity)
-        for bx, by, _, _ in _machine_border_tiles(fx, fy, size):
+        for bx, by in _machine_belt_tiles(fx, fy, size):
             start_tiles.add((bx, by))
     else:
         # External input — start from left edge of grid
@@ -251,7 +273,7 @@ def _edge_endpoints(
         tx, ty = positions[edge.to_node]
         dst_node = next(n for n in graph.nodes if n.id == edge.to_node)
         size = machine_size(dst_node.spec.entity)
-        for bx, by, _, _ in _machine_border_tiles(tx, ty, size):
+        for bx, by in _machine_belt_tiles(tx, ty, size):
             goal_tiles.add((bx, by))
     else:
         # External output — route to right edge
