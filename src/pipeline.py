@@ -18,6 +18,7 @@ def produce(
     label: str | None = None,
     visualize: bool = False,
     open_browser: bool = True,
+    layout_engine: str = "bus",
 ) -> str:
     """One-call interface: item + rate → Factorio blueprint string.
 
@@ -77,7 +78,12 @@ def produce(
     print(f"  External inputs: {ext_items}")
 
     # 2. Layout
-    layout_result = layout(solver_result)
+    if layout_engine == "spaghetti":
+        from .spaghetti import spaghetti_layout
+
+        layout_result = spaghetti_layout(solver_result)
+    else:
+        layout_result = layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
 
     # 3. Validate (raises ValidationError on critical issues)
@@ -105,11 +111,13 @@ if __name__ == "__main__":
     import sys
 
     use_html = "--html" in sys.argv
+    engine = "spaghetti" if "--spaghetti" in sys.argv else "bus"
     bp = produce(
         "electronic-circuit",
         rate=30,
         inputs=["iron-plate", "copper-plate"],
         visualize=use_html,
         open_browser=False,
+        layout_engine=engine,
     )
     print(f"\n{bp}")
