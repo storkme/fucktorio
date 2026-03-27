@@ -121,11 +121,14 @@ def visualize(
     for e in bp.entities:
         entity_counts[e.name] += 1
 
-    # Build tile data: list of {x, y, w, h, color, entity, recipe, tooltip}
+    # Build tile data: list of {x, y, w, h, color, entity, recipe, tooltip, direction}
     tiles: list[dict] = []
     for e in bp.entities:
         tx = int(e.tile_position.x) if hasattr(e.tile_position, "x") else int(e.tile_position[0])
         ty = int(e.tile_position.y) if hasattr(e.tile_position, "y") else int(e.tile_position[1])
+
+        # Get direction (0=N, 4=E, 8=S, 12=W)
+        direction = int(getattr(e, "direction", 0)) if hasattr(e, "direction") else 0
 
         if e.name in _CRAFTING:
             size = 5 if e.name in _5x5 else 3
@@ -141,6 +144,7 @@ def visualize(
                     "entity": e.name,
                     "recipe": e.recipe or "",
                     "tooltip": tooltip,
+                    "dir": direction,
                 }
             )
         else:
@@ -161,6 +165,7 @@ def visualize(
                     "entity": e.name,
                     "recipe": "",
                     "tooltip": tooltip,
+                    "dir": direction,
                 }
             )
 
@@ -591,7 +596,7 @@ function draw() {{
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Draw grid lines if zoomed in enough
-  if (scale >= 8) {{
+  if (scale >= 6) {{
     ctx.strokeStyle = 'rgba(255,255,255,0.04)';
     ctx.lineWidth = 1;
     for (let x = 0; x <= GRID_W; x++) {{
@@ -623,19 +628,138 @@ function draw() {{
     }}
 
     ctx.globalAlpha = alpha;
+    const gap = scale >= 4 ? 1 : 0;
+    const isBelt = t.entity.includes('belt') && !t.entity.includes('underground');
+    const isUGBelt = t.entity.includes('underground-belt');
+    const isPipe = t.entity === 'pipe';
+    const isPTG = t.entity === 'pipe-to-ground';
+    const isInserter = t.entity === 'inserter' || t.entity === 'fast-inserter' || t.entity === 'long-handed-inserter';
+
+    // Base fill
     ctx.fillStyle = t.color;
-    ctx.fillRect(px, py, pw - (scale >= 4 ? 1 : 0), ph - (scale >= 4 ? 1 : 0));
+    ctx.fillRect(px, py, pw - gap, ph - gap);
+
+    // Direction arrows for belts (always visible)
+    if ((isBelt || isUGBelt) && scale >= 4) {{
+      const cx = px + pw / 2;
+      const cy = py + ph / 2;
+      const sz = Math.max(2, scale * 0.35);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.beginPath();
+      // dir: 0=N, 4=E, 8=S, 12=W — draw arrow pointing in flow direction
+      if (t.dir === 0) {{ // North (up)
+        ctx.moveTo(cx, cy - sz); ctx.lineTo(cx - sz, cy + sz * 0.6); ctx.lineTo(cx + sz, cy + sz * 0.6);
+      }} else if (t.dir === 4) {{ // East (right)
+        ctx.moveTo(cx + sz, cy); ctx.lineTo(cx - sz * 0.6, cy - sz); ctx.lineTo(cx - sz * 0.6, cy + sz);
+      }} else if (t.dir === 8) {{ // South (down)
+        ctx.moveTo(cx, cy + sz); ctx.lineTo(cx - sz, cy - sz * 0.6); ctx.lineTo(cx + sz, cy - sz * 0.6);
+      }} else if (t.dir === 12) {{ // West (left)
+        ctx.moveTo(cx - sz, cy); ctx.lineTo(cx + sz * 0.6, cy - sz); ctx.lineTo(cx + sz * 0.6, cy + sz);
+      }}
+      ctx.closePath();
+      ctx.fill();
+    }}
+
+    // Underground belt: draw dashed outline
+    if (isUGBelt && scale >= 4) {{
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.strokeRect(px + 1, py + 1, pw - gap - 2, ph - gap - 2);
+      ctx.setLineDash([]);
+    }}
+
+    // Inserter: draw pickup/drop indicator
+    if (isInserter && scale >= 4) {{
+      const cx = px + pw / 2;
+      const cy = py + ph / 2;
+      const sz = Math.max(2, scale * 0.3);
+      // Draw a line from pickup to drop side
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = Math.max(1, scale * 0.08);
+      ctx.beginPath();
+      if (t.dir === 0) {{ ctx.moveTo(cx, cy + sz); ctx.lineTo(cx, cy - sz); }}       // picks S, drops N
+      else if (t.dir === 4) {{ ctx.moveTo(cx - sz, cy); ctx.lineTo(cx + sz, cy); }}   // picks W, drops E
+      else if (t.dir === 8) {{ ctx.moveTo(cx, cy - sz); ctx.lineTo(cx, cy + sz); }}   // picks N, drops S
+      else if (t.dir === 12) {{ ctx.moveTo(cx + sz, cy); ctx.lineTo(cx - sz, cy); }}  // picks E, drops W
+      ctx.stroke();
+      // Small dot at drop end
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      if (t.dir === 0) ctx.arc(cx, cy - sz, Math.max(1, scale * 0.06), 0, Math.PI * 2);
+      else if (t.dir === 4) ctx.arc(cx + sz, cy, Math.max(1, scale * 0.06), 0, Math.PI * 2);
+      else if (t.dir === 8) ctx.arc(cx, cy + sz, Math.max(1, scale * 0.06), 0, Math.PI * 2);
+      else if (t.dir === 12) ctx.arc(cx - sz, cy, Math.max(1, scale * 0.06), 0, Math.PI * 2);
+      ctx.fill();
+    }}
+
+    // Pipe: draw circle to distinguish from belts
+    if (isPipe && scale >= 6) {{
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = Math.max(1, scale * 0.06);
+      const r = (pw - gap) * 0.35;
+      ctx.beginPath();
+      ctx.arc(px + pw / 2, py + ph / 2, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }}
+
+    // Pipe-to-ground: draw circle with dot
+    if (isPTG && scale >= 6) {{
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = Math.max(1, scale * 0.06);
+      const r = (pw - gap) * 0.3;
+      ctx.beginPath();
+      ctx.arc(px + pw / 2, py + ph / 2, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.beginPath();
+      ctx.arc(px + pw / 2, py + ph / 2, r * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }}
 
     // Draw recipe label on machines when zoomed in
-    if (t.recipe && scale >= 12) {{
+    if (t.recipe && scale >= 10) {{
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.font = `bold ${{Math.max(8, scale * 0.6)}}px sans-serif`;
+      ctx.font = `bold ${{Math.max(8, scale * 0.55)}}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(t.recipe.substring(0, 6), px + pw / 2, py + ph / 2);
+      // Show more of the name at higher zoom
+      const maxChars = scale >= 16 ? 14 : (scale >= 12 ? 10 : 7);
+      const label = t.recipe.length > maxChars ? t.recipe.substring(0, maxChars - 1) + '..' : t.recipe;
+      ctx.fillText(label, px + pw / 2, py + ph / 2);
     }}
   }}
   ctx.globalAlpha = 1.0;
+
+  // Draw pipe connections (lines between adjacent pipes)
+  if (scale >= 6) {{
+    const pipeSet = new Set();
+    for (const t of TILES) {{
+      if (t.entity === 'pipe' || t.entity === 'pipe-to-ground') {{
+        pipeSet.add(`${{t.x}},${{t.y}}`);
+      }}
+    }}
+    ctx.strokeStyle = 'rgba(74, 122, 181, 0.4)';
+    ctx.lineWidth = Math.max(1, scale * 0.15);
+    for (const t of TILES) {{
+      if (t.entity !== 'pipe' && t.entity !== 'pipe-to-ground') continue;
+      const px = offsetX + (t.x - MIN_X + 0.5) * scale;
+      const py = offsetY + (t.y - MIN_Y + 0.5) * scale;
+      // Check right and down neighbors only (to avoid duplicate lines)
+      if (pipeSet.has(`${{t.x + 1}},${{t.y}}`)) {{
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px + scale, py);
+        ctx.stroke();
+      }}
+      if (pipeSet.has(`${{t.x}},${{t.y + 1}}`)) {{
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px, py + scale);
+        ctx.stroke();
+      }}
+    }}
+  }}
 }}
 
 // --- Pan & zoom ---
