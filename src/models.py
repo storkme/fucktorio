@@ -66,6 +66,7 @@ class PlacedEntity:
     recipe: str | None = None  # only for crafting machines
     io_type: str | None = None  # "input" or "output" for underground belts
     entity_number: int | None = None  # assigned during blueprint export
+    carries: str | None = None  # item/fluid name this entity transports
 
 
 @dataclass
