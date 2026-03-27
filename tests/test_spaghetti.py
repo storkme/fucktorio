@@ -2,6 +2,7 @@
 
 import math
 
+from src.blueprint import build_blueprint
 from src.solver import solve
 from src.spaghetti.graph import build_production_graph
 from src.spaghetti.layout import spaghetti_layout
@@ -300,3 +301,141 @@ class TestSpaghettiPhase5:
             for tile in tiles:
                 assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
                 occupied[tile] = ent.name
+
+
+class TestSpaghettiPhase6:
+    """Phase 6: complex chains (mixed solid + fluid, multi-step)."""
+
+    def _check_no_overlaps(self, lr):
+        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
+        _5x5 = {"oil-refinery"}
+        occupied: dict[tuple[int, int], str] = {}
+        for ent in lr.entities:
+            if ent.name in _5x5:
+                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
+            elif ent.name in _3x3:
+                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
+            else:
+                tiles = [(ent.x, ent.y)]
+            for tile in tiles:
+                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
+                occupied[tile] = ent.name
+
+    def test_advanced_circuit(self):
+        """Advanced circuit: deep chain with fluid intermediates."""
+        result = solve(
+            "advanced-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+
+        recipes = {e.recipe for e in lr.entities if e.recipe is not None}
+        assert "advanced-circuit" in recipes
+        assert "electronic-circuit" in recipes
+        assert "copper-cable" in recipes
+        assert "plastic-bar" in recipes
+
+    def test_advanced_circuit_no_overlaps(self):
+        """Advanced circuit layout should have no overlaps."""
+        result = solve(
+            "advanced-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+        self._check_no_overlaps(lr)
+
+    def test_advanced_circuit_has_mixed_transport(self):
+        """Should have both belts and pipes for mixed solid/fluid chain."""
+        result = solve(
+            "advanced-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+
+        belt_types = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
+        belts = [e for e in lr.entities if e.name in belt_types]
+        pipes = [e for e in lr.entities if e.name == "pipe"]
+        assert len(belts) > 0, "Should have belts for solids"
+        assert len(pipes) > 0, "Should have pipes for fluids"
+
+    def test_petroleum_gas(self):
+        """Petroleum gas: oil refinery (5x5) recipe."""
+        result = solve(
+            "petroleum-gas",
+            target_rate=10,
+            available_inputs={"crude-oil"},
+        )
+        lr = spaghetti_layout(result)
+
+        refineries = [e for e in lr.entities if e.name == "oil-refinery"]
+        assert len(refineries) > 0, "Should have oil refineries"
+        for r in refineries:
+            assert r.recipe == "basic-oil-processing"
+
+    def test_petroleum_gas_no_overlaps(self):
+        """Oil refinery layout should have no overlaps."""
+        result = solve(
+            "petroleum-gas",
+            target_rate=10,
+            available_inputs={"crude-oil"},
+        )
+        lr = spaghetti_layout(result)
+        self._check_no_overlaps(lr)
+
+
+class TestSpaghettiVisualization:
+    """Generate visualizations for spaghetti layouts (only runs with --viz)."""
+
+    def test_viz_iron_gear_wheel(self, viz):
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 10/s iron-gear-wheel")
+        viz(bp, "spaghetti-iron-gear-wheel-10s", solver_result=result, production_graph=graph)
+
+    def test_viz_electronic_circuit(self, viz):
+        result = solve(
+            "electronic-circuit",
+            target_rate=10,
+            available_inputs={"iron-plate", "copper-plate"},
+        )
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 10/s electronic-circuit")
+        viz(bp, "spaghetti-electronic-circuit-10s", solver_result=result, production_graph=graph)
+
+    def test_viz_plastic_bar(self, viz):
+        result = solve(
+            "plastic-bar",
+            target_rate=5,
+            available_inputs={"petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 5/s plastic-bar")
+        viz(bp, "spaghetti-plastic-bar-5s", solver_result=result, production_graph=graph)
+
+    def test_viz_advanced_circuit(self, viz):
+        result = solve(
+            "advanced-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 5/s advanced-circuit")
+        viz(bp, "spaghetti-advanced-circuit-5s", solver_result=result, production_graph=graph)
+
+    def test_viz_petroleum_gas(self, viz):
+        result = solve(
+            "petroleum-gas",
+            target_rate=10,
+            available_inputs={"crude-oil"},
+        )
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 10/s petroleum-gas")
+        viz(bp, "spaghetti-petroleum-gas-10s", solver_result=result, production_graph=graph)
