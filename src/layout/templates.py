@@ -437,15 +437,20 @@ def refinery_row(
         entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset, carries=fluid_out))
         entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset, carries=fluid_out))
         entities.append(PlacedEntity(name="pipe", x=mx + 4, y=y_offset, carries=fluid_out))
-        # Output inserter between pipes (for any solid outputs)
-        entities.append(
-            PlacedEntity(
-                name="inserter",
-                x=mx + 3,
-                y=y_offset,
-                direction=EntityDirection.NORTH,
+        # Inserter + belt for solid outputs (if any)
+        has_solid_output = any(not f.is_fluid for f in outputs)
+        if has_solid_output:
+            entities.append(
+                PlacedEntity(
+                    name="inserter",
+                    x=mx + 3,
+                    y=y_offset,
+                    direction=EntityDirection.NORTH,
+                )
             )
-        )
+        else:
+            # Fill with pipe to keep the horizontal run continuous
+            entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset, carries=fluid_out))
         # Horizontal connector pipes between output pipes
         entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset, carries=fluid_out))
         if i < machine_count - 1:
