@@ -6,8 +6,8 @@ from ..models import EntityDirection, PlacedEntity
 from .graph import ProductionGraph
 from .placer import machine_size
 
-# Direction from inserter to machine → inserter facing direction
-# Inserter faces the direction it DROPS toward
+# Inserter faces the direction it DROPS toward.
+# A SOUTH-facing inserter picks from the tile to its north and drops to the tile to its south.
 _FACING: dict[tuple[int, int], EntityDirection] = {
     (0, 1): EntityDirection.SOUTH,  # machine is below → drop south
     (0, -1): EntityDirection.NORTH,  # machine is above → drop north
@@ -23,12 +23,11 @@ def place_inserters(
 ) -> list[PlacedEntity]:
     """Place inserters between routed belts/pipes and machines.
 
-    For each machine, finds tiles that are:
-    - Adjacent to the machine border
-    - Occupied by a routed belt (in routed_tiles)
-    - Have a free tile for the inserter between belt and machine
+    The router places belts 2 tiles from the machine. The inserter goes on
+    the border tile (1 tile from machine), picking from the belt behind it
+    and dropping into the machine in front.
 
-    Places an inserter at the border tile between belt and machine.
+    Layout: ... [belt @ 2 tiles] [inserter @ 1 tile] [machine]
     """
     entities: list[PlacedEntity] = []
     used_tiles: set[tuple[int, int]] = set()
@@ -36,53 +35,33 @@ def place_inserters(
     for node in graph.nodes:
         mx, my = positions[node.id]
         size = machine_size(node.spec.entity)
-        machine_tiles = {(mx + dx, my + dy) for dx in range(size) for dy in range(size)}
 
-        # Check each border tile
-        _try_place_inserters_for_machine(mx, my, size, machine_tiles, routed_tiles, used_tiles, entities)
+        # Check each border tile around the machine
+        borders = [
+            *((mx + dx, my - 1, 0, 1) for dx in range(size)),  # top border
+            *((mx + dx, my + size, 0, -1) for dx in range(size)),  # bottom border
+            *((mx - 1, my + dy, 1, 0) for dy in range(size)),  # left border
+            *((mx + size, my + dy, -1, 0) for dy in range(size)),  # right border
+        ]
 
-    return entities
+        for bx, by, dx, dy in borders:
+            if (bx, by) in used_tiles:
+                continue
+            if (bx, by) in routed_tiles:
+                # Border tile is occupied by a belt — can't place inserter here
+                continue
 
+            # Check if there's a belt one tile further from the machine
+            belt_x, belt_y = bx - dx, by - dy
+            if (belt_x, belt_y) not in routed_tiles:
+                continue
 
-def _try_place_inserters_for_machine(
-    mx: int,
-    my: int,
-    size: int,
-    machine_tiles: set[tuple[int, int]],
-    routed_tiles: set[tuple[int, int]],
-    used_tiles: set[tuple[int, int]],
-    entities: list[PlacedEntity],
-) -> None:
-    """Try to place inserters around a single machine."""
-    # Border tiles with direction toward machine
-    borders = [
-        # (border_x, border_y, dx_to_machine, dy_to_machine)
-        *((mx + dx, my - 1, 0, 1) for dx in range(size)),  # top
-        *((mx + dx, my + size, 0, -1) for dx in range(size)),  # bottom
-        *((mx - 1, my + dy, 1, 0) for dy in range(size)),  # left
-        *((mx + size, my + dy, -1, 0) for dy in range(size)),  # right
-    ]
-
-    for bx, by, dx, dy in borders:
-        if (bx, by) in used_tiles:
-            continue
-
-        # Check if this border tile has a routed belt/pipe
-        if (bx, by) in routed_tiles:
-            # The belt IS on the border tile. Place inserter here —
-            # it picks from the belt at (bx, by) and drops into machine.
-            # But we can't place an inserter on top of a belt.
-            # Instead, check the tile one step further from the machine.
-            # If THAT tile has the belt, inserter goes on the border tile.
-            pass
-
-        # Check tile one step away from machine (belt position)
-        belt_x, belt_y = bx - dx, by - dy  # one tile further from machine
-        if (belt_x, belt_y) in routed_tiles and (bx, by) not in routed_tiles:
-            # Belt at (belt_x, belt_y), inserter at (bx, by), machine adjacent
+            # Belt is at (belt_x, belt_y), inserter goes at (bx, by)
+            # Inserter faces toward the machine (drops into machine)
             facing = _FACING.get((dx, dy))
             if facing is None:
                 continue
+
             entities.append(
                 PlacedEntity(
                     name="inserter",
@@ -92,17 +71,5 @@ def _try_place_inserters_for_machine(
                 )
             )
             used_tiles.add((bx, by))
-            continue
 
-        # Direct adjacency: belt on the border tile itself
-        if (bx, by) in routed_tiles:
-            # Belt right next to machine — inserter picks directly from adjacent belt
-            # In Factorio, inserter at (bx, by) facing (dx, dy) picks from behind
-            # and drops forward. So inserter should be between belt and machine.
-            # But belt IS at the border... the inserter needs its own tile.
-            # Try: inserter at border, picks from belt behind, drops into machine
-            facing = _FACING.get((dx, dy))
-            if facing is not None and (bx, by) not in used_tiles:
-                # This means the inserter and belt share a tile, which isn't valid.
-                # Skip — the router should have left a gap.
-                pass
+    return entities
