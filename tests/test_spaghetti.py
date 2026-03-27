@@ -6,6 +6,9 @@ from src.blueprint import build_blueprint
 from src.solver import solve
 from src.spaghetti.graph import build_production_graph
 from src.spaghetti.layout import spaghetti_layout
+from src.spaghetti.placer import place_machines
+from src.spaghetti.router import route_connections
+from src.validate import validate
 
 
 class TestProductionGraph:
@@ -395,6 +398,49 @@ class TestSpaghettiPhase6:
         )
         lr = spaghetti_layout(result)
         self._check_no_overlaps(lr)
+
+
+class TestSpaghettiValidation:
+    """Tests that spaghetti layouts pass functional validation."""
+
+    def test_iron_gear_wheel_validates(self):
+        """Simple solid recipe should pass validation."""
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+        # spaghetti_layout now calls validate internally, but let's also verify explicitly
+        issues = validate(lr, result, layout_style="spaghetti")
+        errors = [i for i in issues if i.severity == "error"]
+        assert not errors, f"Validation errors: {[e.message for e in errors]}"
+
+    def test_layout_returns_best_effort(self):
+        """Multi-machine layout returns a result even if validation has errors."""
+        result = solve("iron-gear-wheel", target_rate=30, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+        # Should return a layout (not raise), even if some machines lack inserters
+        machines = [e for e in lr.entities if e.name == "assembling-machine-3"]
+        assert len(machines) > 0
+
+    def test_router_reports_failed_edges(self):
+        """Router should report edges it couldn't route."""
+        result = solve("electronic-circuit", target_rate=5, available_inputs={"iron-plate", "copper-plate"})
+        graph = build_production_graph(result)
+        # Use very tight spacing — some edges should fail
+        positions = place_machines(graph, spacing=1)
+        routing = route_connections(graph, positions)
+        # We don't assert failure is guaranteed (BFS might still find paths),
+        # but we verify the failed_edges list is returned
+        assert isinstance(routing.failed_edges, list)
+
+    def test_spaghetti_fluid_check_no_bus_false_positive(self):
+        """Spaghetti mode should not error about missing 'bus' for fluid layouts."""
+        result = solve("plastic-bar", target_rate=5, available_inputs={"petroleum-gas", "coal"})
+        lr = spaghetti_layout(result)
+        from src.validate import check_fluid_port_connectivity
+
+        # Spaghetti mode: no bus errors
+        issues = check_fluid_port_connectivity(lr, layout_style="spaghetti")
+        bus_errors = [i for i in issues if "bus" in i.message]
+        assert not bus_errors, f"Spaghetti mode should not check bus: {bus_errors}"
 
 
 class TestSpaghettiVisualization:
