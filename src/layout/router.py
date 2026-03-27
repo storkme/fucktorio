@@ -102,7 +102,7 @@ def route_bus(
         if flow.is_fluid:
             _route_fluid_lane(entities, x, total_height, row_spans, flow, bus_width)
         else:
-            _route_belt_lane(entities, x, total_height, row_spans)
+            _route_belt_lane(entities, x, total_height, row_spans, flow)
 
     return entities
 
@@ -112,8 +112,10 @@ def _route_belt_lane(
     x: int,
     total_height: int,
     row_spans: list[tuple[int, int, bool, MachineSpec]],
+    flow: ItemFlow,
 ) -> None:
     """Route a single belt bus lane with underground segments through rows."""
+    item = flow.item
     # Merge row spans into underground segments
     simple_spans = [(ys, ye, hf) for ys, ye, hf, _ in row_spans]
     underground_segments = _plan_underground_segments(simple_spans, _UG_BELT_REACH)
@@ -129,6 +131,7 @@ def _route_belt_lane(
                 y=entry_y,
                 direction=EntityDirection.SOUTH,
                 io_type="input",
+                carries=item,
             )
         )
         # Exit: underground-belt output facing SOUTH
@@ -139,6 +142,7 @@ def _route_belt_lane(
                 y=exit_y,
                 direction=EntityDirection.SOUTH,
                 io_type="output",
+                carries=item,
             )
         )
         for y in range(entry_y, exit_y + 1):
@@ -153,6 +157,7 @@ def _route_belt_lane(
                     x=x,
                     y=y,
                     direction=EntityDirection.SOUTH,
+                    carries=item,
                 )
             )
 
@@ -186,9 +191,11 @@ def _route_fluid_lane(
     At each row that consumes this fluid, horizontal pipes bridge from the
     bus to the row's pipe run.
     """
+    item = flow.item
+
     # Vertical surface pipes for the full height
     for y in range(total_height):
-        entities.append(PlacedEntity(name="pipe", x=x, y=y))
+        entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=item))
 
     # Horizontal tap-offs into consuming rows
     for y_start, _y_end, _has_fluid, spec in row_spans:
@@ -203,7 +210,8 @@ def _route_fluid_lane(
         #            or mx+1 (assembling-machine-3 port at mx+1)
         # refinery_row: first input pipe at mx+1 (port at mx+1)
         if spec.entity == "oil-refinery":
-            row_pipe_x = bus_width + 1
+            # refinery_row now places a pipe at mx+0 (= bus_width)
+            row_pipe_x = bus_width
         elif spec.entity == "chemical-plant":
             row_pipe_x = bus_width
         else:
@@ -213,7 +221,7 @@ def _route_fluid_lane(
         # Fill horizontal pipes from bus lane to row pipe (exclusive of
         # endpoints which already have pipes)
         for hx in range(x + 1, row_pipe_x):
-            entities.append(PlacedEntity(name="pipe", x=hx, y=tap_y))
+            entities.append(PlacedEntity(name="pipe", x=hx, y=tap_y, carries=item))
 
 
 def _plan_underground_segments(

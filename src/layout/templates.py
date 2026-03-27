@@ -193,6 +193,7 @@ def fluid_row(
     y_offset: int,
     x_offset: int = 0,
     inputs: list[ItemFlow] | None = None,
+    outputs: list[ItemFlow] | None = None,
 ) -> tuple[list[PlacedEntity], int]:
     """Lay out a row for a recipe that involves fluids.
 
@@ -228,7 +229,13 @@ def fluid_row(
 
     if inputs is None:
         inputs = []
+    if outputs is None:
+        outputs = []
     has_solid_input = any(not f.is_fluid for f in inputs)
+
+    # Determine which fluid each pipe network carries
+    fluid_in = next((f.item for f in inputs if f.is_fluid), None)
+    fluid_out = next((f.item for f in outputs if f.is_fluid), None)
 
     ROW_HEIGHT = 7
     is_chem = machine_entity == "chemical-plant"
@@ -249,11 +256,19 @@ def fluid_row(
 
         # y+1: fluid input pipes + item input inserter (adjacent to machine top)
         if is_chem:
-            # chemical-plant: input ports at (mx, my) and (mx+2, my) → pipes at mx, mx+2
-            entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 1))
-            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 1))
+            # chemical-plant: input ports at (mx, my) and (mx+2, my)
             if has_solid_input:
-                # inserter at mx+1 (between the two pipes)
+                # inserter at mx+1, use pipe-to-ground to tunnel from mx to mx+2
+                # (pipe-to-ground connects to adjacent pipes AND to the machine port)
+                entities.append(
+                    PlacedEntity(
+                        name="pipe-to-ground",
+                        x=mx,
+                        y=y_offset + 1,
+                        direction=EntityDirection.EAST,
+                        carries=fluid_in,
+                    )
+                )
                 entities.append(
                     PlacedEntity(
                         name="inserter",
@@ -262,9 +277,23 @@ def fluid_row(
                         direction=EntityDirection.SOUTH,
                     )
                 )
+                entities.append(
+                    PlacedEntity(
+                        name="pipe-to-ground",
+                        x=mx + 2,
+                        y=y_offset + 1,
+                        direction=EntityDirection.WEST,
+                        carries=fluid_in,
+                    )
+                )
+            else:
+                # No inserter needed — continuous pipe run
+                entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 1, carries=fluid_in))
+                entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 1, carries=fluid_in))
+                entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 1, carries=fluid_in))
         else:
             # assembling-machine-3: input port at (mx+1, my) → pipe at mx+1
-            entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 1))
+            entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 1, carries=fluid_in))
             if has_solid_input:
                 # inserter at mx (offset to avoid pipe at mx+1)
                 entities.append(
@@ -278,7 +307,7 @@ def fluid_row(
 
         # Horizontal connector pipe to next machine
         if i < machine_count - 1:
-            entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 1))
+            entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 1, carries=fluid_in))
 
         # Machine (3×3)
         entities.append(
@@ -293,21 +322,43 @@ def fluid_row(
 
         # y+5: fluid output pipes + item output inserter (adjacent to machine bottom)
         if is_chem:
-            # chemical-plant: output ports at (mx, my+2) and (mx+2, my+2) → pipes at mx, mx+2
-            entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 5))
-            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 5))
-            # output inserter at mx+1
-            entities.append(
-                PlacedEntity(
-                    name="inserter",
-                    x=mx + 1,
-                    y=y_offset + 5,
-                    direction=EntityDirection.SOUTH,
+            # chemical-plant: output ports at (mx, my+2) and (mx+2, my+2)
+            if has_solid_input:
+                # pipe-to-ground to tunnel past output inserter
+                entities.append(
+                    PlacedEntity(
+                        name="pipe-to-ground",
+                        x=mx,
+                        y=y_offset + 5,
+                        direction=EntityDirection.EAST,
+                        carries=fluid_out,
+                    )
                 )
-            )
+                entities.append(
+                    PlacedEntity(
+                        name="inserter",
+                        x=mx + 1,
+                        y=y_offset + 5,
+                        direction=EntityDirection.SOUTH,
+                    )
+                )
+                entities.append(
+                    PlacedEntity(
+                        name="pipe-to-ground",
+                        x=mx + 2,
+                        y=y_offset + 5,
+                        direction=EntityDirection.WEST,
+                        carries=fluid_out,
+                    )
+                )
+            else:
+                # No inserter — continuous pipe run
+                entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 5, carries=fluid_out))
+                entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 5, carries=fluid_out))
+                entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 5, carries=fluid_out))
         else:
             # assembling-machine-3: output port at (mx+1, my+2) → pipe at mx+1
-            entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 5))
+            entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 5, carries=fluid_out))
             # output inserter at mx+2 (offset to avoid pipe)
             entities.append(
                 PlacedEntity(
@@ -320,7 +371,7 @@ def fluid_row(
 
         # Horizontal connector pipe to next machine (output side)
         if i < machine_count - 1:
-            entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 5))
+            entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 5, carries=fluid_out))
 
         # Item output belt
         for dx in range(3):
@@ -343,6 +394,7 @@ def refinery_row(
     y_offset: int,
     x_offset: int = 0,
     inputs: list[ItemFlow] | None = None,
+    outputs: list[ItemFlow] | None = None,
 ) -> tuple[list[PlacedEntity], int]:
     """Lay out a row for oil-refinery (5x5) recipes.
 
@@ -365,7 +417,14 @@ def refinery_row(
 
     if inputs is None:
         inputs = []
+    if outputs is None:
+        outputs = []
     has_solid_input = any(not f.is_fluid for f in inputs)
+
+    # Determine fluid names for tagging
+    fluid_in = next((f.item for f in inputs if f.is_fluid), None)
+    # Refineries have multiple fluid outputs — tag with first for now
+    fluid_out = next((f.item for f in outputs if f.is_fluid), None)
 
     ROW_HEIGHT = 8
     MACHINE_PITCH = 6  # 5-wide machine + 1-tile gap
@@ -375,9 +434,9 @@ def refinery_row(
 
         # y+0: fluid output pipes (adjacent to machine top, connecting to north ports)
         # Output ports at (mx, my), (mx+2, my), (mx+4, my) → pipes one tile above
-        entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset))
-        entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset))
-        entities.append(PlacedEntity(name="pipe", x=mx + 4, y=y_offset))
+        entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset, carries=fluid_out))
+        entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset, carries=fluid_out))
+        entities.append(PlacedEntity(name="pipe", x=mx + 4, y=y_offset, carries=fluid_out))
         # Output inserter between pipes (for any solid outputs)
         entities.append(
             PlacedEntity(
@@ -388,9 +447,9 @@ def refinery_row(
             )
         )
         # Horizontal connector pipes between output pipes
-        entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset))
+        entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset, carries=fluid_out))
         if i < machine_count - 1:
-            entities.append(PlacedEntity(name="pipe", x=mx + 5, y=y_offset))
+            entities.append(PlacedEntity(name="pipe", x=mx + 5, y=y_offset, carries=fluid_out))
 
         # y+1..y+5: Machine (5×5)
         entities.append(
@@ -405,10 +464,11 @@ def refinery_row(
 
         # y+6: fluid input pipes (adjacent to machine bottom, connecting to south ports)
         # Input ports at (mx+1, my+4) and (mx+3, my+4) → pipes one tile below
-        entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 6))
-        entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 6))
-        # Input inserter at mx+2 (between the two input pipes)
+        # Build a continuous pipe run: mx+0 through mx+5 (with inserter gap if solid)
+        entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 6, carries=fluid_in))
+        entities.append(PlacedEntity(name="pipe", x=mx + 1, y=y_offset + 6, carries=fluid_in))
         if has_solid_input:
+            # Input inserter at mx+2 (between the two input pipes)
             entities.append(
                 PlacedEntity(
                     name="inserter",
@@ -417,9 +477,13 @@ def refinery_row(
                     direction=EntityDirection.NORTH,
                 )
             )
-        # Horizontal connector pipes for input side
+        else:
+            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 6, carries=fluid_in))
+        entities.append(PlacedEntity(name="pipe", x=mx + 3, y=y_offset + 6, carries=fluid_in))
+        entities.append(PlacedEntity(name="pipe", x=mx + 4, y=y_offset + 6, carries=fluid_in))
+        # Horizontal connector pipe to next machine
         if i < machine_count - 1:
-            entities.append(PlacedEntity(name="pipe", x=mx + 5, y=y_offset + 6))
+            entities.append(PlacedEntity(name="pipe", x=mx + 5, y=y_offset + 6, carries=fluid_in))
 
         # y+7: item input belt (for any solid ingredients)
         if has_solid_input:
