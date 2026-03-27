@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity
 from .graph import FlowEdge, ProductionGraph
 from .placer import machine_size
+
+
+@dataclass
+class RoutingResult:
+    """Result of routing all flow edges."""
+
+    entities: list[PlacedEntity] = field(default_factory=list)
+    occupied: set[tuple[int, int]] = field(default_factory=set)
+    failed_edges: list[FlowEdge] = field(default_factory=list)
+
 
 # Belt throughput tiers (items per second)
 _BELT_TIERS = [
@@ -174,15 +185,27 @@ def _path_to_entities(
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
-) -> tuple[list[PlacedEntity], set[tuple[int, int]]]:
+    edge_targets: dict[int, tuple[int, int]] | None = None,
+    reserved_tiles: set[tuple[int, int]] | None = None,
+    edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
+) -> RoutingResult:
     """Route all flow edges as belts/pipes using BFS pathfinding.
 
-    Returns (entities, occupied_tiles).
+    Args:
+        edge_targets: Mapping from edge index to a specific belt tile target.
+        reserved_tiles: Pre-occupied tiles the router must avoid.
+        edge_exclusions: Per-edge tiles to temporarily unblock from obstacles.
+            Maps edge index → set of tiles that only this edge may use.
     """
+    if edge_targets is None:
+        edge_targets = {}
+    if edge_exclusions is None:
+        edge_exclusions = {}
     entities: list[PlacedEntity] = []
+    failed_edges: list[FlowEdge] = []
 
-    # Build initial obstacle set from machine footprints
-    occupied: set[tuple[int, int]] = set()
+    # Build initial obstacle set from machine footprints + reserved tiles
+    occupied: set[tuple[int, int]] = set(reserved_tiles) if reserved_tiles else set()
     for node in graph.nodes:
         x, y = positions[node.id]
         size = machine_size(node.spec.entity)
@@ -204,13 +227,28 @@ def route_connections(
         tx, ty = positions[edge.to_node]
         return abs(fx - tx) + abs(fy - ty)
 
-    sorted_edges = sorted(graph.edges, key=_edge_sort_key)
+    sorted_edge_indices = sorted(range(len(graph.edges)), key=lambda i: _edge_sort_key(graph.edges[i]))
 
-    for edge in sorted_edges:
-        # Determine start and goal tiles
-        start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+    for edge_idx in sorted_edge_indices:
+        edge = graph.edges[edge_idx]
+
+        # Temporarily unblock tiles reserved for this specific edge
+        exclusions = edge_exclusions.get(edge_idx, set())
+        if exclusions:
+            occupied -= exclusions
+
+        # Use pre-assigned target if available, otherwise compute from endpoints
+        if edge_idx in edge_targets:
+            target = edge_targets[edge_idx]
+            # For assigned targets, start from the other end's belt tiles
+            start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+            goal_tiles = {target}
+        else:
+            start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
         if not start_tiles or not goal_tiles:
+            if exclusions:
+                occupied |= exclusions
             continue
 
         # Try BFS from each start tile until one works
@@ -222,8 +260,12 @@ def route_connections(
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
+        # Re-block the exclusion tiles (they stay unblocked only if this route used them)
+        if exclusions:
+            occupied |= exclusions
+
         if best_path is None:
-            # Routing failed for this edge — skip for now
+            failed_edges.append(edge)
             continue
 
         # Choose belt tier based on rate
@@ -237,7 +279,7 @@ def route_connections(
         for x, y in best_path:
             occupied.add((x, y))
 
-    return entities, occupied
+    return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
 
 
 def _edge_endpoints(

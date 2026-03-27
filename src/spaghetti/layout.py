@@ -1,31 +1,126 @@
-"""Spaghetti layout orchestrator: graph → place → route → poles → LayoutResult."""
+"""Spaghetti layout orchestrator: graph → place → route → validate → retry."""
 
 from __future__ import annotations
 
+import logging
+
 from ..layout.poles import place_poles
 from ..models import LayoutResult, PlacedEntity, SolverResult
-from .graph import build_production_graph
-from .inserters import place_inserters
+from ..validate import ValidationError, validate
+from .graph import FlowEdge, ProductionGraph, build_production_graph
+from .inserters import assign_inserter_positions, build_inserter_entities
 from .placer import machine_size, place_machines
-from .router import route_connections
+from .router import _machine_tiles, route_connections
+
+log = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_DEFAULT_SPACING = 5
+_SPACING_INCREMENT = 2
+
+_MACHINE_ENTITIES = {
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "oil-refinery",
+}
 
 
 def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
-    """Produce a factory layout using place-and-route (no predefined pattern).
+    """Produce a factory layout using place-and-route with validation.
 
-    1. Build production graph from solver output
-    2. Place machines on the grid
-    3. Route belts/pipes between machines via BFS pathfinding
-    4. Place inserters at machine borders
-    5. Place power poles
+    Uses an escalating retry strategy:
+    - Attempt 1: default spacing
+    - Attempt 2+: increase machine spacing and re-place everything
+
+    Returns the best layout found. If validation still has errors after
+    all retries, returns the last attempt (best-effort) with warnings logged.
     """
-    # 1. Build production graph
     graph = build_production_graph(solver_result)
+    spacing = _DEFAULT_SPACING
+    best_result: LayoutResult | None = None
+    best_error_count = float("inf")
 
-    # 2. Place machines
-    positions = place_machines(graph)
+    for attempt in range(_MAX_RETRIES + 1):
+        layout_result, failed_edges = _attempt_layout(solver_result, graph, spacing)
 
-    # 3. Place machine entities
+        if failed_edges:
+            log.warning(
+                "Attempt %d: %d edge(s) failed routing",
+                attempt + 1,
+                len(failed_edges),
+            )
+
+        try:
+            issues = validate(layout_result, solver_result, layout_style="spaghetti")
+            if issues:
+                for issue in issues:
+                    log.info("Validation: %s", issue.message)
+            return layout_result
+        except ValidationError as exc:
+            error_count = len(exc.issues)
+            if error_count < best_error_count:
+                best_result = layout_result
+                best_error_count = error_count
+
+            if attempt < _MAX_RETRIES:
+                spacing += _SPACING_INCREMENT
+                log.warning(
+                    "Attempt %d: %d validation error(s), retrying with spacing=%d",
+                    attempt + 1,
+                    error_count,
+                    spacing,
+                )
+            else:
+                log.warning(
+                    "Layout has %d validation error(s) after %d attempts (best-effort)",
+                    best_error_count,
+                    _MAX_RETRIES + 1,
+                )
+
+    # Return best-effort layout (the one with fewest errors)
+    return best_result if best_result is not None else layout_result
+
+
+def _attempt_layout(
+    solver_result: SolverResult,
+    graph: ProductionGraph,
+    spacing: int,
+) -> tuple[LayoutResult, list[FlowEdge]]:
+    """Single layout attempt at a given spacing. Returns (result, failed_edges)."""
+
+    # 1. Place machines
+    positions = place_machines(graph, spacing=spacing)
+
+    # 2. Build initial occupied set from machine footprints
+    occupied: set[tuple[int, int]] = set()
+    for node in graph.nodes:
+        x, y = positions[node.id]
+        size = machine_size(node.spec.entity)
+        occupied |= _machine_tiles(x, y, size)
+
+    # 3. Pre-assign inserter positions (reserves border tiles)
+    assignments = assign_inserter_positions(graph, positions, occupied)
+
+    # 4. Build edge→belt_tile mapping and per-edge exclusions for the router
+    edge_targets: dict[int, tuple[int, int]] = {}
+    edge_exclusions: dict[int, set[tuple[int, int]]] = {}
+    for assignment in assignments:
+        # Find the edge index in graph.edges
+        for i, edge in enumerate(graph.edges):
+            if edge is assignment.edge:
+                # Map to the belt tile that the route should target
+                if assignment.edge.to_node == assignment.node_id:
+                    # This is an input inserter — route goal is the belt tile
+                    edge_targets[i] = assignment.belt_tile
+                # Allow this edge (and only this edge) to use its own belt tile
+                if i not in edge_exclusions:
+                    edge_exclusions[i] = set()
+                edge_exclusions[i].add(assignment.belt_tile)
+                break
+
+    # 5. Place machine entities
     entities: list[PlacedEntity] = []
     for node in graph.nodes:
         x, y = positions[node.id]
@@ -38,30 +133,27 @@ def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
             )
         )
 
-    # 4. Route connections (belts + pipes)
-    route_entities, occupied = route_connections(graph, positions)
-    entities.extend(route_entities)
+    # 6. Route connections (belts + pipes) to assigned belt tiles
+    #    Reserve both border tiles (inserters) and belt tiles (route endpoints)
+    #    so other routes don't steal them. Each edge gets its own belt tile
+    #    unblocked via edge_exclusions.
+    reserved = {a.border_tile for a in assignments} | {a.belt_tile for a in assignments}
+    routing = route_connections(
+        graph,
+        positions,
+        edge_targets=edge_targets,
+        reserved_tiles=reserved,
+        edge_exclusions=edge_exclusions,
+    )
+    entities.extend(routing.entities)
 
-    # 5. Place inserters
-    routed_tiles = {(e.x, e.y) for e in route_entities}
-    inserter_entities = place_inserters(graph, positions, routed_tiles)
-    entities.extend(inserter_entities)
+    # 7. Place inserters from pre-assignments
+    entities.extend(build_inserter_entities(assignments))
 
-    # Update occupied set with all entity tiles
+    # 5. Collect occupied tiles for pole placement
     all_occupied: set[tuple[int, int]] = set()
     for e in entities:
-        size = (
-            machine_size(e.name)
-            if e.name
-            in (
-                "assembling-machine-1",
-                "assembling-machine-2",
-                "assembling-machine-3",
-                "chemical-plant",
-                "oil-refinery",
-            )
-            else 1
-        )
+        size = machine_size(e.name) if e.name in _MACHINE_ENTITIES else 1
         for dx in range(size):
             for dy in range(size):
                 all_occupied.add((e.x + dx, e.y + dy))
@@ -81,8 +173,7 @@ def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
     pole_entities = place_poles(width, height, all_occupied)
     entities.extend(pole_entities)
 
-    return LayoutResult(
-        entities=entities,
-        width=width,
-        height=height,
+    return (
+        LayoutResult(entities=entities, width=width, height=height),
+        routing.failed_edges,
     )
