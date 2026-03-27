@@ -131,17 +131,17 @@ class TestLayout:
         # chemical-plant ports (relative to tile_position):
         #   input:  (0, 0) north, (2, 0) north → pipe at (0, -1), (2, -1)
         #   output: (0, 2) south, (2, 2) south → pipe at (0, 3), (2, 3)
-        pipe_tiles = {(e.x, e.y) for e in lr.entities if e.name == "pipe"}
+        pipe_tiles = {(e.x, e.y) for e in lr.entities if e.name in ("pipe", "pipe-to-ground")}
 
         for ent in lr.entities:
             if ent.name != "chemical-plant":
                 continue
             mx, my = ent.x, ent.y
-            # Check input ports (north side) have adjacent pipes
+            # Check input ports (north side) have adjacent pipes (or pipe-to-ground)
             for dx in (0, 2):
                 expected = (mx + dx, my - 1)
                 assert expected in pipe_tiles, f"Chemical plant at ({mx},{my}): missing input pipe at {expected}"
-            # Check output ports (south side) have adjacent pipes
+            # Check output ports (south side) have adjacent pipes (or pipe-to-ground)
             for dx in (0, 2):
                 expected = (mx + dx, my + 3)
                 assert expected in pipe_tiles, f"Chemical plant at ({mx},{my}): missing output pipe at {expected}"

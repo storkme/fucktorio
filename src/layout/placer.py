@@ -50,6 +50,7 @@ def place_rows(
                 y_offset=y_cursor,
                 x_offset=bus_width,
                 inputs=spec.inputs,
+                outputs=spec.outputs,
             )
         elif _has_fluid(spec):
             row_ents, row_h = fluid_row(
@@ -59,6 +60,7 @@ def place_rows(
                 y_offset=y_cursor,
                 x_offset=bus_width,
                 inputs=spec.inputs,
+                outputs=spec.outputs,
             )
         elif num_solid_inputs <= 1:
             row_ents, row_h = single_input_row(

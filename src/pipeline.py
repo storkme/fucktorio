@@ -7,6 +7,7 @@ import math
 from .blueprint import build_blueprint
 from .layout import layout
 from .solver import solve
+from .validate import validate
 
 
 def produce(
@@ -79,13 +80,19 @@ def produce(
     layout_result = layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
 
-    # 3. Blueprint
+    # 3. Validate (raises ValidationError on critical issues)
+    warnings = validate(layout_result, solver_result)
+    if warnings:
+        for w in warnings:
+            print(f"  [{w.severity}] {w.message}")
+
+    # 4. Blueprint
     if label is None:
         label = f"{rate}/s {item}"
     bp_string = build_blueprint(layout_result, label=label)
     print(f"  Blueprint: {len(bp_string)} chars")
 
-    # 4. Generate HTML visualization if requested
+    # 5. Generate HTML visualization if requested
     if visualize:
         from .visualize import visualize as viz
 
