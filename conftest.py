@@ -33,7 +33,7 @@ def viz(request: pytest.FixtureRequest):
     """
     enabled = request.config.getoption("--viz")
 
-    def _save(bp_string: str, name: str | None = None, solver_result=None):
+    def _save(bp_string: str, name: str | None = None, solver_result=None, production_graph=None):
         if not enabled:
             return
         if name is None:
@@ -46,7 +46,13 @@ def viz(request: pytest.FixtureRequest):
 
         from src.visualize import visualize
 
-        visualize(bp_string, output_path=out_path, open_browser=False, solver_result=solver_result)
+        visualize(
+            bp_string,
+            output_path=out_path,
+            open_browser=False,
+            solver_result=solver_result,
+            production_graph=production_graph,
+        )
 
     return _save
 

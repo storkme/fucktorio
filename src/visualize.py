@@ -75,6 +75,7 @@ def visualize(
     output_path: str | None = None,
     open_browser: bool = True,
     solver_result=None,
+    production_graph=None,
 ) -> str:
     """Generate an HTML visualization of a blueprint string.
 
@@ -83,6 +84,7 @@ def visualize(
         output_path: Where to write the HTML file. Defaults to ./blueprint_viz.html.
         open_browser: Whether to open the file in the default browser.
         solver_result: Optional SolverResult for richer production info.
+        production_graph: Optional ProductionGraph for flow diagram panel.
 
     Returns:
         Path to the generated HTML file.
@@ -220,6 +222,33 @@ def visualize(
     label = html.escape(bp.label or "Blueprint")
     total_entities = len(bp.entities)
 
+    # Build production graph data if available
+    graph_data = "null"
+    if production_graph is not None:
+        graph_nodes = []
+        for node in production_graph.nodes:
+            graph_nodes.append(
+                {
+                    "id": node.id,
+                    "recipe": node.spec.recipe,
+                    "entity": node.spec.entity,
+                    "instance": node.instance,
+                    "color": recipe_colors.get(node.spec.recipe, "#888"),
+                }
+            )
+        graph_edges = []
+        for edge in production_graph.edges:
+            graph_edges.append(
+                {
+                    "item": edge.item,
+                    "rate": round(edge.rate, 2),
+                    "is_fluid": edge.is_fluid,
+                    "from": edge.from_node,
+                    "to": edge.to_node,
+                }
+            )
+        graph_data = json.dumps({"nodes": graph_nodes, "edges": graph_edges})
+
     html_content = _HTML_TEMPLATE.format(
         title=label,
         total_entities=total_entities,
@@ -231,6 +260,7 @@ def visualize(
         legend_recipes=legend_recipes,
         legend_infra=legend_infra,
         solver_info=solver_info or "null",
+        graph_data=graph_data,
     )
 
     Path(output_path).write_text(html_content)
@@ -387,6 +417,38 @@ _HTML_TEMPLATE = """\
   #tooltip .tt-recipe {{ color: #76b7b2; }}
   #tooltip .tt-pos {{ color: #888; font-size: 11px; }}
 
+  /* Tabs */
+  #tab-bar {{
+    display: flex;
+    gap: 2px;
+    padding: 8px 8px 0 8px;
+    background: #0f0f23;
+  }}
+  .tab-btn {{
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-bottom: none;
+    color: #a0a0b0;
+    padding: 8px 16px;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }}
+  .tab-btn:hover {{ background: #1a3a6e; color: #e0e0e0; }}
+  .tab-btn.active {{ background: #0f0f23; color: #e94560; border-color: #e94560; }}
+  .tab-panel {{ display: none; flex: 1; position: relative; overflow: hidden; background: #0f0f23; }}
+  .tab-panel.active {{ display: block; }}
+
+  /* Main content area */
+  #main-area {{
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }}
+
   /* Controls */
   #controls {{
     position: absolute;
@@ -408,6 +470,12 @@ _HTML_TEMPLATE = """\
     transition: background 0.15s;
   }}
   #controls button:hover {{ background: #1a3a6e; }}
+
+  /* Graph panel */
+  #graph-panel canvas {{
+    position: absolute;
+    top: 0; left: 0;
+  }}
 </style>
 </head>
 <body>
@@ -437,12 +505,23 @@ _HTML_TEMPLATE = """\
   </div>
 </div>
 
-<div id="canvas-wrap">
-  <canvas id="grid"></canvas>
-  <div id="controls">
-    <button id="btn-fit" title="Fit to view">&#8982;</button>
-    <button id="btn-zin" title="Zoom in">+</button>
-    <button id="btn-zout" title="Zoom out">&minus;</button>
+<div id="main-area">
+  <div id="tab-bar">
+    <button class="tab-btn active" data-tab="layout-panel">Layout</button>
+    <button class="tab-btn" data-tab="graph-panel" id="graph-tab" style="display:none">Flow Graph</button>
+  </div>
+
+  <div id="layout-panel" class="tab-panel active">
+    <canvas id="grid"></canvas>
+    <div id="controls">
+      <button id="btn-fit" title="Fit to view">&#8982;</button>
+      <button id="btn-zin" title="Zoom in">+</button>
+      <button id="btn-zout" title="Zoom out">&minus;</button>
+    </div>
+  </div>
+
+  <div id="graph-panel" class="tab-panel">
+    <canvas id="graph-canvas"></canvas>
   </div>
 </div>
 
@@ -457,13 +536,26 @@ const TILES = {tiles_json};
 const LEGEND_RECIPES = {legend_recipes};
 const LEGEND_INFRA = {legend_infra};
 const SOLVER_INFO = {solver_info};
+const GRAPH_DATA = {graph_data};
 const MIN_X = {min_x};
 const MIN_Y = {min_y};
 const GRID_W = {grid_w};
 const GRID_H = {grid_h};
 
+// --- Tab switching ---
+document.querySelectorAll('.tab-btn').forEach(btn => {{
+  btn.addEventListener('click', () => {{
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'graph-panel') renderGraph();
+  }});
+}});
+if (GRAPH_DATA) document.getElementById('graph-tab').style.display = '';
+
 // --- Canvas setup ---
-const wrap = document.getElementById('canvas-wrap');
+const wrap = document.getElementById('layout-panel');
 const canvas = document.getElementById('grid');
 const ctx = canvas.getContext('2d');
 const tooltip = document.getElementById('tooltip');
@@ -670,6 +762,161 @@ document.getElementById('btn-zout').addEventListener('click', () => {{
   scale = Math.max(scale / 1.5, 0.5);
   draw();
 }});
+
+// --- Production Graph ---
+let graphRendered = false;
+function renderGraph() {{
+  if (graphRendered || !GRAPH_DATA) return;
+  graphRendered = true;
+
+  const panel = document.getElementById('graph-panel');
+  const gc = document.getElementById('graph-canvas');
+  const gctx = gc.getContext('2d');
+
+  gc.width = panel.clientWidth || 800;
+  gc.height = panel.clientHeight || 600;
+
+  const nodes = GRAPH_DATA.nodes;
+  const edges = GRAPH_DATA.edges;
+
+  // Group nodes by recipe for layered layout
+  const recipeGroups = {{}};
+  nodes.forEach(n => {{
+    if (!recipeGroups[n.recipe]) recipeGroups[n.recipe] = [];
+    recipeGroups[n.recipe].push(n);
+  }});
+  const recipes = Object.keys(recipeGroups);
+
+  // Collect unique items from external inputs
+  const extInputItems = [...new Set(edges.filter(e => e.from === null).map(e => e.item))];
+
+  // Assign layer (x) based on dependency depth via BFS from external inputs
+  const recipeLayers = {{}};
+  const recipeInputs = {{}};
+  recipes.forEach(r => {{ recipeInputs[r] = []; }});
+  edges.forEach(e => {{
+    if (e.from !== null && e.to !== null) {{
+      const fromRecipe = nodes.find(n => n.id === e.from)?.recipe;
+      const toRecipe = nodes.find(n => n.id === e.to)?.recipe;
+      if (fromRecipe && toRecipe && fromRecipe !== toRecipe) {{
+        if (!recipeInputs[toRecipe].includes(fromRecipe))
+          recipeInputs[toRecipe].push(fromRecipe);
+      }}
+    }}
+  }});
+
+  // Topological layering
+  const assigned = new Set();
+  let layer = 0;
+  // Start with recipes that have no recipe inputs (only external)
+  let current = recipes.filter(r => recipeInputs[r].length === 0);
+  while (current.length > 0) {{
+    current.forEach(r => {{ recipeLayers[r] = layer; assigned.add(r); }});
+    layer++;
+    current = recipes.filter(r => !assigned.has(r) && recipeInputs[r].every(dep => assigned.has(dep)));
+    if (current.length === 0 && assigned.size < recipes.length) {{
+      // Cycle or orphan — assign remaining
+      recipes.filter(r => !assigned.has(r)).forEach(r => {{ recipeLayers[r] = layer; assigned.add(r); }});
+    }}
+  }}
+  const maxLayer = Math.max(...Object.values(recipeLayers), 0);
+  const totalLayers = maxLayer + 1;
+
+  // Position nodes
+  const nodeRadius = 20;
+  const layerWidth = gc.width / (totalLayers + 2);  // +2 for external input/output columns
+  const nodePositions = {{}};
+
+  // External input positions (leftmost column)
+  const extPositions = {{}};
+  extInputItems.forEach((item, i) => {{
+    const y = (gc.height / (extInputItems.length + 1)) * (i + 1);
+    extPositions[item] = {{ x: layerWidth * 0.5, y }};
+  }});
+
+  // Machine node positions (grouped by recipe, spread vertically)
+  recipes.forEach(recipe => {{
+    const group = recipeGroups[recipe];
+    const lx = layerWidth * (recipeLayers[recipe] + 1.5);
+    group.forEach((n, i) => {{
+      const y = (gc.height / (group.length + 1)) * (i + 1);
+      nodePositions[n.id] = {{ x: lx, y, color: n.color, recipe: n.recipe, entity: n.entity, instance: n.instance }};
+    }});
+  }});
+
+  // Draw edges
+  gctx.lineWidth = 1.5;
+  edges.forEach(e => {{
+    let from, to;
+    if (e.from === null) {{
+      from = extPositions[e.item];
+      if (!from) return;
+    }} else {{
+      from = nodePositions[e.from];
+    }}
+    if (e.to === null) return;  // skip external outputs for now
+    to = nodePositions[e.to];
+    if (!from || !to) return;
+
+    gctx.strokeStyle = e.is_fluid ? '#4a7ab5' : '#888';
+    gctx.beginPath();
+    // Curved edge
+    const cx = (from.x + to.x) / 2;
+    gctx.moveTo(from.x, from.y);
+    gctx.quadraticCurveTo(cx, from.y, to.x, to.y);
+    gctx.stroke();
+
+    // Edge label
+    const mx = (from.x + to.x) / 2;
+    const my = (from.y + to.y) / 2 - 6;
+    gctx.fillStyle = '#888';
+    gctx.font = '10px sans-serif';
+    gctx.textAlign = 'center';
+    const rateStr = e.rate < 1 ? e.rate.toFixed(2) : e.rate.toFixed(1);
+    gctx.fillText(`${{e.item}} ${{rateStr}}/s`, mx, my);
+  }});
+
+  // Draw external input nodes
+  extInputItems.forEach(item => {{
+    const pos = extPositions[item];
+    gctx.fillStyle = '#2a6e2a';
+    gctx.beginPath();
+    gctx.arc(pos.x, pos.y, 14, 0, Math.PI * 2);
+    gctx.fill();
+    gctx.strokeStyle = '#4a9e4a';
+    gctx.lineWidth = 2;
+    gctx.stroke();
+    gctx.fillStyle = '#e0e0e0';
+    gctx.font = '10px sans-serif';
+    gctx.textAlign = 'center';
+    gctx.textBaseline = 'middle';
+    // Truncate long names
+    const label = item.length > 12 ? item.substring(0, 10) + '..' : item;
+    gctx.fillText(label, pos.x, pos.y);
+  }});
+
+  // Draw machine nodes
+  Object.values(nodePositions).forEach(pos => {{
+    gctx.fillStyle = pos.color;
+    gctx.beginPath();
+    gctx.arc(pos.x, pos.y, nodeRadius, 0, Math.PI * 2);
+    gctx.fill();
+    gctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    gctx.lineWidth = 2;
+    gctx.stroke();
+
+    // Label
+    gctx.fillStyle = '#fff';
+    gctx.font = 'bold 10px sans-serif';
+    gctx.textAlign = 'center';
+    gctx.textBaseline = 'middle';
+    const label = pos.recipe.length > 12 ? pos.recipe.substring(0, 10) + '..' : pos.recipe;
+    gctx.fillText(label, pos.x, pos.y - 4);
+    gctx.font = '9px sans-serif';
+    gctx.fillStyle = '#ccc';
+    gctx.fillText(`#${{pos.instance}}`, pos.x, pos.y + 8);
+  }});
+}}
 
 // --- Init ---
 buildLegend();
