@@ -41,8 +41,13 @@ class ValidationError(Exception):
 def validate(
     layout_result: LayoutResult,
     solver_result: SolverResult | None = None,
+    layout_style: str = "bus",
 ) -> list[ValidationIssue]:
     """Run all functional validation checks on a layout.
+
+    Args:
+        layout_style: "bus" for main-bus layouts, "spaghetti" for
+            constraint-based layouts (adapts fluid connectivity check).
 
     Returns a list of issues found. Raises ValidationError if any
     errors (not just warnings) are present.
@@ -50,7 +55,7 @@ def validate(
     issues: list[ValidationIssue] = []
 
     issues.extend(check_pipe_isolation(layout_result))
-    issues.extend(check_fluid_port_connectivity(layout_result))
+    issues.extend(check_fluid_port_connectivity(layout_result, layout_style=layout_style))
     issues.extend(check_inserter_chains(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
@@ -153,16 +158,19 @@ def _get_fluid_ports(entity_name: str) -> list[tuple[int, int, str]]:
     return ports
 
 
-def check_fluid_port_connectivity(layout_result: LayoutResult) -> list[ValidationIssue]:
+def check_fluid_port_connectivity(
+    layout_result: LayoutResult,
+    layout_style: str = "bus",
+) -> list[ValidationIssue]:
     """Check that every machine's fluid ports have connected pipes.
 
     For each machine with fluid ports, verifies:
     1. At least one input port has an adjacent pipe
-    2. At least one input pipe is reachable from the bus via BFS
+    2. (bus mode only) At least one input pipe is reachable from the bus via BFS
     3. At least one output port has an adjacent pipe
 
-    We only require ONE port per type (input/output) to be connected,
-    since machines with multiple ports of the same type share a fluidbox.
+    In spaghetti mode, the bus-reachability check is skipped since there
+    is no bus — only port adjacency is verified.
     """
     issues: list[ValidationIssue] = []
 
@@ -217,7 +225,7 @@ def check_fluid_port_connectivity(layout_result: LayoutResult) -> list[Validatio
                         y=e.y,
                     )
                 )
-            elif bus_pipes:
+            elif layout_style == "bus" and bus_pipes:
                 # Check at least one input pipe connects to bus
                 any_connected = any(
                     _bfs_pipe_reach(pos, pipe_tiles, ptg_pairs) & bus_pipes for pos in input_pipe_positions

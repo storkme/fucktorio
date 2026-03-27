@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity
 from .graph import FlowEdge, ProductionGraph
 from .placer import machine_size
+
+
+@dataclass
+class RoutingResult:
+    """Result of routing all flow edges."""
+
+    entities: list[PlacedEntity] = field(default_factory=list)
+    occupied: set[tuple[int, int]] = field(default_factory=set)
+    failed_edges: list[FlowEdge] = field(default_factory=list)
+
 
 # Belt throughput tiers (items per second)
 _BELT_TIERS = [
@@ -174,12 +185,13 @@ def _path_to_entities(
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
-) -> tuple[list[PlacedEntity], set[tuple[int, int]]]:
+) -> RoutingResult:
     """Route all flow edges as belts/pipes using BFS pathfinding.
 
-    Returns (entities, occupied_tiles).
+    Returns a RoutingResult with entities, occupied tiles, and any failed edges.
     """
     entities: list[PlacedEntity] = []
+    failed_edges: list[FlowEdge] = []
 
     # Build initial obstacle set from machine footprints
     occupied: set[tuple[int, int]] = set()
@@ -223,7 +235,7 @@ def route_connections(
                 best_path = path
 
         if best_path is None:
-            # Routing failed for this edge — skip for now
+            failed_edges.append(edge)
             continue
 
         # Choose belt tier based on rate
@@ -237,7 +249,7 @@ def route_connections(
         for x, y in best_path:
             occupied.add((x, y))
 
-    return entities, occupied
+    return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
 
 
 def _edge_endpoints(
