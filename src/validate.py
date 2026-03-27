@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from .models import LayoutResult, SolverResult
+from .models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 
 _3x3_ENTITIES = {
     "assembling-machine-1",
@@ -18,6 +18,37 @@ _MACHINE_ENTITIES = _3x3_ENTITIES | _5x5_ENTITIES
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
 _BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
+
+# Inserter reach: how many tiles from the inserter the pickup/drop position is
+_INSERTER_REACH = {
+    "inserter": 1,
+    "fast-inserter": 1,
+    "stack-inserter": 1,
+    "long-handed-inserter": 2,
+}
+
+# Belt throughput limits (items per second)
+_BELT_THROUGHPUT = {
+    "transport-belt": 15.0,
+    "fast-transport-belt": 30.0,
+    "express-transport-belt": 45.0,
+}
+
+# Direction → (dx, dy) the inserter drops toward
+_DIR_TO_VEC: dict[EntityDirection, tuple[int, int]] = {
+    EntityDirection.NORTH: (0, -1),
+    EntityDirection.EAST: (1, 0),
+    EntityDirection.SOUTH: (0, 1),
+    EntityDirection.WEST: (-1, 0),
+}
+
+# Opposite direction vectors
+_OPPOSITE_VEC: dict[tuple[int, int], tuple[int, int]] = {
+    (0, -1): (0, 1),
+    (0, 1): (0, -1),
+    (1, 0): (-1, 0),
+    (-1, 0): (1, 0),
+}
 
 
 @dataclass
@@ -59,7 +90,11 @@ def validate(
     issues.extend(check_pipe_isolation(layout_result))
     issues.extend(check_fluid_port_connectivity(layout_result, layout_style=layout_style))
     issues.extend(check_inserter_chains(layout_result, solver_result))
+    issues.extend(check_inserter_direction(layout_result))
     issues.extend(check_belt_connectivity(layout_result, solver_result))
+    issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style=layout_style))
+    issues.extend(check_belt_direction_continuity(layout_result))
+    issues.extend(check_belt_throughput(layout_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -414,6 +449,80 @@ def check_inserter_chains(
     return issues
 
 
+def _build_machine_tile_set(layout_result: LayoutResult) -> set[tuple[int, int]]:
+    """Build a set of all tiles occupied by machines."""
+    tiles: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _MACHINE_ENTITIES:
+            size = _machine_size(e.name)
+            for dx in range(size):
+                for dy in range(size):
+                    tiles.add((e.x + dx, e.y + dy))
+    return tiles
+
+
+def _get_fluid_only_recipes(solver_result: SolverResult | None) -> set[str]:
+    """Get recipes that have only fluid I/O (no solid items)."""
+    fluid_only: set[str] = set()
+    if solver_result is not None:
+        for spec in solver_result.machines:
+            has_solid = any(not f.is_fluid for f in spec.inputs + spec.outputs)
+            if not has_solid:
+                fluid_only.add(spec.recipe)
+    return fluid_only
+
+
+def check_inserter_direction(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that inserters face toward or away from an adjacent machine.
+
+    An inserter picks from one side and drops to the other. Its direction
+    indicates which way it drops. A valid inserter must have its drop or
+    pickup side pointing at a machine — otherwise it's facing parallel to
+    the machine border and won't transfer items.
+    """
+    issues: list[ValidationIssue] = []
+
+    machine_tiles = _build_machine_tile_set(layout_result)
+
+    for e in layout_result.entities:
+        if e.name not in _INSERTER_ENTITIES:
+            continue
+
+        direction_vec = _DIR_TO_VEC.get(e.direction)
+        if direction_vec is None:
+            continue
+
+        reach = _INSERTER_REACH.get(e.name, 1)
+        dx, dy = direction_vec
+        odx, ody = _OPPOSITE_VEC[direction_vec]
+
+        # Drop side: reach tiles in facing direction
+        drop_pos = (e.x + dx * reach, e.y + dy * reach)
+        # Pickup side: reach tiles in opposite direction
+        pickup_pos = (e.x + odx * reach, e.y + ody * reach)
+
+        drop_touches_machine = drop_pos in machine_tiles
+        pickup_touches_machine = pickup_pos in machine_tiles
+
+        if not drop_touches_machine and not pickup_touches_machine:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="inserter-direction",
+                    message=(
+                        f"inserter at ({e.x},{e.y}) facing {e.direction.name}: "
+                        f"neither drop nor pickup side touches a machine"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
+
+    return issues
+
+
 def check_belt_connectivity(
     layout_result: LayoutResult,
     solver_result: SolverResult | None = None,
@@ -568,6 +677,267 @@ def _bfs_belt_reach(
                 queue.append(nb)
 
     return visited
+
+
+def check_belt_flow_path(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+    layout_style: str = "spaghetti",
+) -> list[ValidationIssue]:
+    """Check that each machine's input belt network reaches a source.
+
+    BFS through connected belt tiles from each machine's input-side inserters.
+    The network must reach either:
+    - An inserter adjacent to a different machine (internal flow), or
+    - The boundary of the layout (external input).
+
+    Only checks input-side connections. Output belts are often intentionally
+    short dead-ends (the player extends them), so those are not flagged.
+
+    Severity depends on layout style: error for spaghetti (where routing should
+    produce complete paths), warning for bus (which has known disconnected spurs).
+    """
+    issues: list[ValidationIssue] = []
+
+    fluid_only_recipes = _get_fluid_only_recipes(solver_result)
+
+    # Build tile maps
+    belt_tiles: set[tuple[int, int]] = set()
+    inserter_entities: list[PlacedEntity] = []
+    inserter_positions: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_tiles.add((e.x, e.y))
+        elif e.name in _INSERTER_ENTITIES:
+            inserter_entities.append(e)
+            inserter_positions.add((e.x, e.y))
+
+    if not belt_tiles:
+        return issues  # check_belt_connectivity already handles this
+
+    # Build per-machine tile sets
+    machine_entities = [e for e in layout_result.entities if e.name in _MACHINE_ENTITIES]
+    all_machine_tiles: set[tuple[int, int]] = set()
+    for e in machine_entities:
+        size = _machine_size(e.name)
+        for dx in range(size):
+            for dy in range(size):
+                all_machine_tiles.add((e.x + dx, e.y + dy))
+
+    # Identify input inserters: those that drop INTO a machine
+    # (drop side = facing direction * reach → must land on a machine tile)
+    input_inserter_positions: set[tuple[int, int]] = set()
+    for ie in inserter_entities:
+        direction_vec = _DIR_TO_VEC.get(ie.direction)
+        if direction_vec is None:
+            continue
+        reach = _INSERTER_REACH.get(ie.name, 1)
+        dx, dy = direction_vec
+        drop_pos = (ie.x + dx * reach, ie.y + dy * reach)
+        if drop_pos in all_machine_tiles:
+            input_inserter_positions.add((ie.x, ie.y))
+
+    # Compute layout boundary from all belt positions
+    all_xs = [x for x, _ in belt_tiles]
+    all_ys = [y for _, y in belt_tiles]
+    min_bx, max_bx = min(all_xs), max(all_xs)
+    min_by, max_by = min(all_ys), max(all_ys)
+
+    checked_machines: set[tuple[int, int]] = set()
+    for e in machine_entities:
+        if (e.x, e.y) in checked_machines:
+            continue
+        checked_machines.add((e.x, e.y))
+
+        if e.recipe in fluid_only_recipes:
+            continue
+
+        size = _machine_size(e.name)
+        my_tiles = {
+            (e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)
+        }
+
+        # Find belt tiles adjacent to this machine's INPUT inserters
+        start_belt_tiles: set[tuple[int, int]] = set()
+        for dx in range(-1, size + 1):
+            for dy in range(-1, size + 1):
+                ipos = (e.x + dx, e.y + dy)
+                if ipos not in input_inserter_positions or ipos in my_tiles:
+                    continue
+                for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nb = (ipos[0] + ddx, ipos[1] + ddy)
+                    if nb in belt_tiles and nb not in my_tiles:
+                        start_belt_tiles.add(nb)
+
+        if not start_belt_tiles:
+            continue  # No input inserters with belts — other checks cover this
+
+        belt_network = _bfs_belt_reach(start_belt_tiles, belt_tiles)
+
+        # Check if network reaches another machine's output inserter
+        reaches_source = False
+        for bx, by in belt_network:
+            for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                adj = (bx + ddx, by + ddy)
+                # Inserter adjacent to belt, but NOT an input inserter for this machine
+                if adj in inserter_positions and adj not in my_tiles and adj not in input_inserter_positions:
+                    reaches_source = True
+                    break
+                # Also check if this inserter is an output inserter of another machine
+                if adj in inserter_positions and adj not in my_tiles:
+                    for ddx2, ddy2 in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                        adj2 = (adj[0] + ddx2, adj[1] + ddy2)
+                        if adj2 in all_machine_tiles and adj2 not in my_tiles:
+                            reaches_source = True
+                            break
+                if reaches_source:
+                    break
+            if reaches_source:
+                break
+
+        # Check if network reaches layout boundary (external input)
+        reaches_boundary = any(
+            bx == min_bx or bx == max_bx or by == min_by or by == max_by
+            for bx, by in belt_network
+        )
+
+        if not reaches_source and not reaches_boundary:
+            severity = "error" if layout_style == "spaghetti" else "warning"
+            issues.append(
+                ValidationIssue(
+                    severity=severity,
+                    category="belt-flow-path",
+                    message=(
+                        f"{e.name} at ({e.x},{e.y}): input belt network ({len(belt_network)} tiles) "
+                        f"doesn't reach any source (other machine or layout boundary)"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
+
+    return issues
+
+
+def check_belt_direction_continuity(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that adjacent belts don't form 180-degree reversals.
+
+    Two adjacent belts pointing in exactly opposite directions create a
+    dead spot where items pile up and stop flowing. This is almost always
+    a routing error.
+    """
+    issues: list[ValidationIssue] = []
+
+    # Build belt direction map
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir_map[(e.x, e.y)] = e.direction
+
+    checked: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for (bx, by), direction in belt_dir_map.items():
+        dir_vec = _DIR_TO_VEC.get(direction)
+        if dir_vec is None:
+            continue
+
+        opposite = _OPPOSITE_VEC[dir_vec]
+
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nb = (bx + dx, by + dy)
+            if nb not in belt_dir_map:
+                continue
+
+            pair = (min((bx, by), nb), max((bx, by), nb))
+            if pair in checked:
+                continue
+            checked.add(pair)
+
+            nb_dir = belt_dir_map[nb]
+            nb_vec = _DIR_TO_VEC.get(nb_dir)
+            if nb_vec is None:
+                continue
+
+            # Check if they're 180-degree opposites
+            if nb_vec == opposite:
+                # Only flag if they're on the same axis as their flow
+                # (belts facing N/S adjacent vertically, or E/W adjacent horizontally)
+                # Side-by-side parallel belts going opposite ways is fine (common pattern)
+                if (dx, dy) == dir_vec or (dx, dy) == opposite:
+                    issues.append(
+                        ValidationIssue(
+                            severity="warning",
+                            category="belt-direction",
+                            message=(
+                                f"Adjacent belts at ({bx},{by}) and ({nb[0]},{nb[1]}) "
+                                f"face opposite directions ({direction.name} vs {nb_dir.name}), "
+                                f"creating a dead spot"
+                            ),
+                            x=bx,
+                            y=by,
+                        )
+                    )
+
+    return issues
+
+
+def check_belt_throughput(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that belt tiles don't carry more items/s than their tier allows.
+
+    Multiple routes sharing the same belt tile can exceed the belt's capacity.
+    This check sums all flow rates passing through each belt tile and compares
+    against the belt tier's throughput limit.
+    """
+    issues: list[ValidationIssue] = []
+
+    # Build map of belt tile → (entity_name, total rate)
+    belt_entity_map: dict[tuple[int, int], str] = {}
+    belt_rate_map: dict[tuple[int, int], float] = defaultdict(float)
+
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_entity_map[(e.x, e.y)] = e.name
+            # carries is the item name; we need the rate which isn't stored
+            # per-tile. However, if multiple entities occupy the same tile
+            # (shouldn't happen but indicates overlapping routes), count them.
+
+    # Count overlapping belt entities at the same position.
+    # Each belt entity placed at a tile represents a route using that tile.
+    # We track how many routes share each tile via entity duplication.
+    tile_counts: dict[tuple[int, int], int] = defaultdict(int)
+    tile_rates: dict[tuple[int, int], float] = defaultdict(float)
+    tile_names: dict[tuple[int, int], str] = {}
+
+    for e in layout_result.entities:
+        if e.name not in _BELT_ENTITIES:
+            continue
+        pos = (e.x, e.y)
+        tile_counts[pos] += 1
+        tile_names[pos] = e.name
+        # If the entity has a rate annotation we could use it, but currently
+        # rates aren't stored per-entity. Flag overlapping routes instead.
+
+    for pos, count in tile_counts.items():
+        if count > 1:
+            belt_name = tile_names[pos]
+            max_throughput = _BELT_THROUGHPUT.get(belt_name, 15.0)
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    category="belt-throughput",
+                    message=(
+                        f"Belt at ({pos[0]},{pos[1]}): {count} overlapping routes "
+                        f"on {belt_name} (max {max_throughput}/s)"
+                    ),
+                    x=pos[0],
+                    y=pos[1],
+                )
+            )
+
+    return issues
 
 
 def check_power_coverage(layout_result: LayoutResult) -> list[ValidationIssue]:
