@@ -51,7 +51,7 @@ def validate(
 
     issues.extend(check_pipe_isolation(layout_result))
     issues.extend(check_fluid_port_connectivity(layout_result))
-    issues.extend(check_inserter_chains(layout_result))
+    issues.extend(check_inserter_chains(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -340,21 +340,24 @@ def _bfs_pipe_reach(
     return visited
 
 
-def check_inserter_chains(layout_result: LayoutResult) -> list[ValidationIssue]:
-    """Check that every machine has inserters for item I/O.
+def check_inserter_chains(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check that every machine with solid I/O has inserters.
 
-    Verifies each machine has at least one output inserter adjacent to it.
+    Machines with only fluid inputs/outputs (e.g. oil refineries running
+    basic-oil-processing) don't need inserters.
     """
     issues: list[ValidationIssue] = []
 
-    # Build machine tile map
-    machine_tiles: dict[tuple[int, int], str] = {}
-    for e in layout_result.entities:
-        if e.name in _MACHINE_ENTITIES:
-            size = _machine_size(e.name)
-            for dx in range(size):
-                for dy in range(size):
-                    machine_tiles[(e.x + dx, e.y + dy)] = e.name
+    # Build a set of recipes that need inserters (have solid inputs or outputs)
+    fluid_only_recipes: set[str] = set()
+    if solver_result is not None:
+        for spec in solver_result.machines:
+            has_solid = any(not f.is_fluid for f in spec.inputs + spec.outputs)
+            if not has_solid:
+                fluid_only_recipes.add(spec.recipe)
 
     # Build inserter positions
     inserter_positions: set[tuple[int, int]] = set()
@@ -362,7 +365,7 @@ def check_inserter_chains(layout_result: LayoutResult) -> list[ValidationIssue]:
         if e.name == "inserter":
             inserter_positions.add((e.x, e.y))
 
-    # Each machine should have at least one adjacent inserter
+    # Each machine with solid I/O should have at least one adjacent inserter
     checked_machines: set[tuple[int, int]] = set()
     for e in layout_result.entities:
         if e.name not in _MACHINE_ENTITIES:
@@ -370,6 +373,10 @@ def check_inserter_chains(layout_result: LayoutResult) -> list[ValidationIssue]:
         if (e.x, e.y) in checked_machines:
             continue
         checked_machines.add((e.x, e.y))
+
+        # Skip machines that only have fluid I/O
+        if e.recipe in fluid_only_recipes:
+            continue
 
         size = _machine_size(e.name)
         has_inserter = False
