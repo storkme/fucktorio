@@ -42,8 +42,12 @@ _RECIPE_COLORS = [
 # Fixed colors for infrastructure entities
 _INFRA_COLORS = {
     "transport-belt": "#c8b560",
+    "fast-transport-belt": "#e05050",
+    "express-transport-belt": "#50a0e0",
     "underground-belt": "#a89040",
     "inserter": "#6a8e3e",
+    "fast-inserter": "#4a90d0",
+    "long-handed-inserter": "#d04040",
     "pipe": "#4a7ab5",
     "pipe-to-ground": "#3a6090",
     "medium-electric-pole": "#8b6914",
@@ -51,9 +55,13 @@ _INFRA_COLORS = {
 }
 
 _INFRA_LABELS = {
-    "transport-belt": "Belt",
+    "transport-belt": "Belt (yellow)",
+    "fast-transport-belt": "Belt (red)",
+    "express-transport-belt": "Belt (blue)",
     "underground-belt": "UG Belt",
     "inserter": "Inserter",
+    "fast-inserter": "Fast Inserter",
+    "long-handed-inserter": "Long Inserter",
     "pipe": "Pipe",
     "pipe-to-ground": "UG Pipe",
     "medium-electric-pole": "Pole",
@@ -128,7 +136,8 @@ def visualize(
         ty = int(e.tile_position.y) if hasattr(e.tile_position, "y") else int(e.tile_position[1])
 
         # Get direction (0=N, 4=E, 8=S, 12=W)
-        direction = int(getattr(e, "direction", 0)) if hasattr(e, "direction") else 0
+        direction = int(getattr(e, "direction", 0) or 0)
+        carries = getattr(e, "carries", None) or ""
 
         if e.name in _CRAFTING:
             size = 5 if e.name in _5x5 else 3
@@ -145,12 +154,15 @@ def visualize(
                     "recipe": e.recipe or "",
                     "tooltip": tooltip,
                     "dir": direction,
+                    "carries": carries,
                 }
             )
         else:
             color = _INFRA_COLORS.get(e.name, "#666")
             label = _INFRA_LABELS.get(e.name, e.name)
             tooltip = label
+            if carries:
+                tooltip += f" [{carries}]"
             if e.name == "underground-belt":
                 io = getattr(e, "io_type", None)
                 if io:
@@ -166,6 +178,7 @@ def visualize(
                     "recipe": "",
                     "tooltip": tooltip,
                     "dir": direction,
+                    "carries": carries,
                 }
             )
 
@@ -420,6 +433,7 @@ _HTML_TEMPLATE = """\
   }}
   #tooltip .tt-entity {{ color: #e94560; font-weight: 600; }}
   #tooltip .tt-recipe {{ color: #76b7b2; }}
+  #tooltip .tt-carries {{ color: #c8b560; font-size: 12px; }}
   #tooltip .tt-pos {{ color: #888; font-size: 11px; }}
 
   /* Tabs */
@@ -533,6 +547,7 @@ _HTML_TEMPLATE = """\
 <div id="tooltip">
   <div class="tt-entity"></div>
   <div class="tt-recipe"></div>
+  <div class="tt-carries"></div>
   <div class="tt-pos"></div>
 </div>
 
@@ -588,6 +603,379 @@ function fitToView() {{
   draw();
 }}
 
+// Direction helpers: dir 0=N, 4=E, 8=S, 12=W → angle in radians
+function dirAngle(d) {{ return (d / 4) * Math.PI * 0.5; }}
+// Direction to dx, dy unit vector
+function dirDx(d) {{ return d === 4 ? 1 : d === 12 ? -1 : 0; }}
+function dirDy(d) {{ return d === 8 ? 1 : d === 0 ? -1 : 0; }}
+
+function isBelt(name) {{
+  return name === 'transport-belt' || name === 'fast-transport-belt'
+    || name === 'express-transport-belt';
+}}
+function isInserter(name) {{
+  return name === 'inserter' || name === 'fast-inserter'
+    || name === 'long-handed-inserter';
+}}
+function isPipe(name) {{ return name === 'pipe' || name === 'pipe-to-ground'; }}
+
+// Build adjacency lookup for pipe connectivity
+const tileMap = {{}};
+for (const t of TILES) {{
+  for (let dx = 0; dx < t.w; dx++) {{
+    for (let dy = 0; dy < t.h; dy++) {{
+      const key = (t.x + dx) + ',' + (t.y + dy);
+      tileMap[key] = t;
+    }}
+  }}
+}}
+
+function pipeNeighbors(t) {{
+  const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
+  const result = [];
+  for (const [dx,dy] of dirs) {{
+    const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
+    if (nb && isPipe(nb.entity)) result.push({{dx, dy}});
+  }}
+  return result;
+}}
+
+function drawBelt(ctx, px, py, s, t) {{
+  const gap = scale >= 4 ? 1 : 0;
+  const w = s - gap;
+
+  // Base color — darker for the track
+  const baseColors = {{
+    'transport-belt': '#a89030',
+    'fast-transport-belt': '#b03030',
+    'express-transport-belt': '#3070b0',
+  }};
+  const chevColors = {{
+    'transport-belt': '#e0d070',
+    'fast-transport-belt': '#ff6060',
+    'express-transport-belt': '#70b0f0',
+  }};
+  const base = baseColors[t.entity] || '#a89030';
+  const chev = chevColors[t.entity] || '#e0d070';
+
+  // Belt track background
+  ctx.fillStyle = base;
+  ctx.fillRect(px, py, w, w);
+
+  // Conveyor lines / chevrons
+  if (scale >= 4) {{
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px, py, w, w);
+    ctx.clip();
+
+    const cx = px + w / 2;
+    const cy = py + w / 2;
+    const angle = dirAngle(t.dir || 0);
+
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+
+    // Draw 3 chevron arrows pointing in movement direction
+    ctx.strokeStyle = chev;
+    ctx.lineWidth = Math.max(1, s * 0.12);
+    ctx.lineCap = 'round';
+    const chevSize = w * 0.25;
+    for (let i = -1; i <= 1; i++) {{
+      const oy = i * w * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(-chevSize, oy + chevSize * 0.5);
+      ctx.lineTo(0, oy - chevSize * 0.5);
+      ctx.lineTo(chevSize, oy + chevSize * 0.5);
+      ctx.stroke();
+    }}
+
+    // Side rails
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = Math.max(1, s * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(-w / 2, -w / 2);
+    ctx.lineTo(-w / 2, w / 2);
+    ctx.moveTo(w / 2, -w / 2);
+    ctx.lineTo(w / 2, w / 2);
+    ctx.stroke();
+
+    ctx.restore();
+  }}
+}}
+
+function drawPipe(ctx, px, py, s, t) {{
+  const gap = scale >= 4 ? 1 : 0;
+  const w = s - gap;
+  const cx = px + w / 2;
+  const cy = py + w / 2;
+
+  // Tile background
+  ctx.fillStyle = '#1a2a3a';
+  ctx.fillRect(px, py, w, w);
+
+  const neighbors = pipeNeighbors(t);
+  const pipeWidth = Math.max(2, w * 0.4);
+
+  ctx.strokeStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
+  ctx.lineWidth = pipeWidth;
+  ctx.lineCap = 'round';
+
+  if (neighbors.length === 0) {{
+    // Isolated pipe — draw a dot
+    ctx.fillStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
+    ctx.beginPath();
+    ctx.arc(cx, cy, pipeWidth * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }} else {{
+    // Draw segments from center to each connected neighbor
+    for (const nb of neighbors) {{
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + nb.dx * w / 2, cy + nb.dy * w / 2);
+      ctx.stroke();
+    }}
+  }}
+
+  // Center joint circle
+  if (neighbors.length >= 2) {{
+    ctx.fillStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
+    ctx.beginPath();
+    ctx.arc(cx, cy, pipeWidth * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }}
+
+  // Pipe-to-ground: draw an inner dark circle to show it goes underground
+  if (t.entity === 'pipe-to-ground') {{
+    ctx.fillStyle = '#0a1520';
+    ctx.beginPath();
+    ctx.arc(cx, cy, pipeWidth * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+  }}
+
+  // Fluid tint — subtle colored center dot
+  if (scale >= 8) {{
+    ctx.fillStyle = 'rgba(100,180,255,0.3)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, pipeWidth * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  }}
+}}
+
+function drawInserter(ctx, px, py, s, t) {{
+  const gap = scale >= 4 ? 1 : 0;
+  const w = s - gap;
+  const cx = px + w / 2;
+  const cy = py + w / 2;
+
+  // Background
+  ctx.fillStyle = '#2a3a2a';
+  ctx.fillRect(px, py, w, w);
+
+  const colors = {{
+    'inserter': '#7ab050',
+    'fast-inserter': '#50a0e0',
+    'long-handed-inserter': '#e06060',
+  }};
+  const armColor = colors[t.entity] || '#7ab050';
+  const angle = dirAngle(t.dir || 0);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  // Base circle (pivot)
+  ctx.fillStyle = '#444';
+  ctx.beginPath();
+  ctx.arc(0, w * 0.2, w * 0.15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Arm line from base toward pickup direction
+  ctx.strokeStyle = armColor;
+  ctx.lineWidth = Math.max(1.5, w * 0.12);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, w * 0.2);
+  ctx.lineTo(0, -w * 0.35);
+  ctx.stroke();
+
+  // Grabber claw at the end
+  const clawY = -w * 0.35;
+  const clawW = w * 0.18;
+  ctx.beginPath();
+  ctx.moveTo(-clawW, clawY - clawW * 0.6);
+  ctx.lineTo(0, clawY);
+  ctx.lineTo(clawW, clawY - clawW * 0.6);
+  ctx.stroke();
+
+  // For long-handed, draw a tick mark to indicate reach
+  if (t.entity === 'long-handed-inserter' && scale >= 6) {{
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = Math.max(1, w * 0.06);
+    ctx.setLineDash([w * 0.06, w * 0.06]);
+    ctx.beginPath();
+    ctx.moveTo(0, -w * 0.35);
+    ctx.lineTo(0, -w * 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+
+  ctx.restore();
+}}
+
+function drawMachine(ctx, px, py, pw, ph, t) {{
+  const gap = scale >= 4 ? 1 : 0;
+  const w = pw - gap;
+  const h = ph - gap;
+  const cx = px + w / 2;
+  const cy = py + h / 2;
+
+  // Machine body with rounded corners (if large enough)
+  const r = scale >= 6 ? Math.min(scale * 0.3, 4) : 0;
+  ctx.fillStyle = t.color;
+  if (r > 0) {{
+    ctx.beginPath();
+    ctx.moveTo(px + r, py);
+    ctx.lineTo(px + w - r, py);
+    ctx.quadraticCurveTo(px + w, py, px + w, py + r);
+    ctx.lineTo(px + w, py + h - r);
+    ctx.quadraticCurveTo(px + w, py + h, px + w - r, py + h);
+    ctx.lineTo(px + r, py + h);
+    ctx.quadraticCurveTo(px, py + h, px, py + h - r);
+    ctx.lineTo(px, py + r);
+    ctx.quadraticCurveTo(px, py, px + r, py);
+    ctx.fill();
+  }} else {{
+    ctx.fillRect(px, py, w, h);
+  }}
+
+  // Inner panel / border
+  if (scale >= 6) {{
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    const inset = Math.max(2, w * 0.08);
+    ctx.strokeRect(px + inset, py + inset, w - inset * 2, h - inset * 2);
+  }}
+
+  // Icon based on machine type
+  if (scale >= 8) {{
+    ctx.save();
+    ctx.translate(cx, cy);
+    const iconSize = Math.min(w, h) * 0.3;
+
+    if (t.entity === 'chemical-plant') {{
+      // Flask icon
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      // Flask neck
+      ctx.moveTo(-iconSize * 0.15, -iconSize * 0.7);
+      ctx.lineTo(-iconSize * 0.15, -iconSize * 0.2);
+      ctx.lineTo(-iconSize * 0.5, iconSize * 0.5);
+      ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
+      ctx.lineTo(iconSize * 0.15, -iconSize * 0.2);
+      ctx.lineTo(iconSize * 0.15, -iconSize * 0.7);
+      ctx.stroke();
+      // Liquid level
+      ctx.fillStyle = 'rgba(100,200,255,0.25)';
+      ctx.beginPath();
+      ctx.moveTo(-iconSize * 0.35, iconSize * 0.2);
+      ctx.lineTo(-iconSize * 0.5, iconSize * 0.5);
+      ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
+      ctx.lineTo(iconSize * 0.35, iconSize * 0.2);
+      ctx.fill();
+    }} else if (t.entity === 'oil-refinery') {{
+      // Distillation tower icon — stacked rectangles
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      for (let i = 0; i < 3; i++) {{
+        const ty = -iconSize * 0.6 + i * iconSize * 0.45;
+        const tw = iconSize * (0.5 + i * 0.15);
+        ctx.fillRect(-tw / 2, ty, tw, iconSize * 0.35);
+        ctx.strokeRect(-tw / 2, ty, tw, iconSize * 0.35);
+      }}
+    }} else {{
+      // Gear icon for assembling machines
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+      const teeth = 6;
+      const outerR = iconSize * 0.7;
+      const innerR = iconSize * 0.45;
+      ctx.beginPath();
+      for (let i = 0; i < teeth; i++) {{
+        const a1 = (i / teeth) * Math.PI * 2;
+        const a2 = ((i + 0.35) / teeth) * Math.PI * 2;
+        const a3 = ((i + 0.5) / teeth) * Math.PI * 2;
+        const a4 = ((i + 0.85) / teeth) * Math.PI * 2;
+        if (i === 0) ctx.moveTo(Math.cos(a1) * outerR, Math.sin(a1) * outerR);
+        ctx.lineTo(Math.cos(a2) * outerR, Math.sin(a2) * outerR);
+        ctx.lineTo(Math.cos(a3) * innerR, Math.sin(a3) * innerR);
+        ctx.lineTo(Math.cos(a4) * innerR, Math.sin(a4) * innerR);
+        ctx.lineTo(Math.cos(((i + 1) / teeth) * Math.PI * 2) * outerR,
+                    Math.sin(((i + 1) / teeth) * Math.PI * 2) * outerR);
+      }}
+      ctx.closePath();
+      ctx.stroke();
+      // Inner hole
+      ctx.beginPath();
+      ctx.arc(0, 0, innerR * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }}
+    ctx.restore();
+  }}
+
+  // Recipe label
+  if (t.recipe && scale >= 14) {{
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.font = `bold ${{Math.max(8, scale * 0.5)}}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(t.recipe.substring(0, 8), cx, py + h - Math.max(2, h * 0.05));
+  }}
+}}
+
+function drawPole(ctx, px, py, s, t) {{
+  const gap = scale >= 4 ? 1 : 0;
+  const w = s - gap;
+  const cx = px + w / 2;
+  const cy = py + w / 2;
+
+  // Background
+  ctx.fillStyle = '#2a2510';
+  ctx.fillRect(px, py, w, w);
+
+  // Pole cross shape
+  const armW = Math.max(1.5, w * 0.2);
+  const armLen = w * 0.38;
+  ctx.fillStyle = '#c0a030';
+
+  // Vertical bar
+  ctx.fillRect(cx - armW / 2, cy - armLen, armW, armLen * 2);
+  // Horizontal bar
+  ctx.fillRect(cx - armLen, cy - armW / 2, armLen * 2, armW);
+
+  // Center knob
+  if (scale >= 8) {{
+    ctx.fillStyle = '#e0c040';
+    ctx.beginPath();
+    ctx.arc(cx, cy, armW * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }}
+
+  // Power range indicator (subtle ring)
+  if (scale >= 6) {{
+    ctx.strokeStyle = 'rgba(200,180,50,0.12)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.5 * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+}}
+
 function draw() {{
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -609,8 +997,15 @@ function draw() {{
     }}
   }}
 
-  // Draw tiles
+  // Draw tiles — machines first (larger, behind), then 1x1 entities on top
+  const machines = [];
+  const infra = [];
   for (const t of TILES) {{
+    if (t.w > 1 || t.h > 1) machines.push(t);
+    else infra.push(t);
+  }}
+
+  for (const t of machines) {{
     const px = offsetX + (t.x - MIN_X) * scale;
     const py = offsetY + (t.y - MIN_Y) * scale;
     const pw = t.w * scale;
@@ -618,148 +1013,40 @@ function draw() {{
 
     let alpha = 1.0;
     if (highlightRecipe) {{
-      if (t.recipe === highlightRecipe) {{
-        alpha = 1.0;
-      }} else if (t.recipe) {{
-        alpha = 0.15;
-      }} else {{
-        alpha = 0.3;
-      }}
+      alpha = t.recipe === highlightRecipe ? 1.0 : t.recipe ? 0.15 : 0.3;
     }}
-
     ctx.globalAlpha = alpha;
-    const gap = scale >= 4 ? 1 : 0;
-    const isBelt = t.entity.includes('belt') && !t.entity.includes('underground');
-    const isUGBelt = t.entity.includes('underground-belt');
-    const isPipe = t.entity === 'pipe';
-    const isPTG = t.entity === 'pipe-to-ground';
-    const isInserter = t.entity === 'inserter' || t.entity === 'fast-inserter' || t.entity === 'long-handed-inserter';
+    drawMachine(ctx, px, py, pw, ph, t);
+  }}
 
-    // Base fill
-    ctx.fillStyle = t.color;
-    ctx.fillRect(px, py, pw - gap, ph - gap);
+  for (const t of infra) {{
+    const px = offsetX + (t.x - MIN_X) * scale;
+    const py = offsetY + (t.y - MIN_Y) * scale;
+    const s = scale;
 
-    // Direction arrows for belts (always visible)
-    if ((isBelt || isUGBelt) && scale >= 4) {{
-      const cx = px + pw / 2;
-      const cy = py + ph / 2;
-      const sz = Math.max(2, scale * 0.35);
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.beginPath();
-      // dir: 0=N, 4=E, 8=S, 12=W — draw arrow pointing in flow direction
-      if (t.dir === 0) {{ // North (up)
-        ctx.moveTo(cx, cy - sz); ctx.lineTo(cx - sz, cy + sz * 0.6); ctx.lineTo(cx + sz, cy + sz * 0.6);
-      }} else if (t.dir === 4) {{ // East (right)
-        ctx.moveTo(cx + sz, cy); ctx.lineTo(cx - sz * 0.6, cy - sz); ctx.lineTo(cx - sz * 0.6, cy + sz);
-      }} else if (t.dir === 8) {{ // South (down)
-        ctx.moveTo(cx, cy + sz); ctx.lineTo(cx - sz, cy - sz * 0.6); ctx.lineTo(cx + sz, cy - sz * 0.6);
-      }} else if (t.dir === 12) {{ // West (left)
-        ctx.moveTo(cx - sz, cy); ctx.lineTo(cx + sz * 0.6, cy - sz); ctx.lineTo(cx + sz * 0.6, cy + sz);
-      }}
-      ctx.closePath();
-      ctx.fill();
+    let alpha = 1.0;
+    if (highlightRecipe) {{
+      alpha = 0.3;
     }}
+    ctx.globalAlpha = alpha;
 
-    // Underground belt: draw dashed outline
-    if (isUGBelt && scale >= 4) {{
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
-      ctx.strokeRect(px + 1, py + 1, pw - gap - 2, ph - gap - 2);
-      ctx.setLineDash([]);
-    }}
-
-    // Inserter: draw pickup/drop indicator
-    if (isInserter && scale >= 4) {{
-      const cx = px + pw / 2;
-      const cy = py + ph / 2;
-      const sz = Math.max(2, scale * 0.3);
-      // Draw a line from pickup to drop side
-      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-      ctx.lineWidth = Math.max(1, scale * 0.08);
-      ctx.beginPath();
-      if (t.dir === 0) {{ ctx.moveTo(cx, cy + sz); ctx.lineTo(cx, cy - sz); }}       // picks S, drops N
-      else if (t.dir === 4) {{ ctx.moveTo(cx - sz, cy); ctx.lineTo(cx + sz, cy); }}   // picks W, drops E
-      else if (t.dir === 8) {{ ctx.moveTo(cx, cy - sz); ctx.lineTo(cx, cy + sz); }}   // picks N, drops S
-      else if (t.dir === 12) {{ ctx.moveTo(cx + sz, cy); ctx.lineTo(cx - sz, cy); }}  // picks E, drops W
-      ctx.stroke();
-      // Small dot at drop end
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.beginPath();
-      if (t.dir === 0) ctx.arc(cx, cy - sz, Math.max(1, scale * 0.06), 0, Math.PI * 2);
-      else if (t.dir === 4) ctx.arc(cx + sz, cy, Math.max(1, scale * 0.06), 0, Math.PI * 2);
-      else if (t.dir === 8) ctx.arc(cx, cy + sz, Math.max(1, scale * 0.06), 0, Math.PI * 2);
-      else if (t.dir === 12) ctx.arc(cx - sz, cy, Math.max(1, scale * 0.06), 0, Math.PI * 2);
-      ctx.fill();
-    }}
-
-    // Pipe: draw circle to distinguish from belts
-    if (isPipe && scale >= 6) {{
-      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-      ctx.lineWidth = Math.max(1, scale * 0.06);
-      const r = (pw - gap) * 0.35;
-      ctx.beginPath();
-      ctx.arc(px + pw / 2, py + ph / 2, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }}
-
-    // Pipe-to-ground: draw circle with dot
-    if (isPTG && scale >= 6) {{
-      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-      ctx.lineWidth = Math.max(1, scale * 0.06);
-      const r = (pw - gap) * 0.3;
-      ctx.beginPath();
-      ctx.arc(px + pw / 2, py + ph / 2, r, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.beginPath();
-      ctx.arc(px + pw / 2, py + ph / 2, r * 0.3, 0, Math.PI * 2);
-      ctx.fill();
-    }}
-
-    // Draw recipe label on machines when zoomed in
-    if (t.recipe && scale >= 10) {{
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.font = `bold ${{Math.max(8, scale * 0.55)}}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      // Show more of the name at higher zoom
-      const maxChars = scale >= 16 ? 14 : (scale >= 12 ? 10 : 7);
-      const label = t.recipe.length > maxChars ? t.recipe.substring(0, maxChars - 1) + '..' : t.recipe;
-      ctx.fillText(label, px + pw / 2, py + ph / 2);
+    if (isBelt(t.entity)) {{
+      drawBelt(ctx, px, py, s, t);
+    }} else if (isPipe(t.entity)) {{
+      drawPipe(ctx, px, py, s, t);
+    }} else if (isInserter(t.entity)) {{
+      drawInserter(ctx, px, py, s, t);
+    }} else if (t.entity === 'medium-electric-pole') {{
+      drawPole(ctx, px, py, s, t);
+    }} else {{
+      // Fallback: colored rect
+      const gap = scale >= 4 ? 1 : 0;
+      ctx.fillStyle = t.color;
+      ctx.fillRect(px, py, s - gap, s - gap);
     }}
   }}
+
   ctx.globalAlpha = 1.0;
-
-  // Draw pipe connections (lines between adjacent pipes)
-  if (scale >= 6) {{
-    const pipeSet = new Set();
-    for (const t of TILES) {{
-      if (t.entity === 'pipe' || t.entity === 'pipe-to-ground') {{
-        pipeSet.add(`${{t.x}},${{t.y}}`);
-      }}
-    }}
-    ctx.strokeStyle = 'rgba(74, 122, 181, 0.4)';
-    ctx.lineWidth = Math.max(1, scale * 0.15);
-    for (const t of TILES) {{
-      if (t.entity !== 'pipe' && t.entity !== 'pipe-to-ground') continue;
-      const px = offsetX + (t.x - MIN_X + 0.5) * scale;
-      const py = offsetY + (t.y - MIN_Y + 0.5) * scale;
-      // Check right and down neighbors only (to avoid duplicate lines)
-      if (pipeSet.has(`${{t.x + 1}},${{t.y}}`)) {{
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(px + scale, py);
-        ctx.stroke();
-      }}
-      if (pipeSet.has(`${{t.x}},${{t.y + 1}}`)) {{
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(px, py + scale);
-        ctx.stroke();
-      }}
-    }}
-  }}
 }}
 
 // --- Pan & zoom ---
@@ -812,6 +1099,7 @@ window.addEventListener('mousemove', (e) => {{
     tooltip.style.top = (e.clientY + 12) + 'px';
     tooltip.querySelector('.tt-entity').textContent = found.entity;
     tooltip.querySelector('.tt-recipe').textContent = found.recipe || '';
+    tooltip.querySelector('.tt-carries').textContent = found.carries ? '\u2192 ' + found.carries : '';
     tooltip.querySelector('.tt-pos').textContent = `(${{tileX}}, ${{tileY}})`;
   }} else {{
     tooltip.style.display = 'none';
