@@ -8,9 +8,9 @@ from ..layout.poles import place_poles
 from ..models import LayoutResult, PlacedEntity, SolverResult
 from ..validate import ValidationError, validate
 from .graph import FlowEdge, ProductionGraph, build_production_graph
-from .inserters import place_inserters
+from .inserters import assign_inserter_positions, build_inserter_entities
 from .placer import machine_size, place_machines
-from .router import route_connections
+from .router import _machine_tiles, route_connections
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +93,31 @@ def _attempt_layout(
     # 1. Place machines
     positions = place_machines(graph, spacing=spacing)
 
-    # 2. Place machine entities
+    # 2. Build initial occupied set from machine footprints
+    occupied: set[tuple[int, int]] = set()
+    for node in graph.nodes:
+        x, y = positions[node.id]
+        size = machine_size(node.spec.entity)
+        occupied |= _machine_tiles(x, y, size)
+
+    # 3. Pre-assign inserter positions (reserves border tiles)
+    assignments = assign_inserter_positions(graph, positions, occupied)
+
+    # 4. Build edge→belt_tile mapping for the router
+    edge_targets: dict[int, tuple[int, int]] = {}
+    for assignment in assignments:
+        # Find the edge index in graph.edges
+        for i, edge in enumerate(graph.edges):
+            if edge is assignment.edge:
+                # Map to the belt tile that the route should target
+                if assignment.edge.to_node == assignment.node_id:
+                    # This is an input inserter — route goal is the belt tile
+                    edge_targets[i] = assignment.belt_tile
+                # For output inserters, the route starts from this belt tile
+                # (handled by _edge_endpoints using from_node's belt tiles)
+                break
+
+    # 5. Place machine entities
     entities: list[PlacedEntity] = []
     for node in graph.nodes:
         x, y = positions[node.id]
@@ -106,14 +130,14 @@ def _attempt_layout(
             )
         )
 
-    # 3. Route connections (belts + pipes)
-    routing = route_connections(graph, positions)
+    # 6. Route connections (belts + pipes) to assigned belt tiles
+    #    Pass reserved inserter tiles so the router avoids them
+    reserved = {a.border_tile for a in assignments}
+    routing = route_connections(graph, positions, edge_targets=edge_targets, reserved_tiles=reserved)
     entities.extend(routing.entities)
 
-    # 4. Place inserters
-    routed_tiles = {(e.x, e.y) for e in routing.entities}
-    inserter_entities = place_inserters(graph, positions, routed_tiles)
-    entities.extend(inserter_entities)
+    # 7. Place inserters from pre-assignments
+    entities.extend(build_inserter_entities(assignments))
 
     # 5. Collect occupied tiles for pole placement
     all_occupied: set[tuple[int, int]] = set()
