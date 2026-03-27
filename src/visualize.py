@@ -609,8 +609,14 @@ function dirAngle(d) {{ return (d / 4) * Math.PI * 0.5; }}
 function dirDx(d) {{ return d === 4 ? 1 : d === 12 ? -1 : 0; }}
 function dirDy(d) {{ return d === 8 ? 1 : d === 0 ? -1 : 0; }}
 
-function isBelt(name) {{ return name === 'transport-belt' || name === 'fast-transport-belt' || name === 'express-transport-belt'; }}
-function isInserter(name) {{ return name === 'inserter' || name === 'fast-inserter' || name === 'long-handed-inserter'; }}
+function isBelt(name) {{
+  return name === 'transport-belt' || name === 'fast-transport-belt'
+    || name === 'express-transport-belt';
+}}
+function isInserter(name) {{
+  return name === 'inserter' || name === 'fast-inserter'
+    || name === 'long-handed-inserter';
+}}
 function isPipe(name) {{ return name === 'pipe' || name === 'pipe-to-ground'; }}
 
 // Build adjacency lookup for pipe connectivity
