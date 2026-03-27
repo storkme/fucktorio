@@ -15,7 +15,7 @@ from .router import _machine_tiles, route_connections
 log = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
-_DEFAULT_SPACING = 5
+_DEFAULT_SPACING = 4
 _SPACING_INCREMENT = 2
 
 _MACHINE_ENTITIES = {
