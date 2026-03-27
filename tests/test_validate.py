@@ -3,8 +3,10 @@
 from src.layout import layout
 from src.models import LayoutResult, PlacedEntity
 from src.solver import solve
+from src.models import EntityDirection
 from src.validate import (
     ValidationError,
+    check_belt_connectivity,
     check_fluid_port_connectivity,
     check_inserter_chains,
     check_pipe_isolation,
@@ -123,6 +125,98 @@ class TestInserterChains:
         lr = layout(result)
         issues = check_inserter_chains(lr)
         assert len(issues) == 0, f"Unexpected issues: {issues}"
+
+
+class TestBeltConnectivity:
+    """Tests for belt-to-inserter-to-machine connectivity."""
+
+    def test_inserter_with_belt_ok(self):
+        """Machine with inserter adjacent to a belt should pass."""
+        lr = LayoutResult(
+            entities=[
+                # 3x3 machine at (0,0)
+                PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
+                # Inserter on top border (center top = x=1, y=-1)
+                PlacedEntity(
+                    name="inserter", x=1, y=-1,
+                    direction=EntityDirection.SOUTH,
+                ),
+                # Belt above the inserter
+                PlacedEntity(
+                    name="transport-belt", x=1, y=-2,
+                    direction=EntityDirection.EAST, carries="iron-plate",
+                ),
+                # Extend belt so it's not isolated
+                PlacedEntity(
+                    name="transport-belt", x=2, y=-2,
+                    direction=EntityDirection.EAST, carries="iron-plate",
+                ),
+            ]
+        )
+        issues = check_belt_connectivity(lr)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0
+
+    def test_inserter_without_belt_error(self):
+        """Machine with inserter but no adjacent belt should error."""
+        lr = LayoutResult(
+            entities=[
+                PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
+                # Inserter on top border but no belt anywhere
+                PlacedEntity(
+                    name="inserter", x=1, y=-1,
+                    direction=EntityDirection.SOUTH,
+                ),
+            ]
+        )
+        issues = check_belt_connectivity(lr)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert errors[0].category == "belt-connectivity"
+
+    def test_isolated_single_belt_error(self):
+        """Inserter touching a single isolated belt tile should error."""
+        lr = LayoutResult(
+            entities=[
+                PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
+                PlacedEntity(
+                    name="inserter", x=1, y=-1,
+                    direction=EntityDirection.SOUTH,
+                ),
+                # Single belt tile, not connected to anything
+                PlacedEntity(
+                    name="transport-belt", x=1, y=-2,
+                    direction=EntityDirection.EAST, carries="iron-plate",
+                ),
+            ]
+        )
+        issues = check_belt_connectivity(lr)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert "isolated" in errors[0].message
+
+    def test_no_belts_with_machines_error(self):
+        """Machines needing belts but none in layout should error."""
+        lr = LayoutResult(
+            entities=[
+                PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
+            ]
+        )
+        issues = check_belt_connectivity(lr)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+
+    def test_valid_layout_passes(self):
+        """A real valid layout should pass belt connectivity."""
+        result = solve(
+            "iron-gear-wheel",
+            target_rate=5,
+            available_inputs={"iron-plate"},
+        )
+        lr = layout(result)
+        issues = check_belt_connectivity(lr, result)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0, f"Unexpected errors: {errors}"
 
 
 class TestPowerCoverage:
