@@ -207,7 +207,11 @@ def route_connections(
     reserved_tiles: set[tuple[int, int]] | None = None,
     edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
 ) -> RoutingResult:
-    """Route all flow edges as belts/pipes using BFS pathfinding.
+    """Route all flow edges as belts/pipes using A* pathfinding.
+
+    External edges sharing the same item are grouped and routed consecutively.
+    After the first edge in a group is routed, subsequent edges branch from
+    the existing network rather than routing independently from the boundary.
 
     Args:
         edge_targets: Mapping from edge index to a specific belt tile target.
@@ -232,7 +236,7 @@ def route_connections(
         size = machine_size(node.spec.entity)
         occupied |= _machine_tiles(x, y, size)
 
-    # Compute max grid extent for BFS bounds
+    # Compute max grid extent for A* bounds
     if positions:
         max_x = max(x for x, y in positions.values()) + 10
         max_y = max(y for x, y in positions.values()) + 10
@@ -240,34 +244,92 @@ def route_connections(
     else:
         max_extent = 50
 
-    # Sort edges: route shorter expected distances first
-    def _edge_sort_key(edge: FlowEdge) -> float:
-        if edge.from_node is None or edge.to_node is None:
-            return 0  # external edges first
-        fx, fy = positions[edge.from_node]
-        tx, ty = positions[edge.to_node]
+    # Track belt networks per item for network-aware routing
+    item_networks: dict[str, set[tuple[int, int]]] = {}
+
+    # --- Group edges by type ---
+    # Internal edges (machine → machine): route first
+    internal_indices = []
+    # External input groups: keyed by item
+    ext_input_groups: dict[str, list[int]] = {}
+    # External output groups: keyed by item
+    ext_output_groups: dict[str, list[int]] = {}
+
+    for i, edge in enumerate(graph.edges):
+        if edge.from_node is not None and edge.to_node is not None:
+            internal_indices.append(i)
+        elif edge.from_node is None:
+            ext_input_groups.setdefault(edge.item, []).append(i)
+        else:  # to_node is None
+            ext_output_groups.setdefault(edge.item, []).append(i)
+
+    # Sort internal edges by distance (shorter first)
+    def _distance_key(idx: int) -> float:
+        e = graph.edges[idx]
+        if e.from_node is None or e.to_node is None:
+            return 0
+        fx, fy = positions[e.from_node]
+        tx, ty = positions[e.to_node]
         return abs(fx - tx) + abs(fy - ty)
 
-    sorted_edge_indices = sorted(range(len(graph.edges)), key=lambda i: _edge_sort_key(graph.edges[i]))
+    internal_indices.sort(key=_distance_key)
 
-    for edge_idx in sorted_edge_indices:
+    # Build the routing order: internal edges, then input groups, then output groups
+    routing_order: list[tuple[int, bool]] = []  # (edge_idx, is_network_continuation)
+    for idx in internal_indices:
+        routing_order.append((idx, False))
+    for _item, indices in ext_input_groups.items():
+        for rank, idx in enumerate(indices):
+            routing_order.append((idx, rank > 0))
+    for _item, indices in ext_output_groups.items():
+        for rank, idx in enumerate(indices):
+            routing_order.append((idx, rank > 0))
+
+    # Compute total rate per external item group (for belt tier selection)
+    item_total_rate: dict[str, float] = {}
+    for item, indices in ext_input_groups.items():
+        item_total_rate[item] = sum(graph.edges[i].rate for i in indices)
+    for item, indices in ext_output_groups.items():
+        item_total_rate.setdefault(item, 0)
+        item_total_rate[item] += sum(graph.edges[i].rate for i in indices)
+
+    # --- Route each edge ---
+    for edge_idx, is_continuation in routing_order:
         edge = graph.edges[edge_idx]
-
-        # Skip external output edges — no useful destination to route to.
-        # The output inserter still drops items onto the belt tile; the player
-        # extends the belt from there.
-        if edge.to_node is None:
-            continue
 
         # Temporarily unblock tiles reserved for this specific edge
         exclusions = edge_exclusions.get(edge_idx, set())
         if exclusions:
             occupied -= exclusions
 
-        # Use pre-assigned start/target if available, otherwise compute from endpoints
+        # Determine start and goal tiles
         has_start = edge_idx in edge_starts
         has_target = edge_idx in edge_targets
-        if has_start or has_target:
+        network = item_networks.get(edge.item, set())
+
+        if is_continuation and network:
+            # Network-aware routing: branch from existing network
+            if edge.from_node is None:
+                # External input continuation: start from existing network,
+                # route to this machine's belt tile
+                start_tiles = set(network)
+                if has_target:
+                    goal_tiles = {edge_targets[edge_idx]}
+                else:
+                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+            else:
+                # External output continuation: start from this machine's
+                # belt tile, route to existing network
+                if has_start:
+                    start_tiles = {edge_starts[edge_idx]}
+                else:
+                    start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+                goal_tiles = set(network)
+
+            # Temporarily remove existing network from obstacles so A* can
+            # traverse it to find connection points
+            occupied -= network
+        elif has_start or has_target:
             if has_start and has_target:
                 start_tiles = {edge_starts[edge_idx]}
                 goal_tiles = {edge_targets[edge_idx]}
@@ -281,11 +343,13 @@ def route_connections(
             start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
         if not start_tiles or not goal_tiles:
+            if is_continuation and network:
+                occupied |= network
             if exclusions:
                 occupied |= exclusions
             continue
 
-        # Try BFS from each start tile until one works
+        # Try A* from each start tile until one works
         best_path = None
         for start in start_tiles:
             if start in occupied:
@@ -294,7 +358,11 @@ def route_connections(
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
-        # Re-block the exclusion tiles (they stay unblocked only if this route used them)
+        # Restore network tiles to obstacles
+        if is_continuation and network:
+            occupied |= network
+
+        # Re-block the exclusion tiles
         if exclusions:
             occupied |= exclusions
 
@@ -302,16 +370,24 @@ def route_connections(
             failed_edges.append(edge)
             continue
 
-        # Choose belt tier based on rate
-        belt_name = "pipe" if edge.is_fluid else _belt_entity_for_rate(edge.rate)
+        # Choose belt tier: use total group rate for external edges
+        if edge.is_fluid:
+            belt_name = "pipe"
+        elif edge.item in item_total_rate:
+            belt_name = _belt_entity_for_rate(item_total_rate[edge.item])
+        else:
+            belt_name = _belt_entity_for_rate(edge.rate)
 
-        # Place entities along path
-        path_entities = _path_to_entities(best_path, belt_name, edge.item, edge.is_fluid)
-        entities.extend(path_entities)
+        # Place entities along path, skipping tiles already on the network
+        new_tiles = [t for t in best_path if t not in network]
+        if new_tiles:
+            path_entities = _path_to_entities(new_tiles, belt_name, edge.item, edge.is_fluid)
+            entities.extend(path_entities)
 
-        # Mark tiles as occupied
-        for x, y in best_path:
-            occupied.add((x, y))
+        # Update network and occupied tiles
+        path_set = set(best_path)
+        item_networks.setdefault(edge.item, set()).update(path_set)
+        occupied |= path_set
 
     return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
 
