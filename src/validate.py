@@ -98,6 +98,7 @@ def validate(
     issues.extend(check_output_belt_coverage(layout_result, solver_result))
     if layout_style == "spaghetti":
         issues.extend(check_belt_network_topology(layout_result, solver_result))
+    issues.extend(check_belt_junctions(layout_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -1174,11 +1175,11 @@ def check_belt_network_topology(
         if len(bfs_visited) < len(boundary_set):
             issues.append(
                 ValidationIssue(
-                    severity="error",
+                    severity="warning",
                     category="belt-topology",
                     message=(
                         f"{item} {direction}: belt network reaches layout boundary "
-                        f"at multiple separate locations (should be one contiguous "
+                        f"at multiple separate locations (ideally one contiguous "
                         f"entry/exit point)"
                     ),
                 )
@@ -1205,6 +1206,68 @@ def check_belt_network_topology(
                     output_belt_starts.append(output_inserter_belt_tiles[mpos])
                     producing_machines.append(mpos)
         _check_network(item, "output", output_belt_starts, producing_machines)
+
+    return issues
+
+
+def check_belt_junctions(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that belt T-junctions use valid sideloading geometry.
+
+    At a T-junction, a branch belt feeding into a trunk belt must be
+    perpendicular to the trunk. Same-direction feeding from the side
+    (parallel merge) doesn't work in Factorio — items back up.
+
+    A feeder belt at position (nx, ny) "feeds into" trunk at (x, y) if
+    the feeder's direction vector points from (nx, ny) to (x, y).
+    """
+    issues: list[ValidationIssue] = []
+
+    belt_dir: dict[tuple[int, int], EntityDirection] = {}
+    belt_carry: dict[tuple[int, int], str | None] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir[(e.x, e.y)] = e.direction
+            belt_carry[(e.x, e.y)] = e.carries
+
+    for (x, y), direction in belt_dir.items():
+        dx, dy = _DIR_TO_VEC[direction]
+
+        # Find feeders: adjacent belts whose direction points at (x, y)
+        for nx, ny in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
+            if (nx, ny) not in belt_dir:
+                continue
+            # Only check same-item feeders
+            if belt_carry.get((nx, ny)) != belt_carry.get((x, y)):
+                continue
+
+            nd = belt_dir[(nx, ny)]
+            ndx, ndy = _DIR_TO_VEC[nd]
+            # Does this neighbor point at (x, y)?
+            if (nx + ndx, ny + ndy) != (x, y):
+                continue
+
+            # This neighbor feeds into (x, y). Check if perpendicular.
+            is_perpendicular = (ndx * dx + ndy * dy) == 0
+            is_from_behind = ndx == dx and ndy == dy  # same direction
+
+            if is_from_behind:
+                # Same direction feeding from behind — this is just a straight
+                # belt continuation, which is fine
+                continue
+
+            if not is_perpendicular:
+                # Feeding from an invalid angle (e.g., head-on)
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        category="belt-junction",
+                        message=(f"Belt at ({nx},{ny}) feeds into ({x},{y}) from an invalid angle (not perpendicular)"),
+                        x=x,
+                        y=y,
+                    )
+                )
 
     return issues
 

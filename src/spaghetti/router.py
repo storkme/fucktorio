@@ -35,6 +35,14 @@ _DIR_MAP = {
     (-1, 0): EntityDirection.WEST,
 }
 
+# Inverse: EntityDirection → (dx, dy)
+_DIR_VEC = {
+    EntityDirection.NORTH: (0, -1),
+    EntityDirection.EAST: (1, 0),
+    EntityDirection.SOUTH: (0, 1),
+    EntityDirection.WEST: (-1, 0),
+}
+
 
 def _belt_entity_for_rate(rate: float) -> str:
     """Pick the cheapest belt tier that can handle the given rate."""
@@ -199,6 +207,30 @@ def _path_to_entities(
     return entities
 
 
+def _perpendicular_approach_tiles(
+    network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+    occupied: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    """Find unoccupied tiles perpendicular to existing network belt directions.
+
+    These are valid sideload connection points — approaching a belt from
+    the side rather than head-on or from behind.
+    """
+    approach = set()
+    for nx, ny in network:
+        d = belt_dir_map.get((nx, ny))
+        if d is None:
+            continue
+        dx, dy = _DIR_VEC[d]
+        # Perpendicular directions: rotate 90° both ways
+        for pdx, pdy in [(-dy, dx), (dy, -dx)]:
+            tile = (nx + pdx, ny + pdy)
+            if tile not in occupied and tile not in network:
+                approach.add(tile)
+    return approach
+
+
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
@@ -246,6 +278,8 @@ def route_connections(
 
     # Track belt networks per item for network-aware routing
     item_networks: dict[str, set[tuple[int, int]]] = {}
+    # Track belt directions for junction-aware routing
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
 
     # --- Group edges by type ---
     # Internal edges (machine → machine): route first
@@ -308,27 +342,34 @@ def route_connections(
         network = item_networks.get(edge.item, set())
 
         if is_continuation and network:
-            # Network-aware routing: branch from existing network
+            # Network-aware routing: branch to/from perpendicular approach
+            # tiles adjacent to the existing network (valid sideload points)
+            approach = _perpendicular_approach_tiles(network, belt_dir_map, occupied)
+            # Fall back to raw network tiles if no valid approach exists
+            junction_tiles = approach if approach else set(network)
+            use_approach = bool(approach)
+
             if edge.from_node is None:
-                # External input continuation: start from existing network,
-                # route to this machine's belt tile
-                start_tiles = set(network)
+                # External input continuation: start from approach tiles
+                # next to existing network, route to this machine's belt tile
+                start_tiles = junction_tiles
                 if has_target:
                     goal_tiles = {edge_targets[edge_idx]}
                 else:
                     _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
             else:
                 # External output continuation: start from this machine's
-                # belt tile, route to existing network
+                # belt tile, route to approach tiles next to existing network
                 if has_start:
                     start_tiles = {edge_starts[edge_idx]}
                 else:
                     start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
-                goal_tiles = set(network)
+                goal_tiles = junction_tiles
 
-            # Temporarily remove existing network from obstacles so A* can
-            # traverse it to find connection points
-            occupied -= network
+            # Only remove network from obstacles when falling back to raw
+            # network tiles (approach tiles are already outside the network)
+            if not use_approach:
+                occupied -= network
         elif has_start or has_target:
             if has_start and has_target:
                 start_tiles = {edge_starts[edge_idx]}
@@ -342,8 +383,11 @@ def route_connections(
         else:
             start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
+        # Track whether we removed network from obstacles (for restore later)
+        removed_network = is_continuation and network and not use_approach if is_continuation and network else False
+
         if not start_tiles or not goal_tiles:
-            if is_continuation and network:
+            if removed_network:
                 occupied |= network
             if exclusions:
                 occupied |= exclusions
@@ -359,7 +403,7 @@ def route_connections(
                 best_path = path
 
         # Restore network tiles to obstacles
-        if is_continuation and network:
+        if removed_network:
             occupied |= network
 
         # Re-block the exclusion tiles
@@ -383,6 +427,9 @@ def route_connections(
         if new_tiles:
             path_entities = _path_to_entities(new_tiles, belt_name, edge.item, edge.is_fluid)
             entities.extend(path_entities)
+            # Track belt directions for junction-aware routing
+            for pe in path_entities:
+                belt_dir_map[(pe.x, pe.y)] = pe.direction
 
         # Update network and occupied tiles
         path_set = set(best_path)
