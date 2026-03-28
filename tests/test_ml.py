@@ -347,3 +347,40 @@ class TestMLVisualization:
         graph = build_production_graph(result)
         bp = build_blueprint(lr, label="ml: 5/s advanced-circuit")
         viz(bp, "ml-advanced-circuit-5s", solver_result=result, production_graph=graph)
+
+
+class TestMLSweepVisualization:
+    """Gallery sweep: generate layouts with varied weight profiles (only with --viz)."""
+
+    _SWEEP_PROFILES = [
+        {"edge": 0.5, "compact": 0.05},
+        {"edge": 1.0, "compact": 0.1},
+        {"edge": 2.0, "compact": 0.1},
+        {"edge": 1.0, "compact": 0.5},
+        {"edge": 3.0, "compact": 0.3},
+        {"edge": 0.5, "compact": 0.5},
+    ]
+
+    def test_viz_sweep_electronic_circuit(self, viz):
+        """Generate sweep gallery for electronic-circuit with varied weights."""
+        from src.ml.loss import DEFAULT_WEIGHTS
+
+        result = solve(
+            "electronic-circuit",
+            target_rate=10,
+            available_inputs={"iron-plate", "copper-plate"},
+        )
+        graph = build_production_graph(result)
+
+        for i, profile in enumerate(self._SWEEP_PROFILES):
+            weights = {**DEFAULT_WEIGHTS, **profile}
+            lr = ml_layout(result, weights=weights)
+            tag = f"e{profile['edge']:.1f}_c{profile['compact']:.2f}"
+            label = f"ml-sweep electronic-circuit [{tag}]"
+            bp = build_blueprint(lr, label=label)
+            viz(
+                bp,
+                f"ml-sweep-electronic-circuit-{i:02d}-{tag}",
+                solver_result=result,
+                production_graph=graph,
+            )
