@@ -631,6 +631,127 @@ class TestBeltFlowReachability:
         assert len(output_errors) == 1
 
 
+class TestLaneThroughput:
+    """Tests for per-lane belt throughput simulation."""
+
+    def _make_solver_result(self, rate=2.5):
+        return SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=rate)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=rate * 2)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=rate)],
+        )
+
+    def test_single_inserter_within_capacity(self):
+        """One inserter at 2.5/s on yellow belt (7.5/s per lane) — should pass."""
+        from src.validate import check_lane_throughput
+
+        sr = self._make_solver_result(rate=2.5)
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=3, y=0, recipe="iron-gear-wheel"),
+            # Output inserter on the left side of an east-facing belt
+            PlacedEntity(name="inserter", x=4, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=4, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            PlacedEntity(name="transport-belt", x=5, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        assert not issues
+
+    def test_same_side_inserters_overload(self):
+        """Two inserters on the same side, combined rate > per-lane capacity."""
+        from src.validate import check_lane_throughput
+
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=2,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=5.0)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=10.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=10.0)],
+        )
+        # Two machines both dropping onto the same belt from the same side (north)
+        # Each at 5.0/s → 10.0/s on one lane, exceeding 7.5/s yellow belt lane cap
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=0, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="assembling-machine-3", x=7, y=0, recipe="iron-gear-wheel"),
+            # Both inserters on the north side of the east-facing belt
+            PlacedEntity(name="inserter", x=1, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=1, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            PlacedEntity(name="inserter", x=8, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=8, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Connect them with east-facing belts
+            *[
+                PlacedEntity(name="transport-belt", x=x, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel")
+                for x in range(2, 8)
+            ],
+            PlacedEntity(name="transport-belt", x=9, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        lane_errors = [i for i in issues if "lane" in i.category]
+        assert len(lane_errors) > 0, "Expected lane overload errors"
+
+    def test_opposite_side_inserters_ok(self):
+        """Two inserters on opposite sides — rate splits across lanes."""
+        from src.validate import check_lane_throughput
+
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=2,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=5.0)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=10.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=10.0)],
+        )
+        # Two inserters on opposite sides of the belt
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=0, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="assembling-machine-3", x=7, y=6, recipe="iron-gear-wheel"),
+            # First inserter from north (puts on right/far lane)
+            PlacedEntity(name="inserter", x=1, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=1, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Second inserter from south (puts on left/far lane)
+            PlacedEntity(name="inserter", x=8, y=5, direction=EntityDirection.NORTH),
+            PlacedEntity(name="transport-belt", x=8, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Connect with east-facing belts
+            *[
+                PlacedEntity(name="transport-belt", x=x, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel")
+                for x in range(2, 8)
+            ],
+            PlacedEntity(name="transport-belt", x=9, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        lane_errors = [i for i in issues if "lane" in i.category]
+        assert not lane_errors, f"Unexpected lane errors: {[e.message for e in lane_errors]}"
+
+    def test_no_solver_result_skips(self):
+        """Without solver_result, returns empty."""
+        from src.validate import check_lane_throughput
+
+        lr = LayoutResult(entities=[])
+        issues = check_lane_throughput(lr, None)
+        assert not issues
+
+
 class TestIntegration:
     """Integration tests: full validation on real layouts."""
 
