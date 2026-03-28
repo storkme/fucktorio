@@ -640,6 +640,24 @@ function pipeNeighbors(t) {{
   return result;
 }}
 
+function beltTurnInfo(t) {{
+  // Check if the upstream belt (behind this belt) has a different direction.
+  // Returns null for straight belts, or 'cw'/'ccw' for turn direction.
+  const d = t.dir || 0;
+  // Upstream tile: opposite of our direction
+  const behindX = t.x - dirDx(d);
+  const behindY = t.y - dirDy(d);
+  const behind = tileMap[behindX + ',' + behindY];
+  if (!behind || !isBelt(behind.entity)) return null;
+  const bd = behind.dir || 0;
+  if (bd === d) return null; // straight continuation
+
+  // Cross product of (behind dir) × (our dir) determines turn sense
+  const cross = dirDx(bd) * dirDy(d) - dirDy(bd) * dirDx(d);
+  if (cross === 0) return null; // 180° reversal, not a turn
+  return {{ fromDir: bd, turn: cross > 0 ? 'cw' : 'ccw' }};
+}}
+
 function drawBelt(ctx, px, py, s, t) {{
   const gap = scale >= 4 ? 1 : 0;
   const w = s - gap;
@@ -671,36 +689,94 @@ function drawBelt(ctx, px, py, s, t) {{
 
     const cx = px + w / 2;
     const cy = py + w / 2;
-    const angle = dirAngle(t.dir || 0);
+    const turn = beltTurnInfo(t);
 
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
+    if (turn) {{
+      // Draw curved turn: arc from incoming edge to outgoing edge
+      const angle = dirAngle(t.dir || 0);
+      // The arc center is at the corner where incoming and outgoing edges meet.
+      // In un-rotated space (output = north/up), incoming is from left (ccw) or right (cw).
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
 
-    // Draw 3 chevron arrows pointing in movement direction
-    ctx.strokeStyle = chev;
-    ctx.lineWidth = Math.max(1, s * 0.12);
-    ctx.lineCap = 'round';
-    const chevSize = w * 0.25;
-    for (let i = -1; i <= 1; i++) {{
-      const oy = i * w * 0.3;
+      // Arc corner: for ccw turn, corner is top-left (-w/2, -w/2)
+      //             for cw turn, corner is top-right (w/2, -w/2)
+      const sign = turn.turn === 'cw' ? 1 : -1;
+      const cornerX = sign * w / 2;
+      const cornerY = -w / 2;
+      const r = w;
+
+      // Draw arc rails (outer and inner)
+      const outerR = r + w * 0.02;
+      const innerR = r - w * 0.02;
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = Math.max(1, s * 0.08);
+      // Outer rail
+      const startAngle = turn.turn === 'cw' ? Math.PI : 0;
+      const endAngle = Math.PI * 0.5;
       ctx.beginPath();
-      ctx.moveTo(-chevSize, oy + chevSize * 0.5);
-      ctx.lineTo(0, oy - chevSize * 0.5);
-      ctx.lineTo(chevSize, oy + chevSize * 0.5);
+      ctx.arc(cornerX, cornerY, outerR, startAngle, endAngle, turn.turn === 'cw');
       ctx.stroke();
+
+      // Draw chevron arcs along the curve
+      ctx.strokeStyle = chev;
+      ctx.lineWidth = Math.max(1, s * 0.12);
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 3; i++) {{
+        const frac = (i + 0.5) / 3;
+        const a = turn.turn === 'cw'
+          ? Math.PI - frac * Math.PI * 0.5
+          : frac * Math.PI * 0.5;
+        const chevR = w * 0.5;
+        const mx = cornerX + chevR * Math.cos(a);
+        const my = cornerY + chevR * Math.sin(a);
+        // Small chevron arrow tangent to the arc
+        const tangentA = turn.turn === 'cw' ? a - Math.PI * 0.5 : a + Math.PI * 0.5;
+        const chevSize = w * 0.2;
+        const perpX = Math.cos(tangentA);
+        const perpY = Math.sin(tangentA);
+        const normX = -perpY;
+        const normY = perpX;
+        ctx.beginPath();
+        ctx.moveTo(mx - normX * chevSize + perpX * chevSize * 0.5, my - normY * chevSize + perpY * chevSize * 0.5);
+        ctx.lineTo(mx + normX * chevSize, my + normY * chevSize);
+        ctx.lineTo(mx - normX * chevSize - perpX * chevSize * 0.5, my - normY * chevSize - perpY * chevSize * 0.5);
+        ctx.stroke();
+      }}
+
+      ctx.restore();
+    }} else {{
+      // Straight belt: draw chevrons
+      const angle = dirAngle(t.dir || 0);
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+
+      // Draw 3 chevron arrows pointing in movement direction
+      ctx.strokeStyle = chev;
+      ctx.lineWidth = Math.max(1, s * 0.12);
+      ctx.lineCap = 'round';
+      const chevSize = w * 0.25;
+      for (let i = -1; i <= 1; i++) {{
+        const oy = i * w * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(-chevSize, oy + chevSize * 0.5);
+        ctx.lineTo(0, oy - chevSize * 0.5);
+        ctx.lineTo(chevSize, oy + chevSize * 0.5);
+        ctx.stroke();
+      }}
+
+      // Side rails
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = Math.max(1, s * 0.08);
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, -w / 2);
+      ctx.lineTo(-w / 2, w / 2);
+      ctx.moveTo(w / 2, -w / 2);
+      ctx.lineTo(w / 2, w / 2);
+      ctx.stroke();
+
+      ctx.restore();
     }}
-
-    // Side rails
-    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-    ctx.lineWidth = Math.max(1, s * 0.08);
-    ctx.beginPath();
-    ctx.moveTo(-w / 2, -w / 2);
-    ctx.lineTo(-w / 2, w / 2);
-    ctx.moveTo(w / 2, -w / 2);
-    ctx.lineTo(w / 2, w / 2);
-    ctx.stroke();
-
-    ctx.restore();
   }}
 }}
 
