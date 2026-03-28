@@ -641,23 +641,28 @@ function pipeNeighbors(t) {{
 }}
 
 function beltTurnInfo(t) {{
-  // Check if any adjacent belt feeds into this tile from a different direction.
-  // A neighbor feeds into this tile if its direction vector points here.
-  // Returns null for straight belts, or 'cw'/'ccw' for turn direction.
+  // Detect 90° belt turns. A turn occurs when a perpendicular belt feeds
+  // into this tile AND there is NO straight feeder from behind.
+  // If both exist, it's a sideload junction (belt stays straight).
   const d = t.dir || 0;
   const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
+  let hasStraightFeeder = false;
+  let perpFeeder = null;
   for (const [dx,dy] of dirs) {{
     const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
     if (!nb || !isBelt(nb.entity)) continue;
     const nd = nb.dir || 0;
     // Does this neighbor's direction point at our tile?
-    if (nb.x + dirDx(nd) === t.x && nb.y + dirDy(nd) === t.y) {{
-      if (nd === d) continue; // straight continuation, not a turn
+    if (nb.x + dirDx(nd) !== t.x || nb.y + dirDy(nd) !== t.y) continue;
+    if (nd === d) {{
+      hasStraightFeeder = true;
+    }} else {{
       const cross = dirDx(nd) * dirDy(d) - dirDy(nd) * dirDx(d);
-      if (cross === 0) continue; // 180° reversal
-      return {{ fromDir: nd, turn: cross > 0 ? 'cw' : 'ccw' }};
+      if (cross !== 0) perpFeeder = {{ fromDir: nd, turn: cross > 0 ? 'cw' : 'ccw' }};
     }}
   }}
+  // Only render as a turn if there's a perpendicular feeder but no straight one
+  if (perpFeeder && !hasStraightFeeder) return perpFeeder;
   return null;
 }}
 
