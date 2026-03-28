@@ -18,6 +18,8 @@ import webbrowser
 from collections import Counter
 from pathlib import Path
 
+from src.renderers import THEME_JS
+
 from draftsman.blueprintable import get_blueprintable_from_string
 
 # Distinct, colorblind-friendly palette for recipes
@@ -280,6 +282,8 @@ def visualize(
         solver_info=solver_info or "null",
         graph_data=graph_data,
     )
+    # Inject theme JS separately (can't go through .format() due to braces)
+    html_content = html_content.replace("/* __THEME_JS__ */", THEME_JS)
 
     Path(output_path).write_text(html_content)
     print(f"  Visualization: {output_path}")
@@ -528,6 +532,10 @@ _HTML_TEMPLATE = """\
   <div id="tab-bar">
     <button class="tab-btn active" data-tab="layout-panel">Layout</button>
     <button class="tab-btn" data-tab="graph-panel" id="graph-tab" style="display:none">Flow Graph</button>
+    <span style="flex:1"></span>
+    <span style="font-size:12px;color:#666;margin-right:6px">Theme:</span>
+    <button class="tab-btn theme-switch active" data-theme="schematic">Schematic</button>
+    <button class="tab-btn theme-switch" data-theme="factorio">Factorio</button>
   </div>
 
   <div id="layout-panel" class="tab-panel active">
@@ -563,9 +571,9 @@ const GRID_W = {grid_w};
 const GRID_H = {grid_h};
 
 // --- Tab switching ---
-document.querySelectorAll('.tab-btn').forEach(btn => {{
+document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {{
   btn.addEventListener('click', () => {{
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
@@ -573,6 +581,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {{
   }});
 }});
 if (GRAPH_DATA) document.getElementById('graph-tab').style.display = '';
+
+// --- Theme switching ---
+document.querySelectorAll('.theme-switch').forEach(btn => {{
+  btn.addEventListener('click', () => {{
+    document.querySelectorAll('.theme-switch').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTheme = btn.dataset.theme;
+    draw();
+  }});
+}});
 
 // --- Canvas setup ---
 const wrap = document.getElementById('layout-panel');
@@ -603,21 +621,9 @@ function fitToView() {{
   draw();
 }}
 
-// Direction helpers: dir 0=N, 4=E, 8=S, 12=W → angle in radians
-function dirAngle(d) {{ return (d / 4) * Math.PI * 0.5; }}
-// Direction to dx, dy unit vector
-function dirDx(d) {{ return d === 4 ? 1 : d === 12 ? -1 : 0; }}
-function dirDy(d) {{ return d === 8 ? 1 : d === 0 ? -1 : 0; }}
+let currentTheme = 'schematic';
 
-function isBelt(name) {{
-  return name === 'transport-belt' || name === 'fast-transport-belt'
-    || name === 'express-transport-belt';
-}}
-function isInserter(name) {{
-  return name === 'inserter' || name === 'fast-inserter'
-    || name === 'long-handed-inserter';
-}}
-function isPipe(name) {{ return name === 'pipe' || name === 'pipe-to-ground'; }}
+/* __THEME_JS__ */
 
 // Build adjacency lookup for pipe connectivity
 const tileMap = {{}};
@@ -630,362 +636,22 @@ for (const t of TILES) {{
   }}
 }}
 
-function pipeNeighbors(t) {{
-  const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
-  const result = [];
-  for (const [dx,dy] of dirs) {{
-    const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
-    if (nb && isPipe(nb.entity)) result.push({{dx, dy}});
-  }}
-  return result;
-}}
+// pipeNeighbors is provided by __THEME_JS__ above
 
-function drawBelt(ctx, px, py, s, t) {{
-  const gap = scale >= 4 ? 1 : 0;
-  const w = s - gap;
-
-  // Base color — darker for the track
-  const baseColors = {{
-    'transport-belt': '#a89030',
-    'fast-transport-belt': '#b03030',
-    'express-transport-belt': '#3070b0',
-  }};
-  const chevColors = {{
-    'transport-belt': '#e0d070',
-    'fast-transport-belt': '#ff6060',
-    'express-transport-belt': '#70b0f0',
-  }};
-  const base = baseColors[t.entity] || '#a89030';
-  const chev = chevColors[t.entity] || '#e0d070';
-
-  // Belt track background
-  ctx.fillStyle = base;
-  ctx.fillRect(px, py, w, w);
-
-  // Conveyor lines / chevrons
-  if (scale >= 4) {{
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(px, py, w, w);
-    ctx.clip();
-
-    const cx = px + w / 2;
-    const cy = py + w / 2;
-    const angle = dirAngle(t.dir || 0);
-
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-
-    // Draw 3 chevron arrows pointing in movement direction
-    ctx.strokeStyle = chev;
-    ctx.lineWidth = Math.max(1, s * 0.12);
-    ctx.lineCap = 'round';
-    const chevSize = w * 0.25;
-    for (let i = -1; i <= 1; i++) {{
-      const oy = i * w * 0.3;
-      ctx.beginPath();
-      ctx.moveTo(-chevSize, oy + chevSize * 0.5);
-      ctx.lineTo(0, oy - chevSize * 0.5);
-      ctx.lineTo(chevSize, oy + chevSize * 0.5);
-      ctx.stroke();
-    }}
-
-    // Side rails
-    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-    ctx.lineWidth = Math.max(1, s * 0.08);
-    ctx.beginPath();
-    ctx.moveTo(-w / 2, -w / 2);
-    ctx.lineTo(-w / 2, w / 2);
-    ctx.moveTo(w / 2, -w / 2);
-    ctx.lineTo(w / 2, w / 2);
-    ctx.stroke();
-
-    ctx.restore();
-  }}
-}}
-
-function drawPipe(ctx, px, py, s, t) {{
-  const gap = scale >= 4 ? 1 : 0;
-  const w = s - gap;
-  const cx = px + w / 2;
-  const cy = py + w / 2;
-
-  // Tile background
-  ctx.fillStyle = '#1a2a3a';
-  ctx.fillRect(px, py, w, w);
-
-  const neighbors = pipeNeighbors(t);
-  const pipeWidth = Math.max(2, w * 0.4);
-
-  ctx.strokeStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
-  ctx.lineWidth = pipeWidth;
-  ctx.lineCap = 'round';
-
-  if (neighbors.length === 0) {{
-    // Isolated pipe — draw a dot
-    ctx.fillStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
-    ctx.beginPath();
-    ctx.arc(cx, cy, pipeWidth * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-  }} else {{
-    // Draw segments from center to each connected neighbor
-    for (const nb of neighbors) {{
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + nb.dx * w / 2, cy + nb.dy * w / 2);
-      ctx.stroke();
-    }}
-  }}
-
-  // Center joint circle
-  if (neighbors.length >= 2) {{
-    ctx.fillStyle = t.entity === 'pipe-to-ground' ? '#3a6090' : '#5a9ad0';
-    ctx.beginPath();
-    ctx.arc(cx, cy, pipeWidth * 0.4, 0, Math.PI * 2);
-    ctx.fill();
-  }}
-
-  // Pipe-to-ground: draw an inner dark circle to show it goes underground
-  if (t.entity === 'pipe-to-ground') {{
-    ctx.fillStyle = '#0a1520';
-    ctx.beginPath();
-    ctx.arc(cx, cy, pipeWidth * 0.25, 0, Math.PI * 2);
-    ctx.fill();
-  }}
-
-  // Fluid tint — subtle colored center dot
-  if (scale >= 8) {{
-    ctx.fillStyle = 'rgba(100,180,255,0.3)';
-    ctx.beginPath();
-    ctx.arc(cx, cy, pipeWidth * 0.2, 0, Math.PI * 2);
-    ctx.fill();
-  }}
-}}
-
-function drawInserter(ctx, px, py, s, t) {{
-  const gap = scale >= 4 ? 1 : 0;
-  const w = s - gap;
-  const cx = px + w / 2;
-  const cy = py + w / 2;
-
-  // Background
-  ctx.fillStyle = '#2a3a2a';
-  ctx.fillRect(px, py, w, w);
-
-  const colors = {{
-    'inserter': '#7ab050',
-    'fast-inserter': '#50a0e0',
-    'long-handed-inserter': '#e06060',
-  }};
-  const armColor = colors[t.entity] || '#7ab050';
-  const angle = dirAngle(t.dir || 0);
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-
-  // Base circle (pivot)
-  ctx.fillStyle = '#444';
-  ctx.beginPath();
-  ctx.arc(0, w * 0.2, w * 0.15, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Arm line from base toward pickup direction
-  ctx.strokeStyle = armColor;
-  ctx.lineWidth = Math.max(1.5, w * 0.12);
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(0, w * 0.2);
-  ctx.lineTo(0, -w * 0.35);
-  ctx.stroke();
-
-  // Grabber claw at the end
-  const clawY = -w * 0.35;
-  const clawW = w * 0.18;
-  ctx.beginPath();
-  ctx.moveTo(-clawW, clawY - clawW * 0.6);
-  ctx.lineTo(0, clawY);
-  ctx.lineTo(clawW, clawY - clawW * 0.6);
-  ctx.stroke();
-
-  // For long-handed, draw a tick mark to indicate reach
-  if (t.entity === 'long-handed-inserter' && scale >= 6) {{
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-    ctx.lineWidth = Math.max(1, w * 0.06);
-    ctx.setLineDash([w * 0.06, w * 0.06]);
-    ctx.beginPath();
-    ctx.moveTo(0, -w * 0.35);
-    ctx.lineTo(0, -w * 0.5);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }}
-
-  ctx.restore();
-}}
-
-function drawMachine(ctx, px, py, pw, ph, t) {{
-  const gap = scale >= 4 ? 1 : 0;
-  const w = pw - gap;
-  const h = ph - gap;
-  const cx = px + w / 2;
-  const cy = py + h / 2;
-
-  // Machine body with rounded corners (if large enough)
-  const r = scale >= 6 ? Math.min(scale * 0.3, 4) : 0;
-  ctx.fillStyle = t.color;
-  if (r > 0) {{
-    ctx.beginPath();
-    ctx.moveTo(px + r, py);
-    ctx.lineTo(px + w - r, py);
-    ctx.quadraticCurveTo(px + w, py, px + w, py + r);
-    ctx.lineTo(px + w, py + h - r);
-    ctx.quadraticCurveTo(px + w, py + h, px + w - r, py + h);
-    ctx.lineTo(px + r, py + h);
-    ctx.quadraticCurveTo(px, py + h, px, py + h - r);
-    ctx.lineTo(px, py + r);
-    ctx.quadraticCurveTo(px, py, px + r, py);
-    ctx.fill();
-  }} else {{
-    ctx.fillRect(px, py, w, h);
-  }}
-
-  // Inner panel / border
-  if (scale >= 6) {{
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 1;
-    const inset = Math.max(2, w * 0.08);
-    ctx.strokeRect(px + inset, py + inset, w - inset * 2, h - inset * 2);
-  }}
-
-  // Icon based on machine type
-  if (scale >= 8) {{
-    ctx.save();
-    ctx.translate(cx, cy);
-    const iconSize = Math.min(w, h) * 0.3;
-
-    if (t.entity === 'chemical-plant') {{
-      // Flask icon
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      // Flask neck
-      ctx.moveTo(-iconSize * 0.15, -iconSize * 0.7);
-      ctx.lineTo(-iconSize * 0.15, -iconSize * 0.2);
-      ctx.lineTo(-iconSize * 0.5, iconSize * 0.5);
-      ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
-      ctx.lineTo(iconSize * 0.15, -iconSize * 0.2);
-      ctx.lineTo(iconSize * 0.15, -iconSize * 0.7);
-      ctx.stroke();
-      // Liquid level
-      ctx.fillStyle = 'rgba(100,200,255,0.25)';
-      ctx.beginPath();
-      ctx.moveTo(-iconSize * 0.35, iconSize * 0.2);
-      ctx.lineTo(-iconSize * 0.5, iconSize * 0.5);
-      ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
-      ctx.lineTo(iconSize * 0.35, iconSize * 0.2);
-      ctx.fill();
-    }} else if (t.entity === 'oil-refinery') {{
-      // Distillation tower icon — stacked rectangles
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
-      ctx.fillStyle = 'rgba(255,255,255,0.1)';
-      for (let i = 0; i < 3; i++) {{
-        const ty = -iconSize * 0.6 + i * iconSize * 0.45;
-        const tw = iconSize * (0.5 + i * 0.15);
-        ctx.fillRect(-tw / 2, ty, tw, iconSize * 0.35);
-        ctx.strokeRect(-tw / 2, ty, tw, iconSize * 0.35);
-      }}
-    }} else {{
-      // Gear icon for assembling machines
-      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-      ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
-      const teeth = 6;
-      const outerR = iconSize * 0.7;
-      const innerR = iconSize * 0.45;
-      ctx.beginPath();
-      for (let i = 0; i < teeth; i++) {{
-        const a1 = (i / teeth) * Math.PI * 2;
-        const a2 = ((i + 0.35) / teeth) * Math.PI * 2;
-        const a3 = ((i + 0.5) / teeth) * Math.PI * 2;
-        const a4 = ((i + 0.85) / teeth) * Math.PI * 2;
-        if (i === 0) ctx.moveTo(Math.cos(a1) * outerR, Math.sin(a1) * outerR);
-        ctx.lineTo(Math.cos(a2) * outerR, Math.sin(a2) * outerR);
-        ctx.lineTo(Math.cos(a3) * innerR, Math.sin(a3) * innerR);
-        ctx.lineTo(Math.cos(a4) * innerR, Math.sin(a4) * innerR);
-        ctx.lineTo(Math.cos(((i + 1) / teeth) * Math.PI * 2) * outerR,
-                    Math.sin(((i + 1) / teeth) * Math.PI * 2) * outerR);
-      }}
-      ctx.closePath();
-      ctx.stroke();
-      // Inner hole
-      ctx.beginPath();
-      ctx.arc(0, 0, innerR * 0.4, 0, Math.PI * 2);
-      ctx.stroke();
-    }}
-    ctx.restore();
-  }}
-
-  // Recipe label
-  if (t.recipe && scale >= 14) {{
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.font = `bold ${{Math.max(8, scale * 0.5)}}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(t.recipe.substring(0, 8), cx, py + h - Math.max(2, h * 0.05));
-  }}
-}}
-
-function drawPole(ctx, px, py, s, t) {{
-  const gap = scale >= 4 ? 1 : 0;
-  const w = s - gap;
-  const cx = px + w / 2;
-  const cy = py + w / 2;
-
-  // Background
-  ctx.fillStyle = '#2a2510';
-  ctx.fillRect(px, py, w, w);
-
-  // Pole cross shape
-  const armW = Math.max(1.5, w * 0.2);
-  const armLen = w * 0.38;
-  ctx.fillStyle = '#c0a030';
-
-  // Vertical bar
-  ctx.fillRect(cx - armW / 2, cy - armLen, armW, armLen * 2);
-  // Horizontal bar
-  ctx.fillRect(cx - armLen, cy - armW / 2, armLen * 2, armW);
-
-  // Center knob
-  if (scale >= 8) {{
-    ctx.fillStyle = '#e0c040';
-    ctx.beginPath();
-    ctx.arc(cx, cy, armW * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-  }}
-
-  // Power range indicator (subtle ring)
-  if (scale >= 6) {{
-    ctx.strokeStyle = 'rgba(200,180,50,0.12)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.arc(cx, cy, 3.5 * scale, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }}
-}}
-
+// Individual draw functions (drawBelt, drawPipe, drawInserter, drawMachine, drawPole)
+// are provided by the theme objects in __THEME_JS__ above.
+// REMOVED_DRAW_FUNCTIONS_START
 function draw() {{
+  const theme = getTheme();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   // Grid background
-  ctx.fillStyle = '#0a0a1a';
+  ctx.fillStyle = theme.background;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Draw grid lines if zoomed in enough
   if (scale >= 6) {{
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.strokeStyle = theme.gridLine;
     ctx.lineWidth = 1;
     for (let x = 0; x <= GRID_W; x++) {{
       const px = offsetX + x * scale;
@@ -1016,7 +682,7 @@ function draw() {{
       alpha = t.recipe === highlightRecipe ? 1.0 : t.recipe ? 0.15 : 0.3;
     }}
     ctx.globalAlpha = alpha;
-    drawMachine(ctx, px, py, pw, ph, t);
+    theme.drawMachine(ctx, px, py, pw, ph, t);
   }}
 
   for (const t of infra) {{
@@ -1031,13 +697,13 @@ function draw() {{
     ctx.globalAlpha = alpha;
 
     if (isBelt(t.entity)) {{
-      drawBelt(ctx, px, py, s, t);
+      theme.drawBelt(ctx, px, py, s, t);
     }} else if (isPipe(t.entity)) {{
-      drawPipe(ctx, px, py, s, t);
+      theme.drawPipe(ctx, px, py, s, t);
     }} else if (isInserter(t.entity)) {{
-      drawInserter(ctx, px, py, s, t);
+      theme.drawInserter(ctx, px, py, s, t);
     }} else if (t.entity === 'medium-electric-pole') {{
-      drawPole(ctx, px, py, s, t);
+      theme.drawPole(ctx, px, py, s, t);
     }} else {{
       // Fallback: colored rect
       const gap = scale >= 4 ? 1 : 0;

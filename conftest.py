@@ -69,3 +69,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
         count = len(list(VIZ_DIR.glob("*.html")))
         if count:
             terminalreporter.write_sep("=", f"{count} HTML visualization(s) in {VIZ_DIR}/")
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Generate visual showcase when --viz is used."""
+    if session.config.getoption("--viz", default=False):
+        VIZ_DIR.mkdir(exist_ok=True)
+        from src.showcase import generate_showcase
+
+        generate_showcase(
+            output_path=str(VIZ_DIR / "showcase.html"),
+            open_browser=False,
+        )
