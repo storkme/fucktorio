@@ -96,6 +96,7 @@ def validate(
     issues.extend(check_belt_direction_continuity(layout_result))
     issues.extend(check_belt_throughput(layout_result))
     issues.extend(check_output_belt_coverage(layout_result, solver_result))
+    issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -994,6 +995,211 @@ def check_output_belt_coverage(
                     y=e.y,
                 )
             )
+
+    return issues
+
+
+def check_belt_network_topology(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check that belt networks form valid connected topologies.
+
+    Three checks:
+    1. Shared input networks: all machines consuming the same external input
+       must be reachable from a single connected belt network.
+    2. Output reaches boundary: output belt networks must extend to the layout
+       boundary (not just be a single dead-end stub).
+    3. Shared output networks: all machines producing the same external output
+       must have their output belts connected into a single network that reaches
+       the layout boundary.
+    """
+    issues: list[ValidationIssue] = []
+    if solver_result is None:
+        return issues
+
+    # Build tile maps
+    belt_tiles: set[tuple[int, int]] = set()
+    belt_carries: dict[tuple[int, int], str | None] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_tiles.add((e.x, e.y))
+            belt_carries[(e.x, e.y)] = e.carries
+
+    if not belt_tiles:
+        return issues
+
+    machine_tiles = _build_machine_tile_set(layout_result)
+
+    # Identify inserters and classify as input/output
+    input_inserter_belt_tiles: dict[tuple[int, int], tuple[int, int]] = {}  # machine_pos → belt tile
+    output_inserter_belt_tiles: dict[tuple[int, int], tuple[int, int]] = {}
+    machine_positions: dict[tuple[int, int], PlacedEntity] = {}
+    for e in layout_result.entities:
+        if e.name in _MACHINE_ENTITIES:
+            machine_positions[(e.x, e.y)] = e
+
+    # Build per-machine tile lookup
+    machine_by_tile: dict[tuple[int, int], tuple[int, int]] = {}
+    for e in layout_result.entities:
+        if e.name in _MACHINE_ENTITIES:
+            size = _machine_size(e.name)
+            for dx in range(size):
+                for dy in range(size):
+                    machine_by_tile[(e.x + dx, e.y + dy)] = (e.x, e.y)
+
+    for ins in layout_result.entities:
+        if ins.name not in _INSERTER_ENTITIES:
+            continue
+        direction_vec = _DIR_TO_VEC.get(ins.direction)
+        if direction_vec is None:
+            continue
+        reach = _INSERTER_REACH.get(ins.name, 1)
+        dx, dy = direction_vec
+        odx, ody = _OPPOSITE_VEC[direction_vec]
+        drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
+        pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
+
+        if drop_pos in machine_tiles and pickup_pos in belt_tiles:
+            mpos = machine_by_tile.get(drop_pos)
+            if mpos:
+                input_inserter_belt_tiles.setdefault(mpos, pickup_pos)
+        elif pickup_pos in machine_tiles and drop_pos in belt_tiles:
+            mpos = machine_by_tile.get(pickup_pos)
+            if mpos:
+                output_inserter_belt_tiles.setdefault(mpos, drop_pos)
+
+    # Layout boundary
+    all_xs = [x for x, _ in belt_tiles]
+    all_ys = [y for _, y in belt_tiles]
+    min_bx, max_bx = min(all_xs), max(all_xs)
+    min_by, max_by = min(all_ys), max(all_ys)
+
+    def _on_boundary(pos: tuple[int, int]) -> bool:
+        return pos[0] in (min_bx, max_bx) or pos[1] in (min_by, max_by)
+
+    # Group machines by recipe
+    recipe_machines: dict[str, list[tuple[int, int]]] = {}
+    for pos, e in machine_positions.items():
+        recipe_machines.setdefault(e.recipe, []).append(pos)
+
+    # Get external input/output item names
+    external_input_items = {f.item for f in solver_result.external_inputs if not f.is_fluid}
+    external_output_items = {f.item for f in solver_result.external_outputs if not f.is_fluid}
+
+    # Map: item → which recipes consume it (external inputs only)
+    item_to_consumer_recipes: dict[str, set[str]] = {}
+    for spec in solver_result.machines:
+        for inp in spec.inputs:
+            if inp.item in external_input_items and not inp.is_fluid:
+                item_to_consumer_recipes.setdefault(inp.item, set()).add(spec.recipe)
+
+    # Map: item → which recipes produce it (external outputs only)
+    item_to_producer_recipes: dict[str, set[str]] = {}
+    for spec in solver_result.machines:
+        for out in spec.outputs:
+            if out.item in external_output_items and not out.is_fluid:
+                item_to_producer_recipes.setdefault(out.item, set()).add(spec.recipe)
+
+    def _check_network(
+        item: str,
+        direction: str,
+        belt_starts: list[tuple[int, int]],
+        machine_list: list[tuple[int, int]],
+    ) -> None:
+        """Validate a belt network for an external item (input or output).
+
+        Checks:
+        1. All belt_starts are on one connected network.
+        2. The network reaches the layout boundary.
+        3. The boundary tiles form a contiguous segment on a single edge.
+        """
+        if not belt_starts:
+            return
+
+        # BFS the full network from all start tiles
+        full_network = _bfs_belt_reach(set(belt_starts), belt_tiles)
+
+        # Check connectivity: BFS from just the first start should reach all others
+        if len(belt_starts) > 1:
+            first_network = _bfs_belt_reach({belt_starts[0]}, belt_tiles)
+            disconnected = [
+                mpos for bt, mpos in zip(belt_starts[1:], machine_list[1:], strict=True) if bt not in first_network
+            ]
+            if disconnected:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="belt-topology",
+                        message=(
+                            f"{item} {direction}: {len(disconnected) + 1} disconnected "
+                            f"belt networks for {len(machine_list)} machines "
+                            f"(should be a single connected network)"
+                        ),
+                    )
+                )
+                return  # skip further checks if not even connected
+
+        # Find boundary tiles in the network
+        boundary_tiles = [t for t in full_network if _on_boundary(t)]
+        if not boundary_tiles:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-topology",
+                    message=(
+                        f"{item} {direction}: belt network ({len(full_network)} tiles) doesn't reach layout boundary"
+                    ),
+                )
+            )
+            return
+
+        # Check boundary tiles form one contiguous group (adjacency flood-fill)
+        boundary_set = set(boundary_tiles)
+        bfs_visited: set[tuple[int, int]] = set()
+        bfs_queue = deque([boundary_tiles[0]])
+        bfs_visited.add(boundary_tiles[0])
+        while bfs_queue:
+            bx, by = bfs_queue.popleft()
+            for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nb = (bx + ddx, by + ddy)
+                if nb in boundary_set and nb not in bfs_visited:
+                    bfs_visited.add(nb)
+                    bfs_queue.append(nb)
+        if len(bfs_visited) < len(boundary_set):
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-topology",
+                    message=(
+                        f"{item} {direction}: belt network reaches layout boundary "
+                        f"at multiple separate locations (should be one contiguous "
+                        f"entry/exit point)"
+                    ),
+                )
+            )
+
+    # CHECK: Input networks
+    for item, recipes in item_to_consumer_recipes.items():
+        input_belt_starts: list[tuple[int, int]] = []
+        consuming_machines: list[tuple[int, int]] = []
+        for recipe in recipes:
+            for mpos in recipe_machines.get(recipe, []):
+                if mpos in input_inserter_belt_tiles:
+                    input_belt_starts.append(input_inserter_belt_tiles[mpos])
+                    consuming_machines.append(mpos)
+        _check_network(item, "input", input_belt_starts, consuming_machines)
+
+    # CHECK: Output networks
+    for item, recipes in item_to_producer_recipes.items():
+        output_belt_starts: list[tuple[int, int]] = []
+        producing_machines: list[tuple[int, int]] = []
+        for recipe in recipes:
+            for mpos in recipe_machines.get(recipe, []):
+                if mpos in output_inserter_belt_tiles:
+                    output_belt_starts.append(output_inserter_belt_tiles[mpos])
+                    producing_machines.append(mpos)
+        _check_network(item, "output", output_belt_starts, producing_machines)
 
     return issues
 
