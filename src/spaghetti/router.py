@@ -207,6 +207,27 @@ def _path_to_entities(
     return entities
 
 
+def _network_downstream_ends(
+    network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> set[tuple[int, int]]:
+    """Find tiles at the downstream end of a belt network.
+
+    A downstream end is a network tile whose belt direction points to a tile
+    NOT in the network — the tip where items would exit.
+    """
+    ends = set()
+    for tile in network:
+        d = belt_dir_map.get(tile)
+        if d is None:
+            continue
+        dx, dy = _DIR_VEC[d]
+        forward = (tile[0] + dx, tile[1] + dy)
+        if forward not in network:
+            ends.add(tile)
+    return ends
+
+
 def _perpendicular_approach_tiles(
     network: set[tuple[int, int]],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
@@ -308,6 +329,22 @@ def route_connections(
 
     internal_indices.sort(key=_distance_key)
 
+    # Sort input groups: first edge nearest to boundary, then by proximity
+    # to the first edge's target (so trunk extends outward efficiently)
+    for _item, indices in ext_input_groups.items():
+        if len(indices) <= 1:
+            continue
+
+        # Sort by distance from grid center (first edge gets nearest-boundary machine)
+        def _input_sort_key(idx: int) -> float:
+            e = graph.edges[idx]
+            if e.to_node is None:
+                return 0
+            tx, ty = positions[e.to_node]
+            return tx + ty  # simple spatial ordering
+
+        indices.sort(key=_input_sort_key)
+
     # Build the routing order: internal edges, then input groups, then output groups
     routing_order: list[tuple[int, bool]] = []  # (edge_idx, is_network_continuation)
     for idx in internal_indices:
@@ -342,24 +379,43 @@ def route_connections(
         network = item_networks.get(edge.item, set())
 
         if is_continuation and network:
-            # Network-aware routing: branch to/from perpendicular approach
-            # tiles adjacent to the existing network (valid sideload points)
+            # Network-aware routing for continuations.
+            # Input vs output use different strategies:
+            # - Inputs: extend trunk from downstream ends (items flow forward)
+            # - Outputs: sideload into trunk via perpendicular approach tiles
             approach = _perpendicular_approach_tiles(network, belt_dir_map, occupied)
-            # Fall back to raw network tiles if no valid approach exists
             junction_tiles = approach if approach else set(network)
             use_approach = bool(approach)
 
-            if edge.from_node is None:
-                # External input continuation: start from approach tiles
-                # next to existing network, route to this machine's belt tile
+            if edge.from_node is None and not edge.is_fluid:
+                # External input continuation (belts): extend the trunk from
+                # its downstream end toward this machine's input belt tile.
+                # Items flow forward through the trunk extension.
+                downstream_ends = _network_downstream_ends(network, belt_dir_map)
+                forward_tiles = set()
+                for tile in downstream_ends:
+                    d = belt_dir_map.get(tile)
+                    if d is not None:
+                        dx, dy = _DIR_VEC[d]
+                        forward_tiles.add((tile[0] + dx, tile[1] + dy))
+                start_tiles = forward_tiles if forward_tiles else junction_tiles
+                if has_target:
+                    goal_tiles = {edge_targets[edge_idx]}
+                else:
+                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+                # Forward tiles are outside the network — no obstacle changes needed
+                use_approach = True  # prevent network removal from occupied
+            elif edge.from_node is None:
+                # External input continuation (fluids): pipes connect
+                # omnidirectionally, perpendicular approach works fine
                 start_tiles = junction_tiles
                 if has_target:
                     goal_tiles = {edge_targets[edge_idx]}
                 else:
                     _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
             else:
-                # External output continuation: start from this machine's
-                # belt tile, route to approach tiles next to existing network
+                # External output continuation: sideload into trunk via
+                # perpendicular approach tiles (items merge onto trunk)
                 if has_start:
                     start_tiles = {edge_starts[edge_idx]}
                 else:
@@ -367,7 +423,7 @@ def route_connections(
                 goal_tiles = junction_tiles
 
             # Only remove network from obstacles when falling back to raw
-            # network tiles (approach tiles are already outside the network)
+            # network tiles (approach/forward tiles are outside the network)
             if not use_approach:
                 occupied -= network
         elif has_start or has_target:
