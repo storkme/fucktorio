@@ -488,8 +488,12 @@ class TestUndergroundBeltExits:
         goals = {(8, 0)}
 
         path = _astar_path(
-            start, goals, obstacles, max_extent=20,
-            allow_underground=True, ug_max_reach=4,
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
         )
         assert path is not None, "A* should find a path using underground"
 
@@ -503,13 +507,11 @@ class TestUndergroundBeltExits:
                 dx = (bx - ax) // dist
                 dy = (by - ay) // dist
                 # The tile after the exit must be in the path (continuation)
-                assert i + 2 < len(path), (
-                    f"UG exit at {path[i+1]} is the last tile — no continuation"
-                )
+                assert i + 2 < len(path), f"UG exit at {path[i + 1]} is the last tile — no continuation"
                 cont = path[i + 2]
                 expected_cont = (bx + dx, by + dy)
                 assert cont == expected_cont, (
-                    f"After UG exit at {path[i+1]} (dir {dx},{dy}), "
+                    f"After UG exit at {path[i + 1]} (dir {dx},{dy}), "
                     f"next tile should be {expected_cont} but got {cont}"
                 )
 
@@ -526,8 +528,12 @@ class TestUndergroundBeltExits:
         goals = {(8, 3)}  # goal is offset from the jump direction
 
         path = _astar_path(
-            start, goals, obstacles, max_extent=20,
-            allow_underground=True, ug_max_reach=4,
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
         )
         assert path is not None
 
@@ -539,14 +545,11 @@ class TestUndergroundBeltExits:
             if dist > 1:
                 dx = (bx - ax) // dist
                 dy = (by - ay) // dist
-                assert i + 2 < len(path), (
-                    f"UG exit at {path[i+1]} is the last tile"
-                )
+                assert i + 2 < len(path), f"UG exit at {path[i + 1]} is the last tile"
                 cont = path[i + 2]
                 expected = (bx + dx, by + dy)
                 assert cont == expected, (
-                    f"UG exit at {path[i+1]} should continue to {expected}, "
-                    f"got {cont} (immediate turn)"
+                    f"UG exit at {path[i + 1]} should continue to {expected}, got {cont} (immediate turn)"
                 )
 
     def test_ug_exit_no_position_revisit(self):
@@ -556,14 +559,16 @@ class TestUndergroundBeltExits:
         goals = {(8, 0)}
 
         path = _astar_path(
-            start, goals, obstacles, max_extent=20,
-            allow_underground=True, ug_max_reach=4,
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
         )
         assert path is not None
         positions = [(x, y) for x, y in path]
-        assert len(positions) == len(set(positions)), (
-            f"Path visits same position twice: {positions}"
-        )
+        assert len(positions) == len(set(positions)), f"Path visits same position twice: {positions}"
 
 
 class TestSpaghettiVisualization:
