@@ -259,6 +259,7 @@ def route_connections(
     edge_starts: dict[int, tuple[int, int]] | None = None,
     reserved_tiles: set[tuple[int, int]] | None = None,
     edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
+    edge_subgroups: dict[str, list[list[int]]] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using A* pathfinding.
 
@@ -272,6 +273,9 @@ def route_connections(
         reserved_tiles: Pre-occupied tiles the router must avoid.
         edge_exclusions: Per-edge tiles to temporarily unblock from obstacles.
             Maps edge index → set of tiles that only this edge may use.
+        edge_subgroups: Per-item sub-groups for capacity splitting.
+            Maps item → list of sub-groups (each a list of edge indices).
+            Sub-groups route independently with separate trunk networks.
     """
     if edge_targets is None:
         edge_targets = {}
@@ -279,6 +283,8 @@ def route_connections(
         edge_starts = {}
     if edge_exclusions is None:
         edge_exclusions = {}
+    if edge_subgroups is None:
+        edge_subgroups = {}
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
 
@@ -297,26 +303,59 @@ def route_connections(
     else:
         max_extent = 50
 
-    # Track belt networks per item for network-aware routing
-    item_networks: dict[str, set[tuple[int, int]]] = {}
+    # Track belt networks per sub-group for network-aware routing
+    # Key: (item, subgroup_idx) — each sub-group routes independently
+    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = {}
     # Track belt directions for junction-aware routing
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
 
+    # --- Map each edge index to its sub-group key ---
+    edge_group_key: dict[int, tuple[str, int]] = {}
+    for item, groups in edge_subgroups.items():
+        for g_idx, edge_indices in enumerate(groups):
+            for ei in edge_indices:
+                edge_group_key[ei] = (item, g_idx)
+
     # --- Group edges by type ---
-    # Internal edges (machine → machine): route first
     internal_indices = []
-    # External input groups: keyed by item
-    ext_input_groups: dict[str, list[int]] = {}
-    # External output groups: keyed by item
-    ext_output_groups: dict[str, list[int]] = {}
+    # Routing groups: each is (group_key, [edge_indices])
+    # Input and output sub-groups route as separate groups
+    input_routing_groups: list[tuple[tuple[str, int], list[int]]] = []
+    output_routing_groups: list[tuple[tuple[str, int], list[int]]] = []
+    # Track edges not in any sub-group (fallback to item-based grouping)
+    ungrouped_inputs: dict[str, list[int]] = {}
+    ungrouped_outputs: dict[str, list[int]] = {}
 
     for i, edge in enumerate(graph.edges):
         if edge.from_node is not None and edge.to_node is not None:
             internal_indices.append(i)
         elif edge.from_node is None:
-            ext_input_groups.setdefault(edge.item, []).append(i)
-        else:  # to_node is None
-            ext_output_groups.setdefault(edge.item, []).append(i)
+            if i in edge_group_key:
+                # Will be added via sub-groups below
+                pass
+            else:
+                ungrouped_inputs.setdefault(edge.item, []).append(i)
+        elif i in edge_group_key:
+            pass  # handled via sub-groups
+        else:
+            ungrouped_outputs.setdefault(edge.item, []).append(i)
+
+    # Build sub-group routing groups from edge_subgroups
+    for item, groups in edge_subgroups.items():
+        for g_idx, edge_indices in enumerate(groups):
+            key = (item, g_idx)
+            inputs = [i for i in edge_indices if graph.edges[i].from_node is None]
+            outputs = [i for i in edge_indices if graph.edges[i].to_node is None]
+            if inputs:
+                input_routing_groups.append((key, inputs))
+            if outputs:
+                output_routing_groups.append((key, outputs))
+
+    # Add ungrouped edges as their own groups
+    for item, indices in ungrouped_inputs.items():
+        input_routing_groups.append(((item, 0), indices))
+    for item, indices in ungrouped_outputs.items():
+        output_routing_groups.append(((item, 0), indices))
 
     # Sort internal edges by distance (shorter first)
     def _distance_key(idx: int) -> float:
@@ -329,43 +368,43 @@ def route_connections(
 
     internal_indices.sort(key=_distance_key)
 
-    # Sort input groups: first edge nearest to boundary, then by proximity
-    # to the first edge's target (so trunk extends outward efficiently)
-    for _item, indices in ext_input_groups.items():
+    # Sort edges within each input group by spatial proximity
+    for _key, indices in input_routing_groups:
         if len(indices) <= 1:
             continue
 
-        # Sort by distance from grid center (first edge gets nearest-boundary machine)
         def _input_sort_key(idx: int) -> float:
             e = graph.edges[idx]
             if e.to_node is None:
                 return 0
             tx, ty = positions[e.to_node]
-            return tx + ty  # simple spatial ordering
+            return tx + ty
 
         indices.sort(key=_input_sort_key)
 
     # Build the routing order: internal edges, then input groups, then output groups
-    routing_order: list[tuple[int, bool]] = []  # (edge_idx, is_network_continuation)
+    routing_order: list[tuple[int, bool, tuple[str, int]]] = []
     for idx in internal_indices:
-        routing_order.append((idx, False))
-    for _item, indices in ext_input_groups.items():
+        edge = graph.edges[idx]
+        key = edge_group_key.get(idx, (edge.item, 0))
+        routing_order.append((idx, False, key))
+    for key, indices in input_routing_groups:
         for rank, idx in enumerate(indices):
-            routing_order.append((idx, rank > 0))
-    for _item, indices in ext_output_groups.items():
+            routing_order.append((idx, rank > 0, key))
+    for key, indices in output_routing_groups:
         for rank, idx in enumerate(indices):
-            routing_order.append((idx, rank > 0))
+            routing_order.append((idx, rank > 0, key))
 
-    # Compute total rate per external item group (for belt tier selection)
-    item_total_rate: dict[str, float] = {}
-    for item, indices in ext_input_groups.items():
-        item_total_rate[item] = sum(graph.edges[i].rate for i in indices)
-    for item, indices in ext_output_groups.items():
-        item_total_rate.setdefault(item, 0)
-        item_total_rate[item] += sum(graph.edges[i].rate for i in indices)
+    # Compute total rate per routing group (for belt tier selection)
+    group_total_rate: dict[tuple[str, int], float] = {}
+    for key, indices in input_routing_groups:
+        group_total_rate[key] = sum(graph.edges[i].rate for i in indices)
+    for key, indices in output_routing_groups:
+        group_total_rate.setdefault(key, 0)
+        group_total_rate[key] += sum(graph.edges[i].rate for i in indices)
 
     # --- Route each edge ---
-    for edge_idx, is_continuation in routing_order:
+    for edge_idx, is_continuation, group_key in routing_order:
         edge = graph.edges[edge_idx]
 
         # Temporarily unblock tiles reserved for this specific edge
@@ -376,7 +415,7 @@ def route_connections(
         # Determine start and goal tiles
         has_start = edge_idx in edge_starts
         has_target = edge_idx in edge_targets
-        network = item_networks.get(edge.item, set())
+        network = group_networks.get(group_key, set())
 
         if is_continuation and network:
             # Network-aware routing for continuations.
@@ -473,8 +512,8 @@ def route_connections(
         # Choose belt tier: use total group rate for external edges
         if edge.is_fluid:
             belt_name = "pipe"
-        elif edge.item in item_total_rate:
-            belt_name = _belt_entity_for_rate(item_total_rate[edge.item])
+        elif group_key in group_total_rate:
+            belt_name = _belt_entity_for_rate(group_total_rate[group_key])
         else:
             belt_name = _belt_entity_for_rate(edge.rate)
 
@@ -489,7 +528,7 @@ def route_connections(
 
         # Update network and occupied tiles
         path_set = set(best_path)
-        item_networks.setdefault(edge.item, set()).update(path_set)
+        group_networks.setdefault(group_key, set()).update(path_set)
         occupied |= path_set
 
     return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
