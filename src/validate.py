@@ -592,9 +592,7 @@ def check_belt_connectivity(
             continue
 
         size = _machine_size(e.name)
-        machine_tiles = {
-            (e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)
-        }
+        machine_tiles = {(e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)}
 
         # Find inserters adjacent to this machine
         adjacent_inserters: list[tuple[int, int]] = []
@@ -753,9 +751,7 @@ def check_belt_flow_path(
             continue
 
         size = _machine_size(e.name)
-        my_tiles = {
-            (e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)
-        }
+        my_tiles = {(e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)}
 
         # Find belt tiles adjacent to this machine's INPUT inserters
         start_belt_tiles: set[tuple[int, int]] = set()
@@ -796,10 +792,7 @@ def check_belt_flow_path(
                 break
 
         # Check if network reaches layout boundary (external input)
-        reaches_boundary = any(
-            bx == min_bx or bx == max_bx or by == min_by or by == max_by
-            for bx, by in belt_network
-        )
+        reaches_boundary = any(bx in (min_bx, max_bx) or by in (min_by, max_by) for bx, by in belt_network)
 
         if not reaches_source and not reaches_boundary:
             severity = "error" if layout_style == "spaghetti" else "warning"
@@ -859,25 +852,23 @@ def check_belt_direction_continuity(
             if nb_vec is None:
                 continue
 
-            # Check if they're 180-degree opposites
-            if nb_vec == opposite:
-                # Only flag if they're on the same axis as their flow
-                # (belts facing N/S adjacent vertically, or E/W adjacent horizontally)
-                # Side-by-side parallel belts going opposite ways is fine (common pattern)
-                if (dx, dy) == dir_vec or (dx, dy) == opposite:
-                    issues.append(
-                        ValidationIssue(
-                            severity="warning",
-                            category="belt-direction",
-                            message=(
-                                f"Adjacent belts at ({bx},{by}) and ({nb[0]},{nb[1]}) "
-                                f"face opposite directions ({direction.name} vs {nb_dir.name}), "
-                                f"creating a dead spot"
-                            ),
-                            x=bx,
-                            y=by,
-                        )
+            # Check if they're 180-degree opposites on the same axis as their flow
+            # (belts facing N/S adjacent vertically, or E/W adjacent horizontally)
+            # Side-by-side parallel belts going opposite ways is fine (common pattern)
+            if nb_vec == opposite and (dx, dy) in (dir_vec, opposite):
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        category="belt-direction",
+                        message=(
+                            f"Adjacent belts at ({bx},{by}) and ({nb[0]},{nb[1]}) "
+                            f"face opposite directions ({direction.name} vs {nb_dir.name}), "
+                            f"creating a dead spot"
+                        ),
+                        x=bx,
+                        y=by,
                     )
+                )
 
     return issues
 
@@ -893,22 +884,9 @@ def check_belt_throughput(
     """
     issues: list[ValidationIssue] = []
 
-    # Build map of belt tile → (entity_name, total rate)
-    belt_entity_map: dict[tuple[int, int], str] = {}
-    belt_rate_map: dict[tuple[int, int], float] = defaultdict(float)
-
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_entity_map[(e.x, e.y)] = e.name
-            # carries is the item name; we need the rate which isn't stored
-            # per-tile. However, if multiple entities occupy the same tile
-            # (shouldn't happen but indicates overlapping routes), count them.
-
     # Count overlapping belt entities at the same position.
     # Each belt entity placed at a tile represents a route using that tile.
-    # We track how many routes share each tile via entity duplication.
     tile_counts: dict[tuple[int, int], int] = defaultdict(int)
-    tile_rates: dict[tuple[int, int], float] = defaultdict(float)
     tile_names: dict[tuple[int, int], str] = {}
 
     for e in layout_result.entities:

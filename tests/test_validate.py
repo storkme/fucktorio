@@ -1,9 +1,8 @@
 """Tests for functional blueprint validation."""
 
 from src.layout import layout
-from src.models import LayoutResult, PlacedEntity
+from src.models import EntityDirection, LayoutResult, PlacedEntity
 from src.solver import solve
-from src.models import EntityDirection
 from src.validate import (
     ValidationError,
     check_belt_connectivity,
@@ -211,18 +210,26 @@ class TestBeltConnectivity:
                 PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
                 # Inserter on top border (center top = x=1, y=-1)
                 PlacedEntity(
-                    name="inserter", x=1, y=-1,
+                    name="inserter",
+                    x=1,
+                    y=-1,
                     direction=EntityDirection.SOUTH,
                 ),
                 # Belt above the inserter
                 PlacedEntity(
-                    name="transport-belt", x=1, y=-2,
-                    direction=EntityDirection.EAST, carries="iron-plate",
+                    name="transport-belt",
+                    x=1,
+                    y=-2,
+                    direction=EntityDirection.EAST,
+                    carries="iron-plate",
                 ),
                 # Extend belt so it's not isolated
                 PlacedEntity(
-                    name="transport-belt", x=2, y=-2,
-                    direction=EntityDirection.EAST, carries="iron-plate",
+                    name="transport-belt",
+                    x=2,
+                    y=-2,
+                    direction=EntityDirection.EAST,
+                    carries="iron-plate",
                 ),
             ]
         )
@@ -237,7 +244,9 @@ class TestBeltConnectivity:
                 PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
                 # Inserter on top border but no belt anywhere
                 PlacedEntity(
-                    name="inserter", x=1, y=-1,
+                    name="inserter",
+                    x=1,
+                    y=-1,
                     direction=EntityDirection.SOUTH,
                 ),
             ]
@@ -253,13 +262,18 @@ class TestBeltConnectivity:
             entities=[
                 PlacedEntity(name="assembling-machine-1", x=0, y=0, recipe="iron-gear-wheel"),
                 PlacedEntity(
-                    name="inserter", x=1, y=-1,
+                    name="inserter",
+                    x=1,
+                    y=-1,
                     direction=EntityDirection.SOUTH,
                 ),
                 # Single belt tile, not connected to anything
                 PlacedEntity(
-                    name="transport-belt", x=1, y=-2,
-                    direction=EntityDirection.EAST, carries="iron-plate",
+                    name="transport-belt",
+                    x=1,
+                    y=-2,
+                    direction=EntityDirection.EAST,
+                    carries="iron-plate",
                 ),
             ]
         )
