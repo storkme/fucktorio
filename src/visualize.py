@@ -684,9 +684,33 @@ function drawBelt(ctx, px, py, s, t) {{
   const base = baseColors[t.entity] || '#a89030';
   const chev = chevColors[t.entity] || '#e0d070';
 
-  // Belt track background
+  const cx = px + w / 2;
+  const cy = py + w / 2;
+  const turn = beltTurnInfo(t);
+
+  // Belt track background — curved for turns, rectangular for straight
   ctx.fillStyle = base;
-  ctx.fillRect(px, py, w, w);
+  if (turn) {{
+    const angle = dirAngle(t.dir || 0);
+    const sign = turn.turn === 'cw' ? 1 : -1;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    const crnX = sign * w / 2;
+    const crnY = -w / 2;
+    // Fill a quarter-annulus (donut wedge) for the curved belt
+    const ccw = turn.turn === 'cw';
+    const sa = ccw ? Math.PI : 0;
+    const ea = Math.PI * 0.5;
+    ctx.beginPath();
+    ctx.arc(crnX, crnY, w, sa, ea, ccw);       // outer edge
+    ctx.arc(crnX, crnY, 0.01, ea, sa, !ccw);   // inner edge (near-zero radius)
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }} else {{
+    ctx.fillRect(px, py, w, w);
+  }}
 
   // Conveyor lines / chevrons
   if (scale >= 4) {{
@@ -695,20 +719,12 @@ function drawBelt(ctx, px, py, s, t) {{
     ctx.rect(px, py, w, w);
     ctx.clip();
 
-    const cx = px + w / 2;
-    const cy = py + w / 2;
-    const turn = beltTurnInfo(t);
-
     if (turn) {{
       // Draw curved turn: arc from incoming edge to outgoing edge
       const angle = dirAngle(t.dir || 0);
-      // The arc center is at the corner where incoming and outgoing edges meet.
-      // In un-rotated space (output = north/up), incoming is from left (ccw) or right (cw).
       ctx.translate(cx, cy);
       ctx.rotate(angle);
 
-      // Arc corner: for ccw turn, corner is top-left (-w/2, -w/2)
-      //             for cw turn, corner is top-right (w/2, -w/2)
       const sign = turn.turn === 'cw' ? 1 : -1;
       const cornerX = sign * w / 2;
       const cornerY = -w / 2;
