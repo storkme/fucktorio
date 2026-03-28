@@ -431,6 +431,35 @@ class TestSpaghettiValidation:
         # but we verify the failed_edges list is returned
         assert isinstance(routing.failed_edges, list)
 
+    def test_output_inserters_have_belts(self):
+        """Every machine should have an output inserter dropping onto a belt."""
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+
+        from src.validate import check_output_belt_coverage
+
+        issues = check_output_belt_coverage(lr, result)
+        errors = [i for i in issues if i.severity == "error"]
+        assert not errors, f"Output belt errors: {[e.message for e in errors]}"
+
+        # Verify belt stubs carry the output item
+        gear_belts = [e for e in lr.entities if e.carries == "iron-gear-wheel"]
+        machines = [e for e in lr.entities if e.name == "assembling-machine-3"]
+        assert len(gear_belts) >= len(machines), f"Expected >= {len(machines)} output belt stubs, got {len(gear_belts)}"
+
+    def test_internal_edge_output_belt(self):
+        """Internal edges should connect through the output inserter's belt tile."""
+        result = solve(
+            "electronic-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate"},
+        )
+        lr = spaghetti_layout(result)
+
+        # Copper-cable machines with output edges should have output belts
+        cable_belts = [e for e in lr.entities if e.carries == "copper-cable" and "belt" in e.name]
+        assert len(cable_belts) > 0, "No copper-cable belt entities found"
+
     def test_spaghetti_fluid_check_no_bus_false_positive(self):
         """Spaghetti mode should not error about missing 'bus' for fluid layouts."""
         result = solve("plastic-bar", target_rate=5, available_inputs={"petroleum-gas", "coal"})
