@@ -1,0 +1,48 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - 'heading "spaghetti: 5/s plastic-bar" [level=1] [ref=e4]'
+      - generic [ref=e5]: 109 entities · 32×23 tiles
+    - generic [ref=e6]:
+      - heading "Recipes" [level=2] [ref=e7]
+      - generic [ref=e9] [cursor=pointer]:
+        - generic [ref=e11]: plastic-bar
+        - generic [ref=e12]: ×3
+    - generic [ref=e13]:
+      - heading "Infrastructure" [level=2] [ref=e14]
+      - generic [ref=e15]:
+        - generic [ref=e16] [cursor=pointer]:
+          - generic [ref=e18]: Inserter
+          - generic [ref=e19]: ×9
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: Pole
+          - generic [ref=e23]: ×17
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: Pipe
+          - generic [ref=e27]: ×25
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: Belt (yellow)
+          - generic [ref=e31]: ×55
+    - generic [ref=e32]:
+      - heading "Production" [level=2] [ref=e33]
+      - table [ref=e34]:
+        - rowgroup [ref=e35]:
+          - row "Recipe Count Inputs" [ref=e36]:
+            - columnheader "Recipe" [ref=e37]
+            - columnheader "Count" [ref=e38]
+            - columnheader "Inputs" [ref=e39]
+        - rowgroup [ref=e40]:
+          - row "plastic-bar 3 petroleum-gas 50.0/sfluid coal 2.5/s" [ref=e41]:
+            - cell "plastic-bar" [ref=e42]: plastic-bar
+            - cell "3" [ref=e44]
+            - cell "petroleum-gas 50.0/sfluid coal 2.5/s" [ref=e45]:
+              - text: petroleum-gas 50.0/sfluid
+              - text: coal 2.5/s
+  - generic [ref=e46]:
+    - generic [ref=e47]:
+      - button "Layout" [ref=e48] [cursor=pointer]
+      - button "Flow Graph" [ref=e49] [cursor=pointer]
+    - generic [ref=e52]:
+      - button "⌖" [ref=e53] [cursor=pointer]
+      - button "+" [ref=e54] [cursor=pointer]
+      - button "−" [ref=e55] [cursor=pointer]
