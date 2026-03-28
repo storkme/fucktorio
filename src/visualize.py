@@ -641,21 +641,24 @@ function pipeNeighbors(t) {{
 }}
 
 function beltTurnInfo(t) {{
-  // Check if the upstream belt (behind this belt) has a different direction.
+  // Check if any adjacent belt feeds into this tile from a different direction.
+  // A neighbor feeds into this tile if its direction vector points here.
   // Returns null for straight belts, or 'cw'/'ccw' for turn direction.
   const d = t.dir || 0;
-  // Upstream tile: opposite of our direction
-  const behindX = t.x - dirDx(d);
-  const behindY = t.y - dirDy(d);
-  const behind = tileMap[behindX + ',' + behindY];
-  if (!behind || !isBelt(behind.entity)) return null;
-  const bd = behind.dir || 0;
-  if (bd === d) return null; // straight continuation
-
-  // Cross product of (behind dir) × (our dir) determines turn sense
-  const cross = dirDx(bd) * dirDy(d) - dirDy(bd) * dirDx(d);
-  if (cross === 0) return null; // 180° reversal, not a turn
-  return {{ fromDir: bd, turn: cross > 0 ? 'cw' : 'ccw' }};
+  const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
+  for (const [dx,dy] of dirs) {{
+    const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
+    if (!nb || !isBelt(nb.entity)) continue;
+    const nd = nb.dir || 0;
+    // Does this neighbor's direction point at our tile?
+    if (nb.x + dirDx(nd) === t.x && nb.y + dirDy(nd) === t.y) {{
+      if (nd === d) continue; // straight continuation, not a turn
+      const cross = dirDx(nd) * dirDy(d) - dirDy(nd) * dirDx(d);
+      if (cross === 0) continue; // 180° reversal
+      return {{ fromDir: nd, turn: cross > 0 ? 'cw' : 'ccw' }};
+    }}
+  }}
+  return null;
 }}
 
 function drawBelt(ctx, px, py, s, t) {{
