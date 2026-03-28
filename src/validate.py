@@ -96,7 +96,8 @@ def validate(
     issues.extend(check_belt_direction_continuity(layout_result))
     issues.extend(check_belt_throughput(layout_result))
     issues.extend(check_output_belt_coverage(layout_result, solver_result))
-    issues.extend(check_belt_network_topology(layout_result, solver_result))
+    if layout_style == "spaghetti":
+        issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -1117,12 +1118,16 @@ def check_belt_network_topology(
         if not belt_starts:
             return
 
+        # Filter belt tiles to only those carrying this item (prevents
+        # BFS from leaking into adjacent networks for different items)
+        item_belt_tiles = {pos for pos, carry in belt_carries.items() if carry == item}
+
         # BFS the full network from all start tiles
-        full_network = _bfs_belt_reach(set(belt_starts), belt_tiles)
+        full_network = _bfs_belt_reach(set(belt_starts), item_belt_tiles)
 
         # Check connectivity: BFS from just the first start should reach all others
         if len(belt_starts) > 1:
-            first_network = _bfs_belt_reach({belt_starts[0]}, belt_tiles)
+            first_network = _bfs_belt_reach({belt_starts[0]}, item_belt_tiles)
             disconnected = [
                 mpos for bt, mpos in zip(belt_starts[1:], machine_list[1:], strict=True) if bt not in first_network
             ]

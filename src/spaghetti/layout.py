@@ -114,8 +114,8 @@ def _attempt_layout(
                 if assignment.edge.to_node == assignment.node_id:
                     # Input inserter — route goal is this belt tile
                     edge_targets[i] = assignment.belt_tile
-                elif assignment.edge.from_node == assignment.node_id and assignment.edge.to_node is not None:
-                    # Output inserter for internal edge — route must start here
+                elif assignment.edge.from_node == assignment.node_id:
+                    # Output inserter — route must start from this belt tile
                     edge_starts[i] = assignment.belt_tile
                 # Allow this edge (and only this edge) to use its own belt tile
                 if i not in edge_exclusions:
@@ -151,14 +151,18 @@ def _attempt_layout(
     )
     entities.extend(routing.entities)
 
-    # 6b. Place belt stubs for external output inserters
+    # 6b. Place belt stubs for any external output inserters whose edges
+    #     failed routing (normally the router handles these now)
     entity_tiles = {(e.x, e.y) for e in entities}
+    failed_items = {e.item for e in routing.failed_edges}
     for assignment in assignments:
         edge = assignment.edge
         if edge.from_node == assignment.node_id and edge.to_node is None:
             bx, by = assignment.belt_tile
             if (bx, by) in entity_tiles:
                 continue  # already has an entity from routing
+            if edge.item not in failed_items:
+                continue  # router handled it
             dx = bx - assignment.border_tile[0]
             dy = by - assignment.border_tile[1]
             if edge.is_fluid:
