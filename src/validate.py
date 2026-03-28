@@ -107,6 +107,7 @@ def validate(
         issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_belt_junctions(layout_result))
     issues.extend(check_belt_loops(layout_result))
+    issues.extend(check_belt_item_isolation(layout_result))
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
     issues.extend(check_lane_throughput(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
@@ -1388,6 +1389,49 @@ def check_belt_loops(
                 )
 
         confirmed |= visited_set
+
+    return issues
+
+
+def check_belt_item_isolation(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that belts carrying different items don't feed into each other.
+
+    Unlike pipes, belts don't auto-merge by adjacency — but if belt A's
+    direction points at belt B and they carry different items, items from A
+    will physically flow onto B, contaminating it.
+    """
+    issues: list[ValidationIssue] = []
+
+    belt_dir: dict[tuple[int, int], EntityDirection] = {}
+    belt_carry: dict[tuple[int, int], str | None] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir[(e.x, e.y)] = e.direction
+            belt_carry[(e.x, e.y)] = e.carries
+
+    seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for (ax, ay), ad in belt_dir.items():
+        dx, dy = _DIR_TO_VEC[ad]
+        bx, by = ax + dx, ay + dy
+        if (bx, by) not in belt_dir:
+            continue
+        ac = belt_carry.get((ax, ay))
+        bc = belt_carry.get((bx, by))
+        if ac and bc and ac != bc:
+            pair = ((ax, ay), (bx, by))
+            if pair not in seen:
+                seen.add(pair)
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="belt-item-isolation",
+                        message=(f"Belt at ({ax},{ay}) carries {ac} but feeds into ({bx},{by}) which carries {bc}"),
+                        x=ax,
+                        y=ay,
+                    )
+                )
 
     return issues
 
