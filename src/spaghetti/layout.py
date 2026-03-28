@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 
 from ..layout.poles import place_poles
-from ..models import LayoutResult, PlacedEntity, SolverResult
+from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from ..validate import ValidationError, validate
 from .graph import FlowEdge, ProductionGraph, build_production_graph
 from .inserters import assign_inserter_positions, build_inserter_entities
 from .placer import machine_size, place_machines
-from .router import _machine_tiles, route_connections
+from .router import _DIR_MAP, _belt_entity_for_rate, _machine_tiles, route_connections
 
 log = logging.getLogger(__name__)
 
@@ -105,15 +105,18 @@ def _attempt_layout(
 
     # 4. Build edge→belt_tile mapping and per-edge exclusions for the router
     edge_targets: dict[int, tuple[int, int]] = {}
+    edge_starts: dict[int, tuple[int, int]] = {}
     edge_exclusions: dict[int, set[tuple[int, int]]] = {}
     for assignment in assignments:
         # Find the edge index in graph.edges
         for i, edge in enumerate(graph.edges):
             if edge is assignment.edge:
-                # Map to the belt tile that the route should target
                 if assignment.edge.to_node == assignment.node_id:
-                    # This is an input inserter — route goal is the belt tile
+                    # Input inserter — route goal is this belt tile
                     edge_targets[i] = assignment.belt_tile
+                elif assignment.edge.from_node == assignment.node_id and assignment.edge.to_node is not None:
+                    # Output inserter for internal edge — route must start here
+                    edge_starts[i] = assignment.belt_tile
                 # Allow this edge (and only this edge) to use its own belt tile
                 if i not in edge_exclusions:
                     edge_exclusions[i] = set()
@@ -142,10 +145,36 @@ def _attempt_layout(
         graph,
         positions,
         edge_targets=edge_targets,
+        edge_starts=edge_starts,
         reserved_tiles=reserved,
         edge_exclusions=edge_exclusions,
     )
     entities.extend(routing.entities)
+
+    # 6b. Place belt stubs for external output inserters
+    entity_tiles = {(e.x, e.y) for e in entities}
+    for assignment in assignments:
+        edge = assignment.edge
+        if edge.from_node == assignment.node_id and edge.to_node is None:
+            bx, by = assignment.belt_tile
+            if (bx, by) in entity_tiles:
+                continue  # already has an entity from routing
+            dx = bx - assignment.border_tile[0]
+            dy = by - assignment.border_tile[1]
+            if edge.is_fluid:
+                entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+            else:
+                belt_name = _belt_entity_for_rate(edge.rate)
+                direction = _DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=bx,
+                        y=by,
+                        direction=direction,
+                        carries=edge.item,
+                    )
+                )
 
     # 7. Place inserters from pre-assignments
     entities.extend(build_inserter_entities(assignments))

@@ -95,6 +95,7 @@ def validate(
     issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style=layout_style))
     issues.extend(check_belt_direction_continuity(layout_result))
     issues.extend(check_belt_throughput(layout_result))
+    issues.extend(check_output_belt_coverage(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -912,6 +913,85 @@ def check_belt_throughput(
                     ),
                     x=pos[0],
                     y=pos[1],
+                )
+            )
+
+    return issues
+
+
+def check_output_belt_coverage(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check that every machine with solid outputs has an output inserter with a belt.
+
+    An output inserter picks FROM the machine and drops onto a belt. This check
+    verifies that the drop side of at least one such inserter has a belt entity,
+    ensuring products can actually leave the machine.
+
+    Machines with only fluid outputs are skipped (they use pipes).
+    """
+    issues: list[ValidationIssue] = []
+
+    # Identify recipes whose outputs are entirely fluid
+    fluid_output_recipes: set[str] = set()
+    if solver_result is not None:
+        for spec in solver_result.machines:
+            has_solid_output = any(not f.is_fluid for f in spec.outputs)
+            if not has_solid_output:
+                fluid_output_recipes.add(spec.recipe)
+
+    machine_tiles = _build_machine_tile_set(layout_result)
+    belt_tiles: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_tiles.add((e.x, e.y))
+
+    checked: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name not in _MACHINE_ENTITIES:
+            continue
+        if (e.x, e.y) in checked:
+            continue
+        checked.add((e.x, e.y))
+
+        if e.recipe in fluid_output_recipes:
+            continue
+
+        size = _machine_size(e.name)
+        my_tiles = set()
+        for dx in range(size):
+            for dy in range(size):
+                my_tiles.add((e.x + dx, e.y + dy))
+
+        # Find output inserters: inserters whose pickup side touches this machine
+        has_output_belt = False
+        for ins in layout_result.entities:
+            if ins.name not in _INSERTER_ENTITIES:
+                continue
+            direction_vec = _DIR_TO_VEC.get(ins.direction)
+            if direction_vec is None:
+                continue
+
+            reach = _INSERTER_REACH.get(ins.name, 1)
+            dx, dy = direction_vec
+            odx, ody = _OPPOSITE_VEC[direction_vec]
+
+            pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
+            drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
+
+            if pickup_pos in my_tiles and drop_pos not in machine_tiles and drop_pos in belt_tiles:
+                has_output_belt = True
+                break
+
+        if not has_output_belt:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="output-belt",
+                    message=(f"{e.name} at ({e.x},{e.y}): no output inserter has a belt at its drop position"),
+                    x=e.x,
+                    y=e.y,
                 )
             )
 

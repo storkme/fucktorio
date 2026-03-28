@@ -203,6 +203,7 @@ def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
     edge_targets: dict[int, tuple[int, int]] | None = None,
+    edge_starts: dict[int, tuple[int, int]] | None = None,
     reserved_tiles: set[tuple[int, int]] | None = None,
     edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
 ) -> RoutingResult:
@@ -210,12 +211,15 @@ def route_connections(
 
     Args:
         edge_targets: Mapping from edge index to a specific belt tile target.
+        edge_starts: Mapping from edge index to a specific belt tile start.
         reserved_tiles: Pre-occupied tiles the router must avoid.
         edge_exclusions: Per-edge tiles to temporarily unblock from obstacles.
             Maps edge index → set of tiles that only this edge may use.
     """
     if edge_targets is None:
         edge_targets = {}
+    if edge_starts is None:
+        edge_starts = {}
     if edge_exclusions is None:
         edge_exclusions = {}
     entities: list[PlacedEntity] = []
@@ -260,12 +264,19 @@ def route_connections(
         if exclusions:
             occupied -= exclusions
 
-        # Use pre-assigned target if available, otherwise compute from endpoints
-        if edge_idx in edge_targets:
-            target = edge_targets[edge_idx]
-            # For assigned targets, start from the other end's belt tiles
-            start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
-            goal_tiles = {target}
+        # Use pre-assigned start/target if available, otherwise compute from endpoints
+        has_start = edge_idx in edge_starts
+        has_target = edge_idx in edge_targets
+        if has_start or has_target:
+            if has_start and has_target:
+                start_tiles = {edge_starts[edge_idx]}
+                goal_tiles = {edge_targets[edge_idx]}
+            elif has_target:
+                start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+                goal_tiles = {edge_targets[edge_idx]}
+            else:  # has_start only
+                _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+                start_tiles = {edge_starts[edge_idx]}
         else:
             start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
