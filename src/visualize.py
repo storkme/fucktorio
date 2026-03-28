@@ -18,9 +18,9 @@ import webbrowser
 from collections import Counter
 from pathlib import Path
 
-from src.renderers import THEME_JS
-
 from draftsman.blueprintable import get_blueprintable_from_string
+
+from src.renderers import THEME_JS
 
 # Distinct, colorblind-friendly palette for recipes
 _RECIPE_COLORS = [

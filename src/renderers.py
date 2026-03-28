@@ -1032,9 +1032,14 @@ const factorio = {
 # Combined: all themes + dispatch helper
 # ---------------------------------------------------------------------------
 
-THEME_JS = UTILS_JS + SCHEMATIC_THEME_JS + FACTORIO_THEME_JS + r"""
+THEME_JS = (
+    UTILS_JS
+    + SCHEMATIC_THEME_JS
+    + FACTORIO_THEME_JS
+    + r"""
 // Theme dispatch
 function getTheme() {
   return (typeof currentTheme !== 'undefined' && currentTheme === 'factorio') ? factorio : schematic;
 }
 """
+)

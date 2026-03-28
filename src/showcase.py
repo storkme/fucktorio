@@ -28,9 +28,7 @@ def generate_showcase(output_path: str | None = None, open_browser: bool = True)
 
     tiles = _build_showcase_tiles()
 
-    html_content = _SHOWCASE_TEMPLATE.replace("__TILES_JSON__", json.dumps(tiles)).replace(
-        "__THEME_JS__", THEME_JS
-    )
+    html_content = _SHOWCASE_TEMPLATE.replace("__TILES_JSON__", json.dumps(tiles)).replace("__THEME_JS__", THEME_JS)
 
     Path(output_path).write_text(html_content)
     print(f"  Showcase: {output_path}")
@@ -46,130 +44,130 @@ def _build_showcase_tiles() -> list[dict]:
     tiles: list[dict] = []
 
     def add(x, y, entity, direction=0, w=1, h=1, recipe="", color="", carries="", group=""):
-        tiles.append({
-            "x": x, "y": y, "w": w, "h": h,
-            "entity": entity, "dir": direction,
-            "recipe": recipe,
-            "color": color or _default_color(entity, recipe),
-            "carries": carries,
-            "tooltip": f"{entity} dir={direction}",
-            "group": group,
-        })
+        tiles.append(
+            {
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "entity": entity,
+                "dir": direction,
+                "recipe": recipe,
+                "color": color or _default_color(entity, recipe),
+                "carries": carries,
+                "tooltip": f"{entity} dir={direction}",
+                "group": group,
+            }
+        )
 
     # --- Group 1: Transport belts (all tiers, all directions, with turns) ---
     gx, gy = 0, 0
 
     # Yellow belt - straight in all 4 directions
     add(gx, gy, "transport-belt", 0, group="Yellow Belt")
-    add(gx+1, gy, "transport-belt", 4, group="Yellow Belt")
-    add(gx+2, gy, "transport-belt", 8, group="Yellow Belt")
-    add(gx+3, gy, "transport-belt", 12, group="Yellow Belt")
+    add(gx + 1, gy, "transport-belt", 4, group="Yellow Belt")
+    add(gx + 2, gy, "transport-belt", 8, group="Yellow Belt")
+    add(gx + 3, gy, "transport-belt", 12, group="Yellow Belt")
 
     # Yellow belt - L-turn (going east then south)
-    add(gx+5, gy, "transport-belt", 4, group="Yellow Belt Turn")
-    add(gx+6, gy, "transport-belt", 4, group="Yellow Belt Turn")
-    add(gx+7, gy, "transport-belt", 8, group="Yellow Belt Turn")
-    add(gx+7, gy+1, "transport-belt", 8, group="Yellow Belt Turn")
-    add(gx+7, gy+2, "transport-belt", 8, group="Yellow Belt Turn")
+    add(gx + 5, gy, "transport-belt", 4, group="Yellow Belt Turn")
+    add(gx + 6, gy, "transport-belt", 4, group="Yellow Belt Turn")
+    add(gx + 7, gy, "transport-belt", 8, group="Yellow Belt Turn")
+    add(gx + 7, gy + 1, "transport-belt", 8, group="Yellow Belt Turn")
+    add(gx + 7, gy + 2, "transport-belt", 8, group="Yellow Belt Turn")
 
     # Red belt - straight run
-    add(gx, gy+2, "fast-transport-belt", 4, group="Red Belt")
-    add(gx+1, gy+2, "fast-transport-belt", 4, group="Red Belt")
-    add(gx+2, gy+2, "fast-transport-belt", 4, group="Red Belt")
-    add(gx+3, gy+2, "fast-transport-belt", 4, group="Red Belt")
+    add(gx, gy + 2, "fast-transport-belt", 4, group="Red Belt")
+    add(gx + 1, gy + 2, "fast-transport-belt", 4, group="Red Belt")
+    add(gx + 2, gy + 2, "fast-transport-belt", 4, group="Red Belt")
+    add(gx + 3, gy + 2, "fast-transport-belt", 4, group="Red Belt")
 
     # Blue belt - straight run
-    add(gx, gy+4, "express-transport-belt", 4, group="Blue Belt")
-    add(gx+1, gy+4, "express-transport-belt", 4, group="Blue Belt")
-    add(gx+2, gy+4, "express-transport-belt", 4, group="Blue Belt")
-    add(gx+3, gy+4, "express-transport-belt", 4, group="Blue Belt")
+    add(gx, gy + 4, "express-transport-belt", 4, group="Blue Belt")
+    add(gx + 1, gy + 4, "express-transport-belt", 4, group="Blue Belt")
+    add(gx + 2, gy + 4, "express-transport-belt", 4, group="Blue Belt")
+    add(gx + 3, gy + 4, "express-transport-belt", 4, group="Blue Belt")
 
     # --- Group 2: Underground belts ---
     gx, gy = 0, 7
     add(gx, gy, "underground-belt", 4, group="Underground Belt")
-    add(gx+3, gy, "underground-belt", 12, group="Underground Belt")
+    add(gx + 3, gy, "underground-belt", 12, group="Underground Belt")
 
     # --- Group 3: Splitter ---
     gx, gy = 5, 7
     add(gx, gy, "splitter", 4, w=1, h=2, group="Splitter")
-    add(gx+2, gy, "splitter", 0, w=2, h=1, group="Splitter")
+    add(gx + 2, gy, "splitter", 0, w=2, h=1, group="Splitter")
 
     # --- Group 4: Inserters (all types, all directions) ---
     gx, gy = 0, 10
     add(gx, gy, "inserter", 0, group="Inserter")
-    add(gx+1, gy, "inserter", 4, group="Inserter")
-    add(gx+2, gy, "inserter", 8, group="Inserter")
-    add(gx+3, gy, "inserter", 12, group="Inserter")
+    add(gx + 1, gy, "inserter", 4, group="Inserter")
+    add(gx + 2, gy, "inserter", 8, group="Inserter")
+    add(gx + 3, gy, "inserter", 12, group="Inserter")
 
-    add(gx+5, gy, "fast-inserter", 0, group="Fast Inserter")
-    add(gx+6, gy, "fast-inserter", 4, group="Fast Inserter")
-    add(gx+7, gy, "fast-inserter", 8, group="Fast Inserter")
-    add(gx+8, gy, "fast-inserter", 12, group="Fast Inserter")
+    add(gx + 5, gy, "fast-inserter", 0, group="Fast Inserter")
+    add(gx + 6, gy, "fast-inserter", 4, group="Fast Inserter")
+    add(gx + 7, gy, "fast-inserter", 8, group="Fast Inserter")
+    add(gx + 8, gy, "fast-inserter", 12, group="Fast Inserter")
 
-    add(gx, gy+2, "long-handed-inserter", 0, group="Long Inserter")
-    add(gx+1, gy+2, "long-handed-inserter", 4, group="Long Inserter")
-    add(gx+2, gy+2, "long-handed-inserter", 8, group="Long Inserter")
-    add(gx+3, gy+2, "long-handed-inserter", 12, group="Long Inserter")
+    add(gx, gy + 2, "long-handed-inserter", 0, group="Long Inserter")
+    add(gx + 1, gy + 2, "long-handed-inserter", 4, group="Long Inserter")
+    add(gx + 2, gy + 2, "long-handed-inserter", 8, group="Long Inserter")
+    add(gx + 3, gy + 2, "long-handed-inserter", 12, group="Long Inserter")
 
     # --- Group 5: Pipes (various connectivity patterns) ---
     gx, gy = 0, 14
 
     add(gx, gy, "pipe", group="Pipe")
 
-    add(gx+2, gy, "pipe", group="Pipe Run")
-    add(gx+3, gy, "pipe", group="Pipe Run")
-    add(gx+4, gy, "pipe", group="Pipe Run")
-    add(gx+5, gy, "pipe", group="Pipe Run")
+    add(gx + 2, gy, "pipe", group="Pipe Run")
+    add(gx + 3, gy, "pipe", group="Pipe Run")
+    add(gx + 4, gy, "pipe", group="Pipe Run")
+    add(gx + 5, gy, "pipe", group="Pipe Run")
 
-    add(gx+7, gy, "pipe", group="Pipe T")
-    add(gx+8, gy, "pipe", group="Pipe T")
-    add(gx+9, gy, "pipe", group="Pipe T")
-    add(gx+8, gy+1, "pipe", group="Pipe T")
+    add(gx + 7, gy, "pipe", group="Pipe T")
+    add(gx + 8, gy, "pipe", group="Pipe T")
+    add(gx + 9, gy, "pipe", group="Pipe T")
+    add(gx + 8, gy + 1, "pipe", group="Pipe T")
 
-    add(gx+11, gy, "pipe", group="Pipe Cross")
-    add(gx+12, gy, "pipe", group="Pipe Cross")
-    add(gx+13, gy, "pipe", group="Pipe Cross")
-    add(gx+12, gy-1, "pipe", group="Pipe Cross")
-    add(gx+12, gy+1, "pipe", group="Pipe Cross")
+    add(gx + 11, gy, "pipe", group="Pipe Cross")
+    add(gx + 12, gy, "pipe", group="Pipe Cross")
+    add(gx + 13, gy, "pipe", group="Pipe Cross")
+    add(gx + 12, gy - 1, "pipe", group="Pipe Cross")
+    add(gx + 12, gy + 1, "pipe", group="Pipe Cross")
 
-    add(gx, gy+2, "pipe-to-ground", 4, group="UG Pipe")
-    add(gx+3, gy+2, "pipe-to-ground", 12, group="UG Pipe")
+    add(gx, gy + 2, "pipe-to-ground", 4, group="UG Pipe")
+    add(gx + 3, gy + 2, "pipe-to-ground", 12, group="UG Pipe")
 
     # --- Group 6: Power poles ---
     gx, gy = 0, 18
     add(gx, gy, "medium-electric-pole", group="Power Pole")
-    add(gx+4, gy, "medium-electric-pole", group="Power Pole")
+    add(gx + 4, gy, "medium-electric-pole", group="Power Pole")
 
     # --- Group 7: Assembling machines (3x3) ---
     gx, gy = 0, 21
-    add(gx, gy, "assembling-machine-1", w=3, h=3, recipe="iron-gear-wheel",
-        color="#4e79a7", group="Assembler 1")
-    add(gx+4, gy, "assembling-machine-2", w=3, h=3, recipe="copper-cable",
-        color="#f28e2b", group="Assembler 2")
-    add(gx+8, gy, "assembling-machine-3", w=3, h=3, recipe="electronic-circuit",
-        color="#e15759", group="Assembler 3")
+    add(gx, gy, "assembling-machine-1", w=3, h=3, recipe="iron-gear-wheel", color="#4e79a7", group="Assembler 1")
+    add(gx + 4, gy, "assembling-machine-2", w=3, h=3, recipe="copper-cable", color="#f28e2b", group="Assembler 2")
+    add(gx + 8, gy, "assembling-machine-3", w=3, h=3, recipe="electronic-circuit", color="#e15759", group="Assembler 3")
 
     # --- Group 8: Chemical plant (3x3) ---
     gx, gy = 0, 25
-    add(gx, gy, "chemical-plant", w=3, h=3, recipe="sulfuric-acid",
-        color="#76b7b2", group="Chemical Plant")
+    add(gx, gy, "chemical-plant", w=3, h=3, recipe="sulfuric-acid", color="#76b7b2", group="Chemical Plant")
 
     # --- Group 9: Oil refinery (5x5) ---
     gx, gy = 4, 25
-    add(gx, gy, "oil-refinery", w=5, h=5, recipe="advanced-oil-processing",
-        color="#59a14f", group="Oil Refinery")
+    add(gx, gy, "oil-refinery", w=5, h=5, recipe="advanced-oil-processing", color="#59a14f", group="Oil Refinery")
 
     # --- Group 10: Mini factory vignette ---
     gx, gy = 0, 32
     for i in range(5):
-        add(gx, gy+i, "transport-belt", 8, carries="iron-plate", group="Mini Factory")
-    add(gx+1, gy+1, "inserter", 4, group="Mini Factory")
-    add(gx+2, gy, "assembling-machine-2", w=3, h=3, recipe="iron-gear-wheel",
-        color="#4e79a7", group="Mini Factory")
-    add(gx+5, gy+1, "inserter", 4, group="Mini Factory")
+        add(gx, gy + i, "transport-belt", 8, carries="iron-plate", group="Mini Factory")
+    add(gx + 1, gy + 1, "inserter", 4, group="Mini Factory")
+    add(gx + 2, gy, "assembling-machine-2", w=3, h=3, recipe="iron-gear-wheel", color="#4e79a7", group="Mini Factory")
+    add(gx + 5, gy + 1, "inserter", 4, group="Mini Factory")
     for i in range(5):
-        add(gx+6, gy+i, "transport-belt", 8, carries="iron-gear-wheel", group="Mini Factory")
-    add(gx+3, gy+4, "medium-electric-pole", group="Mini Factory")
+        add(gx + 6, gy + i, "transport-belt", 8, carries="iron-gear-wheel", group="Mini Factory")
+    add(gx + 3, gy + 4, "medium-electric-pole", group="Mini Factory")
 
     return tiles
 
