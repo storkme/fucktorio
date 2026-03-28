@@ -99,6 +99,7 @@ def validate(
     if layout_style == "spaghetti":
         issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_belt_junctions(layout_result))
+    issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -677,6 +678,57 @@ def _bfs_belt_reach(
             if nb in belt_tiles and nb not in visited:
                 visited.add(nb)
                 queue.append(nb)
+
+    return visited
+
+
+def _bfs_belt_downstream(
+    starts: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> set[tuple[int, int]]:
+    """BFS following belt directions forward — where do items end up?"""
+    visited: set[tuple[int, int]] = set()
+    queue = deque(starts & belt_dir_map.keys())
+    visited.update(queue)
+
+    while queue:
+        x, y = queue.popleft()
+        d = belt_dir_map.get((x, y))
+        if d is None:
+            continue
+        dx, dy = _DIR_TO_VEC[d]
+        nb = (x + dx, y + dy)
+        if nb in belt_dir_map and nb not in visited:
+            visited.add(nb)
+            queue.append(nb)
+
+    return visited
+
+
+def _bfs_belt_upstream(
+    starts: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> set[tuple[int, int]]:
+    """BFS tracing backward against belt flow — where can items come from?
+
+    A neighbor (nx,ny) feeds into (x,y) if the neighbor's direction
+    points at (x,y): (nx + ndx, ny + ndy) == (x, y).
+    """
+    visited: set[tuple[int, int]] = set()
+    queue = deque(starts & belt_dir_map.keys())
+    visited.update(queue)
+
+    while queue:
+        x, y = queue.popleft()
+        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = x + ddx, y + ddy
+            nd = belt_dir_map.get((nx, ny))
+            if nd is None or (nx, ny) in visited:
+                continue
+            ndx, ndy = _DIR_TO_VEC[nd]
+            if (nx + ndx, ny + ndy) == (x, y):
+                visited.add((nx, ny))
+                queue.append((nx, ny))
 
     return visited
 
@@ -1268,6 +1320,165 @@ def check_belt_junctions(
                         y=y,
                     )
                 )
+
+    return issues
+
+
+def check_belt_flow_reachability(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+    layout_style: str = "spaghetti",
+) -> list[ValidationIssue]:
+    """Check that items can physically flow through belts to/from machines.
+
+    Uses directional BFS that follows actual belt directions, unlike the
+    adjacency-based checks. For each machine:
+    - Input check: trace upstream from the input inserter's belt tile to
+      verify items can reach it from the boundary or another machine's output.
+    - Output check: trace downstream from the output inserter's belt tile to
+      verify items can leave toward the boundary or another machine's input.
+    """
+    issues: list[ValidationIssue] = []
+    if solver_result is None:
+        return issues
+
+    fluid_only_recipes = _get_fluid_only_recipes(solver_result)
+
+    # Build belt direction map
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir_map[(e.x, e.y)] = e.direction
+
+    if not belt_dir_map:
+        return issues
+
+    # Build machine tile maps
+    machine_tiles = _build_machine_tile_set(layout_result)
+    machine_by_tile: dict[tuple[int, int], tuple[int, int]] = {}
+    for e in layout_result.entities:
+        if e.name in _MACHINE_ENTITIES:
+            size = _machine_size(e.name)
+            for dx in range(size):
+                for dy in range(size):
+                    machine_by_tile[(e.x + dx, e.y + dy)] = (e.x, e.y)
+
+    # Classify inserters as input or output, recording their belt tiles
+    # input_belt_tiles: set of tiles where input inserters pick from
+    # output_belt_tiles: set of tiles where output inserters drop onto
+    input_belt_tiles: set[tuple[int, int]] = set()
+    output_belt_tiles: set[tuple[int, int]] = set()
+    # Per-machine: which belt tiles are input/output for that machine
+    machine_input_belts: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    machine_output_belts: dict[tuple[int, int], list[tuple[int, int]]] = {}
+
+    for ins in layout_result.entities:
+        if ins.name not in _INSERTER_ENTITIES:
+            continue
+        direction_vec = _DIR_TO_VEC.get(ins.direction)
+        if direction_vec is None:
+            continue
+        reach = _INSERTER_REACH.get(ins.name, 1)
+        dx, dy = direction_vec
+        odx, ody = _OPPOSITE_VEC[direction_vec]
+        drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
+        pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
+
+        if drop_pos in machine_tiles and pickup_pos in belt_dir_map:
+            mpos = machine_by_tile.get(drop_pos)
+            if mpos:
+                input_belt_tiles.add(pickup_pos)
+                machine_input_belts.setdefault(mpos, []).append(pickup_pos)
+        elif pickup_pos in machine_tiles and drop_pos in belt_dir_map:
+            mpos = machine_by_tile.get(pickup_pos)
+            if mpos:
+                output_belt_tiles.add(drop_pos)
+                machine_output_belts.setdefault(mpos, []).append(drop_pos)
+
+    # Compute layout boundary from belt positions
+    all_xs = [x for x, _ in belt_dir_map]
+    all_ys = [y for _, y in belt_dir_map]
+    min_bx, max_bx = min(all_xs), max(all_xs)
+    min_by, max_by = min(all_ys), max(all_ys)
+
+    def _on_boundary(pos: tuple[int, int]) -> bool:
+        return pos[0] in (min_bx, max_bx) or pos[1] in (min_by, max_by)
+
+    severity = "error" if layout_style == "spaghetti" else "warning"
+
+    # Check inputs: can items reach each machine's input inserter?
+    checked: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name not in _MACHINE_ENTITIES:
+            continue
+        mpos = (e.x, e.y)
+        if mpos in checked:
+            continue
+        checked.add(mpos)
+        if e.recipe in fluid_only_recipes:
+            continue
+
+        belts = machine_input_belts.get(mpos, [])
+        if not belts:
+            continue  # other checks catch missing inserters
+
+        belt_set = set(belts)
+        upstream = _bfs_belt_upstream(belt_set, belt_dir_map)
+        # Exclude start tiles — they may be on the boundary but that
+        # doesn't mean items can reach them from outside
+        upstream_beyond_start = upstream - belt_set
+        reaches_source = any(_on_boundary(t) for t in upstream_beyond_start) or bool(
+            upstream_beyond_start & output_belt_tiles
+        )
+        if not reaches_source:
+            issues.append(
+                ValidationIssue(
+                    severity=severity,
+                    category="belt-flow-reachability",
+                    message=(
+                        f"{e.name} at ({e.x},{e.y}): items can't reach input "
+                        f"(no upstream path from boundary or another machine's output)"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
+
+    # Check outputs: can items leave each machine's output inserter?
+    checked.clear()
+    for e in layout_result.entities:
+        if e.name not in _MACHINE_ENTITIES:
+            continue
+        mpos = (e.x, e.y)
+        if mpos in checked:
+            continue
+        checked.add(mpos)
+        if e.recipe in fluid_only_recipes:
+            continue
+
+        belts = machine_output_belts.get(mpos, [])
+        if not belts:
+            continue  # other checks catch missing output belts
+
+        belt_set = set(belts)
+        downstream = _bfs_belt_downstream(belt_set, belt_dir_map)
+        downstream_beyond_start = downstream - belt_set
+        reaches_sink = any(_on_boundary(t) for t in downstream_beyond_start) or bool(
+            downstream_beyond_start & input_belt_tiles
+        )
+        if not reaches_sink:
+            issues.append(
+                ValidationIssue(
+                    severity=severity,
+                    category="belt-flow-reachability",
+                    message=(
+                        f"{e.name} at ({e.x},{e.y}): items can't leave output "
+                        f"(no downstream path to boundary or another machine's input)"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
 
     return issues
 
