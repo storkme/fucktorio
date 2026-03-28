@@ -1,0 +1,43 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - 'heading "spaghetti: 10/s iron-gear-wheel" [level=1] [ref=e4]'
+      - generic [ref=e5]: 50 entities · 24×24 tiles
+    - generic [ref=e6]:
+      - heading "Recipes" [level=2] [ref=e7]
+      - generic [ref=e9] [cursor=pointer]:
+        - generic [ref=e11]: iron-gear-wheel
+        - generic [ref=e12]: ×4
+    - generic [ref=e13]:
+      - heading "Infrastructure" [level=2] [ref=e14]
+      - generic [ref=e15]:
+        - generic [ref=e16] [cursor=pointer]:
+          - generic [ref=e18]: Inserter
+          - generic [ref=e19]: ×8
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: Pole
+          - generic [ref=e23]: ×16
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: Belt (yellow)
+          - generic [ref=e27]: ×22
+    - generic [ref=e28]:
+      - heading "Production" [level=2] [ref=e29]
+      - table [ref=e30]:
+        - rowgroup [ref=e31]:
+          - row "Recipe Count Inputs" [ref=e32]:
+            - columnheader "Recipe" [ref=e33]
+            - columnheader "Count" [ref=e34]
+            - columnheader "Inputs" [ref=e35]
+        - rowgroup [ref=e36]:
+          - row "iron-gear-wheel 4 iron-plate 20.0/s" [ref=e37]:
+            - cell "iron-gear-wheel" [ref=e38]: iron-gear-wheel
+            - cell "4" [ref=e40]
+            - cell "iron-plate 20.0/s" [ref=e41]
+  - generic [ref=e42]:
+    - generic [ref=e43]:
+      - button "Layout" [ref=e44] [cursor=pointer]
+      - button "Flow Graph" [ref=e45] [cursor=pointer]
+    - generic [ref=e48]:
+      - button "⌖" [ref=e49] [cursor=pointer]
+      - button "+" [ref=e50] [cursor=pointer]
+      - button "−" [ref=e51] [cursor=pointer]

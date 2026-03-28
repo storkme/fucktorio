@@ -194,6 +194,15 @@ def _astar_path(
                         break
                     if (ex, ey) in obstacles:
                         continue  # exit blocked, try further
+                    # Don't land on a goal tile — items exit underground
+                    # facing the jump direction and need a surface belt
+                    # ahead to continue. If we land on a goal, the path
+                    # ends here with no continuation.
+                    if (ex, ey) in goals:
+                        continue
+                    # Tile after exit must also be free
+                    if (ex + dx, ey + dy) in obstacles:
+                        continue
 
                     new_g = cur_g + dist * _UG_COST_MULTIPLIER
                     if (ex, ey) in g_score and g_score[(ex, ey)] <= new_g:
@@ -648,6 +657,19 @@ def route_connections(
         if best_path is None:
             failed_edges.append(edge)
             continue
+
+        # Post-process: if path ends with an underground jump, extend by one
+        # surface tile in the jump direction so items have somewhere to go
+        if len(best_path) >= 2 and not edge.is_fluid:
+            last = best_path[-1]
+            prev = best_path[-2]
+            dist = abs(last[0] - prev[0]) + abs(last[1] - prev[1])
+            if dist > 1:
+                dx = (last[0] - prev[0]) // dist
+                dy = (last[1] - prev[1]) // dist
+                ext = (last[0] + dx, last[1] + dy)
+                if ext not in occupied:
+                    best_path.append(ext)
 
         # Place entities along path, skipping tiles already on the network
         new_tiles = [t for t in best_path if t not in network]
