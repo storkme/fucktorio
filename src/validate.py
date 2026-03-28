@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from .models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
+from .models import EntityDirection, LayoutResult, MachineSpec, PlacedEntity, SolverResult
 
 _3x3_ENTITIES = {
     "assembling-machine-1",
@@ -32,6 +32,13 @@ _BELT_THROUGHPUT = {
     "transport-belt": 15.0,
     "fast-transport-belt": 30.0,
     "express-transport-belt": 45.0,
+}
+
+# Per-lane capacity (half of total belt throughput)
+_LANE_CAPACITY = {
+    "transport-belt": 7.5,
+    "fast-transport-belt": 15.0,
+    "express-transport-belt": 22.5,
 }
 
 # Direction → (dx, dy) the inserter drops toward
@@ -100,6 +107,7 @@ def validate(
         issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_belt_junctions(layout_result))
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
+    issues.extend(check_lane_throughput(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
 
     errors = [i for i in issues if i.severity == "error"]
@@ -1479,6 +1487,267 @@ def check_belt_flow_reachability(
                     y=e.y,
                 )
             )
+
+    return issues
+
+
+def _inserter_target_lane(
+    ins_x: int,
+    ins_y: int,
+    belt_x: int,
+    belt_y: int,
+    belt_dir: EntityDirection,
+) -> str:
+    """Return which lane an inserter places items on (the far lane).
+
+    The inserter is on one side of the belt (left or right, relative to
+    belt direction). Items go on the opposite (far) lane.
+    """
+    dx, dy = _DIR_TO_VEC[belt_dir]
+    # Left perpendicular (looking in belt direction)
+    left_dx, left_dy = -dy, dx
+    # Vector from belt to inserter
+    rel_x, rel_y = ins_x - belt_x, ins_y - belt_y
+    dot = rel_x * left_dx + rel_y * left_dy
+    # Inserter on left → items on right (far lane), and vice versa
+    if dot > 0:
+        return "right"
+    elif dot < 0:
+        return "left"
+    # Directly behind/in front — default to left
+    return "left"
+
+
+def _classify_belt_feeders(
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> dict[tuple[int, int], list[tuple[tuple[int, int], str]]]:
+    """For each belt tile, return feeders and their type.
+
+    Returns {(x,y): [(feeder_pos, feed_type), ...]}
+    where feed_type is 'straight', 'sideload_left', or 'sideload_right'.
+    """
+    feeders: dict[tuple[int, int], list[tuple[tuple[int, int], str]]] = {}
+    for (bx, by), belt_d in belt_dir_map.items():
+        tile_feeders = []
+        bdx, bdy = _DIR_TO_VEC[belt_d]
+        # Left perpendicular
+        left_dx, left_dy = -bdy, bdx
+
+        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = bx + ddx, by + ddy
+            nd = belt_dir_map.get((nx, ny))
+            if nd is None:
+                continue
+            ndx, ndy = _DIR_TO_VEC[nd]
+            # Does this neighbor output to (bx, by)?
+            if (nx + ndx, ny + ndy) != (bx, by):
+                continue
+            # Classify: straight or sideload
+            if nd == belt_d:
+                tile_feeders.append(((nx, ny), "straight"))
+            else:
+                # Which side does the sideload come from?
+                rel_x, rel_y = nx - bx, ny - by
+                dot = rel_x * left_dx + rel_y * left_dy
+                if dot > 0:
+                    tile_feeders.append(((nx, ny), "sideload_left"))
+                else:
+                    tile_feeders.append(((nx, ny), "sideload_right"))
+        if tile_feeders:
+            feeders[(bx, by)] = tile_feeders
+    return feeders
+
+
+def check_lane_throughput(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check per-lane belt throughput using full lane simulation.
+
+    Each belt has two lanes (left/right), each with half the belt's total
+    throughput. Items enter specific lanes: inserters → far lane, sideloads
+    → near lane. Turns swap lanes. Flags tiles where either lane exceeds
+    its per-lane capacity.
+    """
+    issues: list[ValidationIssue] = []
+    if solver_result is None:
+        return issues
+
+    # Build belt maps
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    belt_name_map: dict[tuple[int, int], str] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir_map[(e.x, e.y)] = e.direction
+            belt_name_map[(e.x, e.y)] = e.name
+
+    if not belt_dir_map:
+        return issues
+
+    # Build machine tile maps
+    machine_tiles = _build_machine_tile_set(layout_result)
+    machine_by_tile: dict[tuple[int, int], tuple[int, int]] = {}
+    machine_entity: dict[tuple[int, int], PlacedEntity] = {}
+    for e in layout_result.entities:
+        if e.name in _MACHINE_ENTITIES:
+            machine_entity[(e.x, e.y)] = e
+            size = _machine_size(e.name)
+            for dx in range(size):
+                for dy in range(size):
+                    machine_by_tile[(e.x + dx, e.y + dy)] = (e.x, e.y)
+
+    # Build recipe → MachineSpec lookup
+    recipe_to_spec: dict[str, MachineSpec] = {}
+    for spec in solver_result.machines:
+        recipe_to_spec[spec.recipe] = spec
+
+    # Find output inserters and their injection rates per lane
+    # lane_injections: {(bx, by): {"left": rate, "right": rate}}
+    lane_injections: dict[tuple[int, int], dict[str, float]] = {}
+    belt_carries: dict[tuple[int, int], str | None] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_carries[(e.x, e.y)] = e.carries
+
+    for ins in layout_result.entities:
+        if ins.name not in _INSERTER_ENTITIES:
+            continue
+        direction_vec = _DIR_TO_VEC.get(ins.direction)
+        if direction_vec is None:
+            continue
+        reach = _INSERTER_REACH.get(ins.name, 1)
+        dx, dy = direction_vec
+        odx, ody = _OPPOSITE_VEC[direction_vec]
+        drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
+        pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
+
+        # Output inserter: picks from machine, drops onto belt
+        if pickup_pos not in machine_tiles or drop_pos not in belt_dir_map:
+            continue
+
+        mpos = machine_by_tile.get(pickup_pos)
+        if mpos is None or mpos not in machine_entity:
+            continue
+
+        me = machine_entity[mpos]
+        spec = recipe_to_spec.get(me.recipe or "")
+        if spec is None:
+            continue
+
+        # Find the rate for the item this belt carries
+        carried_item = belt_carries.get(drop_pos)
+        if carried_item is None:
+            continue
+
+        rate = 0.0
+        for out in spec.outputs:
+            if out.item == carried_item:
+                rate = out.rate
+                break
+        if rate <= 0:
+            continue
+
+        # Determine target lane
+        belt_d = belt_dir_map[drop_pos]
+        lane = _inserter_target_lane(ins.x, ins.y, drop_pos[0], drop_pos[1], belt_d)
+
+        entry = lane_injections.setdefault(drop_pos, {"left": 0.0, "right": 0.0})
+        entry[lane] += rate
+
+    # Classify feeders for each belt tile
+    feeders = _classify_belt_feeders(belt_dir_map)
+
+    # Topological-order propagation
+    # Compute in-degree (number of belt feeders)
+    in_degree: dict[tuple[int, int], int] = {pos: 0 for pos in belt_dir_map}
+    for pos, tile_feeders in feeders.items():
+        in_degree[pos] = len(tile_feeders)
+
+    # Start from tiles with in-degree 0
+    queue = deque(pos for pos, deg in in_degree.items() if deg == 0)
+    lane_rates: dict[tuple[int, int], dict[str, float]] = {}
+    processed: set[tuple[int, int]] = set()
+
+    # Initialize all tiles
+    for pos in belt_dir_map:
+        inj = lane_injections.get(pos, {"left": 0.0, "right": 0.0})
+        lane_rates[pos] = {"left": inj["left"], "right": inj["right"]}
+
+    while queue:
+        pos = queue.popleft()
+        if pos in processed:
+            continue
+        processed.add(pos)
+
+        # Propagate this tile's output to its downstream tile
+        d = belt_dir_map.get(pos)
+        if d is None:
+            continue
+        ddx, ddy = _DIR_TO_VEC[d]
+        downstream = (pos[0] + ddx, pos[1] + ddy)
+
+        if downstream not in belt_dir_map:
+            continue
+
+        # How does this tile feed the downstream tile?
+        downstream_d = belt_dir_map[downstream]
+        downstream_dx, downstream_dy = _DIR_TO_VEC[downstream_d]
+        # Left perpendicular of downstream belt
+        left_dx, left_dy = -downstream_dy, downstream_dx
+
+        my_rates = lane_rates[pos]
+
+        if d == downstream_d:
+            # Straight feed: lanes preserved
+            lane_rates[downstream]["left"] += my_rates["left"]
+            lane_rates[downstream]["right"] += my_rates["right"]
+        elif (ddx, ddy) == (downstream_dx, downstream_dy):
+            # Same output direction (shouldn't happen for adjacent tiles with different dirs)
+            lane_rates[downstream]["left"] += my_rates["left"]
+            lane_rates[downstream]["right"] += my_rates["right"]
+        else:
+            # Check if this is a sideload or a turn
+            # If we're directly behind the downstream tile, it's a turn (direction changed)
+            behind_downstream = (downstream[0] - downstream_dx, downstream[1] - downstream_dy)
+            if pos == behind_downstream:
+                # Turn: lanes swap
+                lane_rates[downstream]["left"] += my_rates["right"]
+                lane_rates[downstream]["right"] += my_rates["left"]
+            else:
+                # Sideload: total goes to near lane
+                rel_x = pos[0] - downstream[0]
+                rel_y = pos[1] - downstream[1]
+                dot = rel_x * left_dx + rel_y * left_dy
+                total = my_rates["left"] + my_rates["right"]
+                if dot > 0:
+                    lane_rates[downstream]["left"] += total
+                else:
+                    lane_rates[downstream]["right"] += total
+
+        # Decrease in-degree of downstream; add to queue if ready
+        in_degree[downstream] -= 1
+        if in_degree[downstream] <= 0 and downstream not in processed:
+            queue.append(downstream)
+
+    # Check capacity
+    for pos, rates in lane_rates.items():
+        belt_name = belt_name_map.get(pos, "transport-belt")
+        cap = _LANE_CAPACITY.get(belt_name, 7.5)
+        for lane_name in ("left", "right"):
+            if rates[lane_name] > cap + 0.01:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="lane-throughput",
+                        message=(
+                            f"Belt at ({pos[0]},{pos[1]}): {lane_name} lane "
+                            f"{rates[lane_name]:.1f}/s exceeds {belt_name} "
+                            f"per-lane capacity {cap}/s"
+                        ),
+                        x=pos[0],
+                        y=pos[1],
+                    )
+                )
 
     return issues
 
