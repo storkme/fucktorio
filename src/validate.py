@@ -16,7 +16,9 @@ _3x3_ENTITIES = {
 _5x5_ENTITIES = {"oil-refinery"}
 _MACHINE_ENTITIES = _3x3_ENTITIES | _5x5_ENTITIES
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
-_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
+_SURFACE_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
+_UG_BELT_ENTITIES = {"underground-belt"}
+_BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
 
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
@@ -32,6 +34,7 @@ _BELT_THROUGHPUT = {
     "transport-belt": 15.0,
     "fast-transport-belt": 30.0,
     "express-transport-belt": 45.0,
+    "underground-belt": 15.0,
 }
 
 # Per-lane capacity (half of total belt throughput)
@@ -39,6 +42,7 @@ _LANE_CAPACITY = {
     "transport-belt": 7.5,
     "fast-transport-belt": 15.0,
     "express-transport-belt": 22.5,
+    "underground-belt": 7.5,
 }
 
 # Direction → (dx, dy) the inserter drops toward
@@ -692,11 +696,71 @@ def _bfs_belt_reach(
     return visited
 
 
+def _build_ug_pairs(
+    layout_result: LayoutResult,
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Build underground belt pair map: entry↔exit.
+
+    Scans underground-belt entities and matches input/output pairs
+    by direction and alignment. Returns bidirectional mapping.
+    """
+    # Group by direction and axis
+    ug_inputs: list[PlacedEntity] = []
+    ug_outputs: list[PlacedEntity] = []
+    for e in layout_result.entities:
+        if e.name == "underground-belt":
+            if e.io_type == "input":
+                ug_inputs.append(e)
+            elif e.io_type == "output":
+                ug_outputs.append(e)
+
+    pairs: dict[tuple[int, int], tuple[int, int]] = {}
+    used_outputs: set[tuple[int, int]] = set()
+
+    for inp in ug_inputs:
+        d = _DIR_TO_VEC.get(inp.direction)
+        if d is None:
+            continue
+        dx, dy = d
+        # Find nearest matching output in the same direction along the line
+        best_out = None
+        best_dist = float("inf")
+        for out in ug_outputs:
+            if (out.x, out.y) in used_outputs:
+                continue
+            if out.direction != inp.direction:
+                continue
+            # Must be along the direction line
+            rx, ry = out.x - inp.x, out.y - inp.y
+            if dx != 0:
+                if ry != 0 or (rx > 0) != (dx > 0):
+                    continue
+                dist = abs(rx)
+            else:
+                if rx != 0 or (ry > 0) != (dy > 0):
+                    continue
+                dist = abs(ry)
+            if 1 < dist < best_dist:
+                best_dist = dist
+                best_out = out
+
+        if best_out is not None:
+            pairs[(inp.x, inp.y)] = (best_out.x, best_out.y)
+            pairs[(best_out.x, best_out.y)] = (inp.x, inp.y)
+            used_outputs.add((best_out.x, best_out.y))
+
+    return pairs
+
+
 def _bfs_belt_downstream(
     starts: set[tuple[int, int]],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
+    ug_pairs: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
-    """BFS following belt directions forward — where do items end up?"""
+    """BFS following belt directions forward — where do items end up?
+
+    Traverses underground belt tunnels via ug_pairs mapping.
+    """
     visited: set[tuple[int, int]] = set()
     queue = deque(starts & belt_dir_map.keys())
     visited.update(queue)
@@ -707,6 +771,14 @@ def _bfs_belt_downstream(
         if d is None:
             continue
         dx, dy = _DIR_TO_VEC[d]
+
+        # Check for underground tunnel jump
+        if ug_pairs and (x, y) in ug_pairs:
+            paired = ug_pairs[(x, y)]
+            if paired not in visited:
+                visited.add(paired)
+                queue.append(paired)
+
         nb = (x + dx, y + dy)
         if nb in belt_dir_map and nb not in visited:
             visited.add(nb)
@@ -718,11 +790,13 @@ def _bfs_belt_downstream(
 def _bfs_belt_upstream(
     starts: set[tuple[int, int]],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
+    ug_pairs: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
     """BFS tracing backward against belt flow — where can items come from?
 
     A neighbor (nx,ny) feeds into (x,y) if the neighbor's direction
     points at (x,y): (nx + ndx, ny + ndy) == (x, y).
+    Traverses underground belt tunnels via ug_pairs mapping.
     """
     visited: set[tuple[int, int]] = set()
     queue = deque(starts & belt_dir_map.keys())
@@ -730,6 +804,14 @@ def _bfs_belt_upstream(
 
     while queue:
         x, y = queue.popleft()
+
+        # Check for underground tunnel jump (reverse)
+        if ug_pairs and (x, y) in ug_pairs:
+            paired = ug_pairs[(x, y)]
+            if paired not in visited:
+                visited.add(paired)
+                queue.append(paired)
+
         for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             nx, ny = x + ddx, y + ddy
             nd = belt_dir_map.get((nx, ny))
@@ -1406,13 +1488,19 @@ def check_belt_item_isolation(
 
     belt_dir: dict[tuple[int, int], EntityDirection] = {}
     belt_carry: dict[tuple[int, int], str | None] = {}
+    ug_inputs: set[tuple[int, int]] = set()
     for e in layout_result.entities:
         if e.name in _BELT_ENTITIES:
             belt_dir[(e.x, e.y)] = e.direction
             belt_carry[(e.x, e.y)] = e.carries
+            if e.name in _UG_BELT_ENTITIES and e.io_type == "input":
+                ug_inputs.add((e.x, e.y))
 
     seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     for (ax, ay), ad in belt_dir.items():
+        # Skip underground belt entries — items go underground, not to adjacent tile
+        if (ax, ay) in ug_inputs:
+            continue
         dx, dy = _DIR_TO_VEC[ad]
         bx, by = ax + dx, ay + dy
         if (bx, by) not in belt_dir:
@@ -1464,6 +1552,9 @@ def check_belt_flow_reachability(
 
     if not belt_dir_map:
         return issues
+
+    # Build underground belt pair map for tunnel traversal
+    ug_pairs = _build_ug_pairs(layout_result)
 
     # Build machine tile maps
     machine_tiles = _build_machine_tile_set(layout_result)
@@ -1535,7 +1626,7 @@ def check_belt_flow_reachability(
             continue  # other checks catch missing inserters
 
         belt_set = set(belts)
-        upstream = _bfs_belt_upstream(belt_set, belt_dir_map)
+        upstream = _bfs_belt_upstream(belt_set, belt_dir_map, ug_pairs=ug_pairs)
         # Exclude start tiles — they may be on the boundary but that
         # doesn't mean items can reach them from outside
         upstream_beyond_start = upstream - belt_set
@@ -1573,7 +1664,7 @@ def check_belt_flow_reachability(
             continue  # other checks catch missing output belts
 
         belt_set = set(belts)
-        downstream = _bfs_belt_downstream(belt_set, belt_dir_map)
+        downstream = _bfs_belt_downstream(belt_set, belt_dir_map, ug_pairs=ug_pairs)
         downstream_beyond_start = downstream - belt_set
         reaches_sink = any(_on_boundary(t) for t in downstream_beyond_start) or bool(
             downstream_beyond_start & input_belt_tiles

@@ -25,6 +25,14 @@ _BELT_TIERS = [
     ("express-transport-belt", 45.0),
 ]
 
+# Underground belt max reach (tiles between entry and exit, exclusive)
+_UG_MAX_REACH = {
+    "transport-belt": 4,
+    "fast-transport-belt": 6,
+    "express-transport-belt": 8,
+}
+_UG_COST_MULTIPLIER = 3  # underground costs 3x per tile vs surface
+
 # Direction vectors: (dx, dy) for each cardinal direction
 _DIRECTIONS = [(0, -1), (1, 0), (0, 1), (-1, 0)]  # N, E, S, W
 
@@ -105,11 +113,17 @@ def _astar_path(
     goals: set[tuple[int, int]],
     obstacles: set[tuple[int, int]],
     max_extent: int = 200,
+    allow_underground: bool = False,
+    ug_max_reach: int = 4,
 ) -> list[tuple[int, int]] | None:
-    """A* pathfinding with Manhattan heuristic.
+    """A* pathfinding with Manhattan heuristic and optional underground jumps.
 
-    Produces shorter, more direct paths than BFS by using A* with
-    a Manhattan distance heuristic. Tie-breaking favors straight lines.
+    When allow_underground is True, the A* can generate "underground jump"
+    neighbors that skip over obstacles. Jump cost is higher than surface
+    (3x per tile), so surface is always preferred when available.
+
+    Underground jumps appear as non-adjacent consecutive tiles in the
+    returned path (Manhattan distance > 1 between consecutive entries).
     """
     import heapq
 
@@ -119,7 +133,6 @@ def _astar_path(
     if not goals:
         return None
 
-    # Pick a single goal for the heuristic (nearest by Manhattan)
     goal_list = list(goals)
     sx, sy = start
 
@@ -127,7 +140,6 @@ def _astar_path(
         return min(abs(x - gx) + abs(y - gy) for gx, gy in goal_list)
 
     counter = 0
-    # (f_score, counter, x, y)
     open_set: list[tuple[int, int, int, int]] = []
     heapq.heappush(open_set, (_h(sx, sy), counter, sx, sy))
     counter += 1
@@ -149,6 +161,7 @@ def _astar_path(
 
         cur_g = g_score.get((cx, cy), 0)
 
+        # Normal surface moves (cost 1)
         for dx, dy in _DIRECTIONS:
             nx, ny = cx + dx, cy + dy
 
@@ -167,6 +180,31 @@ def _astar_path(
             heapq.heappush(open_set, (f, counter, nx, ny))
             counter += 1
 
+        # Underground jumps (cost = dist * _UG_COST_MULTIPLIER)
+        if allow_underground:
+            # Don't chain: skip if we reached this tile via a jump
+            prev = parent.get((cx, cy))
+            if prev is not None and (abs(prev[0] - cx) + abs(prev[1] - cy)) > 1:
+                continue
+
+            for dx, dy in _DIRECTIONS:
+                for dist in range(2, ug_max_reach + 2):
+                    ex, ey = cx + dx * dist, cy + dy * dist
+                    if ex < -10 or ey < -10 or ex > max_extent or ey > max_extent:
+                        break
+                    if (ex, ey) in obstacles:
+                        continue  # exit blocked, try further
+
+                    new_g = cur_g + dist * _UG_COST_MULTIPLIER
+                    if (ex, ey) in g_score and g_score[(ex, ey)] <= new_g:
+                        continue
+
+                    g_score[(ex, ey)] = new_g
+                    parent[(ex, ey)] = (cx, cy)
+                    f = new_g + _h(ex, ey)
+                    heapq.heappush(open_set, (f, counter, ex, ey))
+                    counter += 1
+
     return None
 
 
@@ -176,14 +214,55 @@ def _path_to_entities(
     item: str,
     is_fluid: bool,
 ) -> list[PlacedEntity]:
-    """Convert a tile path to placed belt or pipe entities."""
+    """Convert a tile path to placed belt or pipe entities.
+
+    Underground jumps appear as non-adjacent consecutive tiles in the path
+    (Manhattan distance > 1). These are converted to underground-belt
+    input/output pairs.
+    """
     entities: list[PlacedEntity] = []
 
     for i, (x, y) in enumerate(path):
         if is_fluid:
             entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=item))
+            continue
+
+        # Check if this tile is part of an underground jump
+        prev_dist = abs(x - path[i - 1][0]) + abs(y - path[i - 1][1]) if i > 0 else 1
+        next_dist = abs(path[i + 1][0] - x) + abs(path[i + 1][1] - y) if i + 1 < len(path) else 1
+
+        if next_dist > 1:
+            # Underground entry: this tile goes underground toward next tile
+            dx = (path[i + 1][0] - x) // next_dist
+            dy = (path[i + 1][1] - y) // next_dist
+            direction = _DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+            entities.append(
+                PlacedEntity(
+                    name="underground-belt",
+                    x=x,
+                    y=y,
+                    direction=direction,
+                    io_type="input",
+                    carries=item,
+                )
+            )
+        elif prev_dist > 1:
+            # Underground exit: this tile comes up from underground
+            dx = (x - path[i - 1][0]) // prev_dist
+            dy = (y - path[i - 1][1]) // prev_dist
+            direction = _DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+            entities.append(
+                PlacedEntity(
+                    name="underground-belt",
+                    x=x,
+                    y=y,
+                    direction=direction,
+                    io_type="output",
+                    carries=item,
+                )
+            )
         else:
-            # Determine belt direction from path
+            # Normal surface belt
             if i + 1 < len(path):
                 dx = path[i + 1][0] - x
                 dy = path[i + 1][1] - y
@@ -191,7 +270,7 @@ def _path_to_entities(
                 dx = x - path[i - 1][0]
                 dy = y - path[i - 1][1]
             else:
-                dx, dy = 0, 1  # default south
+                dx, dy = 0, 1
 
             direction = _DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
             entities.append(
@@ -412,6 +491,15 @@ def route_connections(
         if exclusions:
             occupied -= exclusions
 
+        # Determine belt tier early (needed for underground reach)
+        if edge.is_fluid:
+            belt_name = "pipe"
+        elif group_key in group_total_rate:
+            belt_name = _belt_entity_for_rate(group_total_rate[group_key])
+        else:
+            belt_name = _belt_entity_for_rate(edge.rate)
+        ug_reach = _UG_MAX_REACH.get(belt_name, 4)
+
         # Determine start and goal tiles
         has_start = edge_idx in edge_starts
         has_target = edge_idx in edge_targets
@@ -480,7 +568,7 @@ def route_connections(
                 occupied |= exclusions
             continue
 
-        # Try A* from each start tile until one works
+        # Try A* from each start tile — surface only first (fast)
         best_path = None
         for start in start_tiles:
             if start in occupied:
@@ -489,9 +577,25 @@ def route_connections(
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
+        # If surface routing failed, try with underground belts
+        if best_path is None and not edge.is_fluid:
+            for start in start_tiles:
+                if start in occupied:
+                    continue
+                path = _astar_path(
+                    start,
+                    goal_tiles - occupied,
+                    occupied,
+                    max_extent,
+                    allow_underground=True,
+                    ug_max_reach=ug_reach,
+                )
+                if path and (best_path is None or len(path) < len(best_path)):
+                    best_path = path
+
         # Check for cross-item contamination: would any tile in the path
-        # output onto a belt carrying a different item? Retry up to 3 times,
-        # accumulating blocked tiles.
+        # output onto a belt carrying a different item? Retry up to 3 times
+        # with underground belts enabled (they can tunnel under other routes).
         if best_path and not edge.is_fluid:
             all_blocked: set[tuple[int, int]] = set()
             for _retry in range(3):
@@ -522,7 +626,14 @@ def route_connections(
                 for start in start_tiles:
                     if start in occupied:
                         continue
-                    path = _astar_path(start, goal_tiles - occupied, occupied, max_extent)
+                    path = _astar_path(
+                        start,
+                        goal_tiles - occupied,
+                        occupied,
+                        max_extent,
+                        allow_underground=not edge.is_fluid,
+                        ug_max_reach=ug_reach,
+                    )
                     if path and (best_path is None or len(path) < len(best_path)):
                         best_path = path
                 if best_path is None:
@@ -537,14 +648,6 @@ def route_connections(
         if best_path is None:
             failed_edges.append(edge)
             continue
-
-        # Choose belt tier: use total group rate for external edges
-        if edge.is_fluid:
-            belt_name = "pipe"
-        elif group_key in group_total_rate:
-            belt_name = _belt_entity_for_rate(group_total_rate[group_key])
-        else:
-            belt_name = _belt_entity_for_rate(edge.rate)
 
         # Place entities along path, skipping tiles already on the network
         new_tiles = [t for t in best_path if t not in network]
