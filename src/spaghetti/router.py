@@ -424,7 +424,6 @@ def route_connections(
             # - Outputs: sideload into trunk via perpendicular approach tiles
             approach = _perpendicular_approach_tiles(network, belt_dir_map, occupied)
             junction_tiles = approach if approach else set(network)
-            use_approach = bool(approach)
 
             if edge.from_node is None and not edge.is_fluid:
                 # External input continuation (belts): extend the trunk from
@@ -443,7 +442,6 @@ def route_connections(
                 else:
                     _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
                 # Forward tiles are outside the network — no obstacle changes needed
-                use_approach = True  # prevent network removal from occupied
             elif edge.from_node is None:
                 # External input continuation (fluids): pipes connect
                 # omnidirectionally, perpendicular approach works fine
@@ -461,10 +459,9 @@ def route_connections(
                     start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
                 goal_tiles = junction_tiles
 
-            # Only remove network from obstacles when falling back to raw
-            # network tiles (approach/forward tiles are outside the network)
-            if not use_approach:
-                occupied -= network
+            # Never remove network from obstacles — routing through existing
+            # network tiles creates belt loops. If no approach/forward tiles
+            # are available, the edge will fail routing (better than a loop).
         elif has_start or has_target:
             if has_start and has_target:
                 start_tiles = {edge_starts[edge_idx]}
@@ -478,12 +475,7 @@ def route_connections(
         else:
             start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
 
-        # Track whether we removed network from obstacles (for restore later)
-        removed_network = is_continuation and network and not use_approach if is_continuation and network else False
-
         if not start_tiles or not goal_tiles:
-            if removed_network:
-                occupied |= network
             if exclusions:
                 occupied |= exclusions
             continue
@@ -496,10 +488,6 @@ def route_connections(
             path = _astar_path(start, goal_tiles - occupied, occupied, max_extent)
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
-
-        # Restore network tiles to obstacles
-        if removed_network:
-            occupied |= network
 
         # Re-block the exclusion tiles
         if exclusions:

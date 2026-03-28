@@ -106,6 +106,7 @@ def validate(
     if layout_style == "spaghetti":
         issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_belt_junctions(layout_result))
+    issues.extend(check_belt_loops(layout_result))
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
     issues.extend(check_lane_throughput(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
@@ -1328,6 +1329,65 @@ def check_belt_junctions(
                         y=y,
                     )
                 )
+
+    return issues
+
+
+def check_belt_loops(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check for belt loops (cycles where items circulate forever).
+
+    Follows each belt's direction forward. If we revisit a tile,
+    there's a loop. Items caught in a loop never reach their destination.
+    """
+    issues: list[ValidationIssue] = []
+
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir_map[(e.x, e.y)] = e.direction
+
+    # Track which tiles we've already confirmed as loop-free or part of a reported loop
+    confirmed: set[tuple[int, int]] = set()
+    reported_loops: set[frozenset[tuple[int, int]]] = set()
+
+    for start in belt_dir_map:
+        if start in confirmed:
+            continue
+
+        # Follow the chain forward
+        visited_order: list[tuple[int, int]] = []
+        visited_set: set[tuple[int, int]] = set()
+        cur = start
+
+        while cur in belt_dir_map and cur not in visited_set:
+            visited_set.add(cur)
+            visited_order.append(cur)
+            d = belt_dir_map[cur]
+            dx, dy = _DIR_TO_VEC[d]
+            cur = (cur[0] + dx, cur[1] + dy)
+
+        if cur in visited_set:
+            # Found a cycle — extract the loop tiles
+            cycle_start_idx = visited_order.index(cur)
+            loop_tiles = frozenset(visited_order[cycle_start_idx:])
+
+            if loop_tiles not in reported_loops:
+                reported_loops.add(loop_tiles)
+                # Pick a representative tile for the error location
+                rep = min(loop_tiles)
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="belt-loop",
+                        message=(f"Belt loop detected: {len(loop_tiles)} tiles form a cycle near ({rep[0]},{rep[1]})"),
+                        x=rep[0],
+                        y=rep[1],
+                    )
+                )
+
+        confirmed |= visited_set
 
     return issues
 
