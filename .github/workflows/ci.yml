@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install factorio-draftsman pytest
+      - run: pip install factorio-draftsman pytest scipy
       - run: pytest tests/ -v --viz --junitxml=test-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -62,12 +62,63 @@ jobs:
       - name: Generate index.html
         run: |
           cd site
-          echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Test Visualizations</title><style>body{font-family:sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem}a{display:block;padding:.3rem 0}</style></head><body><h1>Test Visualizations</h1><ul>' > index.html
-          for f in *.html; do
-            [ "$f" = "index.html" ] && continue
-            echo "<li><a href=\"$f\">$f</a></li>" >> index.html
-          done
-          echo '</ul></body></html>' >> index.html
+          python3 - <<'PYEOF'
+          import os, html
+
+          files = sorted(f for f in os.listdir('.') if f.endswith('.html') and f != 'index.html')
+
+          # Group files by prefix (e.g. "spaghetti-", "ml-", "ml-sweep-")
+          sections: dict[str, list[str]] = {}
+          order = []
+          for f in files:
+              if f.startswith('ml-sweep-'):
+                  key = 'ML Sweep Gallery'
+              elif f.startswith('ml-'):
+                  key = 'ML Layout'
+              elif f.startswith('spaghetti-'):
+                  key = 'Spaghetti Layout'
+              else:
+                  key = 'Other'
+              if key not in sections:
+                  sections[key] = []
+                  order.append(key)
+              sections[key].append(f)
+
+          with open('index.html', 'w') as out:
+              out.write('<!DOCTYPE html><html><head><meta charset="utf-8">')
+              out.write('<title>Fucktorio - Test Visualizations</title>')
+              out.write('<style>')
+              out.write('body{font-family:sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;background:#1a1a2e;color:#e0e0e0}')
+              out.write('h1{color:#ff6b9d}')
+              out.write('h2{color:#c792ea;margin-top:2rem;border-bottom:1px solid #333;padding-bottom:.3rem}')
+              out.write('a{color:#82aaff;text-decoration:none;display:block;padding:.25rem 0}')
+              out.write('a:hover{color:#ff6b9d;text-decoration:underline}')
+              out.write('.sweep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.5rem}')
+              out.write('.sweep-grid a{padding:.4rem .6rem;background:#16213e;border-radius:4px}')
+              out.write('.sweep-grid a:hover{background:#1a1a40}')
+              out.write('</style></head><body>')
+              out.write('<h1>Fucktorio Test Visualizations</h1>')
+
+              for section in order:
+                  out.write(f'<h2>{html.escape(section)}</h2>')
+                  is_sweep = 'sweep' in section.lower()
+                  if is_sweep:
+                      out.write('<div class="sweep-grid">')
+                  else:
+                      out.write('<ul>')
+                  for f in sections[section]:
+                      label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
+                      if is_sweep:
+                          out.write(f'<a href="{html.escape(f)}">{html.escape(label)}</a>')
+                      else:
+                          out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
+                  if is_sweep:
+                      out.write('</div>')
+                  else:
+                      out.write('</ul>')
+
+              out.write('</body></html>')
+          PYEOF
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
