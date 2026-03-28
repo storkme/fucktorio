@@ -18,12 +18,12 @@ _MAX_RETRIES = 3
 _DEFAULT_SPACING = 4
 _SPACING_INCREMENT = 2
 
-# Retry strategies: alternate side strategies and spacing
+# Retry strategies: vary spacing (left_right is incompatible with horizontal trunks)
 _RETRY_STRATEGIES = [
     ("top_bottom", _DEFAULT_SPACING),
-    ("left_right", _DEFAULT_SPACING),
     ("top_bottom", _DEFAULT_SPACING + _SPACING_INCREMENT),
-    ("left_right", _DEFAULT_SPACING + 2 * _SPACING_INCREMENT),
+    ("top_bottom", _DEFAULT_SPACING + 2 * _SPACING_INCREMENT),
+    ("top_bottom", _DEFAULT_SPACING + 3 * _SPACING_INCREMENT),
 ]
 
 _MACHINE_ENTITIES = {
@@ -66,23 +66,26 @@ def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
                     log.info("Validation: %s", issue.message)
             return layout_result
         except ValidationError as exc:
-            error_count = len(exc.issues)
-            if error_count < best_error_count:
+            # Score includes both validation errors and failed routing edges
+            # (failed edges are worse — they mean completely missing connections)
+            score = len(exc.issues) + len(failed_edges) * 10
+            if score < best_error_count:
                 best_result = layout_result
-                best_error_count = error_count
+                best_error_count = score
 
             if attempt < len(_RETRY_STRATEGIES) - 1:
                 next_strategy, next_spacing = _RETRY_STRATEGIES[attempt + 1]
                 log.warning(
-                    "Attempt %d: %d validation error(s), retrying with strategy=%s spacing=%d",
+                    "Attempt %d: %d validation error(s) + %d failed edges, retrying with strategy=%s spacing=%d",
                     attempt + 1,
-                    error_count,
+                    len(exc.issues),
+                    len(failed_edges),
                     next_strategy,
                     next_spacing,
                 )
             else:
                 log.warning(
-                    "Layout has %d validation error(s) after %d attempts (best-effort)",
+                    "Layout has score %d (errors + failed edges) after %d attempts (best-effort)",
                     best_error_count,
                     len(_RETRY_STRATEGIES),
                 )
