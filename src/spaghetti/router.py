@@ -124,6 +124,11 @@ def _astar_path(
 
     Underground jumps appear as non-adjacent consecutive tiles in the
     returned path (Manhattan distance > 1 between consecutive entries).
+
+    Direction-aware state: after an underground exit, the A* state carries
+    a forced direction. The next move MUST continue one tile in that
+    direction (the belt continuation after the UG exit) before any turns
+    or further underground jumps are allowed.
     """
     import heapq
 
@@ -139,27 +144,56 @@ def _astar_path(
     def _h(x: int, y: int) -> int:
         return min(abs(x - gx) + abs(y - gy) for gx, gy in goal_list)
 
+    # State: (x, y, forced) where forced is None or (dx, dy) direction.
+    # forced is set on UG exit tiles — must take one step in that direction
+    # before normal movement resumes.
+    State = tuple[int, int, tuple[int, int] | None]
+    initial: State = (sx, sy, None)
+
     counter = 0
-    open_set: list[tuple[int, int, int, int]] = []
-    heapq.heappush(open_set, (_h(sx, sy), counter, sx, sy))
+    open_set: list[tuple[int, int, State]] = []
+    heapq.heappush(open_set, (_h(sx, sy), counter, initial))
     counter += 1
 
-    g_score: dict[tuple[int, int], int] = {start: 0}
-    parent: dict[tuple[int, int], tuple[int, int]] = {}
+    g_score: dict[State, int] = {initial: 0}
+    parent: dict[State, State] = {}
 
     while open_set:
-        _, _, cx, cy = heapq.heappop(open_set)
+        _, _, state = heapq.heappop(open_set)
+        cx, cy, forced = state
 
-        if (cx, cy) in goals:
-            path = [(cx, cy)]
-            cur = (cx, cy)
+        # Only reach a goal when no forced continuation pending
+        if (cx, cy) in goals and forced is None:
+            path: list[tuple[int, int]] = [(cx, cy)]
+            cur = state
             while cur in parent:
                 cur = parent[cur]
-                path.append(cur)
+                path.append((cur[0], cur[1]))
             path.reverse()
             return path
 
-        cur_g = g_score.get((cx, cy), 0)
+        cur_g = g_score.get(state, 0)
+
+        if forced is not None:
+            # Prevent A* from later revisiting this position as a normal tile,
+            # which would create duplicate (x, y) entries in the path.
+            none_state: State = (cx, cy, None)
+            if none_state not in g_score or g_score[none_state] > cur_g:
+                g_score[none_state] = cur_g
+
+            # Must continue in forced direction (one straight step after UG exit)
+            fdx, fdy = forced
+            nx, ny = cx + fdx, cy + fdy
+            if not (nx < -10 or ny < -10 or nx > max_extent or ny > max_extent) and (nx, ny) not in obstacles:
+                new_state: State = (nx, ny, None)
+                new_g = cur_g + 1
+                if new_state not in g_score or g_score[new_state] > new_g:
+                    g_score[new_state] = new_g
+                    parent[new_state] = state
+                    f = new_g + _h(nx, ny)
+                    heapq.heappush(open_set, (f, counter, new_state))
+                    counter += 1
+            continue  # No other moves when forced
 
         # Normal surface moves (cost 1)
         for dx, dy in _DIRECTIONS:
@@ -170,23 +204,19 @@ def _astar_path(
             if (nx, ny) in obstacles:
                 continue
 
+            new_state = (nx, ny, None)
             new_g = cur_g + 1
-            if (nx, ny) in g_score and g_score[(nx, ny)] <= new_g:
+            if new_state in g_score and g_score[new_state] <= new_g:
                 continue
 
-            g_score[(nx, ny)] = new_g
-            parent[(nx, ny)] = (cx, cy)
+            g_score[new_state] = new_g
+            parent[new_state] = state
             f = new_g + _h(nx, ny)
-            heapq.heappush(open_set, (f, counter, nx, ny))
+            heapq.heappush(open_set, (f, counter, new_state))
             counter += 1
 
         # Underground jumps (cost = dist * _UG_COST_MULTIPLIER)
         if allow_underground:
-            # Don't chain: skip if we reached this tile via a jump
-            prev = parent.get((cx, cy))
-            if prev is not None and (abs(prev[0] - cx) + abs(prev[1] - cy)) > 1:
-                continue
-
             for dx, dy in _DIRECTIONS:
                 for dist in range(2, ug_max_reach + 2):
                     ex, ey = cx + dx * dist, cy + dy * dist
@@ -200,18 +230,21 @@ def _astar_path(
                     # ends here with no continuation.
                     if (ex, ey) in goals:
                         continue
-                    # Tile after exit must also be free
+                    # Tile after exit must also be free (for forced continuation)
                     if (ex + dx, ey + dy) in obstacles:
                         continue
 
+                    # Exit state carries forced direction — next step must
+                    # continue straight before turning is allowed.
+                    new_state = (ex, ey, (dx, dy))
                     new_g = cur_g + dist * _UG_COST_MULTIPLIER
-                    if (ex, ey) in g_score and g_score[(ex, ey)] <= new_g:
+                    if new_state in g_score and g_score[new_state] <= new_g:
                         continue
 
-                    g_score[(ex, ey)] = new_g
-                    parent[(ex, ey)] = (cx, cy)
+                    g_score[new_state] = new_g
+                    parent[new_state] = state
                     f = new_g + _h(ex, ey)
-                    heapq.heappush(open_set, (f, counter, ex, ey))
+                    heapq.heappush(open_set, (f, counter, new_state))
                     counter += 1
 
     return None
