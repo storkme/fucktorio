@@ -489,6 +489,47 @@ def route_connections(
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
+        # Check for cross-item contamination: would any tile in the path
+        # output onto a belt carrying a different item? Retry up to 3 times,
+        # accumulating blocked tiles.
+        if best_path and not edge.is_fluid:
+            all_blocked: set[tuple[int, int]] = set()
+            for _retry in range(3):
+                contaminating: set[tuple[int, int]] = set()
+                for i, (px, py) in enumerate(best_path):
+                    if (px, py) in network:
+                        continue
+                    if i + 1 < len(best_path):
+                        ddx = best_path[i + 1][0] - px
+                        ddy = best_path[i + 1][1] - py
+                    elif i > 0:
+                        ddx = px - best_path[i - 1][0]
+                        ddy = py - best_path[i - 1][1]
+                    else:
+                        continue
+                    target = (px + ddx, py + ddy)
+                    for (other_item, _sg), other_tiles in group_networks.items():
+                        if other_item != edge.item and target in other_tiles:
+                            contaminating.add((px, py))
+                            break
+
+                if not contaminating:
+                    break  # path is clean
+
+                all_blocked |= contaminating
+                occupied |= contaminating
+                best_path = None
+                for start in start_tiles:
+                    if start in occupied:
+                        continue
+                    path = _astar_path(start, goal_tiles - occupied, occupied, max_extent)
+                    if path and (best_path is None or len(path) < len(best_path)):
+                        best_path = path
+                if best_path is None:
+                    break  # no alternative found
+
+            occupied -= all_blocked  # restore
+
         # Re-block the exclusion tiles
         if exclusions:
             occupied |= exclusions
