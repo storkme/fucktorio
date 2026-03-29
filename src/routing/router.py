@@ -373,6 +373,27 @@ def _perpendicular_approach_tiles(
     return approach
 
 
+def _network_upstream_ends(
+    network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> set[tuple[int, int]]:
+    """Find tiles at the upstream end of a belt network.
+
+    An upstream end is a network tile whose BACKWARD neighbor (opposite of
+    belt direction) is NOT in the network — the tip where items enter.
+    """
+    ends = set()
+    for tile in network:
+        d = belt_dir_map.get(tile)
+        if d is None:
+            continue
+        dx, dy = DIR_VEC[d]
+        backward = (tile[0] - dx, tile[1] - dy)
+        if backward not in network:
+            ends.add(tile)
+    return ends
+
+
 def _compute_io_y_slots(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
@@ -785,13 +806,22 @@ def route_connections(
                 else:
                     _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
             else:
-                # External output continuation: sideload into trunk via
-                # perpendicular approach tiles (items merge onto trunk)
+                # External output continuation: route to nearest trunk
+                # connection point (sideload or upstream approach)
                 if has_start:
                     start_tiles = {edge_starts[edge_idx]}
                 else:
                     start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
-                goal_tiles = junction_tiles
+                upstream_ends = _network_upstream_ends(network, belt_dir_map)
+                upstream_approach = set()
+                for tile in upstream_ends:
+                    d = belt_dir_map.get(tile)
+                    if d is not None:
+                        dx, dy = DIR_VEC[d]
+                        back = (tile[0] - dx, tile[1] - dy)
+                        if back not in occupied and back not in network:
+                            upstream_approach.add(back)
+                goal_tiles = junction_tiles | upstream_approach
 
             # Never remove network from obstacles — routing through existing
             # network tiles creates belt loops. If no approach/forward tiles
