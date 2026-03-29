@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity
@@ -16,6 +17,8 @@ from .common import (
     machine_tiles,
 )
 from .graph import FlowEdge, ProductionGraph
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -335,6 +338,162 @@ def _perpendicular_approach_tiles(
     return approach
 
 
+def _compute_io_y_slots(
+    graph: ProductionGraph,
+    positions: dict[int, tuple[int, int]],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Compute y-slot assignments for external input and output items.
+
+    Returns (input_slots, output_slots) where each maps item name -> y coordinate.
+    Items are stacked vertically starting from the minimum grid y.
+    """
+    if not positions:
+        return {}, {}
+
+    min_gy = min(y for _, y in positions.values()) - 3
+
+    input_items: list[str] = []
+    output_items: list[str] = []
+    seen_input: set[str] = set()
+    seen_output: set[str] = set()
+
+    for edge in graph.edges:
+        if edge.from_node is None and edge.item not in seen_input:
+            input_items.append(edge.item)
+            seen_input.add(edge.item)
+        if edge.to_node is None and edge.item not in seen_output:
+            output_items.append(edge.item)
+            seen_output.add(edge.item)
+
+    input_slots = {item: min_gy + i for i, item in enumerate(input_items)}
+    output_slots = {item: min_gy + i for i, item in enumerate(output_items)}
+    return input_slots, output_slots
+
+
+def _fix_belt_directions(
+    entities: list[PlacedEntity],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> None:
+    """Post-process belt directions to fix T-junctions, underground exits, and orphans.
+
+    Modifies entities in-place and updates belt_dir_map.
+    """
+    # Build position -> entity index mapping (belts and underground belts only)
+    belt_names = {
+        "transport-belt", "fast-transport-belt", "express-transport-belt",
+        "underground-belt",
+    }
+    pos_to_idx: dict[tuple[int, int], int] = {}
+    for i, e in enumerate(entities):
+        if e.name in belt_names:
+            pos_to_idx[(e.x, e.y)] = i
+
+    if not pos_to_idx:
+        return
+
+    belt_positions = set(pos_to_idx.keys())
+
+    # 1. Build adjacency map
+    adj: dict[tuple[int, int], list[tuple[int, int]]] = {pos: [] for pos in belt_positions}
+    for pos in belt_positions:
+        x, y = pos
+        for dx, dy in DIRECTIONS:
+            neighbor = (x + dx, y + dy)
+            if neighbor in belt_positions:
+                adj[pos].append(neighbor)
+
+    # 2. Log head-on belt collisions at T-junctions
+    for pos in belt_positions:
+        ent = entities[pos_to_idx[pos]]
+        if ent.name == "underground-belt":
+            continue
+        cur_dir = belt_dir_map.get(pos)
+        if cur_dir is None:
+            continue
+
+        cur_dvec = DIR_VEC[cur_dir]
+        feeders = []
+        for nx, ny in adj[pos]:
+            n_dir = belt_dir_map.get((nx, ny))
+            if n_dir is None:
+                continue
+            n_dvec = DIR_VEC[n_dir]
+            if (nx + n_dvec[0], ny + n_dvec[1]) == pos:
+                feeders.append((nx, ny))
+
+        if len(feeders) < 2:
+            continue
+
+        # Count inline feeders (same axis as belt direction)
+        inline_count = sum(
+            1 for fx, fy in feeders
+            if (pos[0] - fx, pos[1] - fy) == cur_dvec
+            or (fx - pos[0], fy - pos[1]) == cur_dvec
+        )
+        if inline_count >= 2:
+            logger.warning(
+                "Head-on belt collision at (%d, %d): feeders from opposite sides",
+                pos[0], pos[1],
+            )
+
+    # 3. Fix underground exit directions for sideloading
+    for pos in belt_positions:
+        idx = pos_to_idx[pos]
+        ent = entities[idx]
+        if ent.name != "underground-belt" or ent.io_type != "output":
+            continue
+        cur_dir = belt_dir_map.get(pos)
+        if cur_dir is None:
+            continue
+        cur_dvec = DIR_VEC[cur_dir]
+        exit_target = (pos[0] + cur_dvec[0], pos[1] + cur_dvec[1])
+
+        # If exit target has a perpendicular belt, ensure exit points at the trunk
+        if exit_target in belt_dir_map:
+            target_dir = belt_dir_map[exit_target]
+            target_dvec = DIR_VEC[target_dir]
+            if cur_dvec[0] * target_dvec[0] + cur_dvec[1] * target_dvec[1] == 0:
+                expected_dvec = (exit_target[0] - pos[0], exit_target[1] - pos[1])
+                expected_dir = DIR_MAP.get(expected_dvec)
+                if expected_dir is not None and expected_dir != cur_dir:
+                    ent.direction = expected_dir
+                    belt_dir_map[pos] = expected_dir
+
+    # 4. Fix orphaned belt stubs (dead ends pointing into nothing)
+    for pos in belt_positions:
+        idx = pos_to_idx[pos]
+        ent = entities[idx]
+        if ent.name == "underground-belt":
+            continue
+        cur_dir = belt_dir_map.get(pos)
+        if cur_dir is None:
+            continue
+        cur_dvec = DIR_VEC[cur_dir]
+        forward = (pos[0] + cur_dvec[0], pos[1] + cur_dvec[1])
+
+        # If forward tile has no belt, this is a dead end
+        if forward in belt_positions:
+            continue
+
+        # Check if any upstream neighbor exists (points at us)
+        upstream = None
+        for nx, ny in adj[pos]:
+            n_dir = belt_dir_map.get((nx, ny))
+            if n_dir is None:
+                continue
+            n_dvec = DIR_VEC[n_dir]
+            if (nx + n_dvec[0], ny + n_dvec[1]) == pos:
+                upstream = (nx, ny)
+                break
+
+        if upstream is not None:
+            # Orient this belt to continue in the upstream direction
+            up_dir = belt_dir_map.get(upstream)
+            if up_dir is not None and up_dir != cur_dir:
+                ent.direction = up_dir
+                belt_dir_map[pos] = up_dir
+
+
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
@@ -370,6 +529,9 @@ def route_connections(
         edge_subgroups = {}
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
+
+    # Pre-compute y-slot assignments for external I/O boundary convention
+    input_y_slots, output_y_slots = _compute_io_y_slots(graph, positions)
 
     # Build initial obstacle set from machine footprints + reserved tiles
     occupied: set[tuple[int, int]] = set(reserved_tiles) if reserved_tiles else set()
@@ -546,7 +708,7 @@ def route_connections(
                 if has_target:
                     goal_tiles = {edge_targets[edge_idx]}
                 else:
-                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
                 # Forward tiles are outside the network — no obstacle changes needed
             elif edge.from_node is None:
                 # External input continuation (fluids): pipes connect
@@ -555,14 +717,14 @@ def route_connections(
                 if has_target:
                     goal_tiles = {edge_targets[edge_idx]}
                 else:
-                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+                    _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
             else:
                 # External output continuation: sideload into trunk via
                 # perpendicular approach tiles (items merge onto trunk)
                 if has_start:
                     start_tiles = {edge_starts[edge_idx]}
                 else:
-                    start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+                    start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
                 goal_tiles = junction_tiles
 
             # Never remove network from obstacles — routing through existing
@@ -573,13 +735,13 @@ def route_connections(
                 start_tiles = {edge_starts[edge_idx]}
                 goal_tiles = {edge_targets[edge_idx]}
             elif has_target:
-                start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied)
+                start_tiles, _ = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
                 goal_tiles = {edge_targets[edge_idx]}
             else:  # has_start only
-                _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+                _, goal_tiles = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
                 start_tiles = {edge_starts[edge_idx]}
         else:
-            start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied)
+            start_tiles, goal_tiles = _edge_endpoints(edge, graph, positions, occupied, input_y_slots, output_y_slots)
 
         if not start_tiles or not goal_tiles:
             if exclusions:
@@ -694,6 +856,9 @@ def route_connections(
         group_networks.setdefault(group_key, set()).update(path_set)
         occupied |= path_set
 
+    # Post-process belt directions to fix T-junctions, underground exits, orphans
+    _fix_belt_directions(entities, belt_dir_map)
+
     return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
 
 
@@ -702,13 +867,15 @@ def _edge_endpoints(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
     occupied: set[tuple[int, int]],
+    input_y_slots: dict[str, int] | None = None,
+    output_y_slots: dict[str, int] | None = None,
 ) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
     """Determine start and goal tile sets for routing an edge.
 
     For internal edges: start/goal = belt tiles (2 tiles from machine),
     leaving the border tile free for an inserter.
-    For external inputs: start = edge of grid, goal = belt tiles of dest.
-    For external outputs: start = belt tiles of source, goal = edge of grid.
+    For external inputs: start = LEFT edge at assigned y-slot.
+    For external outputs: goal = RIGHT edge at assigned y-slot.
     """
     start_tiles: set[tuple[int, int]] = set()
     goal_tiles: set[tuple[int, int]] = set()
@@ -720,45 +887,20 @@ def _edge_endpoints(
         for bx, by in _machine_belt_tiles(fx, fy, size):
             start_tiles.add((bx, by))
     else:
-        # External input — start from the nearest grid edge to the target machine
-        if edge.to_node is not None and edge.to_node in {n.id for n in graph.nodes}:
-            tx, ty = positions[edge.to_node]
-            dst_size = machine_size(next(n for n in graph.nodes if n.id == edge.to_node).spec.entity)
-            # Find grid bounds
+        # External input — start from the LEFT edge at this item's y-slot
+        if positions:
             all_x = [x for x, _ in positions.values()]
-            all_y = [y for _, y in positions.values()]
-            min_gx, max_gx = min(all_x) - 3, max(all_x) + dst_size + 3
-            min_gy, max_gy = min(all_y) - 3, max(all_y) + dst_size + 3
-            # Center of target machine
-            cx, cy = tx + dst_size // 2, ty + dst_size // 2
-            # Distance to each edge
-            edges_dist = [
-                (cx - min_gx, "left"),
-                (max_gx - cx, "right"),
-                (cy - min_gy, "top"),
-                (max_gy - cy, "bottom"),
-            ]
-            edges_dist.sort(key=lambda d: d[0])
-            _, nearest = edges_dist[0]
-            # Place start tiles along that edge
-            if nearest == "left":
+            left_x = min(all_x) - 3
+            if input_y_slots and edge.item in input_y_slots:
+                y_slot = input_y_slots[edge.item]
+                start_tiles.add((left_x, y_slot))
+            else:
+                # Fallback: spread along left edge
+                all_y = [y for _, y in positions.values()]
+                min_gy = min(all_y) - 3
+                max_gy = max(all_y) + 8
                 for y in range(min_gy, max_gy + 1):
-                    start_tiles.add((min_gx, y))
-            elif nearest == "right":
-                for y in range(min_gy, max_gy + 1):
-                    start_tiles.add((max_gx, y))
-            elif nearest == "top":
-                for x in range(min_gx, max_gx + 1):
-                    start_tiles.add((x, min_gy))
-            else:  # bottom
-                for x in range(min_gx, max_gx + 1):
-                    start_tiles.add((x, max_gy))
-        else:
-            # Fallback: left edge
-            min_y = min(y for _, y in positions.values()) if positions else 0
-            max_y = max(y for _, y in positions.values()) + 5 if positions else 10
-            for y in range(min_y - 3, max_y + 4):
-                start_tiles.add((min(x for x, _ in positions.values()) - 3, y))
+                    start_tiles.add((left_x, y))
 
     if edge.to_node is not None:
         tx, ty = positions[edge.to_node]
@@ -767,41 +909,24 @@ def _edge_endpoints(
         for bx, by in _machine_belt_tiles(tx, ty, size):
             goal_tiles.add((bx, by))
     else:
-        # External output — route to nearest grid edge (like inputs do)
-        if edge.from_node is not None and edge.from_node in {n.id for n in graph.nodes}:
-            fx, fy = positions[edge.from_node]
-            src_size = machine_size(next(n for n in graph.nodes if n.id == edge.from_node).spec.entity)
+        # External output — route to the RIGHT edge at this item's y-slot
+        if positions:
             all_x = [x for x, _ in positions.values()]
-            all_y = [y for _, y in positions.values()]
-            min_gx, max_gx = min(all_x) - 3, max(all_x) + src_size + 3
-            min_gy, max_gy = min(all_y) - 3, max(all_y) + src_size + 3
-            cx, cy = fx + src_size // 2, fy + src_size // 2
-            edges_dist = [
-                (cx - min_gx, "left"),
-                (max_gx - cx, "right"),
-                (cy - min_gy, "top"),
-                (max_gy - cy, "bottom"),
-            ]
-            edges_dist.sort(key=lambda d: d[0])
-            _, nearest = edges_dist[0]
-            if nearest == "left":
-                for y in range(min_gy, max_gy + 1):
-                    goal_tiles.add((min_gx, y))
-            elif nearest == "right":
-                for y in range(min_gy, max_gy + 1):
-                    goal_tiles.add((max_gx, y))
-            elif nearest == "top":
-                for x in range(min_gx, max_gx + 1):
-                    goal_tiles.add((x, min_gy))
+            # Find max machine size for right boundary
+            max_size = max(
+                (machine_size(n.spec.entity) for n in graph.nodes),
+                default=3,
+            )
+            right_x = max(all_x) + max_size + 3
+            if output_y_slots and edge.item in output_y_slots:
+                y_slot = output_y_slots[edge.item]
+                goal_tiles.add((right_x, y_slot))
             else:
-                for x in range(min_gx, max_gx + 1):
-                    goal_tiles.add((x, max_gy))
-        else:
-            # Fallback: right edge
-            max_x = max(x for x, _ in positions.values()) + 10 if positions else 20
-            min_y = min(y for _, y in positions.values()) if positions else 0
-            max_y = max(y for _, y in positions.values()) + 5 if positions else 10
-            for y in range(min_y - 2, max_y + 3):
-                goal_tiles.add((max_x, y))
+                # Fallback: spread along right edge
+                all_y = [y for _, y in positions.values()]
+                min_gy = min(all_y) - 3
+                max_gy = max(all_y) + 8
+                for y in range(min_gy, max_gy + 1):
+                    goal_tiles.add((right_x, y))
 
     return start_tiles, goal_tiles
