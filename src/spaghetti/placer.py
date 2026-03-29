@@ -4,21 +4,8 @@ from __future__ import annotations
 
 import math
 
+from ..routing.common import machine_size as machine_size
 from .graph import ProductionGraph
-
-# Machine footprint sizes (tiles)
-_MACHINE_SIZE: dict[str, int] = {
-    "assembling-machine-1": 3,
-    "assembling-machine-2": 3,
-    "assembling-machine-3": 3,
-    "chemical-plant": 3,
-    "oil-refinery": 5,
-}
-_DEFAULT_SIZE = 3
-
-
-def machine_size(entity: str) -> int:
-    return _MACHINE_SIZE.get(entity, _DEFAULT_SIZE)
 
 
 def place_machines(graph: ProductionGraph, spacing: int = 4) -> dict[int, tuple[int, int]]:
@@ -28,7 +15,7 @@ def place_machines(graph: ProductionGraph, spacing: int = 4) -> dict[int, tuple[
     (measured from edge of one machine to edge of next). This leaves
     room for inserters, belts, and routing.
 
-    Returns a dict mapping node_id → (x, y) tile position (top-left corner).
+    Returns a dict mapping node_id -> (x, y) tile position (top-left corner).
     """
     if not graph.nodes:
         return {}
