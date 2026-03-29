@@ -191,11 +191,10 @@ def assign_inserter_positions(
 
             # Sort available sides: preferred first, then the rest
             # (only when side_preference is not overriding for this node)
-            if side_preference is None or node.id not in side_preference:
-                if preferred is not None:
-                    available_sides.sort(
-                        key=lambda s: 0 if s[2] == preferred else 1,
-                    )
+            if (side_preference is None or node.id not in side_preference) and preferred is not None:
+                available_sides.sort(
+                    key=lambda s: 0 if s[2] == preferred else 1,
+                )
 
             # Pick the best available side
             border, belt, direction_vec = available_sides.pop(0)

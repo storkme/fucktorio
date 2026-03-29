@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..layout.poles import place_poles
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
-from .common import DIR_MAP, _MACHINE_SIZE, belt_entity_for_rate, machine_size, machine_tiles
+from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, machine_size, machine_tiles
 from .graph import FlowEdge, ProductionGraph
 from .inserters import assign_inserter_positions, build_inserter_entities
 from .router import route_connections

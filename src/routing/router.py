@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity
 from .common import (
-    DIR_MAP,
-    DIR_VEC,
-    DIRECTIONS,
     _UG_COST_MULTIPLIER,
     _UG_MAX_REACH,
     _UG_PIPE_REACH,
+    DIR_MAP,
+    DIR_VEC,
+    DIRECTIONS,
     belt_entity_for_rate,
     machine_size,
     machine_tiles,

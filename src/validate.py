@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from .models import EntityDirection, LayoutResult, MachineSpec, PlacedEntity, SolverResult
+from .routing.common import _UG_MAX_REACH
 
 _3x3_ENTITIES = {
     "assembling-machine-1",
@@ -27,9 +28,6 @@ _UG_TO_SURFACE_TIER: dict[str, str] = {
     "express-underground-belt": "express-transport-belt",
 }
 
-# Underground belt max reach (tiles between entry and exit, exclusive)
-# Imported from routing for single source of truth
-from .routing.common import _UG_MAX_REACH
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
 
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
