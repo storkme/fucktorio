@@ -87,6 +87,7 @@ def visualize(
     solver_result=None,
     production_graph=None,
     validation_issues=None,
+    layout_result=None,
 ) -> str:
     """Generate an HTML visualization of a blueprint string.
 
@@ -133,6 +134,13 @@ def visualize(
     for e in bp.entities:
         entity_counts[e.name] += 1
 
+    # Build carries lookup from layout_result (draftsman entities don't preserve carries)
+    carries_lookup: dict[tuple[int, int], str] = {}
+    if layout_result is not None:
+        for ent in layout_result.entities:
+            if ent.carries:
+                carries_lookup[(ent.x, ent.y)] = ent.carries
+
     # Build tile data: list of {x, y, w, h, color, entity, recipe, tooltip, direction}
     tiles: list[dict] = []
     for e in bp.entities:
@@ -141,7 +149,7 @@ def visualize(
 
         # Get direction (0=N, 4=E, 8=S, 12=W)
         direction = int(getattr(e, "direction", 0) or 0)
-        carries = getattr(e, "carries", None) or ""
+        carries = carries_lookup.get((tx, ty)) or getattr(e, "carries", None) or ""
 
         if e.name in _CRAFTING:
             size = 5 if e.name in _5x5 else 3

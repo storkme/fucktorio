@@ -63,6 +63,7 @@ def viz(request: pytest.FixtureRequest):
             solver_result=solver_result,
             production_graph=production_graph,
             validation_issues=validation_issues,
+            layout_result=layout_result,
         )
 
     return _save
