@@ -2,13 +2,15 @@
 
 import math
 
+import pytest
+
 from src.blueprint import build_blueprint
 from src.solver import solve
 from src.spaghetti.graph import build_production_graph
 from src.spaghetti.layout import spaghetti_layout
 from src.spaghetti.placer import place_machines
 from src.spaghetti.router import _astar_path, route_connections
-from src.validate import validate
+from src.validate import ValidationError, validate
 
 
 class TestProductionGraph:
@@ -470,6 +472,114 @@ class TestSpaghettiValidation:
         issues = check_fluid_port_connectivity(lr, layout_style="spaghetti")
         bus_errors = [i for i in issues if "bus" in i.message]
         assert not bus_errors, f"Spaghetti mode should not check bus: {bus_errors}"
+
+
+class TestRecipeLadder:
+    """Recipe complexity ladder: tracks which recipes produce zero-error blueprints.
+
+    Each tier represents increasing recipe complexity. A passing test means
+    the layout engine can handle that level of complexity end-to-end.
+
+    | Tier | Recipe              | Complexity                          |
+    |------|---------------------|-------------------------------------|
+    | 1    | iron-gear-wheel     | 1 recipe, 1 solid input             |
+    | 2    | electronic-circuit  | 2 recipes, 2 solid inputs           |
+    | 3    | plastic-bar         | 1 recipe, 1 fluid + 1 solid input   |
+    | 4    | advanced-circuit    | 5+ recipes, mixed solid/fluid       |
+    | 5    | processing-unit     | Deep chain, multiple fluids         |
+    | 6    | rocket-control-unit | Very deep chain                     |
+    """
+
+    def test_tier1_iron_gear_wheel(self):
+        """Tier 1: single recipe, single solid input."""
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 1 validation errors: {[e.message for e in exc.issues]}")
+
+    @pytest.mark.xfail(reason="Cross-contamination and belt loops in multi-recipe chains")
+    def test_tier2_electronic_circuit(self):
+        """Tier 2: 2-step solid chain (copper-cable -> electronic-circuit)."""
+        result = solve(
+            "electronic-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate"},
+        )
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 2 validation errors: {[e.message for e in exc.issues]}")
+
+    @pytest.mark.xfail(reason="Pipe isolation failures with fluid recipes")
+    def test_tier3_plastic_bar(self):
+        """Tier 3: fluid recipe (petroleum-gas + coal -> plastic-bar)."""
+        result = solve(
+            "plastic-bar",
+            target_rate=5,
+            available_inputs={"petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 3 validation errors: {[e.message for e in exc.issues]}")
+
+    @pytest.mark.xfail(reason="Massive routing failures with 40+ machine layouts")
+    def test_tier4_advanced_circuit(self):
+        """Tier 4: deep mixed chain (copper-cable, plastic-bar, electronic-circuit -> advanced-circuit)."""
+        result = solve(
+            "advanced-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate", "petroleum-gas", "coal"},
+        )
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 4 validation errors: {[e.message for e in exc.issues]}")
+
+    @pytest.mark.xfail(reason="Deep chain with multiple fluids not yet supported")
+    def test_tier5_processing_unit(self):
+        """Tier 5: processing-unit (deep chain, multiple fluids)."""
+        result = solve(
+            "processing-unit",
+            target_rate=2,
+            available_inputs={
+                "iron-plate",
+                "copper-plate",
+                "petroleum-gas",
+                "coal",
+                "sulfuric-acid",
+            },
+        )
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 5 validation errors: {[e.message for e in exc.issues]}")
+
+    @pytest.mark.skip(reason="Solver returns 0 machines for rocket-control-unit")
+    def test_tier6_rocket_control_unit(self):
+        """Tier 6: rocket-control-unit (very deep chain)."""
+        result = solve(
+            "rocket-control-unit",
+            target_rate=1,
+            available_inputs={
+                "iron-plate",
+                "copper-plate",
+                "petroleum-gas",
+                "coal",
+                "sulfuric-acid",
+            },
+        )
+        lr = spaghetti_layout(result)
+        try:
+            validate(lr, result, layout_style="spaghetti")
+        except ValidationError as exc:
+            pytest.fail(f"Tier 6 validation errors: {[e.message for e in exc.issues]}")
 
 
 class TestUndergroundBeltExits:
