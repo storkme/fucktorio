@@ -17,8 +17,19 @@ _5x5_ENTITIES = {"oil-refinery"}
 _MACHINE_ENTITIES = _3x3_ENTITIES | _5x5_ENTITIES
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
 _SURFACE_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
-_UG_BELT_ENTITIES = {"underground-belt"}
+_UG_BELT_ENTITIES = {"underground-belt", "fast-underground-belt", "express-underground-belt"}
 _BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES
+
+# Map underground belt entity name to the corresponding surface belt tier
+_UG_TO_SURFACE_TIER: dict[str, str] = {
+    "underground-belt": "transport-belt",
+    "fast-underground-belt": "fast-transport-belt",
+    "express-underground-belt": "express-transport-belt",
+}
+
+# Underground belt max reach (tiles between entry and exit, exclusive)
+# Imported from routing for single source of truth
+from .routing.common import _UG_MAX_REACH
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
 
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
@@ -110,6 +121,8 @@ def validate(
     if layout_style == "spaghetti":
         issues.extend(check_belt_network_topology(layout_result, solver_result))
     issues.extend(check_belt_junctions(layout_result))
+    issues.extend(check_underground_belt_pairs(layout_result))
+    issues.extend(check_underground_belt_sideloading(layout_result))
     issues.extend(check_belt_loops(layout_result))
     issues.extend(check_belt_item_isolation(layout_result))
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
@@ -1402,16 +1415,214 @@ def check_belt_junctions(
                 continue
 
             if not is_perpendicular:
-                # Feeding from an invalid angle (e.g., head-on)
+                # Head-on collision: belt pointing opposite to the trunk
+                is_head_on = (ndx == -dx and ndy == -dy)
                 issues.append(
                     ValidationIssue(
-                        severity="warning",
+                        severity="error" if is_head_on else "warning",
                         category="belt-junction",
-                        message=(f"Belt at ({nx},{ny}) feeds into ({x},{y}) from an invalid angle (not perpendicular)"),
+                        message=(
+                            f"Belt at ({nx},{ny}) feeds HEAD-ON into ({x},{y})"
+                            if is_head_on
+                            else f"Belt at ({nx},{ny}) feeds into ({x},{y}) from an invalid angle (not perpendicular)"
+                        ),
                         x=x,
                         y=y,
                     )
                 )
+
+    return issues
+
+
+def check_underground_belt_pairs(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check underground belt pairing: every input has a matching output.
+
+    Validates:
+    - Each UG input has a matching output (same direction, same axis)
+    - Distance between pairs does not exceed max reach for the tier
+    - No intermediate UG belt of same tier intercepts the pair
+    """
+    issues: list[ValidationIssue] = []
+
+    # Collect all UG belts grouped by io_type
+    ug_inputs: list[PlacedEntity] = []
+    ug_outputs: list[PlacedEntity] = []
+    all_ug: list[PlacedEntity] = []
+    for e in layout_result.entities:
+        if e.name in _UG_BELT_ENTITIES:
+            all_ug.append(e)
+            if e.io_type == "input":
+                ug_inputs.append(e)
+            elif e.io_type == "output":
+                ug_outputs.append(e)
+
+    used_outputs: set[tuple[int, int]] = set()
+
+    for inp in ug_inputs:
+        d = _DIR_TO_VEC.get(inp.direction)
+        if d is None:
+            continue
+        dx, dy = d
+        surface_tier = _UG_TO_SURFACE_TIER.get(inp.name, "transport-belt")
+        max_reach = _UG_MAX_REACH.get(surface_tier, 4)
+
+        # Find nearest matching output along direction
+        best_out: PlacedEntity | None = None
+        best_dist = float("inf")
+        for out in ug_outputs:
+            if (out.x, out.y) in used_outputs:
+                continue
+            if out.direction != inp.direction:
+                continue
+            if out.name != inp.name:
+                continue
+            rx, ry = out.x - inp.x, out.y - inp.y
+            if dx != 0:
+                if ry != 0 or (rx > 0) != (dx > 0):
+                    continue
+                dist = abs(rx)
+            else:
+                if rx != 0 or (ry > 0) != (dy > 0):
+                    continue
+                dist = abs(ry)
+            if 1 < dist < best_dist:
+                best_dist = dist
+                best_out = out
+
+        if best_out is None:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="underground-belt",
+                    message=(
+                        f"Unpaired underground belt input at ({inp.x},{inp.y}) "
+                        f"facing {inp.direction.name}: no matching output found"
+                    ),
+                    x=inp.x,
+                    y=inp.y,
+                )
+            )
+            continue
+
+        used_outputs.add((best_out.x, best_out.y))
+
+        # Check distance does not exceed max reach
+        dist = best_dist
+        if dist > max_reach:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="underground-belt",
+                    message=(
+                        f"Underground belt pair ({inp.x},{inp.y})->({best_out.x},{best_out.y}) "
+                        f"distance {int(dist)} exceeds max reach {max_reach} for {surface_tier}"
+                    ),
+                    x=inp.x,
+                    y=inp.y,
+                )
+            )
+
+        # Check for intercepting UG belts of the same tier between the pair
+        for ug in all_ug:
+            if ug is inp or ug is best_out:
+                continue
+            if ug.name != inp.name or ug.direction != inp.direction:
+                continue
+            rx, ry = ug.x - inp.x, ug.y - inp.y
+            if dx != 0:
+                if ry != 0 or (rx > 0) != (dx > 0):
+                    continue
+                udist = abs(rx)
+            else:
+                if rx != 0 or (ry > 0) != (dy > 0):
+                    continue
+                udist = abs(ry)
+            if 0 < udist < dist:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        category="underground-belt",
+                        message=(
+                            f"Underground belt at ({ug.x},{ug.y}) intercepts pair "
+                            f"({inp.x},{inp.y})->({best_out.x},{best_out.y})"
+                        ),
+                        x=ug.x,
+                        y=ug.y,
+                    )
+                )
+
+    # Check for unpaired outputs (outputs not matched to any input)
+    for out in ug_outputs:
+        if (out.x, out.y) not in used_outputs:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="underground-belt",
+                    message=(
+                        f"Unpaired underground belt output at ({out.x},{out.y}) "
+                        f"facing {out.direction.name}: no matching input found"
+                    ),
+                    x=out.x,
+                    y=out.y,
+                )
+            )
+
+    return issues
+
+
+def check_underground_belt_sideloading(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check underground belt exit sideloading geometry.
+
+    For each UG belt output (exit), checks what's on the tile it exits
+    onto. If it's a belt:
+    - Perpendicular sideload: valid (feeds near lane)
+    - Head-on collision (opposite direction, same axis): error
+    """
+    issues: list[ValidationIssue] = []
+
+    belt_dir: dict[tuple[int, int], EntityDirection] = {}
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir[(e.x, e.y)] = e.direction
+
+    for e in layout_result.entities:
+        if e.name not in _UG_BELT_ENTITIES or e.io_type != "output":
+            continue
+
+        d = _DIR_TO_VEC.get(e.direction)
+        if d is None:
+            continue
+        dx, dy = d
+        exit_tile = (e.x + dx, e.y + dy)
+
+        if exit_tile not in belt_dir:
+            continue
+
+        target_dir = belt_dir[exit_tile]
+        tdx, tdy = _DIR_TO_VEC[target_dir]
+
+        # Check relationship between UG exit direction and target belt direction
+        dot = dx * tdx + dy * tdy
+
+        if dot < 0:
+            # Head-on: UG exit flows into a belt coming toward it
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="underground-belt",
+                    message=(
+                        f"Underground belt exit at ({e.x},{e.y}) facing {e.direction.name} "
+                        f"collides head-on with belt at ({exit_tile[0]},{exit_tile[1]}) "
+                        f"facing {target_dir.name}"
+                    ),
+                    x=e.x,
+                    y=e.y,
+                )
+            )
 
     return issues
 
