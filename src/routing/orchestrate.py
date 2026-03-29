@@ -15,6 +15,8 @@ def build_layout(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
     side_strategy: str = "top_bottom",
+    side_preference: dict[int, list[tuple[int, int]]] | None = None,
+    edge_order: list[int] | None = None,
 ) -> tuple[LayoutResult, list[FlowEdge]]:
     """Build a complete layout from machine positions.
 
@@ -30,7 +32,8 @@ def build_layout(
 
     # 2. Pre-assign inserter positions (lane-aware, reserves border tiles)
     plan = assign_inserter_positions(
-        graph, positions, occupied, solver_result=solver_result, side_strategy=side_strategy
+        graph, positions, occupied, solver_result=solver_result,
+        side_strategy=side_strategy, side_preference=side_preference,
     )
     assignments = plan.assignments
 
@@ -76,6 +79,7 @@ def build_layout(
         reserved_tiles=reserved,
         edge_exclusions=edge_exclusions,
         edge_subgroups=plan.edge_subgroups,
+        edge_order=edge_order,
     )
     entities.extend(routing.entities)
 
