@@ -18,10 +18,12 @@ _MAX_RETRIES = 3
 _DEFAULT_SPACING = 4
 _SPACING_INCREMENT = 2
 
-# Retry strategies: vary spacing (left_right is incompatible with horizontal trunks)
+# Retry strategies: vary spacing and side strategy
 _RETRY_STRATEGIES = [
     ("top_bottom", _DEFAULT_SPACING),
+    ("left_right", _DEFAULT_SPACING),
     ("top_bottom", _DEFAULT_SPACING + _SPACING_INCREMENT),
+    ("left_right", _DEFAULT_SPACING + _SPACING_INCREMENT),
     ("top_bottom", _DEFAULT_SPACING + 2 * _SPACING_INCREMENT),
     ("top_bottom", _DEFAULT_SPACING + 3 * _SPACING_INCREMENT),
 ]

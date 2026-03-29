@@ -503,6 +503,20 @@ def route_connections(
 
         indices.sort(key=_input_sort_key)
 
+    # Sort edges within each output group by spatial proximity
+    for _key, indices in output_routing_groups:
+        if len(indices) <= 1:
+            continue
+
+        def _output_sort_key(idx: int) -> float:
+            e = graph.edges[idx]
+            if e.from_node is None:
+                return 0
+            fx, fy = positions[e.from_node]
+            return fx + fy
+
+        indices.sort(key=_output_sort_key)
+
     # Build the routing order: internal edges, then input groups, then output groups
     routing_order: list[tuple[int, bool, tuple[str, int]]] = []
     for idx in internal_indices:
@@ -791,11 +805,41 @@ def _edge_endpoints(
         for bx, by in _machine_belt_tiles(tx, ty, size):
             goal_tiles.add((bx, by))
     else:
-        # External output — route to right edge
-        max_x = max(x for x, _ in positions.values()) + 10 if positions else 20
-        min_y = min(y for _, y in positions.values()) if positions else 0
-        max_y = max(y for _, y in positions.values()) + 5 if positions else 10
-        for y in range(min_y - 2, max_y + 3):
-            goal_tiles.add((max_x, y))
+        # External output — route to nearest grid edge (like inputs do)
+        if edge.from_node is not None and edge.from_node in {n.id for n in graph.nodes}:
+            fx, fy = positions[edge.from_node]
+            src_size = machine_size(next(n for n in graph.nodes if n.id == edge.from_node).spec.entity)
+            all_x = [x for x, _ in positions.values()]
+            all_y = [y for _, y in positions.values()]
+            min_gx, max_gx = min(all_x) - 3, max(all_x) + src_size + 3
+            min_gy, max_gy = min(all_y) - 3, max(all_y) + src_size + 3
+            cx, cy = fx + src_size // 2, fy + src_size // 2
+            edges_dist = [
+                (cx - min_gx, "left"),
+                (max_gx - cx, "right"),
+                (cy - min_gy, "top"),
+                (max_gy - cy, "bottom"),
+            ]
+            edges_dist.sort(key=lambda d: d[0])
+            _, nearest = edges_dist[0]
+            if nearest == "left":
+                for y in range(min_gy, max_gy + 1):
+                    goal_tiles.add((min_gx, y))
+            elif nearest == "right":
+                for y in range(min_gy, max_gy + 1):
+                    goal_tiles.add((max_gx, y))
+            elif nearest == "top":
+                for x in range(min_gx, max_gx + 1):
+                    goal_tiles.add((x, min_gy))
+            else:
+                for x in range(min_gx, max_gx + 1):
+                    goal_tiles.add((x, max_gy))
+        else:
+            # Fallback: right edge
+            max_x = max(x for x, _ in positions.values()) + 10 if positions else 20
+            min_y = min(y for _, y in positions.values()) if positions else 0
+            max_y = max(y for _, y in positions.values()) + 5 if positions else 10
+            for y in range(min_y - 2, max_y + 3):
+                goal_tiles.add((max_x, y))
 
     return start_tiles, goal_tiles
