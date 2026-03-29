@@ -9,3 +9,7 @@ build/
 *.blueprint
 blueprint_viz.html
 test_viz/
+
+# Claude Code worktrees
+.claude/worktrees/
+misc/
