@@ -281,10 +281,7 @@ def _mutate(
         side_pref[node.id] = sides
 
     # Mutate edge order: partial shuffle of parent's order
-    if parent.edge_order is not None:
-        edge_ord = list(parent.edge_order)
-    else:
-        edge_ord = list(range(num_edges))
+    edge_ord = list(parent.edge_order) if parent.edge_order is not None else list(range(num_edges))
 
     # Shuffle a portion (25-50%) of the edge order
     n_swap = max(1, rng.randint(len(edge_ord) // 4, len(edge_ord) // 2 + 1))
