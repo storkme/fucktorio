@@ -7,7 +7,7 @@ import math
 from .blueprint import build_blueprint
 from .layout import layout
 from .solver import solve
-from .validate import validate
+from .validate import ValidationError, validate
 
 
 def produce(
@@ -90,8 +90,11 @@ def produce(
         layout_result = layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
 
-    # 3. Validate (raises ValidationError on critical issues)
-    warnings = validate(layout_result, solver_result)
+    # 3. Validate (log issues but continue with best-effort layout)
+    try:
+        warnings = validate(layout_result, solver_result)
+    except ValidationError as e:
+        warnings = e.issues
     if warnings:
         for w in warnings:
             print(f"  [{w.severity}] {w.message}")
