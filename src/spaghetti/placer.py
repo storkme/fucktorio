@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
 
 from ..routing.common import machine_size as machine_size
 from .graph import ProductionGraph
@@ -75,10 +74,14 @@ def _dependency_order(graph: ProductionGraph) -> list[int]:
     downstream: dict[int, list[int]] = {nid: [] for nid in node_ids}
 
     for edge in graph.edges:
-        if edge.from_node is not None and edge.to_node is not None:
-            if edge.from_node in node_ids and edge.to_node in node_ids:
-                in_degree[edge.to_node] += 1
-                downstream[edge.from_node].append(edge.to_node)
+        if (
+            edge.from_node is not None
+            and edge.to_node is not None
+            and edge.from_node in node_ids
+            and edge.to_node in node_ids
+        ):
+            in_degree[edge.to_node] += 1
+            downstream[edge.from_node].append(edge.to_node)
 
     # Count total connections per node (for tie-breaking)
     connection_count: dict[int, int] = {nid: 0 for nid in node_ids}
@@ -137,9 +140,13 @@ def _connected_placed(
         node = next(n for n in graph.nodes if n.id == node_id)
         best_sibling = None
         for other in graph.nodes:
-            if other.id != node_id and other.id in placed and other.spec.recipe == node.spec.recipe:
-                if best_sibling is None or other.id > best_sibling:
-                    best_sibling = other.id
+            if (
+                other.id != node_id
+                and other.id in placed
+                and other.spec.recipe == node.spec.recipe
+                and (best_sibling is None or other.id > best_sibling)
+            ):
+                best_sibling = other.id
         if best_sibling is not None:
             connected.append(best_sibling)
 

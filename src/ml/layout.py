@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..models import LayoutResult, SolverResult
-from ..routing.graph import ProductionGraph, build_production_graph
+from ..routing.graph import build_production_graph
 from ..routing.orchestrate import build_layout
 from ..validate import ValidationError, validate
 from .placer import ml_place_machines

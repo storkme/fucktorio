@@ -12,9 +12,9 @@ from src.ml.loss import (
     total_loss,
 )
 from src.ml.placer import ml_place_machines
-from src.solver import solve
 from src.routing.common import machine_size
 from src.routing.graph import build_production_graph
+from src.solver import solve
 
 # ---------------------------------------------------------------------------
 # Loss function unit tests

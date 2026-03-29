@@ -888,9 +888,11 @@ function buildValidation() {{
     div.className = 'val-item ' + (issue.severity === 'error' ? 'val-error' : 'val-warning');
     let posHtml = '';
     if (issue.x != null && issue.y != null) {{
-      posHtml = `<div class="val-pos" data-x="${{issue.x}}" data-y="${{issue.y}}">&rarr; (${{issue.x}}, ${{issue.y}})</div>`;
+      posHtml = `<div class="val-pos" data-x="${{issue.x}}" ` +
+        `data-y="${{issue.y}}">&rarr; (${{issue.x}}, ${{issue.y}})</div>`;
     }}
-    div.innerHTML = `<div class="val-category">${{issue.category}}</div><div class="val-msg">${{issue.message}}</div>${{posHtml}}`;
+    div.innerHTML = `<div class="val-category">${{issue.category}}</div>` +
+      `<div class="val-msg">${{issue.message}}</div>${{posHtml}}`;
     el.appendChild(div);
   }}
   // Click position to pan to it
