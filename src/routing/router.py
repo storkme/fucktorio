@@ -104,11 +104,41 @@ def _astar_path(
     if not goals:
         return None
 
-    goal_list = list(goals)
     sx, sy = start
 
-    def _h(x: int, y: int) -> int:
-        return min(abs(x - gx) + abs(y - gy) for gx, gy in goal_list)
+    # Deviation penalty: compute line from start to goal center
+    goal_cx = sum(g[0] for g in goals) / len(goals)
+    goal_cy = sum(g[1] for g in goals) / len(goals)
+    line_dx = goal_cx - sx
+    line_dy = goal_cy - sy
+    line_len = max(1.0, (line_dx**2 + line_dy**2) ** 0.5)
+
+    def _deviation(x: int, y: int) -> float:
+        """Perpendicular distance from (x,y) to the start→goal line."""
+        return abs((x - sx) * line_dy - (y - sy) * line_dx) / line_len
+
+    # Optimized heuristic: special-case single goal (common) to avoid
+    # generator/min overhead; for multi-goal, use inlined abs to avoid
+    # Python function call overhead (~460k calls in a typical run).
+    if len(goals) == 1:
+        (gx0, gy0), = goals
+
+        def _h(x: int, y: int) -> int:
+            dx = x - gx0
+            dy = y - gy0
+            return (dx if dx > 0 else -dx) + (dy if dy > 0 else -dy)
+    else:
+        goal_list = list(goals)
+
+        def _h(x: int, y: int) -> int:
+            best = 0x7FFFFFFF
+            for gx, gy in goal_list:
+                dx = x - gx
+                dy = y - gy
+                d = (dx if dx > 0 else -dx) + (dy if dy > 0 else -dy)
+                if d < best:
+                    best = d
+            return best
 
     # State: (x, y, forced) where forced is None or (dx, dy) direction.
     # forced is set on UG exit tiles — must take one step in that direction
@@ -121,7 +151,7 @@ def _astar_path(
     heapq.heappush(open_set, (_h(sx, sy), counter, initial))
     counter += 1
 
-    g_score: dict[State, int] = {initial: 0}
+    g_score: dict[State, float] = {initial: 0.0}
     parent: dict[State, State] = {}
 
     while open_set:
@@ -152,7 +182,7 @@ def _astar_path(
             nx, ny = cx + fdx, cy + fdy
             if not (nx < -10 or ny < -10 or nx > max_extent or ny > max_extent) and (nx, ny) not in obstacles:
                 new_state: State = (nx, ny, None)
-                new_g = cur_g + 1
+                new_g = cur_g + 1.0
                 if new_state not in g_score or g_score[new_state] > new_g:
                     g_score[new_state] = new_g
                     parent[new_state] = state
@@ -161,7 +191,7 @@ def _astar_path(
                     counter += 1
             continue  # No other moves when forced
 
-        # Normal surface moves (cost 1)
+        # Normal surface moves (cost 1 + turn penalty + deviation penalty)
         for dx, dy in DIRECTIONS:
             nx, ny = cx + dx, cy + dy
 
@@ -171,7 +201,24 @@ def _astar_path(
                 continue
 
             new_state = (nx, ny, None)
-            new_g = cur_g + 1
+            new_g = cur_g + 1.0
+
+            # Turn penalty: changing direction costs extra
+            prev = parent.get(state)
+            if prev is not None:
+                pdx = cx - prev[0]
+                pdy = cy - prev[1]
+                # Normalize for underground jumps (non-unit deltas)
+                if pdx != 0:
+                    pdx = 1 if pdx > 0 else -1
+                if pdy != 0:
+                    pdy = 1 if pdy > 0 else -1
+                if (dx, dy) != (pdx, pdy):
+                    new_g += 0.5
+
+            # Deviation penalty: stay near the start→goal line
+            new_g += _deviation(nx, ny) * 0.1
+
             if new_state in g_score and g_score[new_state] <= new_g:
                 continue
 
@@ -203,7 +250,7 @@ def _astar_path(
                     # Exit state carries forced direction — next step must
                     # continue straight before turning is allowed.
                     new_state = (ex, ey, (dx, dy))
-                    new_g = cur_g + dist * _UG_COST_MULTIPLIER
+                    new_g = cur_g + dist * _UG_COST_MULTIPLIER + _deviation(ex, ey) * 0.1
                     if new_state in g_score and g_score[new_state] <= new_g:
                         continue
 

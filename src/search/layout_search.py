@@ -4,59 +4,19 @@ from __future__ import annotations
 
 import logging
 import random
-from collections import deque
 from dataclasses import dataclass
 
 from ..models import LayoutResult, SolverResult
 from ..routing.common import machine_size, machine_tiles
 from ..routing.graph import ProductionGraph, build_production_graph
 from ..routing.orchestrate import build_layout
-from ..spaghetti.placer import dependency_order, incremental_place
+from ..spaghetti.placer import incremental_place
 from ..validate import ValidationError, validate
 
 log = logging.getLogger(__name__)
 
 # All four side direction vectors
 _ALL_SIDES = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-
-
-_BELT_ENTITIES = {
-    "transport-belt", "fast-transport-belt", "express-transport-belt",
-    "underground-belt", "fast-underground-belt", "express-underground-belt",
-}
-
-
-def _count_disconnected_networks(layout_result: LayoutResult) -> int:
-    """Count total extra belt network components across all items.
-
-    For each item carried by belts, count connected components via BFS.
-    Returns sum of (components - 1) per item (0 = all connected).
-    """
-    belt_tiles_by_item: dict[str, set[tuple[int, int]]] = {}
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES and e.carries:
-            belt_tiles_by_item.setdefault(e.carries, set()).add((e.x, e.y))
-
-    total = 0
-    for _item, tiles in belt_tiles_by_item.items():
-        visited: set[tuple[int, int]] = set()
-        components = 0
-        for start in tiles:
-            if start in visited:
-                continue
-            # BFS flood fill
-            queue = deque([start])
-            visited.add(start)
-            while queue:
-                x, y = queue.popleft()
-                for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                    nb = (x + dx, y + dy)
-                    if nb in tiles and nb not in visited:
-                        visited.add(nb)
-                        queue.append(nb)
-            components += 1
-        total += max(0, components - 1)
-    return total
 
 
 @dataclass
@@ -66,7 +26,6 @@ class _Candidate:
     positions: dict[int, tuple[int, int]]
     side_preference: dict[int, list[tuple[int, int]]] | None = None
     edge_order: list[int] | None = None
-    placement_order: list[int] | None = None
     score: float = float("inf")
     layout: LayoutResult | None = None
 
@@ -175,9 +134,7 @@ def _generate_initial_population(
     """Generate the initial population of candidates."""
     population: list[_Candidate] = []
 
-    default_order = dependency_order(graph)
-
-    # Seed candidates at different spacings (deterministic placement order)
+    # Seed candidates at different spacings
     spacing_variants = [base_positions]
     population.append(_Candidate(positions=dict(base_positions)))
 
@@ -191,37 +148,17 @@ def _generate_initial_population(
         spacing_variants.append(positions_s5)
         population.append(_Candidate(positions=positions_s5))
 
-    def _order_candidate() -> _Candidate:
-        order = list(default_order)
-        rng.shuffle(order)
-        spacing = rng.choice([3, 4])
-        pos = incremental_place(graph, spacing=spacing, placement_order=order)
-        return _Candidate(
-            positions=pos,
-            placement_order=order,
-            side_preference=_random_side_preference(graph, rng),
-            edge_order=_random_edge_order(num_edges, rng),
-        )
-
-    # Placement-order variants: shuffled orders explore fundamentally
-    # different machine arrangements (only useful with 2+ machines)
-    if len(default_order) >= 2:
-        num_order_variants = min(5, max(0, population_size - len(population)))
-        for _ in range(num_order_variants):
-            population.append(_order_candidate())
-
-    # Remaining candidates: mix of perturbed positions and perturbed orders
-    while len(population) < population_size:
-        if rng.random() < 0.5 and len(default_order) > 1:
-            population.append(_order_candidate())
-        else:
-            base = rng.choice(spacing_variants)
-            positions = _perturb_positions(base, graph, rng, sigma=2)
-            population.append(_Candidate(
-                positions=positions,
-                side_preference=_random_side_preference(graph, rng),
-                edge_order=_random_edge_order(num_edges, rng),
-            ))
+    # Remaining candidates: perturb positions, randomize sides/edge order
+    for _ in range(population_size - len(population)):
+        base = rng.choice(spacing_variants)
+        positions = _perturb_positions(base, graph, rng, sigma=2)
+        side_pref = _random_side_preference(graph, rng)
+        edge_ord = _random_edge_order(num_edges, rng)
+        population.append(_Candidate(
+            positions=positions,
+            side_preference=side_pref,
+            edge_order=edge_ord,
+        ))
 
     return population
 
@@ -252,22 +189,10 @@ def _evaluate(
     except ValidationError as exc:
         error_count = len(exc.issues)
 
-    # Compactness: bounding box area
-    if layout_result.entities:
-        xs = [e.x for e in layout_result.entities]
-        ys = [e.y for e in layout_result.entities]
-        bbox_area = (max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1)
-    else:
-        bbox_area = 0
-
-    # Disconnected networks: count extra components per item
-    disconnected = _count_disconnected_networks(layout_result)
-
     candidate.score = (
-        error_count * 10
-        + len(failed_edges) * 100
-        + bbox_area * 0.1
-        + disconnected * 20
+        error_count
+        + len(failed_edges) * 10
+        + len(layout_result.entities) * 0.01
     )
 
 
@@ -330,12 +255,17 @@ def _random_edge_order(num_edges: int, rng: random.Random) -> list[int]:
     return order
 
 
-def _mutate_side_preference(
+def _mutate(
     parent: _Candidate,
     graph: ProductionGraph,
+    num_edges: int,
     rng: random.Random,
-) -> dict[int, list[tuple[int, int]]]:
-    """Mutate side preferences: start from parent's or generate fresh."""
+) -> _Candidate:
+    """Produce a child candidate by mutating a parent."""
+    # Perturb positions with smaller sigma
+    positions = _perturb_positions(parent.positions, graph, rng, sigma=1.5)
+
+    # Mutate side preferences: start from parent's or generate fresh
     if parent.side_preference is not None:
         side_pref = dict(parent.side_preference)
     else:
@@ -350,65 +280,17 @@ def _mutate_side_preference(
         rng.shuffle(sides)
         side_pref[node.id] = sides
 
-    return side_pref
-
-
-def _mutate_edge_order(
-    parent: _Candidate,
-    num_edges: int,
-    rng: random.Random,
-) -> list[int]:
-    """Mutate edge routing order via partial shuffle."""
-    edge_ord = (
-        list(parent.edge_order)
-        if parent.edge_order is not None
-        else list(range(num_edges))
-    )
-    if not edge_ord:
-        return edge_ord
+    # Mutate edge order: partial shuffle of parent's order
+    edge_ord = list(parent.edge_order) if parent.edge_order is not None else list(range(num_edges))
 
     # Shuffle a portion (25-50%) of the edge order
     n_swap = max(1, rng.randint(len(edge_ord) // 4, len(edge_ord) // 2 + 1))
-    indices_to_swap = rng.sample(
-        range(len(edge_ord)), k=min(n_swap, len(edge_ord))
-    )
+    indices_to_swap = rng.sample(range(len(edge_ord)), k=min(n_swap, len(edge_ord)))
     values = [edge_ord[i] for i in indices_to_swap]
     rng.shuffle(values)
     for i, idx in enumerate(indices_to_swap):
         edge_ord[idx] = values[i]
 
-    return edge_ord
-
-
-def _mutate(
-    parent: _Candidate,
-    graph: ProductionGraph,
-    num_edges: int,
-    rng: random.Random,
-) -> _Candidate:
-    """Produce a child candidate by mutating a parent."""
-    side_pref = _mutate_side_preference(parent, graph, rng)
-    edge_ord = _mutate_edge_order(parent, num_edges, rng)
-
-    if parent.placement_order is not None and len(parent.placement_order) >= 2:
-        # Placement-order candidate: mutate order and recompute positions
-        new_order = list(parent.placement_order)
-        n_swaps = rng.randint(1, min(3, len(new_order) - 1))
-        for _ in range(n_swaps):
-            i, j = rng.sample(range(len(new_order)), 2)
-            new_order[i], new_order[j] = new_order[j], new_order[i]
-        positions = incremental_place(
-            graph, spacing=rng.choice([3, 4]), placement_order=new_order,
-        )
-        return _Candidate(
-            positions=positions,
-            placement_order=new_order,
-            side_preference=side_pref,
-            edge_order=edge_ord,
-        )
-
-    # Position-perturbation candidate: perturb positions directly
-    positions = _perturb_positions(parent.positions, graph, rng, sigma=1.5)
     return _Candidate(
         positions=positions,
         side_preference=side_pref,
