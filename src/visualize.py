@@ -86,6 +86,7 @@ def visualize(
     open_browser: bool = True,
     solver_result=None,
     production_graph=None,
+    validation_issues=None,
 ) -> str:
     """Generate an HTML visualization of a blueprint string.
 
@@ -95,6 +96,7 @@ def visualize(
         open_browser: Whether to open the file in the default browser.
         solver_result: Optional SolverResult for richer production info.
         production_graph: Optional ProductionGraph for flow diagram panel.
+        validation_issues: Optional list of ValidationIssue for error display.
 
     Returns:
         Path to the generated HTML file.
@@ -269,6 +271,22 @@ def visualize(
             )
         graph_data = json.dumps({"nodes": graph_nodes, "edges": graph_edges})
 
+    # Build validation issues data
+    validation_data = "null"
+    if validation_issues:
+        validation_data = json.dumps(
+            [
+                {
+                    "severity": i.severity,
+                    "category": i.category,
+                    "message": i.message,
+                    "x": i.x,
+                    "y": i.y,
+                }
+                for i in validation_issues
+            ]
+        )
+
     html_content = _HTML_TEMPLATE.format(
         title=label,
         total_entities=total_entities,
@@ -281,6 +299,7 @@ def visualize(
         legend_infra=legend_infra,
         solver_info=solver_info or "null",
         graph_data=graph_data,
+        validation_data=validation_data,
     )
     # Inject theme JS separately (can't go through .format() due to braces)
     html_content = html_content.replace("/* __THEME_JS__ */", THEME_JS)
@@ -347,6 +366,14 @@ _HTML_TEMPLATE = """\
 
   /* Legend */
   .legend-section {{ margin-bottom: 8px; }}
+  .val-item {{ padding: 3px 0; border-bottom: 1px solid #1a1a2e; }}
+  .val-error {{ color: #ff6b6b; }}
+  .val-warning {{ color: #ffd93d; }}
+  .val-category {{ font-weight: bold; font-size: 10px; text-transform: uppercase; opacity: 0.7; }}
+  .val-msg {{ word-break: break-word; }}
+  .val-pos {{ font-size: 10px; opacity: 0.5; cursor: pointer; }}
+  .val-pos:hover {{ opacity: 1; }}
+  .val-summary {{ margin-bottom: 6px; font-weight: bold; }}
   .legend-item {{
     display: flex;
     align-items: center;
@@ -526,6 +553,11 @@ _HTML_TEMPLATE = """\
       <tbody id="solver-body"></tbody>
     </table>
   </div>
+
+  <div id="validation-section" style="display:none">
+    <h2 id="validation-header">Validation</h2>
+    <div id="validation-list" style="font-size:11px;max-height:300px;overflow-y:auto"></div>
+  </div>
 </div>
 
 <div id="main-area">
@@ -565,6 +597,7 @@ const LEGEND_RECIPES = {legend_recipes};
 const LEGEND_INFRA = {legend_infra};
 const SOLVER_INFO = {solver_info};
 const GRAPH_DATA = {graph_data};
+const VALIDATION_DATA = {validation_data};
 const MIN_X = {min_x};
 const MIN_Y = {min_y};
 const GRID_W = {grid_w};
@@ -829,6 +862,49 @@ function buildSolverTable() {{
     tbody.appendChild(tr);
   }}
 }}
+
+// --- Validation issues ---
+function buildValidation() {{
+  if (!VALIDATION_DATA) return;
+  document.getElementById('validation-section').style.display = 'block';
+  const el = document.getElementById('validation-list');
+  const errors = VALIDATION_DATA.filter(i => i.severity === 'error');
+  const warnings = VALIDATION_DATA.filter(i => i.severity === 'warning');
+  const hdr = document.getElementById('validation-header');
+  if (errors.length > 0) {{
+    hdr.textContent = `Validation (${{errors.length}} error${{errors.length !== 1 ? 's' : ''}})`;
+    hdr.style.background = '#ff6b6b';
+  }} else if (warnings.length > 0) {{
+    hdr.textContent = `Validation (${{warnings.length}} warning${{warnings.length !== 1 ? 's' : ''}})`;
+    hdr.style.background = '#ffd93d';
+    hdr.style.color = '#1a1a2e';
+  }} else {{
+    hdr.textContent = 'Validation OK';
+    hdr.style.background = '#4ade80';
+    hdr.style.color = '#1a1a2e';
+  }}
+  for (const issue of VALIDATION_DATA) {{
+    const div = document.createElement('div');
+    div.className = 'val-item ' + (issue.severity === 'error' ? 'val-error' : 'val-warning');
+    let posHtml = '';
+    if (issue.x != null && issue.y != null) {{
+      posHtml = `<div class="val-pos" data-x="${{issue.x}}" data-y="${{issue.y}}">&rarr; (${{issue.x}}, ${{issue.y}})</div>`;
+    }}
+    div.innerHTML = `<div class="val-category">${{issue.category}}</div><div class="val-msg">${{issue.message}}</div>${{posHtml}}`;
+    el.appendChild(div);
+  }}
+  // Click position to pan to it
+  el.addEventListener('click', (ev) => {{
+    const posEl = ev.target.closest('.val-pos');
+    if (!posEl) return;
+    const tx = parseFloat(posEl.dataset.x);
+    const ty = parseFloat(posEl.dataset.y);
+    offsetX = canvas.width / 2 - (tx - MIN_X + 0.5) * scale;
+    offsetY = canvas.height / 2 - (ty - MIN_Y + 0.5) * scale;
+    draw();
+  }});
+}}
+buildValidation();
 
 // --- Controls ---
 document.getElementById('btn-fit').addEventListener('click', fitToView);

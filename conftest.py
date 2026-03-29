@@ -33,7 +33,7 @@ def viz(request: pytest.FixtureRequest):
     """
     enabled = request.config.getoption("--viz")
 
-    def _save(bp_string: str, name: str | None = None, solver_result=None, production_graph=None):
+    def _save(bp_string: str, name: str | None = None, solver_result=None, production_graph=None, layout_result=None):
         if not enabled:
             return
         if name is None:
@@ -44,6 +44,16 @@ def viz(request: pytest.FixtureRequest):
         out_dir.mkdir(exist_ok=True)
         out_path = str(out_dir / f"{safe_name}.html")
 
+        # Run validation to collect issues for display
+        validation_issues = None
+        if layout_result is not None and solver_result is not None:
+            from src.validate import ValidationError, validate
+
+            try:
+                validation_issues = validate(layout_result, solver_result, layout_style="spaghetti")
+            except ValidationError as exc:
+                validation_issues = exc.issues
+
         from src.visualize import visualize
 
         visualize(
@@ -52,6 +62,7 @@ def viz(request: pytest.FixtureRequest):
             open_browser=False,
             solver_result=solver_result,
             production_graph=production_graph,
+            validation_issues=validation_issues,
         )
 
     return _save
