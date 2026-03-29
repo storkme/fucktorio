@@ -55,7 +55,7 @@ def _machine_footprint(x: int, y: int, size: int) -> set[tuple[int, int]]:
     return {(x + dx, y + dy) for dx in range(size) for dy in range(size)}
 
 
-def _dependency_order(graph: ProductionGraph) -> list[int]:
+def dependency_order(graph: ProductionGraph) -> list[int]:
     """Return node IDs in placement order (upstream-first topological sort).
 
     Machines with only external inputs (leaf producers) come first,
@@ -305,6 +305,7 @@ def _score_position(
 def incremental_place(
     graph: ProductionGraph,
     spacing: int = 3,
+    placement_order: list[int] | None = None,
 ) -> dict[int, tuple[int, int]]:
     """Place machines incrementally in dependency order.
 
@@ -323,7 +324,7 @@ def incremental_place(
     if not graph.nodes:
         return {}
 
-    order = _dependency_order(graph)
+    order = placement_order if placement_order is not None else dependency_order(graph)
     node_map = {n.id: n for n in graph.nodes}
 
     positions: dict[int, tuple[int, int]] = {}
