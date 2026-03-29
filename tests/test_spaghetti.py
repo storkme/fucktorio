@@ -7,7 +7,7 @@ from src.solver import solve
 from src.spaghetti.graph import build_production_graph
 from src.spaghetti.layout import spaghetti_layout
 from src.spaghetti.placer import place_machines
-from src.spaghetti.router import route_connections
+from src.spaghetti.router import _astar_path, route_connections
 from src.validate import validate
 
 
@@ -431,6 +431,35 @@ class TestSpaghettiValidation:
         # but we verify the failed_edges list is returned
         assert isinstance(routing.failed_edges, list)
 
+    def test_output_inserters_have_belts(self):
+        """Every machine should have an output inserter dropping onto a belt."""
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        lr = spaghetti_layout(result)
+
+        from src.validate import check_output_belt_coverage
+
+        issues = check_output_belt_coverage(lr, result)
+        errors = [i for i in issues if i.severity == "error"]
+        assert not errors, f"Output belt errors: {[e.message for e in errors]}"
+
+        # Verify belt stubs carry the output item
+        gear_belts = [e for e in lr.entities if e.carries == "iron-gear-wheel"]
+        machines = [e for e in lr.entities if e.name == "assembling-machine-3"]
+        assert len(gear_belts) >= len(machines), f"Expected >= {len(machines)} output belt stubs, got {len(gear_belts)}"
+
+    def test_internal_edge_output_belt(self):
+        """Internal edges should connect through the output inserter's belt tile."""
+        result = solve(
+            "electronic-circuit",
+            target_rate=5,
+            available_inputs={"iron-plate", "copper-plate"},
+        )
+        lr = spaghetti_layout(result)
+
+        # Copper-cable machines with output edges should have output belts
+        cable_belts = [e for e in lr.entities if e.carries == "copper-cable" and "belt" in e.name]
+        assert len(cable_belts) > 0, "No copper-cable belt entities found"
+
     def test_spaghetti_fluid_check_no_bus_false_positive(self):
         """Spaghetti mode should not error about missing 'bus' for fluid layouts."""
         result = solve("plastic-bar", target_rate=5, available_inputs={"petroleum-gas", "coal"})
@@ -441,6 +470,105 @@ class TestSpaghettiValidation:
         issues = check_fluid_port_connectivity(lr, layout_style="spaghetti")
         bus_errors = [i for i in issues if "bus" in i.message]
         assert not bus_errors, f"Spaghetti mode should not check bus: {bus_errors}"
+
+
+class TestUndergroundBeltExits:
+    """Underground belt exits must have a continuation belt ahead."""
+
+    def test_ug_exit_has_forward_continuation(self):
+        """A* path after UG exit must continue one tile in the jump direction.
+
+        Regression test for issue #26: items exit underground facing the jump
+        direction and need a surface belt directly ahead.
+        """
+        # Create a wall of obstacles that forces an underground jump.
+        # Start on the left, goal on the right, wall in between.
+        obstacles = {(5, y) for y in range(-5, 10)}  # vertical wall at x=5
+        start = (3, 0)
+        goals = {(8, 0)}
+
+        path = _astar_path(
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
+        )
+        assert path is not None, "A* should find a path using underground"
+
+        # Find underground jumps (non-adjacent consecutive tiles)
+        for i in range(len(path) - 1):
+            ax, ay = path[i]
+            bx, by = path[i + 1]
+            dist = abs(bx - ax) + abs(by - ay)
+            if dist > 1:
+                # This is a UG jump: entry at path[i], exit at path[i+1]
+                dx = (bx - ax) // dist
+                dy = (by - ay) // dist
+                # The tile after the exit must be in the path (continuation)
+                assert i + 2 < len(path), f"UG exit at {path[i + 1]} is the last tile — no continuation"
+                cont = path[i + 2]
+                expected_cont = (bx + dx, by + dy)
+                assert cont == expected_cont, (
+                    f"After UG exit at {path[i + 1]} (dir {dx},{dy}), "
+                    f"next tile should be {expected_cont} but got {cont}"
+                )
+
+    def test_ug_exit_no_immediate_turn(self):
+        """Path cannot turn immediately after UG exit.
+
+        The forced continuation step prevents the path from turning at the
+        UG exit tile, which would leave items stranded.
+        """
+        # Obstacles that might tempt the A* to turn right after UG exit:
+        # wall at x=5, but goal is south-east of the exit
+        obstacles = {(5, y) for y in range(-5, 10)}
+        start = (3, 0)
+        goals = {(8, 3)}  # goal is offset from the jump direction
+
+        path = _astar_path(
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
+        )
+        assert path is not None
+
+        # Verify all UG exits have a straight continuation
+        for i in range(len(path) - 1):
+            ax, ay = path[i]
+            bx, by = path[i + 1]
+            dist = abs(bx - ax) + abs(by - ay)
+            if dist > 1:
+                dx = (bx - ax) // dist
+                dy = (by - ay) // dist
+                assert i + 2 < len(path), f"UG exit at {path[i + 1]} is the last tile"
+                cont = path[i + 2]
+                expected = (bx + dx, by + dy)
+                assert cont == expected, (
+                    f"UG exit at {path[i + 1]} should continue to {expected}, got {cont} (immediate turn)"
+                )
+
+    def test_ug_exit_no_position_revisit(self):
+        """A* path should not visit the same position twice."""
+        obstacles = {(5, y) for y in range(-5, 10)}
+        start = (3, 0)
+        goals = {(8, 0)}
+
+        path = _astar_path(
+            start,
+            goals,
+            obstacles,
+            max_extent=20,
+            allow_underground=True,
+            ug_max_reach=4,
+        )
+        assert path is not None
+        positions = [(x, y) for x, y in path]
+        assert len(positions) == len(set(positions)), f"Path visits same position twice: {positions}"
 
 
 class TestSpaghettiVisualization:

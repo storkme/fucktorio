@@ -1,13 +1,14 @@
 """Tests for functional blueprint validation."""
 
 from src.layout import layout
-from src.models import EntityDirection, LayoutResult, PlacedEntity
+from src.models import EntityDirection, ItemFlow, LayoutResult, MachineSpec, PlacedEntity, SolverResult
 from src.solver import solve
 from src.validate import (
     ValidationError,
     check_belt_connectivity,
     check_belt_direction_continuity,
     check_belt_flow_path,
+    check_belt_flow_reachability,
     check_belt_throughput,
     check_fluid_port_connectivity,
     check_inserter_chains,
@@ -483,6 +484,272 @@ class TestPowerCoverage:
         # Power coverage is a warning, not error
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 0
+
+
+class TestBeltFlowReachability:
+    """Tests for directional belt flow reachability."""
+
+    def _machine_with_inserter_and_belts(self, belt_dirs, belt_x_range):
+        """Helper: 3x3 machine at (3,0) with input inserter at (4,-1) picking from (4,-2).
+
+        belt_dirs: list of (x, y, EntityDirection) for belt tiles.
+        """
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=3, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="inserter", x=4, y=-1, direction=EntityDirection.SOUTH),
+        ]
+        for x, y, d in belt_dirs:
+            entities.append(PlacedEntity(name="transport-belt", x=x, y=y, direction=d))
+        return LayoutResult(entities=entities)
+
+    def test_straight_belt_input_ok(self):
+        """East-facing belts from boundary to input inserter should pass."""
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+        )
+        # Belts: (0,-2)→ (1,-2)→ (2,-2)→ (3,-2)→ (4,-2)→  — inserter picks from (4,-2)
+        belt_dirs = [(x, -2, EntityDirection.EAST) for x in range(5)]
+        lr = self._machine_with_inserter_and_belts(belt_dirs, range(5))
+        issues = check_belt_flow_reachability(lr, sr)
+        input_errors = [i for i in issues if "can't reach input" in i.message]
+        assert not input_errors
+
+    def test_reversed_belt_input_fails(self):
+        """West-facing belts can't deliver items eastward to the machine."""
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+        )
+        # Belts all face WEST — items flow away from the machine
+        belt_dirs = [(x, -2, EntityDirection.WEST) for x in range(5)]
+        lr = self._machine_with_inserter_and_belts(belt_dirs, range(5))
+        issues = check_belt_flow_reachability(lr, sr)
+        input_errors = [i for i in issues if "can't reach input" in i.message]
+        assert len(input_errors) == 1
+
+    def test_sideload_upstream_ok(self):
+        """A south-facing belt sideloading onto an east-facing trunk is valid upstream."""
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+        )
+        # Trunk: (2,-2)→ (3,-2)→ (4,-2)→  with sideload from (2,-3)↓ onto (2,-2)
+        belt_dirs = [
+            (2, -3, EntityDirection.SOUTH),  # sideload feeder
+            (2, -2, EntityDirection.EAST),
+            (3, -2, EntityDirection.EAST),
+            (4, -2, EntityDirection.EAST),
+        ]
+        lr = self._machine_with_inserter_and_belts(belt_dirs, range(5))
+        issues = check_belt_flow_reachability(lr, sr)
+        input_errors = [i for i in issues if "can't reach input" in i.message]
+        assert not input_errors
+
+    def test_output_downstream_reaches_boundary(self):
+        """Output belt facing toward boundary should pass downstream check."""
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+        )
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=3, y=0, recipe="iron-gear-wheel"),
+            # Input inserter + belts (so input check passes)
+            PlacedEntity(name="inserter", x=4, y=-1, direction=EntityDirection.SOUTH),
+            *[PlacedEntity(name="transport-belt", x=x, y=-2, direction=EntityDirection.EAST) for x in range(5)],
+            # Output inserter dropping onto belt going south toward boundary
+            PlacedEntity(name="inserter", x=4, y=3, direction=EntityDirection.SOUTH),
+            *[PlacedEntity(name="transport-belt", x=4, y=y, direction=EntityDirection.SOUTH) for y in range(4, 8)],
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_belt_flow_reachability(lr, sr)
+        output_errors = [i for i in issues if "can't leave output" in i.message]
+        assert not output_errors
+
+    def test_output_dead_end_fails(self):
+        """Output belt facing away from boundary (into machines) should fail."""
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=2.5)],
+        )
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=3, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="inserter", x=4, y=-1, direction=EntityDirection.SOUTH),
+            *[PlacedEntity(name="transport-belt", x=x, y=-2, direction=EntityDirection.EAST) for x in range(5)],
+            # Output inserter drops onto a NORTH-facing belt (goes toward machine, dead end)
+            PlacedEntity(name="inserter", x=4, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=4, y=4, direction=EntityDirection.NORTH),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_belt_flow_reachability(lr, sr)
+        output_errors = [i for i in issues if "can't leave output" in i.message]
+        assert len(output_errors) == 1
+
+
+class TestLaneThroughput:
+    """Tests for per-lane belt throughput simulation."""
+
+    def _make_solver_result(self, rate=2.5):
+        return SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=1,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=rate)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=rate * 2)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=rate)],
+        )
+
+    def test_single_inserter_within_capacity(self):
+        """One inserter at 2.5/s on yellow belt (7.5/s per lane) — should pass."""
+        from src.validate import check_lane_throughput
+
+        sr = self._make_solver_result(rate=2.5)
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=3, y=0, recipe="iron-gear-wheel"),
+            # Output inserter on the left side of an east-facing belt
+            PlacedEntity(name="inserter", x=4, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=4, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            PlacedEntity(name="transport-belt", x=5, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        assert not issues
+
+    def test_same_side_inserters_overload(self):
+        """Two inserters on the same side, combined rate > per-lane capacity."""
+        from src.validate import check_lane_throughput
+
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=2,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=5.0)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=10.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=10.0)],
+        )
+        # Two machines both dropping onto the same belt from the same side (north)
+        # Each at 5.0/s → 10.0/s on one lane, exceeding 7.5/s yellow belt lane cap
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=0, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="assembling-machine-3", x=7, y=0, recipe="iron-gear-wheel"),
+            # Both inserters on the north side of the east-facing belt
+            PlacedEntity(name="inserter", x=1, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=1, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            PlacedEntity(name="inserter", x=8, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=8, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Connect them with east-facing belts
+            *[
+                PlacedEntity(name="transport-belt", x=x, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel")
+                for x in range(2, 8)
+            ],
+            PlacedEntity(name="transport-belt", x=9, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        lane_errors = [i for i in issues if "lane" in i.category]
+        assert len(lane_errors) > 0, "Expected lane overload errors"
+
+    def test_opposite_side_inserters_ok(self):
+        """Two inserters on opposite sides — rate splits across lanes."""
+        from src.validate import check_lane_throughput
+
+        sr = SolverResult(
+            machines=[
+                MachineSpec(
+                    entity="assembling-machine-3",
+                    recipe="iron-gear-wheel",
+                    count=2,
+                    inputs=[ItemFlow(item="iron-plate", rate=5.0)],
+                    outputs=[ItemFlow(item="iron-gear-wheel", rate=5.0)],
+                )
+            ],
+            external_inputs=[ItemFlow(item="iron-plate", rate=10.0)],
+            external_outputs=[ItemFlow(item="iron-gear-wheel", rate=10.0)],
+        )
+        # Two inserters on opposite sides of the belt
+        entities = [
+            PlacedEntity(name="assembling-machine-3", x=0, y=0, recipe="iron-gear-wheel"),
+            PlacedEntity(name="assembling-machine-3", x=7, y=6, recipe="iron-gear-wheel"),
+            # First inserter from north (puts on right/far lane)
+            PlacedEntity(name="inserter", x=1, y=3, direction=EntityDirection.SOUTH),
+            PlacedEntity(name="transport-belt", x=1, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Second inserter from south (puts on left/far lane)
+            PlacedEntity(name="inserter", x=8, y=5, direction=EntityDirection.NORTH),
+            PlacedEntity(name="transport-belt", x=8, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+            # Connect with east-facing belts
+            *[
+                PlacedEntity(name="transport-belt", x=x, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel")
+                for x in range(2, 8)
+            ],
+            PlacedEntity(name="transport-belt", x=9, y=4, direction=EntityDirection.EAST, carries="iron-gear-wheel"),
+        ]
+        lr = LayoutResult(entities=entities)
+        issues = check_lane_throughput(lr, sr)
+        lane_errors = [i for i in issues if "lane" in i.category]
+        assert not lane_errors, f"Unexpected lane errors: {[e.message for e in lane_errors]}"
+
+    def test_no_solver_result_skips(self):
+        """Without solver_result, returns empty."""
+        from src.validate import check_lane_throughput
+
+        lr = LayoutResult(entities=[])
+        issues = check_lane_throughput(lr, None)
+        assert not issues
 
 
 class TestIntegration:

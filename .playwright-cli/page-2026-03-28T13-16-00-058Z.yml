@@ -1,0 +1,78 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - 'heading "spaghetti: 5/s advanced-circuit" [level=1] [ref=e4]'
+      - generic [ref=e5]: 2167 entities · 96×89 tiles
+    - generic [ref=e6]:
+      - heading "Recipes" [level=2] [ref=e7]
+      - generic [ref=e8]:
+        - generic [ref=e9] [cursor=pointer]:
+          - generic [ref=e11]: advanced-circuit
+          - generic [ref=e12]: ×24
+        - generic [ref=e13] [cursor=pointer]:
+          - generic [ref=e15]: electronic-circuit
+          - generic [ref=e16]: ×4
+        - generic [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: copper-cable
+          - generic [ref=e20]: ×10
+        - generic [ref=e21] [cursor=pointer]:
+          - generic [ref=e23]: plastic-bar
+          - generic [ref=e24]: ×5
+    - generic [ref=e25]:
+      - heading "Infrastructure" [level=2] [ref=e26]
+      - generic [ref=e27]:
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: Belt (red)
+          - generic [ref=e31]: ×6
+        - generic [ref=e32] [cursor=pointer]:
+          - generic [ref=e34]: Inserter
+          - generic [ref=e35]: ×157
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e38]: Pole
+          - generic [ref=e39]: ×138
+        - generic [ref=e40] [cursor=pointer]:
+          - generic [ref=e42]: Pipe
+          - generic [ref=e43]: ×6
+        - generic [ref=e44] [cursor=pointer]:
+          - generic [ref=e46]: Belt (yellow)
+          - generic [ref=e47]: ×1817
+    - generic [ref=e48]:
+      - heading "Production" [level=2] [ref=e49]
+      - table [ref=e50]:
+        - rowgroup [ref=e51]:
+          - row "Recipe Count Inputs" [ref=e52]:
+            - columnheader "Recipe" [ref=e53]
+            - columnheader "Count" [ref=e54]
+            - columnheader "Inputs" [ref=e55]
+        - rowgroup [ref=e56]:
+          - row "advanced-circuit 24 electronic-circuit 10.0/s plastic-bar 10.0/s copper-cable 20.0/s" [ref=e57]:
+            - cell "advanced-circuit" [ref=e58]: advanced-circuit
+            - cell "24" [ref=e60]
+            - cell "electronic-circuit 10.0/s plastic-bar 10.0/s copper-cable 20.0/s" [ref=e61]:
+              - text: electronic-circuit 10.0/s
+              - text: plastic-bar 10.0/s
+              - text: copper-cable 20.0/s
+          - row "electronic-circuit 4 iron-plate 10.0/s copper-cable 30.0/s" [ref=e62]:
+            - cell "electronic-circuit" [ref=e63]: electronic-circuit
+            - cell "4" [ref=e65]
+            - cell "iron-plate 10.0/s copper-cable 30.0/s" [ref=e66]:
+              - text: iron-plate 10.0/s
+              - text: copper-cable 30.0/s
+          - row "copper-cable 10 copper-plate 25.0/s" [ref=e67]:
+            - cell "copper-cable" [ref=e68]: copper-cable
+            - cell "10" [ref=e70]
+            - cell "copper-plate 25.0/s" [ref=e71]
+          - row "plastic-bar 5 petroleum-gas 100.0/sfluid coal 5.0/s" [ref=e72]:
+            - cell "plastic-bar" [ref=e73]: plastic-bar
+            - cell "5" [ref=e75]
+            - cell "petroleum-gas 100.0/sfluid coal 5.0/s" [ref=e76]:
+              - text: petroleum-gas 100.0/sfluid
+              - text: coal 5.0/s
+  - generic [ref=e77]:
+    - generic [ref=e78]:
+      - button "Layout" [ref=e79] [cursor=pointer]
+      - button "Flow Graph" [ref=e80] [cursor=pointer]
+    - generic [ref=e83]:
+      - button "⌖" [ref=e84] [cursor=pointer]
+      - button "+" [ref=e85] [cursor=pointer]
+      - button "−" [ref=e86] [cursor=pointer]
