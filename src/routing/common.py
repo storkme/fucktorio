@@ -37,7 +37,7 @@ _UG_MAX_REACH = {
     "fast-transport-belt": 6,
     "express-transport-belt": 8,
 }
-_UG_COST_MULTIPLIER = 3  # underground costs 3x per tile vs surface
+_UG_COST_MULTIPLIER = 5  # underground costs 5x per tile vs surface
 _UG_PIPE_REACH = 10  # pipe-to-ground max reach (tiles between entry and exit)
 
 
