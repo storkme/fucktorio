@@ -12,6 +12,7 @@ from .common import (
     DIRECTIONS,
     _UG_COST_MULTIPLIER,
     _UG_MAX_REACH,
+    _UG_PIPE_REACH,
     belt_entity_for_rate,
     machine_size,
     machine_tiles,
@@ -228,46 +229,33 @@ def _path_to_entities(
     input/output pairs.
     """
     entities: list[PlacedEntity] = []
+    ug_name = "pipe-to-ground" if is_fluid else "underground-belt"
 
     for i, (x, y) in enumerate(path):
-        if is_fluid:
-            entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=item))
-            continue
-
-        # Check if this tile is part of an underground jump
+        # Detect underground jumps: non-adjacent consecutive tiles
         prev_dist = abs(x - path[i - 1][0]) + abs(y - path[i - 1][1]) if i > 0 else 1
         next_dist = abs(path[i + 1][0] - x) + abs(path[i + 1][1] - y) if i + 1 < len(path) else 1
 
         if next_dist > 1:
-            # Underground entry: this tile goes underground toward next tile
+            # Underground entry
             dx = (path[i + 1][0] - x) // next_dist
             dy = (path[i + 1][1] - y) // next_dist
             direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
-            entities.append(
-                PlacedEntity(
-                    name="underground-belt",
-                    x=x,
-                    y=y,
-                    direction=direction,
-                    io_type="input",
-                    carries=item,
-                )
-            )
+            entities.append(PlacedEntity(
+                name=ug_name, x=x, y=y,
+                direction=direction, io_type="input", carries=item,
+            ))
         elif prev_dist > 1:
-            # Underground exit: this tile comes up from underground
+            # Underground exit
             dx = (x - path[i - 1][0]) // prev_dist
             dy = (y - path[i - 1][1]) // prev_dist
             direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
-            entities.append(
-                PlacedEntity(
-                    name="underground-belt",
-                    x=x,
-                    y=y,
-                    direction=direction,
-                    io_type="output",
-                    carries=item,
-                )
-            )
+            entities.append(PlacedEntity(
+                name=ug_name, x=x, y=y,
+                direction=direction, io_type="output", carries=item,
+            ))
+        elif is_fluid:
+            entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=item))
         else:
             # Normal surface belt
             if i + 1 < len(path):
@@ -748,30 +736,24 @@ def route_connections(
                 occupied |= exclusions
             continue
 
-        # Try A* from each start tile — surface only first (fast)
+        # Single-pass A* with underground always enabled.
+        # The UG cost multiplier (3x) ensures surface is preferred when free.
+        # For fluid edges, use pipe-to-ground reach instead of belt-tier reach.
+        effective_ug_reach = _UG_PIPE_REACH if edge.is_fluid else ug_reach
         best_path = None
         for start in start_tiles:
             if start in occupied:
                 continue
-            path = _astar_path(start, goal_tiles - occupied, occupied, max_extent)
+            path = _astar_path(
+                start,
+                goal_tiles - occupied,
+                occupied,
+                max_extent,
+                allow_underground=True,
+                ug_max_reach=effective_ug_reach,
+            )
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
-
-        # If surface routing failed, try with underground belts
-        if best_path is None and not edge.is_fluid:
-            for start in start_tiles:
-                if start in occupied:
-                    continue
-                path = _astar_path(
-                    start,
-                    goal_tiles - occupied,
-                    occupied,
-                    max_extent,
-                    allow_underground=True,
-                    ug_max_reach=ug_reach,
-                )
-                if path and (best_path is None or len(path) < len(best_path)):
-                    best_path = path
 
         # Check for cross-item contamination: would any tile in the path
         # output onto a belt carrying a different item? Retry up to 3 times
@@ -811,8 +793,8 @@ def route_connections(
                         goal_tiles - occupied,
                         occupied,
                         max_extent,
-                        allow_underground=not edge.is_fluid,
-                        ug_max_reach=ug_reach,
+                        allow_underground=True,
+                        ug_max_reach=effective_ug_reach,
                     )
                     if path and (best_path is None or len(path) < len(best_path)):
                         best_path = path
@@ -831,7 +813,7 @@ def route_connections(
 
         # Post-process: if path ends with an underground jump, extend by one
         # surface tile in the jump direction so items have somewhere to go
-        if len(best_path) >= 2 and not edge.is_fluid:
+        if len(best_path) >= 2:
             last = best_path[-1]
             prev = best_path[-2]
             dist = abs(last[0] - prev[0]) + abs(last[1] - prev[1])
