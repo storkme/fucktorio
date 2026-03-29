@@ -8,21 +8,21 @@ from ..models import LayoutResult, SolverResult
 from ..routing.graph import build_production_graph
 from ..routing.orchestrate import build_layout
 from ..validate import ValidationError, validate
-from .placer import place_machines
+from .placer import incremental_place
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_SPACING = 4
-_SPACING_INCREMENT = 2
+_DEFAULT_SPACING = 3
+_SPACING_INCREMENT = 1
 
 # Retry strategies: vary spacing and side strategy
 _RETRY_STRATEGIES = [
-    ("top_bottom", _DEFAULT_SPACING),
-    ("left_right", _DEFAULT_SPACING),
-    ("top_bottom", _DEFAULT_SPACING + _SPACING_INCREMENT),
-    ("left_right", _DEFAULT_SPACING + _SPACING_INCREMENT),
-    ("top_bottom", _DEFAULT_SPACING + 2 * _SPACING_INCREMENT),
-    ("top_bottom", _DEFAULT_SPACING + 3 * _SPACING_INCREMENT),
+    ("top_bottom", 3),
+    ("left_right", 3),
+    ("top_bottom", 4),
+    ("left_right", 4),
+    ("top_bottom", 5),
+    ("top_bottom", 6),
 ]
 
 
@@ -41,7 +41,7 @@ def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
     best_error_count = float("inf")
 
     for attempt, (strategy, spacing) in enumerate(_RETRY_STRATEGIES):
-        positions = place_machines(graph, spacing=spacing)
+        positions = incremental_place(graph, spacing=spacing)
         layout_result, failed_edges = build_layout(
             solver_result, graph, positions, side_strategy=strategy
         )
