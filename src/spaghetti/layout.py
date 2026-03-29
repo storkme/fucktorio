@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from ..models import LayoutResult, SolverResult
-from ..search.layout_search import evolutionary_layout
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +15,8 @@ def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
     Explores many candidate layouts by varying machine positions, inserter
     side preferences, and edge routing order. Returns the best layout found.
     """
+    from ..search.layout_search import evolutionary_layout
+
     return evolutionary_layout(solver_result)
 
 
