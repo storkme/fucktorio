@@ -108,6 +108,7 @@ def assign_inserter_positions(
     occupied: set[tuple[int, int]],
     solver_result: SolverResult | None = None,
     side_strategy: str = "top_bottom",
+    side_preference: dict[int, list[tuple[int, int]]] | None = None,
 ) -> InsertionPlan:
     """Pre-assign inserter positions for every flow edge.
 
@@ -117,6 +118,9 @@ def assign_inserter_positions(
     Args:
         side_strategy: "top_bottom", "left_right", or "round_robin".
             Controls which axis inserters alternate on for shared-item edges.
+        side_preference: Per-machine side order override. Maps node_id to
+            an ordered list of (dx, dy) direction vectors to try. When
+            provided, overrides side_strategy for the given machines.
 
     Returns an InsertionPlan with assignments and sub-group info.
     """
@@ -157,6 +161,14 @@ def assign_inserter_positions(
         # Get available border positions per side
         sides = _get_sides(mx, my, size)
 
+        # If side_preference is provided for this node, sort sides by
+        # the preference order (try preferred directions first)
+        if side_preference is not None and node.id in side_preference:
+            pref_order = side_preference[node.id]
+            sides = sorted(sides, key=lambda s, po=pref_order: (
+                po.index(s[2]) if s[2] in po else len(po)
+            ))
+
         # Filter out sides where border tiles are already occupied
         available_sides: list[tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = []
         for border, belt, direction_vec in sides:
@@ -178,10 +190,12 @@ def assign_inserter_positions(
                     break
 
             # Sort available sides: preferred first, then the rest
-            if preferred is not None:
-                available_sides.sort(
-                    key=lambda s: 0 if s[2] == preferred else 1,
-                )
+            # (only when side_preference is not overriding for this node)
+            if side_preference is None or node.id not in side_preference:
+                if preferred is not None:
+                    available_sides.sort(
+                        key=lambda s: 0 if s[2] == preferred else 1,
+                    )
 
             # Pick the best available side
             border, belt, direction_vec = available_sides.pop(0)
