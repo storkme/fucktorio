@@ -186,7 +186,7 @@ def _evaluate(
     # Skip expensive validation for candidates with many failed edges —
     # they'll never survive selection anyway.
     if len(failed_edges) >= 3:
-        candidate.score = len(failed_edges) * 10 + len(layout_result.entities) * 0.01
+        candidate.score = len(failed_edges) * 1000 + len(layout_result.entities) * 0.01
         return
 
     try:
@@ -197,9 +197,8 @@ def _evaluate(
 
     belt_count = sum(1 for e in layout_result.entities if "belt" in e.name)
     candidate.score = (
-        error_count
-        + len(failed_edges) * 10
-        + len(layout_result.entities) * 0.01
+        error_count * 100
+        + len(failed_edges) * 1000
         + belt_count * 0.5
     )
 
