@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 
 from ..layout.poles import place_poles
-from ..models import LayoutResult, PlacedEntity, SolverResult
+from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from ..spaghetti.graph import FlowEdge, ProductionGraph, build_production_graph
 from ..spaghetti.inserters import assign_inserter_positions, build_inserter_entities
 from ..spaghetti.placer import machine_size
-from ..spaghetti.router import _machine_tiles, route_connections
+from ..spaghetti.router import _DIR_MAP, _belt_entity_for_rate, _machine_tiles, route_connections
 from ..validate import ValidationError, validate
 from .placer import ml_place_machines
 
@@ -94,6 +94,7 @@ def _attempt_layout(
     graph: ProductionGraph,
     weights: dict[str, float] | None = None,
     min_gap: float = 2.0,
+    side_strategy: str = "top_bottom",
 ) -> tuple[LayoutResult, list[FlowEdge]]:
     """Single layout attempt. Returns (result, failed_edges)."""
 
@@ -107,17 +108,26 @@ def _attempt_layout(
         size = machine_size(node.spec.entity)
         occupied |= _machine_tiles(x, y, size)
 
-    # 3. Pre-assign inserter positions
-    assignments = assign_inserter_positions(graph, positions, occupied)
+    # 3. Pre-assign inserter positions (lane-aware, reserves border tiles)
+    plan = assign_inserter_positions(
+        graph, positions, occupied, solver_result=solver_result, side_strategy=side_strategy
+    )
+    assignments = plan.assignments
 
-    # 4. Build edge→belt_tile mapping and per-edge exclusions
+    # 4. Build edge→belt_tile mapping and per-edge exclusions for the router
     edge_targets: dict[int, tuple[int, int]] = {}
+    edge_starts: dict[int, tuple[int, int]] = {}
     edge_exclusions: dict[int, set[tuple[int, int]]] = {}
     for assignment in assignments:
         for i, edge in enumerate(graph.edges):
             if edge is assignment.edge:
                 if assignment.edge.to_node == assignment.node_id:
+                    # Input inserter — route goal is this belt tile
                     edge_targets[i] = assignment.belt_tile
+                elif assignment.edge.from_node == assignment.node_id:
+                    # Output inserter — route must start from this belt tile
+                    edge_starts[i] = assignment.belt_tile
+                # Allow this edge (and only this edge) to use its own belt tile
                 if i not in edge_exclusions:
                     edge_exclusions[i] = set()
                 edge_exclusions[i].add(assignment.belt_tile)
@@ -136,16 +146,47 @@ def _attempt_layout(
             )
         )
 
-    # 6. Route connections
+    # 6. Route connections (belts + pipes) to assigned belt tiles
     reserved = {a.border_tile for a in assignments} | {a.belt_tile for a in assignments}
     routing = route_connections(
         graph,
         positions,
         edge_targets=edge_targets,
+        edge_starts=edge_starts,
         reserved_tiles=reserved,
         edge_exclusions=edge_exclusions,
+        edge_subgroups=plan.edge_subgroups,
     )
     entities.extend(routing.entities)
+
+    # 6b. Place belt stubs for any external output inserters whose edges
+    #     failed routing
+    entity_tiles = {(e.x, e.y) for e in entities}
+    failed_items = {e.item for e in routing.failed_edges}
+    for assignment in assignments:
+        edge = assignment.edge
+        if edge.from_node == assignment.node_id and edge.to_node is None:
+            bx, by = assignment.belt_tile
+            if (bx, by) in entity_tiles:
+                continue
+            if edge.item not in failed_items:
+                continue
+            dx = bx - assignment.border_tile[0]
+            dy = by - assignment.border_tile[1]
+            if edge.is_fluid:
+                entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+            else:
+                belt_name = _belt_entity_for_rate(edge.rate)
+                direction = _DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=bx,
+                        y=by,
+                        direction=direction,
+                        carries=edge.item,
+                    )
+                )
 
     # 7. Place inserters
     entities.extend(build_inserter_entities(assignments))

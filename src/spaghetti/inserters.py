@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
-from ..models import EntityDirection, PlacedEntity
+from ..models import EntityDirection, PlacedEntity, SolverResult
 from .graph import FlowEdge, ProductionGraph
 from .placer import machine_size
 
@@ -19,6 +20,20 @@ _FACING: dict[tuple[int, int], EntityDirection] = {
 # The four sides of a machine: (dx_to_machine, dy_to_machine)
 _SIDES = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # top, bottom, left, right
 
+# Belt throughput limits (items per second) — mirrors validate.py
+_BELT_CAPACITY = {
+    "transport-belt": 15.0,
+    "fast-transport-belt": 30.0,
+    "express-transport-belt": 45.0,
+}
+_MAX_BELT_CAPACITY = 45.0
+
+# Side strategy pairs: which two sides to alternate between
+_STRATEGY_PAIRS: dict[str, list[tuple[int, int]]] = {
+    "top_bottom": [(0, 1), (0, -1)],  # top, bottom
+    "left_right": [(1, 0), (-1, 0)],  # left, right
+}
+
 
 @dataclass
 class InserterAssignment:
@@ -31,20 +46,98 @@ class InserterAssignment:
     direction: EntityDirection  # inserter facing direction
 
 
+@dataclass
+class InsertionPlan:
+    """Result of lane-aware inserter assignment."""
+
+    assignments: list[InserterAssignment] = field(default_factory=list)
+    # item → list of sub-groups, each sub-group is a list of edge indices
+    edge_subgroups: dict[str, list[list[int]]] = field(default_factory=dict)
+
+
+def _compute_edge_subgroups(
+    graph: ProductionGraph,
+    solver_result: SolverResult | None,
+) -> dict[str, list[list[int]]]:
+    """Partition external edges into sub-groups by belt capacity.
+
+    When total rate for an item exceeds a single belt's capacity,
+    machines are split into sub-groups that each fit on one trunk.
+    """
+    if solver_result is None:
+        return {}
+
+    # Map item → per-machine rate (from solver)
+    item_rate: dict[str, float] = {}
+    for spec in solver_result.machines:
+        for inp in spec.inputs:
+            if not inp.is_fluid:
+                item_rate[inp.item] = inp.rate
+        for out in spec.outputs:
+            if not out.is_fluid:
+                item_rate[out.item] = out.rate
+
+    subgroups: dict[str, list[list[int]]] = {}
+
+    # Group external edges by item
+    ext_groups: dict[str, list[int]] = {}
+    for i, edge in enumerate(graph.edges):
+        if edge.is_fluid:
+            continue
+        if edge.from_node is None or edge.to_node is None:
+            ext_groups.setdefault(edge.item, []).append(i)
+
+    for item, edge_indices in ext_groups.items():
+        per_machine_rate = item_rate.get(item, 0)
+        total_rate = per_machine_rate * len(edge_indices)
+
+        if total_rate <= _MAX_BELT_CAPACITY:
+            # All fit on one trunk
+            subgroups[item] = [edge_indices]
+        else:
+            # Split into sub-groups
+            n_trunks = math.ceil(total_rate / _MAX_BELT_CAPACITY)
+            groups: list[list[int]] = [[] for _ in range(n_trunks)]
+            for j, idx in enumerate(edge_indices):
+                groups[j % n_trunks].append(idx)
+            subgroups[item] = groups
+
+    return subgroups
+
+
 def assign_inserter_positions(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
     occupied: set[tuple[int, int]],
-) -> list[InserterAssignment]:
+    solver_result: SolverResult | None = None,
+    side_strategy: str = "top_bottom",
+) -> InsertionPlan:
     """Pre-assign inserter positions for every flow edge.
 
-    For each machine, assigns border tiles to input/output edges round-robin
-    across the machine's sides. This ensures every edge gets a guaranteed
-    inserter position before routing begins.
+    Lane-aware: for edges sharing an external item, alternates inserter
+    sides based on the side_strategy so items spread across both belt lanes.
 
-    The assigned border tiles are added to the occupied set so the router
-    won't route through them.
+    Args:
+        side_strategy: "top_bottom", "left_right", or "round_robin".
+            Controls which axis inserters alternate on for shared-item edges.
+
+    Returns an InsertionPlan with assignments and sub-group info.
     """
+    # Compute sub-groups for capacity splitting
+    edge_subgroups = _compute_edge_subgroups(graph, solver_result)
+
+    # Build preferred side mapping for each edge
+    # edge index → preferred direction_vec (toward machine)
+    edge_preferred: dict[int, tuple[int, int]] = {}
+    strategy_pair = _STRATEGY_PAIRS.get(side_strategy, [(0, 1), (0, -1)])
+
+    for _item, groups in edge_subgroups.items():
+        for group in groups:
+            for rank, edge_idx in enumerate(group):
+                # Alternate between the two sides in the strategy pair
+                edge_preferred[edge_idx] = strategy_pair[rank % 2]
+
+    # Now do per-machine assignment with preferred sides
     assignments: list[InserterAssignment] = []
     used_borders: set[tuple[int, int]] = set()
 
@@ -72,13 +165,24 @@ def assign_inserter_positions(
             if not available_sides:
                 break
 
-            # Pick the next available side
+            # Find this edge's index in graph.edges for preferred side lookup
+            preferred = None
+            for i, ge in enumerate(graph.edges):
+                if ge is edge and i in edge_preferred:
+                    preferred = edge_preferred[i]
+                    break
+
+            # Sort available sides: preferred first, then the rest
+            if preferred is not None:
+                available_sides.sort(
+                    key=lambda s: 0 if s[2] == preferred else 1,
+                )
+
+            # Pick the best available side
             border, belt, direction_vec = available_sides.pop(0)
 
             # For input inserters: picks from belt, drops into machine
             # For output inserters: picks from machine, drops onto belt
-            # The facing direction is always toward the machine for inputs,
-            # away from machine for outputs
             if is_input:
                 facing = _FACING.get(direction_vec)
             else:
@@ -100,7 +204,7 @@ def assign_inserter_positions(
             used_borders.add(border)
             occupied.add(border)  # Reserve so router avoids this tile
 
-    return assignments
+    return InsertionPlan(assignments=assignments, edge_subgroups=edge_subgroups)
 
 
 def _get_sides(mx: int, my: int, size: int) -> list[tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]:

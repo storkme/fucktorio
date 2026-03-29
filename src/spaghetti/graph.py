@@ -133,21 +133,42 @@ def _connect_producers_to_consumers(
 ) -> None:
     """Distribute flow from producers to consumers.
 
-    Spreads the load across producer instances round-robin style.
-    Each consumer needs per_consumer_rate of the item.
+    Uses a capacity-aware greedy fill: each producer has a limited output
+    rate, and each consumer has a demand. When one producer can't satisfy
+    a consumer's full demand, the remainder spills to the next producer.
     """
     if not producers:
         return
 
-    # Round-robin: assign each consumer to producers
-    for i, consumer in enumerate(consumers):
-        producer = producers[i % len(producers)]
-        graph.edges.append(
-            FlowEdge(
-                item=item,
-                rate=per_consumer_rate,
-                is_fluid=is_fluid,
-                from_node=producer.id,
-                to_node=consumer.id,
-            )
-        )
+    # Per-producer capacity for this item
+    per_producer_rate = 0.0
+    for out in producers[0].spec.outputs:
+        if out.item == item:
+            per_producer_rate = out.rate
+            break
+
+    if per_producer_rate <= 0:
+        return
+
+    # Track remaining capacity per producer
+    remaining = [per_producer_rate] * len(producers)
+    p = 0  # current producer index
+
+    for consumer in consumers:
+        demand = per_consumer_rate
+        while demand > 1e-9 and p < len(producers):
+            alloc = min(demand, remaining[p])
+            if alloc > 1e-9:
+                graph.edges.append(
+                    FlowEdge(
+                        item=item,
+                        rate=alloc,
+                        is_fluid=is_fluid,
+                        from_node=producers[p].id,
+                        to_node=consumer.id,
+                    )
+                )
+                remaining[p] -= alloc
+                demand -= alloc
+            if remaining[p] < 1e-9:
+                p += 1
