@@ -183,16 +183,24 @@ def _evaluate(
 
     candidate.layout = layout_result
 
+    # Skip expensive validation for candidates with many failed edges —
+    # they'll never survive selection anyway.
+    if len(failed_edges) >= 3:
+        candidate.score = len(failed_edges) * 10 + len(layout_result.entities) * 0.01
+        return
+
     try:
         validate(layout_result, solver_result, layout_style="spaghetti")
         error_count = 0
     except ValidationError as exc:
         error_count = len(exc.issues)
 
+    belt_count = sum(1 for e in layout_result.entities if "belt" in e.name)
     candidate.score = (
         error_count
         + len(failed_edges) * 10
         + len(layout_result.entities) * 0.01
+        + belt_count * 0.5
     )
 
 

@@ -13,3 +13,4 @@ test_viz/
 # Claude Code worktrees
 .claude/worktrees/
 misc/
+/graphics/

@@ -841,15 +841,17 @@ def check_belt_flow_path(
     solver_result: SolverResult | None = None,
     layout_style: str = "spaghetti",
 ) -> list[ValidationIssue]:
-    """Check that each machine's input belt network reaches a source.
+    """Check that each machine's belt networks reach valid sources/sinks.
 
-    BFS through connected belt tiles from each machine's input-side inserters.
-    The network must reach either:
-    - An inserter adjacent to a different machine (internal flow), or
-    - The boundary of the layout (external input).
+    For inputs: BFS through connected belt tiles from each machine's input-side
+    inserters. The network must reach either an inserter adjacent to a different
+    machine (internal flow) or the layout boundary (external input).
 
-    Only checks input-side connections. Output belts are often intentionally
-    short dead-ends (the player extends them), so those are not flagged.
+    For outputs: BFS from each machine's output-side inserters. The network must
+    reach either another machine's input inserter or the layout boundary.
+
+    Boundary checks require the network to have at least 3 tiles to avoid
+    falsely passing dead stubs that happen to sit at the layout edge.
 
     Severity depends on layout style: error for spaghetti (where routing should
     produce complete paths), warning for bus (which has known disconnected spurs).
@@ -881,9 +883,9 @@ def check_belt_flow_path(
             for dy in range(size):
                 all_machine_tiles.add((e.x + dx, e.y + dy))
 
-    # Identify input inserters: those that drop INTO a machine
-    # (drop side = facing direction * reach → must land on a machine tile)
+    # Classify inserters in a single pass: input (drops into machine) vs output (picks from machine)
     input_inserter_positions: set[tuple[int, int]] = set()
+    output_inserter_positions: set[tuple[int, int]] = set()
     for ie in inserter_entities:
         direction_vec = _DIR_TO_VEC.get(ie.direction)
         if direction_vec is None:
@@ -891,14 +893,53 @@ def check_belt_flow_path(
         reach = _INSERTER_REACH.get(ie.name, 1)
         dx, dy = direction_vec
         drop_pos = (ie.x + dx * reach, ie.y + dy * reach)
+        pickup_pos = (ie.x - dx * reach, ie.y - dy * reach)
         if drop_pos in all_machine_tiles:
             input_inserter_positions.add((ie.x, ie.y))
+        if pickup_pos in all_machine_tiles:
+            output_inserter_positions.add((ie.x, ie.y))
 
     # Compute layout boundary from all belt positions
     all_xs = [x for x, _ in belt_tiles]
     all_ys = [y for _, y in belt_tiles]
     min_bx, max_bx = min(all_xs), max(all_xs)
     min_by, max_by = min(all_ys), max(all_ys)
+
+    def _belt_tiles_near_inserters(
+        machine_entity: PlacedEntity,
+        machine_tiles: set[tuple[int, int]],
+        target_inserter_positions: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        """Find belt tiles adjacent to a machine's inserters of a given type."""
+        size = _machine_size(machine_entity.name)
+        result: set[tuple[int, int]] = set()
+        for dx in range(-1, size + 1):
+            for dy in range(-1, size + 1):
+                ipos = (machine_entity.x + dx, machine_entity.y + dy)
+                if ipos not in target_inserter_positions or ipos in machine_tiles:
+                    continue
+                for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nb = (ipos[0] + ddx, ipos[1] + ddy)
+                    if nb in belt_tiles and nb not in machine_tiles:
+                        result.add(nb)
+        return result
+
+    def _network_reaches_boundary(network: set[tuple[int, int]]) -> bool:
+        """Check if a belt network reaches the layout boundary.
+
+        Requires at least 3 tiles to avoid falsely passing dead stubs
+        that happen to sit at the layout edge.
+        """
+        return len(network) >= 3 and any(
+            bx in (min_bx, max_bx) or by in (min_by, max_by) for bx, by in network
+        )
+
+    # Build recipe -> has_solid_output lookup for output checks
+    solid_output_recipes: set[str] = set()
+    if solver_result:
+        for ms in solver_result.machines:
+            if any(not o.is_fluid for o in ms.outputs):
+                solid_output_recipes.add(ms.recipe)
 
     checked_machines: set[tuple[int, int]] = set()
     for e in machine_entities:
@@ -912,56 +953,75 @@ def check_belt_flow_path(
         size = _machine_size(e.name)
         my_tiles = {(e.x + dx, e.y + dy) for dx in range(size) for dy in range(size)}
 
-        # Find belt tiles adjacent to this machine's INPUT inserters
-        start_belt_tiles: set[tuple[int, int]] = set()
-        for dx in range(-1, size + 1):
-            for dy in range(-1, size + 1):
-                ipos = (e.x + dx, e.y + dy)
-                if ipos not in input_inserter_positions or ipos in my_tiles:
-                    continue
+        # --- Input path checking ---
+        input_belt_starts = _belt_tiles_near_inserters(e, my_tiles, input_inserter_positions)
+        if input_belt_starts:
+            belt_network = _bfs_belt_reach(input_belt_starts, belt_tiles)
+
+            # Check if network reaches another machine's output inserter
+            reaches_source = False
+            for bx, by in belt_network:
                 for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                    nb = (ipos[0] + ddx, ipos[1] + ddy)
-                    if nb in belt_tiles and nb not in my_tiles:
-                        start_belt_tiles.add(nb)
+                    adj = (bx + ddx, by + ddy)
+                    if adj in inserter_positions and adj not in my_tiles and adj not in input_inserter_positions:
+                        reaches_source = True
+                        break
+                    if adj in inserter_positions and adj not in my_tiles:
+                        for ddx2, ddy2 in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                            adj2 = (adj[0] + ddx2, adj[1] + ddy2)
+                            if adj2 in all_machine_tiles and adj2 not in my_tiles:
+                                reaches_source = True
+                                break
+                    if reaches_source:
+                        break
+                if reaches_source:
+                    break
 
-        if not start_belt_tiles:
-            continue  # No input inserters with belts — other checks cover this
+            if not reaches_source and not _network_reaches_boundary(belt_network):
+                severity = "error" if layout_style == "spaghetti" else "warning"
+                issues.append(
+                    ValidationIssue(
+                        severity=severity,
+                        category="belt-flow-path",
+                        message=(
+                            f"{e.name} at ({e.x},{e.y}): input belt network ({len(belt_network)} tiles) "
+                            f"doesn't reach any source (other machine or layout boundary)"
+                        ),
+                        x=e.x,
+                        y=e.y,
+                    )
+                )
 
-        belt_network = _bfs_belt_reach(start_belt_tiles, belt_tiles)
+        # --- Output path checking ---
+        has_solid_output = e.recipe in solid_output_recipes if solver_result else True
+        if not has_solid_output:
+            continue
 
-        # Check if network reaches another machine's output inserter
-        reaches_source = False
+        output_belt_starts = _belt_tiles_near_inserters(e, my_tiles, output_inserter_positions)
+        if not output_belt_starts:
+            continue
+
+        belt_network = _bfs_belt_reach(output_belt_starts, belt_tiles)
+
+        reaches_sink = False
         for bx, by in belt_network:
             for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                 adj = (bx + ddx, by + ddy)
-                # Inserter adjacent to belt, but NOT an input inserter for this machine
-                if adj in inserter_positions and adj not in my_tiles and adj not in input_inserter_positions:
-                    reaches_source = True
+                if adj in input_inserter_positions and adj not in my_tiles:
+                    reaches_sink = True
                     break
-                # Also check if this inserter is an output inserter of another machine
-                if adj in inserter_positions and adj not in my_tiles:
-                    for ddx2, ddy2 in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                        adj2 = (adj[0] + ddx2, adj[1] + ddy2)
-                        if adj2 in all_machine_tiles and adj2 not in my_tiles:
-                            reaches_source = True
-                            break
-                if reaches_source:
-                    break
-            if reaches_source:
+            if reaches_sink:
                 break
 
-        # Check if network reaches layout boundary (external input)
-        reaches_boundary = any(bx in (min_bx, max_bx) or by in (min_by, max_by) for bx, by in belt_network)
-
-        if not reaches_source and not reaches_boundary:
+        if not reaches_sink and not _network_reaches_boundary(belt_network):
             severity = "error" if layout_style == "spaghetti" else "warning"
             issues.append(
                 ValidationIssue(
                     severity=severity,
                     category="belt-flow-path",
                     message=(
-                        f"{e.name} at ({e.x},{e.y}): input belt network ({len(belt_network)} tiles) "
-                        f"doesn't reach any source (other machine or layout boundary)"
+                        f"{e.name} at ({e.x},{e.y}): output belt network ({len(belt_network)} tiles) "
+                        f"doesn't reach any sink (other machine or layout boundary)"
                     ),
                     x=e.x,
                     y=e.y,

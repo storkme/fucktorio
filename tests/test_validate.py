@@ -372,8 +372,8 @@ class TestBeltFlowPath:
         assert len(errors) == 0
         assert len(warnings) == 1
 
-    def test_output_belts_not_flagged(self):
-        """Output inserter belts should not be flagged even if disconnected."""
+    def test_disconnected_output_belts_flagged(self):
+        """Disconnected output belts are flagged as errors."""
         lr = LayoutResult(
             entities=[
                 PlacedEntity(name="assembling-machine-1", x=5, y=5, recipe="iron-gear-wheel"),
@@ -383,15 +383,16 @@ class TestBeltFlowPath:
                 PlacedEntity(name="transport-belt", x=5, y=3, direction=EntityDirection.EAST),
                 PlacedEntity(name="transport-belt", x=4, y=3, direction=EntityDirection.EAST),
                 PlacedEntity(name="transport-belt", x=3, y=3, direction=EntityDirection.EAST),
-                # Output inserter (picks from machine, drops north) — dead-end belt
+                # Output inserter (picks from machine, drops south) — dead-end belt
                 PlacedEntity(name="inserter", x=6, y=8, direction=EntityDirection.SOUTH),
                 PlacedEntity(name="transport-belt", x=6, y=9, direction=EntityDirection.EAST),
                 PlacedEntity(name="transport-belt", x=7, y=9, direction=EntityDirection.EAST),
             ]
         )
         issues = check_belt_flow_path(lr)
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) == 0
+        output_errors = [i for i in issues if "output belt network" in i.message]
+        assert len(output_errors) == 1
+        assert "doesn't reach any sink" in output_errors[0].message
 
 
 class TestBeltDirectionContinuity:
