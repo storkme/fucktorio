@@ -13,8 +13,8 @@ from src.ml.loss import (
 )
 from src.ml.placer import ml_place_machines
 from src.solver import solve
-from src.spaghetti.graph import build_production_graph
-from src.spaghetti.placer import machine_size
+from src.routing.common import machine_size
+from src.routing.graph import build_production_graph
 
 # ---------------------------------------------------------------------------
 # Loss function unit tests

@@ -6,10 +6,10 @@ import pytest
 
 from src.blueprint import build_blueprint
 from src.solver import solve
-from src.spaghetti.graph import build_production_graph
+from src.routing.graph import build_production_graph
+from src.routing.router import _astar_path, route_connections
 from src.spaghetti.layout import spaghetti_layout
 from src.spaghetti.placer import place_machines
-from src.spaghetti.router import _astar_path, route_connections
 from src.validate import ValidationError, validate
 
 

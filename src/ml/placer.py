@@ -12,8 +12,8 @@ import logging
 import numpy as np
 from scipy.optimize import minimize
 
-from ..spaghetti.graph import ProductionGraph
-from ..spaghetti.placer import machine_size
+from ..routing.common import machine_size
+from ..routing.graph import ProductionGraph
 from ..spaghetti.placer import place_machines as grid_place_machines
 from .loss import total_loss
 
