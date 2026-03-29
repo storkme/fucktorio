@@ -132,10 +132,18 @@ def assign_inserter_positions(
     strategy_pair = _STRATEGY_PAIRS.get(side_strategy, [(0, 1), (0, -1)])
 
     for _item, groups in edge_subgroups.items():
-        for group in groups:
-            for rank, edge_idx in enumerate(group):
-                # Alternate between the two sides in the strategy pair
-                edge_preferred[edge_idx] = strategy_pair[rank % 2]
+        for g_idx, group in enumerate(groups):
+            # All edges in the same sub-group go on the same side so the
+            # router can connect them into a single trunk network.
+            # Inputs use side 0, outputs use side 1 (so they don't conflict).
+            # Multiple sub-groups for the same direction alternate further.
+            sample_edge = graph.edges[group[0]]
+            is_output = sample_edge.to_node is None
+            base = 1 if is_output else 0
+            side_idx = (base + g_idx) % 2
+            side = strategy_pair[side_idx]
+            for edge_idx in group:
+                edge_preferred[edge_idx] = side
 
     # Now do per-machine assignment with preferred sides
     assignments: list[InserterAssignment] = []
