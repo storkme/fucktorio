@@ -134,8 +134,13 @@ def build_layout(
     else:
         width = height = 0
 
-    # 9. Place power poles
-    pole_entities = place_poles(width, height, all_occupied)
+    # 9. Place power poles (greedy near machines)
+    machine_centers = []
+    for e in entities:
+        if e.name in _MACHINE_SIZE:
+            size = machine_size(e.name)
+            machine_centers.append((e.x + size // 2, e.y + size // 2))
+    pole_entities = place_poles(width, height, all_occupied, machine_centers=machine_centers)
     entities.extend(pole_entities)
 
     return (
