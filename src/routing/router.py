@@ -490,6 +490,7 @@ def route_connections(
     reserved_tiles: set[tuple[int, int]] | None = None,
     edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
     edge_subgroups: dict[str, list[list[int]]] | None = None,
+    edge_order: list[int] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using A* pathfinding.
 
@@ -506,6 +507,9 @@ def route_connections(
         edge_subgroups: Per-item sub-groups for capacity splitting.
             Maps item -> list of sub-groups (each a list of edge indices).
             Sub-groups route independently with separate trunk networks.
+        edge_order: Optional custom edge routing order. When provided,
+            a list of edge indices into graph.edges that overrides
+            the default internal-then-input-then-output ordering.
     """
     if edge_targets is None:
         edge_targets = {}
@@ -649,6 +653,33 @@ def route_connections(
     for key, indices in output_routing_groups:
         group_total_rate.setdefault(key, 0)
         group_total_rate[key] += sum(graph.edges[i].rate for i in indices)
+
+    # Override routing order if custom edge_order is provided
+    if edge_order is not None:
+        # Build a set of all edge indices present in the default routing_order
+        default_indices = {idx for idx, _, _ in routing_order}
+        # Build a lookup from edge index to its group key
+        idx_to_key: dict[int, tuple[str, int]] = {}
+        for idx, _, key in routing_order:
+            idx_to_key[idx] = key
+        # Rebuild routing_order using the custom edge_order, keeping
+        # is_continuation logic: first occurrence per group_key is not
+        # a continuation, subsequent ones are.
+        seen_groups: set[tuple[str, int]] = set()
+        new_routing_order: list[tuple[int, bool, tuple[str, int]]] = []
+        for idx in edge_order:
+            if idx not in default_indices:
+                continue
+            key = idx_to_key.get(idx, (graph.edges[idx].item, 0))
+            is_cont = key in seen_groups
+            seen_groups.add(key)
+            new_routing_order.append((idx, is_cont, key))
+        # Append any edges not in edge_order (safety net)
+        covered = {i for i, _, _ in new_routing_order}
+        for idx, is_cont, key in routing_order:
+            if idx not in covered:
+                new_routing_order.append((idx, is_cont, key))
+        routing_order = new_routing_order
 
     # --- Route each edge ---
     for edge_idx, is_continuation, group_key in routing_order:
