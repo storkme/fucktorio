@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from ..routing.common import machine_size as machine_size
-from .graph import ProductionGraph
+from ..routing.graph import ProductionGraph
 
 
 def place_machines(graph: ProductionGraph, spacing: int = 4) -> dict[int, tuple[int, int]]:
