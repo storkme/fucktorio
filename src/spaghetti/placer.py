@@ -184,8 +184,9 @@ def _candidate_positions(
         cx, cy = positions[cid]
         csize = machine_size(next(n for n in graph.nodes if n.id == cid).spec.entity)
 
-        # Generate candidates in cardinal directions at various distances
-        for dist in range(spacing, spacing + 5):
+        # Generate candidates in cardinal directions at various distances.
+        # Always start from gap=1 (room for an inserter) regardless of spacing.
+        for dist in range(max(1, spacing), spacing + 5):
             # Right of connected machine (preferred — keeps layout left-to-right)
             candidates.append((cx + csize + dist, cy))
             # Below connected machine
@@ -261,24 +262,32 @@ def _score_position(
         elif abs(center_x - c_center_x) < 1.0:
             score -= 2.0  # vertical alignment bonus
 
-    # Corridor penalty: check for tight spaces (< 2 tiles) between
-    # this machine and any placed machine
+    # Corridor scoring: reward gap=1 for connected machines (enables direct
+    # insertion), penalize tight gaps for unconnected machines (blocks routing).
+    connected_ids = set(_connected_placed(node_id, graph, set(positions.keys())))
     for pid, (px, py) in positions.items():
         psize = machine_size(next(n for n in graph.nodes if n.id == pid).spec.entity)
         # Horizontal gap
         if y < py + psize and y + node_size > py:
-            # Vertically overlapping — check horizontal gap
             gap_right = px - (x + node_size)
             gap_left = x - (px + psize)
             gap = max(gap_right, gap_left)
-            if 0 < gap < 2:
-                score += 10.0  # tight corridor penalty
+            if gap == 0:
+                score += 10.0  # machines touching — no room for inserter
+            elif gap == 1 and pid in connected_ids:
+                score -= 5.0  # direct insertion possible
+            elif 0 < gap < 2 and pid not in connected_ids:
+                score += 10.0  # tight gap blocks belt routing
         # Vertical gap
         if x < px + psize and x + node_size > px:
             gap_bottom = py - (y + node_size)
             gap_top = y - (py + psize)
             gap = max(gap_bottom, gap_top)
-            if 0 < gap < 2:
+            if gap == 0:
+                score += 10.0
+            elif gap == 1 and pid in connected_ids:
+                score -= 5.0
+            elif 0 < gap < 2 and pid not in connected_ids:
                 score += 10.0
 
     # Penalize positions that go too far negative (A* bounds at -10)

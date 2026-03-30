@@ -675,6 +675,7 @@ def route_connections(
     edge_subgroups: dict[str, list[list[int]]] | None = None,
     edge_order: list[int] | None = None,
     edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] | None = None,
+    skip_edges: set[int] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using A* pathfinding.
 
@@ -709,6 +710,8 @@ def route_connections(
         edge_subgroups = {}
     if edge_lane_info is None:
         edge_lane_info = {}
+    if skip_edges is None:
+        skip_edges = set()
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
 
@@ -873,6 +876,9 @@ def route_connections(
 
     # --- Route each edge ---
     for edge_idx, is_continuation, group_key in routing_order:
+        if edge_idx in skip_edges:
+            continue
+
         edge = graph.edges[edge_idx]
 
         # Temporarily unblock tiles reserved for this specific edge

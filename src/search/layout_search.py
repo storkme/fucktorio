@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import os
 import random
 from dataclasses import dataclass
 
@@ -32,9 +34,9 @@ class _Candidate:
 
 def evolutionary_layout(
     solver_result: SolverResult,
-    population_size: int = 30,
-    survivors: int = 5,
-    generations: int = 5,
+    population_size: int = 60,
+    survivors: int = 10,
+    generations: int = 3,
     seed: int | None = None,
 ) -> LayoutResult:
     """Produce a factory layout using evolutionary search over parameters.
@@ -70,12 +72,25 @@ def evolutionary_layout(
 
     best_overall = _Candidate(positions=base_positions)
 
+    # Determine worker count for parallel evaluation
+    n_workers = min(os.cpu_count() or 1, population_size)
+
     for gen in range(generations):
-        # Evaluate all unevaluated candidates
-        for candidate in population:
-            if candidate.layout is not None:
-                continue  # already evaluated (survivor from previous gen)
-            _evaluate(candidate, solver_result, graph)
+        # Evaluate unevaluated candidates in parallel
+        to_eval = [c for c in population if c.layout is None]
+        if to_eval:
+            args = [(c, solver_result, graph) for c in to_eval]
+            try:
+                with multiprocessing.Pool(n_workers) as pool:
+                    results = pool.starmap(_evaluate_worker, args)
+                for candidate, (layout, score) in zip(to_eval, results):
+                    candidate.layout = layout
+                    candidate.score = score
+            except Exception:
+                # Fallback to sequential if multiprocessing fails
+                log.debug("Parallel eval failed, falling back to sequential", exc_info=True)
+                for candidate in to_eval:
+                    _evaluate(candidate, solver_result, graph)
 
         # Sort by score (lower is better)
         population.sort(key=lambda c: c.score)
@@ -114,9 +129,19 @@ def evolutionary_layout(
             population.append(_mutate(parent, graph, num_edges, rng))
 
     # Final evaluation of any unevaluated candidates
+    final_to_eval = [c for c in population if c.layout is None]
+    if final_to_eval:
+        args = [(c, solver_result, graph) for c in final_to_eval]
+        try:
+            with multiprocessing.Pool(n_workers) as pool:
+                results = pool.starmap(_evaluate_worker, args)
+            for candidate, (layout, score) in zip(final_to_eval, results):
+                candidate.layout = layout
+                candidate.score = score
+        except Exception:
+            for candidate in final_to_eval:
+                _evaluate(candidate, solver_result, graph)
     for candidate in population:
-        if candidate.layout is None:
-            _evaluate(candidate, solver_result, graph)
         if candidate.score < best_overall.score:
             best_overall = candidate
 
@@ -143,11 +168,16 @@ def _generate_initial_population(
     population.append(_Candidate(positions=dict(base_positions)))
 
     if population_size > 1:
+        positions_s1 = incremental_place(graph, spacing=1)
+        spacing_variants.append(positions_s1)
+        population.append(_Candidate(positions=positions_s1))
+
+    if population_size > 2:
         positions_s4 = incremental_place(graph, spacing=4)
         spacing_variants.append(positions_s4)
         population.append(_Candidate(positions=positions_s4))
 
-    if population_size > 2:
+    if population_size > 3:
         positions_s5 = incremental_place(graph, spacing=5)
         spacing_variants.append(positions_s5)
         population.append(_Candidate(positions=positions_s5))
@@ -169,6 +199,16 @@ def _generate_initial_population(
     return population
 
 
+def _evaluate_worker(
+    candidate: _Candidate,
+    solver_result: SolverResult,
+    graph: ProductionGraph,
+) -> tuple[LayoutResult, float]:
+    """Evaluate a candidate and return (layout, score). Used by multiprocessing."""
+    _evaluate(candidate, solver_result, graph)
+    return (candidate.layout, candidate.score)
+
+
 def _evaluate(
     candidate: _Candidate,
     solver_result: SolverResult,
@@ -176,7 +216,7 @@ def _evaluate(
 ) -> None:
     """Evaluate a candidate: build layout, validate, compute score."""
     try:
-        layout_result, failed_edges = build_layout(
+        layout_result, failed_edges, direct_count = build_layout(
             solver_result,
             graph,
             candidate.positions,
@@ -204,7 +244,14 @@ def _evaluate(
         error_count = len(exc.issues)
 
     belt_count = sum(1 for e in layout_result.entities if "belt" in e.name)
-    candidate.score = error_count * 100 + len(failed_edges) * 1000 + belt_count * 0.5
+    area = layout_result.width * layout_result.height
+    candidate.score = (
+        error_count * 100
+        + len(failed_edges) * 1000
+        + belt_count * 0.5
+        + area * 0.1
+        - direct_count * 10
+    )
 
 
 def _perturb_positions(

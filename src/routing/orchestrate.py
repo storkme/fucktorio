@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, inserter_target_lane, machine_size, machine_tiles
 from .graph import FlowEdge, ProductionGraph
-from .inserters import assign_inserter_positions, build_inserter_entities
+from .inserters import InserterAssignment, assign_inserter_positions, build_inserter_entities
 from .poles import place_poles
 from .router import route_connections
 
@@ -17,7 +17,7 @@ def build_layout(
     side_strategy: str = "top_bottom",
     side_preference: dict[int, list[tuple[int, int]]] | None = None,
     edge_order: list[int] | None = None,
-) -> tuple[LayoutResult, list[FlowEdge]]:
+) -> tuple[LayoutResult, list[FlowEdge], int]:
     """Build a complete layout from machine positions.
 
     Steps: build occupied set, assign inserters, route connections,
@@ -41,11 +41,83 @@ def build_layout(
     )
     assignments = plan.assignments
 
+    # 2b. Detect direct machine-to-machine insertion opportunities
+    # For internal edges where two machines are adjacent (gap=1), place a
+    # direct inserter in the gap tile instead of routing a belt.
+    direct_edge_indices: set[int] = set()
+    for i, edge in enumerate(graph.edges):
+        if edge.from_node is None or edge.to_node is None or edge.is_fluid:
+            continue
+        # Check if machines are adjacent with gap=1
+        ax, ay = positions[edge.from_node]
+        bx, by = positions[edge.to_node]
+        a_size = machine_size(
+            next(n for n in graph.nodes if n.id == edge.from_node).spec.entity
+        )
+        b_size = machine_size(
+            next(n for n in graph.nodes if n.id == edge.to_node).spec.entity
+        )
+
+        # Find gap tiles between the two machines
+        gap_tile = None
+        ins_dir = None
+        # Check horizontal adjacency (A left of B or B left of A)
+        if ay < by + b_size and ay + a_size > by:
+            # Vertically overlapping — check horizontal gap
+            overlap_start = max(ay, by)
+            overlap_end = min(ay + a_size, by + b_size)
+            if ax + a_size + 1 == bx:
+                # A is left of B, gap column = ax + a_size
+                mid_y = (overlap_start + overlap_end) // 2
+                gap_tile = (ax + a_size, mid_y)
+                ins_dir = EntityDirection.EAST  # picks from A, drops into B
+            elif bx + b_size + 1 == ax:
+                # B is left of A, gap column = bx + b_size
+                mid_y = (overlap_start + overlap_end) // 2
+                gap_tile = (bx + b_size, mid_y)
+                ins_dir = EntityDirection.WEST  # picks from A (right), drops into B (left)
+        # Check vertical adjacency
+        if gap_tile is None and ax < bx + b_size and ax + a_size > bx:
+            overlap_start = max(ax, bx)
+            overlap_end = min(ax + a_size, bx + b_size)
+            if ay + a_size + 1 == by:
+                # A is above B, gap row = ay + a_size
+                mid_x = (overlap_start + overlap_end) // 2
+                gap_tile = (mid_x, ay + a_size)
+                ins_dir = EntityDirection.SOUTH
+            elif by + b_size + 1 == ay:
+                # B is above A, gap row = by + b_size
+                mid_x = (overlap_start + overlap_end) // 2
+                gap_tile = (mid_x, by + b_size)
+                ins_dir = EntityDirection.NORTH
+
+        if gap_tile is not None and gap_tile not in occupied and ins_dir is not None:
+            # Check this edge isn't already assigned by the regular inserter pass
+            already_assigned = any(a.edge is edge for a in assignments)
+            if already_assigned:
+                # Remove the existing assignment and replace with direct
+                assignments[:] = [a for a in assignments if a.edge is not edge]
+
+            assignments.append(
+                InserterAssignment(
+                    edge=edge,
+                    node_id=edge.from_node,
+                    border_tile=gap_tile,
+                    belt_tile=gap_tile,  # no belt tile for direct insertion
+                    direction=ins_dir,
+                    is_direct=True,
+                )
+            )
+            occupied.add(gap_tile)
+            direct_edge_indices.add(i)
+
     # 3. Build edge->belt_tile mapping and per-edge exclusions for the router
     edge_targets: dict[int, tuple[int, int]] = {}
     edge_starts: dict[int, tuple[int, int]] = {}
     edge_exclusions: dict[int, set[tuple[int, int]]] = {}
     for assignment in assignments:
+        if assignment.is_direct:
+            continue  # Direct insertions don't need routing
         for i, edge in enumerate(graph.edges):
             if edge is assignment.edge:
                 if assignment.edge.to_node == assignment.node_id:
@@ -63,6 +135,8 @@ def build_layout(
     # 3b. Compute lane info for A* pathfinding
     edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] = {}
     for assignment in assignments:
+        if assignment.is_direct:
+            continue
         for i, edge in enumerate(graph.edges):
             if edge is assignment.edge:
                 if assignment.edge.from_node == assignment.node_id:
@@ -102,6 +176,7 @@ def build_layout(
         edge_subgroups=plan.edge_subgroups,
         edge_order=edge_order,
         edge_lane_info=edge_lane_info,
+        skip_edges=direct_edge_indices,
     )
     entities.extend(routing.entities)
 
@@ -168,4 +243,5 @@ def build_layout(
     return (
         LayoutResult(entities=entities, width=width, height=height),
         routing.failed_edges,
+        len(direct_edge_indices),
     )
