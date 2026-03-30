@@ -85,7 +85,7 @@ def evolutionary_layout(
             try:
                 with multiprocessing.Pool(n_workers) as pool:
                     results = pool.starmap(_evaluate_worker, args)
-                for candidate, (layout, score) in zip(to_eval, results):
+                for candidate, (layout, score) in zip(to_eval, results, strict=True):
                     candidate.layout = layout
                     candidate.score = score
             except Exception:
@@ -137,7 +137,7 @@ def evolutionary_layout(
         try:
             with multiprocessing.Pool(n_workers) as pool:
                 results = pool.starmap(_evaluate_worker, args)
-            for candidate, (layout, score) in zip(final_to_eval, results):
+            for candidate, (layout, score) in zip(final_to_eval, results, strict=True):
                 candidate.layout = layout
                 candidate.score = score
         except Exception:
@@ -240,12 +240,8 @@ def _evaluate(
             inc_rng = random.Random(candidate.position_seed)
 
             def _gen_candidates(node_id, g, positions, occupied, rng):
-                node_size = machine_size(
-                    next(n for n in g.nodes if n.id == node_id).spec.entity
-                )
-                cands = _candidate_positions(
-                    node_id, node_size, g, positions, occupied, spacing=3
-                )
+                node_size = machine_size(next(n for n in g.nodes if n.id == node_id).spec.entity)
+                cands = _candidate_positions(node_id, node_size, g, positions, occupied, spacing=3)
                 rng.shuffle(cands)
                 return cands
 
@@ -288,13 +284,7 @@ def _evaluate(
 
     belt_count = sum(1 for e in layout_result.entities if "belt" in e.name)
     area = layout_result.width * layout_result.height
-    candidate.score = (
-        error_count * 100
-        + len(failed_edges) * 1000
-        + belt_count * 0.5
-        + area * 0.1
-        - direct_count * 10
-    )
+    candidate.score = error_count * 100 + len(failed_edges) * 1000 + belt_count * 0.5 + area * 0.1 - direct_count * 10
 
 
 def _perturb_positions(

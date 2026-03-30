@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
-from .common import _MACHINE_SIZE, DIR_MAP, DIR_VEC, belt_entity_for_rate, inserter_target_lane, machine_size, machine_tiles
+from .common import (
+    _MACHINE_SIZE,
+    DIR_MAP,
+    DIR_VEC,
+    belt_entity_for_rate,
+    inserter_target_lane,
+    machine_size,
+    machine_tiles,
+)
 from .graph import FlowEdge, ProductionGraph
 from .inserters import (
     InserterAssignment,
-    InsertionPlan,
     _compute_edge_subgroups,
     _get_sides,
     assign_inserter_positions,
@@ -15,9 +22,7 @@ from .inserters import (
 )
 from .poles import place_poles
 from .router import (
-    RoutingResult,
     _astar_path,
-    _compute_io_y_slots,
     _fix_belt_directions,
     _path_to_entities,
     route_connections,
@@ -65,12 +70,8 @@ def build_layout(
         # Check if machines are adjacent with gap=1
         ax, ay = positions[edge.from_node]
         bx, by = positions[edge.to_node]
-        a_size = machine_size(
-            next(n for n in graph.nodes if n.id == edge.from_node).spec.entity
-        )
-        b_size = machine_size(
-            next(n for n in graph.nodes if n.id == edge.to_node).spec.entity
-        )
+        a_size = machine_size(next(n for n in graph.nodes if n.id == edge.from_node).spec.entity)
+        b_size = machine_size(next(n for n in graph.nodes if n.id == edge.to_node).spec.entity)
 
         # Find gap tiles between the two machines
         gap_tile = None
@@ -332,9 +333,8 @@ def build_layout_incremental(
             if edge.from_node == node_id:
                 if edge.to_node is None or edge.to_node in placed_node_ids:
                     routable_edges.append((i, edge))
-            elif edge.to_node == node_id:
-                if edge.from_node is None or edge.from_node in placed_node_ids:
-                    routable_edges.append((i, edge))
+            elif edge.to_node == node_id and (edge.from_node is None or edge.from_node in placed_node_ids):
+                routable_edges.append((i, edge))
 
         best_result = None  # (position, machine_tiles, assignments, routing, direct_indices)
         best_failed_count = float("inf")
@@ -370,7 +370,13 @@ def build_layout_incremental(
 
                 # Check adjacency (gap=1)
                 gap_tile, ins_dir = _find_direct_gap(
-                    cx, cy, size, ox, oy, o_size, edge.from_node == node_id,
+                    cx,
+                    cy,
+                    size,
+                    ox,
+                    oy,
+                    o_size,
+                    edge.from_node == node_id,
                 )
                 if gap_tile is not None and gap_tile not in trial_occupied and ins_dir is not None:
                     trial_assignments.append(
@@ -409,18 +415,25 @@ def build_layout_incremental(
                     )
 
                 # Find first available side
-                assigned = False
                 for border, belt, direction_vec in sides:
                     if border in trial_occupied or belt in trial_occupied:
                         continue
                     is_input = edge.to_node == node_id
                     if is_input:
-                        facing = {(0, 1): EntityDirection.SOUTH, (0, -1): EntityDirection.NORTH,
-                                  (1, 0): EntityDirection.EAST, (-1, 0): EntityDirection.WEST}.get(direction_vec)
+                        facing = {
+                            (0, 1): EntityDirection.SOUTH,
+                            (0, -1): EntityDirection.NORTH,
+                            (1, 0): EntityDirection.EAST,
+                            (-1, 0): EntityDirection.WEST,
+                        }.get(direction_vec)
                     else:
                         reverse = (-direction_vec[0], -direction_vec[1])
-                        facing = {(0, 1): EntityDirection.SOUTH, (0, -1): EntityDirection.NORTH,
-                                  (1, 0): EntityDirection.EAST, (-1, 0): EntityDirection.WEST}.get(reverse)
+                        facing = {
+                            (0, 1): EntityDirection.SOUTH,
+                            (0, -1): EntityDirection.NORTH,
+                            (1, 0): EntityDirection.EAST,
+                            (-1, 0): EntityDirection.WEST,
+                        }.get(reverse)
                     if facing is None:
                         continue
 
@@ -429,9 +442,7 @@ def build_layout_incremental(
                     else:
                         away_vec = (-direction_vec[0], -direction_vec[1])
                         belt_dir = DIR_MAP[away_vec]
-                        target_lane = inserter_target_lane(
-                            border[0], border[1], belt[0], belt[1], belt_dir
-                        )
+                        target_lane = inserter_target_lane(border[0], border[1], belt[0], belt[1], belt_dir)
 
                     assignment = InserterAssignment(
                         edge=edge,
@@ -456,7 +467,6 @@ def build_layout_incremental(
                     if i not in edge_exclusions:
                         edge_exclusions[i] = set()
                     edge_exclusions[i].add(belt)
-                    assigned = True
                     break
 
             # Route edges for this machine.
@@ -469,8 +479,16 @@ def build_layout_incremental(
             trial_failed: list[FlowEdge] = []
 
             # Separate external and internal edges
-            external_edges = [(i, e) for i, e in routable_edges if i not in trial_direct and (e.from_node is None or e.to_node is None)]
-            internal_edges = [(i, e) for i, e in routable_edges if i not in trial_direct and e.from_node is not None and e.to_node is not None]
+            external_edges = [
+                (i, e)
+                for i, e in routable_edges
+                if i not in trial_direct and (e.from_node is None or e.to_node is None)
+            ]
+            internal_edges = [
+                (i, e)
+                for i, e in routable_edges
+                if i not in trial_direct and e.from_node is not None and e.to_node is not None
+            ]
 
             # Handle external edges: place belt stubs, route continuations
             for i, edge in external_edges:
@@ -521,8 +539,11 @@ def build_layout_incremental(
 
                     if goals:
                         path = _astar_path(
-                            (bx, by), goals, obstacles,
-                            allow_underground=True, ug_max_reach=6,
+                            (bx, by),
+                            goals,
+                            obstacles,
+                            allow_underground=True,
+                            ug_max_reach=6,
                             belt_dir_map=trial_belt_dir_map,
                         )
                     else:
@@ -608,8 +629,17 @@ def build_layout_incremental(
             continue
 
         # Accept the best position
-        (pos, m_tiles, assignments, trial_ents, direct_idxs,
-         new_occupied, new_belt_dir_map, new_group_networks, failed) = best_result
+        (
+            pos,
+            m_tiles,
+            assignments,
+            trial_ents,
+            direct_idxs,
+            new_occupied,
+            new_belt_dir_map,
+            new_group_networks,
+            failed,
+        ) = best_result
         positions[node_id] = pos
         occupied = new_occupied
         placed_node_ids.add(node_id)
@@ -717,8 +747,12 @@ def build_layout_incremental(
 
 
 def _find_direct_gap(
-    ax: int, ay: int, a_size: int,
-    bx: int, by: int, b_size: int,
+    ax: int,
+    ay: int,
+    a_size: int,
+    bx: int,
+    by: int,
+    b_size: int,
     a_is_source: bool,
 ) -> tuple[tuple[int, int] | None, EntityDirection | None]:
     """Find a gap tile for direct insertion between adjacent machines.
