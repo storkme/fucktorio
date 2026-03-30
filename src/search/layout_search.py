@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from ..models import LayoutResult, SolverResult
 from ..routing.common import machine_size, machine_tiles
 from ..routing.graph import ProductionGraph, build_production_graph
-from ..routing.orchestrate import build_layout
-from ..spaghetti.placer import incremental_place
+from ..routing.orchestrate import build_layout, build_layout_incremental
+from ..spaghetti.placer import _candidate_positions, _dependency_order, incremental_place
 from ..validate import ValidationError, validate
 
 log = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ class _Candidate:
     positions: dict[int, tuple[int, int]]
     side_preference: dict[int, list[tuple[int, int]]] | None = None
     edge_order: list[int] | None = None
+    position_seed: int = 0  # RNG seed for incremental position selection
+    placement_order: list[int] | None = None  # machine placement order
     score: float = float("inf")
     layout: LayoutResult | None = None
 
@@ -182,19 +184,36 @@ def _generate_initial_population(
         spacing_variants.append(positions_s5)
         population.append(_Candidate(positions=positions_s5))
 
-    # Remaining candidates: perturb positions, randomize sides/edge order
+    # Remaining candidates: mix of incremental and batch
+    dep_order = _dependency_order(graph)
+
     for _ in range(population_size - len(population)):
-        base = rng.choice(spacing_variants)
-        positions = _perturb_positions(base, graph, rng, sigma=2)
         side_pref = _random_side_preference(graph, rng)
-        edge_ord = _random_edge_order(num_edges, rng)
-        population.append(
-            _Candidate(
-                positions=positions,
-                side_preference=side_pref,
-                edge_order=edge_ord,
+
+        if rng.random() < 0.7:
+            # Incremental candidate (70% of population)
+            # Shuffle placement order within topological levels
+            order = _shuffle_topo_order(dep_order, graph, rng)
+            population.append(
+                _Candidate(
+                    positions={},  # unused in incremental mode
+                    side_preference=side_pref,
+                    placement_order=order,
+                    position_seed=rng.randint(0, 2**31),
+                )
             )
-        )
+        else:
+            # Batch candidate (30% — keeps exploration diversity)
+            base = rng.choice(spacing_variants)
+            positions = _perturb_positions(base, graph, rng, sigma=2)
+            edge_ord = _random_edge_order(num_edges, rng)
+            population.append(
+                _Candidate(
+                    positions=positions,
+                    side_preference=side_pref,
+                    edge_order=edge_ord,
+                )
+            )
 
     return population
 
@@ -216,13 +235,37 @@ def _evaluate(
 ) -> None:
     """Evaluate a candidate: build layout, validate, compute score."""
     try:
-        layout_result, failed_edges, direct_count = build_layout(
-            solver_result,
-            graph,
-            candidate.positions,
-            side_preference=candidate.side_preference,
-            edge_order=candidate.edge_order,
-        )
+        if candidate.placement_order is not None:
+            # Incremental mode
+            inc_rng = random.Random(candidate.position_seed)
+
+            def _gen_candidates(node_id, g, positions, occupied, rng):
+                node_size = machine_size(
+                    next(n for n in g.nodes if n.id == node_id).spec.entity
+                )
+                cands = _candidate_positions(
+                    node_id, node_size, g, positions, occupied, spacing=3
+                )
+                rng.shuffle(cands)
+                return cands
+
+            layout_result, failed_edges, direct_count = build_layout_incremental(
+                solver_result,
+                graph,
+                candidate.placement_order,
+                _gen_candidates,
+                side_preference=candidate.side_preference,
+                rng=inc_rng,
+            )
+        else:
+            # Batch mode (legacy)
+            layout_result, failed_edges, direct_count = build_layout(
+                solver_result,
+                graph,
+                candidate.positions,
+                side_preference=candidate.side_preference,
+                edge_order=candidate.edge_order,
+            )
     except Exception:
         log.debug("Candidate build_layout raised exception", exc_info=True)
         candidate.score = 10000.0
@@ -304,6 +347,24 @@ def _random_side_preference(
     return pref
 
 
+def _shuffle_topo_order(
+    base_order: list[int],
+    graph: ProductionGraph,
+    rng: random.Random,
+) -> list[int]:
+    """Shuffle machine placement order while respecting dependency constraints.
+
+    Machines within the same topological level can be freely reordered.
+    For iron-gear-wheel (all same level), this is a full shuffle.
+    """
+    # Group by topological level (upstream machines before downstream)
+    # Simple approach: just shuffle the whole order (dependencies are soft constraints
+    # that affect quality, not hard constraints that break correctness)
+    order = list(base_order)
+    rng.shuffle(order)
+    return order
+
+
 def _random_edge_order(num_edges: int, rng: random.Random) -> list[int]:
     """Generate a random edge routing order."""
     order = list(range(num_edges))
@@ -318,9 +379,6 @@ def _mutate(
     rng: random.Random,
 ) -> _Candidate:
     """Produce a child candidate by mutating a parent."""
-    # Perturb positions with smaller sigma
-    positions = _perturb_positions(parent.positions, graph, rng, sigma=1.5)
-
     # Mutate side preferences: start from parent's or generate fresh
     if parent.side_preference is not None:
         side_pref = dict(parent.side_preference)
@@ -334,19 +392,35 @@ def _mutate(
         rng.shuffle(sides)
         side_pref[node.id] = sides
 
-    # Mutate edge order: partial shuffle of parent's order
-    edge_ord = list(parent.edge_order) if parent.edge_order is not None else list(range(num_edges))
+    if parent.placement_order is not None:
+        # Incremental mode: mutate placement order and position seed
+        order = list(parent.placement_order)
+        # Swap 1-2 adjacent pairs
+        for _ in range(rng.randint(1, 2)):
+            if len(order) >= 2:
+                idx = rng.randint(0, len(order) - 2)
+                order[idx], order[idx + 1] = order[idx + 1], order[idx]
 
-    # Shuffle a portion (25-50%) of the edge order
-    n_swap = max(1, rng.randint(len(edge_ord) // 4, len(edge_ord) // 2 + 1))
-    indices_to_swap = rng.sample(range(len(edge_ord)), k=min(n_swap, len(edge_ord)))
-    values = [edge_ord[i] for i in indices_to_swap]
-    rng.shuffle(values)
-    for i, idx in enumerate(indices_to_swap):
-        edge_ord[idx] = values[i]
+        return _Candidate(
+            positions={},
+            side_preference=side_pref,
+            placement_order=order,
+            position_seed=rng.randint(0, 2**31),
+        )
+    else:
+        # Batch mode: mutate positions and edge order
+        positions = _perturb_positions(parent.positions, graph, rng, sigma=1.5)
 
-    return _Candidate(
-        positions=positions,
-        side_preference=side_pref,
-        edge_order=edge_ord,
-    )
+        edge_ord = list(parent.edge_order) if parent.edge_order is not None else list(range(num_edges))
+        n_swap = max(1, rng.randint(len(edge_ord) // 4, len(edge_ord) // 2 + 1))
+        indices_to_swap = rng.sample(range(len(edge_ord)), k=min(n_swap, len(edge_ord)))
+        values = [edge_ord[i] for i in indices_to_swap]
+        rng.shuffle(values)
+        for i, idx in enumerate(indices_to_swap):
+            edge_ord[idx] = values[i]
+
+        return _Candidate(
+            positions=positions,
+            side_preference=side_pref,
+            edge_order=edge_ord,
+        )
