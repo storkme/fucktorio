@@ -23,8 +23,13 @@ from .inserters import (
 from .poles import place_poles
 from .router import (
     _astar_path,
+    _classify_approach_by_lane,
+    _detect_sideload_lane,
     _fix_belt_directions,
+    _network_downstream_ends,
+    _network_upstream_ends,
     _path_to_entities,
+    _perpendicular_approach_tiles,
     route_connections,
 )
 
@@ -307,6 +312,7 @@ def build_layout_incremental(
 
     # Routing state carried across incremental calls
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    lane_loads: dict[tuple[str, int], dict[str, float]] = {}  # per-group lane throughput
     group_networks: dict[tuple[str, int], set[tuple[int, int]]] = {}
 
     node_map = {n.id: n for n in graph.nodes}
@@ -527,38 +533,92 @@ def build_layout_incremental(
                 existing_network = trial_group_networks.get(group_key, set())
 
                 if existing_network:
-                    # Continuation: A* pathfind from belt tile to existing network
+                    # Continuation: connect stub to existing network.
+                    is_input = i in edge_targets
                     obstacles = trial_occupied - {(bx, by)} - existing_network
-                    # Goal: any tile adjacent to the existing network that's free
-                    goals = set()
-                    for nx, ny in existing_network:
-                        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                            adj = (nx + ddx, ny + ddy)
-                            if adj not in obstacles and adj not in existing_network:
-                                goals.add(adj)
-                    # Also allow routing directly into existing network tiles
-                    goals |= existing_network
+
+                    # Precompute foreign item tiles for contamination avoidance
+                    _oit: set[tuple[int, int]] | None = None
+                    if not edge.is_fluid:
+                        _oit = set()
+                        for (oi, _sg), tiles in trial_group_networks.items():
+                            if oi != edge.item:
+                                _oit |= tiles
+                        if not _oit:
+                            _oit = None
 
                     path = None
-                    if goals:
-                        # Precompute foreign item tiles for contamination avoidance
-                        _oit: set[tuple[int, int]] | None = None
-                        if not edge.is_fluid:
-                            _oit = set()
-                            for (oi, _sg), tiles in trial_group_networks.items():
-                                if oi != edge.item:
-                                    _oit |= tiles
-                            if not _oit:
-                                _oit = None
-                        path = _astar_path(
-                            (bx, by),
-                            goals,
-                            obstacles,
-                            allow_underground=True,
-                            ug_max_reach=6,
-                            belt_dir_map=trial_belt_dir_map,
-                            other_item_tiles=_oit,
+                    if is_input and not edge.is_fluid:
+                        # Input: multi-source A* from network toward stub
+                        downstream_ends = _network_downstream_ends(
+                            existing_network, trial_belt_dir_map
                         )
+                        forward_tiles = set()
+                        for tile in downstream_ends:
+                            d = trial_belt_dir_map.get(tile)
+                            if d is not None:
+                                dvx, dvy = DIR_VEC[d]
+                                ft = (tile[0] + dvx, tile[1] + dvy)
+                                if ft not in existing_network:
+                                    forward_tiles.add(ft)
+                        approach = _perpendicular_approach_tiles(
+                            existing_network, trial_belt_dir_map, trial_occupied
+                        )
+                        all_starts = (forward_tiles | approach) - obstacles
+                        if all_starts:
+                            path = _astar_path(
+                                starts=all_starts,
+                                goals={(bx, by)},
+                                obstacles=obstacles,
+                                allow_underground=True,
+                                ug_max_reach=6,
+                                belt_dir_map=trial_belt_dir_map,
+                                other_item_tiles=_oit,
+                            )
+                    else:
+                        # Output (or fluid): route from stub to network
+                        # For belts: prefer the side that balances lane throughput
+                        all_goals = set()
+                        for nx, ny in existing_network:
+                            for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                                adj = (nx + ddx, ny + ddy)
+                                if adj not in obstacles and adj not in existing_network:
+                                    all_goals.add(adj)
+                        all_goals |= existing_network
+
+                        if all_goals and not edge.is_fluid:
+                            left_goals, right_goals = _classify_approach_by_lane(
+                                existing_network, trial_belt_dir_map, trial_occupied
+                            )
+                            cur = lane_loads.get(group_key, {"left": 0.0, "right": 0.0})
+                            if cur["left"] <= cur["right"]:
+                                preferred, fallback = left_goals, right_goals
+                            else:
+                                preferred, fallback = right_goals, left_goals
+                            if preferred:
+                                path = _astar_path(
+                                    start=(bx, by), goals=preferred, obstacles=obstacles,
+                                    allow_underground=True, ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                )
+                            if not path and fallback:
+                                path = _astar_path(
+                                    start=(bx, by), goals=fallback, obstacles=obstacles,
+                                    allow_underground=True, ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                )
+                            if not path and all_goals:
+                                path = _astar_path(
+                                    start=(bx, by), goals=all_goals, obstacles=obstacles,
+                                    allow_underground=True, ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                )
+                        elif all_goals:
+                            path = _astar_path(
+                                start=(bx, by), goals=all_goals, obstacles=obstacles,
+                                allow_underground=True, ug_max_reach=6,
+                                belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                            )
 
                     if path:
                         belt_name = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
@@ -568,6 +628,13 @@ def build_layout_incremental(
                             trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
                             trial_occupied.add((pe.x, pe.y))
                         trial_group_networks.setdefault(group_key, set()).update(set(path))
+                        # Track lane load for output continuations
+                        is_output = i in edge_starts
+                        if is_output and not edge.is_fluid and existing_network:
+                            sl = _detect_sideload_lane(path, existing_network, trial_belt_dir_map)
+                            if sl:
+                                loads = lane_loads.setdefault(group_key, {"left": 0.0, "right": 0.0})
+                                loads[sl] += edge.rate
                     else:
                         failed_count += 1
                         trial_failed.append(edge)
@@ -678,8 +745,6 @@ def build_layout_incremental(
         group_networks = new_group_networks
 
     # Extend trunks with entry/exit tails so the validator sees boundary connections
-    from .router import _network_downstream_ends, _network_upstream_ends
-
     for (item, _sg_idx), network in group_networks.items():
         if not network:
             continue
