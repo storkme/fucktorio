@@ -656,7 +656,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(iron_gear_10s_layout, label="spaghetti: 10/s iron-gear-wheel")
         viz(
             bp,
-            "spaghetti-iron-gear-wheel-10s",
+            "iron-gear-wheel-10s",
             solver_result=iron_gear_10s,
             production_graph=graph,
             layout_result=iron_gear_10s_layout,
@@ -672,7 +672,7 @@ class TestSpaghettiVisualization:
         lr = spaghetti_layout(result)
         graph = build_production_graph(result)
         bp = build_blueprint(lr, label="spaghetti: 10/s electronic-circuit")
-        viz(bp, "spaghetti-electronic-circuit-10s", solver_result=result, production_graph=graph, layout_result=lr)
+        viz(bp, "electronic-circuit-10s", solver_result=result, production_graph=graph, layout_result=lr)
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
     def test_viz_plastic_bar(self, viz):
@@ -684,7 +684,7 @@ class TestSpaghettiVisualization:
         lr = spaghetti_layout(result)
         graph = build_production_graph(result)
         bp = build_blueprint(lr, label="spaghetti: 5/s plastic-bar")
-        viz(bp, "spaghetti-plastic-bar-5s", solver_result=result, production_graph=graph, layout_result=lr)
+        viz(bp, "plastic-bar-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
     def test_viz_advanced_circuit(self, viz):
@@ -696,7 +696,7 @@ class TestSpaghettiVisualization:
         lr = spaghetti_layout(result)
         graph = build_production_graph(result)
         bp = build_blueprint(lr, label="spaghetti: 5/s advanced-circuit")
-        viz(bp, "spaghetti-advanced-circuit-5s", solver_result=result, production_graph=graph, layout_result=lr)
+        viz(bp, "advanced-circuit-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
     def test_viz_petroleum_gas(self, viz):
@@ -708,4 +708,4 @@ class TestSpaghettiVisualization:
         lr = spaghetti_layout(result)
         graph = build_production_graph(result)
         bp = build_blueprint(lr, label="spaghetti: 10/s petroleum-gas")
-        viz(bp, "spaghetti-petroleum-gas-10s", solver_result=result, production_graph=graph, layout_result=lr)
+        viz(bp, "petroleum-gas-10s", solver_result=result, production_graph=graph, layout_result=lr)

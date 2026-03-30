@@ -67,22 +67,8 @@ jobs:
 
           files = sorted(f for f in os.listdir('.') if f.endswith('.html') and f != 'index.html')
 
-          # Group files by prefix (e.g. "spaghetti-", "ml-", "ml-sweep-")
-          sections: dict[str, list[str]] = {}
-          order = []
-          for f in files:
-              if f.startswith('ml-sweep-'):
-                  key = 'ML Sweep Gallery'
-              elif f.startswith('ml-'):
-                  key = 'ML Layout'
-              elif f.startswith('spaghetti-'):
-                  key = 'Spaghetti Layout'
-              else:
-                  key = 'Other'
-              if key not in sections:
-                  sections[key] = []
-                  order.append(key)
-              sections[key].append(f)
+          layouts = [f for f in files if f != 'showcase.html']
+          tools = [f for f in files if f == 'showcase.html']
 
           with open('index.html', 'w') as out:
               out.write('<!DOCTYPE html><html><head><meta charset="utf-8">')
@@ -93,29 +79,22 @@ jobs:
               out.write('h2{color:#c792ea;margin-top:2rem;border-bottom:1px solid #333;padding-bottom:.3rem}')
               out.write('a{color:#82aaff;text-decoration:none;display:block;padding:.25rem 0}')
               out.write('a:hover{color:#ff6b9d;text-decoration:underline}')
-              out.write('.sweep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.5rem}')
-              out.write('.sweep-grid a{padding:.4rem .6rem;background:#16213e;border-radius:4px}')
-              out.write('.sweep-grid a:hover{background:#1a1a40}')
               out.write('</style></head><body>')
               out.write('<h1>Fucktorio Test Visualizations</h1>')
 
-              for section in order:
-                  out.write(f'<h2>{html.escape(section)}</h2>')
-                  is_sweep = 'sweep' in section.lower()
-                  if is_sweep:
-                      out.write('<div class="sweep-grid">')
-                  else:
-                      out.write('<ul>')
-                  for f in sections[section]:
+              if layouts:
+                  out.write('<h2>Layouts</h2><ul>')
+                  for f in layouts:
                       label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
-                      if is_sweep:
-                          out.write(f'<a href="{html.escape(f)}">{html.escape(label)}</a>')
-                      else:
-                          out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
-                  if is_sweep:
-                      out.write('</div>')
-                  else:
-                      out.write('</ul>')
+                      out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
+                  out.write('</ul>')
+
+              if tools:
+                  out.write('<h2>Tools</h2><ul>')
+                  for f in tools:
+                      label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
+                      out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
+                  out.write('</ul>')
 
               out.write('</body></html>')
           PYEOF
