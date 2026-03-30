@@ -82,10 +82,6 @@ def produce(
         from .spaghetti import spaghetti_layout
 
         layout_result = spaghetti_layout(solver_result)
-    elif layout_engine == "ml":
-        from .ml import ml_layout
-
-        layout_result = ml_layout(solver_result)
     else:
         layout_result = layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
@@ -118,7 +114,7 @@ if __name__ == "__main__":
     import sys
 
     use_html = "--html" in sys.argv
-    engine = "spaghetti" if "--spaghetti" in sys.argv else ("ml" if "--ml" in sys.argv else "bus")
+    engine = "spaghetti" if "--spaghetti" in sys.argv else "bus"
     bp = produce(
         "electronic-circuit",
         rate=30,
