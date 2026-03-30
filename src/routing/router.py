@@ -87,9 +87,9 @@ def _machine_belt_tiles(x: int, y: int, size: int) -> list[tuple[int, int]]:
 
 
 def _astar_path(
-    start: tuple[int, int],
-    goals: set[tuple[int, int]],
-    obstacles: set[tuple[int, int]],
+    start: tuple[int, int] | None = None,
+    goals: set[tuple[int, int]] = (),
+    obstacles: set[tuple[int, int]] = (),
     max_extent: int = 200,
     allow_underground: bool = False,
     ug_max_reach: int = 4,
@@ -97,15 +97,17 @@ def _astar_path(
     goal_lane_check: tuple[int, int] | None = None,
     belt_dir_map: dict[tuple[int, int], EntityDirection] | None = None,
     other_item_tiles: set[tuple[int, int]] | None = None,
+    starts: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]] | None:
     """A* pathfinding with Manhattan heuristic, underground jumps, and lane awareness.
 
-    Lane-aware state tracks which belt lane (left/right) items are on:
-    - Straight moves: lane preserved
-    - Turns: lane swaps (left↔right relative to travel direction)
-    - Sideloads onto existing belts: lane forced to near side of receiver
+    Supports multi-source search: pass ``starts`` to seed the open set with
+    multiple start tiles at cost 0 (single A* expansion).  Falls back to
+    ``start`` for single-source calls.
 
     Args:
+        start: Single start tile (legacy, use ``starts`` for multi-source).
+        starts: Set of start tiles for multi-source A*.
         start_lane: Which lane items start on ("left"/"right"/None).
         goal_lane_check: If set, the (dx, dy) vector from belt tile toward
             the inserter at the goal. Used to dynamically compute the needed
@@ -114,10 +116,27 @@ def _astar_path(
         other_item_tiles: Tiles belonging to belt networks carrying a different
             item. Used to prevent cross-item contamination during pathfinding.
     """
+    # Normalise start(s)
+    if starts is not None:
+        start_set = starts - obstacles
+    elif start is not None:
+        start_set = {start}
+    else:
+        return None
+
+    if not start_set or not goals:
+        return None
+
+    # Quick check: any start already a goal?
+    overlap = start_set & set(goals)
+    if overlap:
+        t = next(iter(overlap))
+        return [t]
+
     # Dispatch to Rust implementation if available
     if _USE_RUST_ASTAR:
         return _rust_astar_path(
-            start,
+            list(start_set),
             list(goals),
             list(obstacles),
             max_extent,
@@ -131,24 +150,18 @@ def _astar_path(
 
     import heapq
 
-    if start in goals:
-        return [start]
-
-    if not goals:
-        return None
-
-    sx, sy = start
-
-    # Deviation penalty: compute line from start to goal center
+    # Deviation penalty: compute line from start centroid to goal center
+    scx = sum(x for x, _ in start_set) / len(start_set)
+    scy = sum(y for _, y in start_set) / len(start_set)
     goal_cx = sum(g[0] for g in goals) / len(goals)
     goal_cy = sum(g[1] for g in goals) / len(goals)
-    line_dx = goal_cx - sx
-    line_dy = goal_cy - sy
+    line_dx = goal_cx - scx
+    line_dy = goal_cy - scy
     line_len = max(1.0, (line_dx**2 + line_dy**2) ** 0.5)
 
     def _deviation(x: int, y: int) -> float:
         """Perpendicular distance from (x,y) to the start→goal line."""
-        return abs((x - sx) * line_dy - (y - sy) * line_dx) / line_len
+        return abs((x - scx) * line_dy - (y - scy) * line_dx) / line_len
 
     # Optimized heuristic: special-case single goal (common) to avoid
     # generator/min overhead; for multi-goal, use inlined abs to avoid
@@ -177,15 +190,18 @@ def _astar_path(
     # - forced is None or (dx, dy) direction (set on UG exit tiles)
     # - lane is "left", "right", or None (which belt lane items are on)
     State = tuple[int, int, tuple[int, int] | None, str | None]
-    initial: State = (sx, sy, None, start_lane)
 
     counter = 0
     open_set: list[tuple[int, int, State]] = []
-    heapq.heappush(open_set, (_h(sx, sy), counter, initial))
-    counter += 1
-
-    g_score: dict[State, float] = {initial: 0.0}
+    g_score: dict[State, float] = {}
     parent: dict[State, State] = {}
+
+    # Seed open set with all start tiles
+    for sx, sy in start_set:
+        initial: State = (sx, sy, None, start_lane)
+        g_score[initial] = 0.0
+        heapq.heappush(open_set, (_h(sx, sy), counter, initial))
+        counter += 1
 
     while open_set:
         _, _, state = heapq.heappop(open_set)
@@ -561,6 +577,55 @@ def _perpendicular_approach_tiles(
             if tile not in occupied and tile not in network:
                 approach.add(tile)
     return approach
+
+
+def _classify_approach_by_lane(
+    network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+    occupied: set[tuple[int, int]],
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Split perpendicular approach tiles into left-lane and right-lane sets."""
+    left_goals: set[tuple[int, int]] = set()
+    right_goals: set[tuple[int, int]] = set()
+    for nx, ny in network:
+        d = belt_dir_map.get((nx, ny))
+        if d is None:
+            continue
+        dx, dy = DIR_VEC[d]
+        left_tile = (nx - dy, ny + dx)
+        if left_tile not in occupied and left_tile not in network:
+            left_goals.add(left_tile)
+        right_tile = (nx + dy, ny - dx)
+        if right_tile not in occupied and right_tile not in network:
+            right_goals.add(right_tile)
+    return left_goals, right_goals
+
+
+def _detect_sideload_lane(
+    path: list[tuple[int, int]],
+    network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+) -> str | None:
+    """Determine which trunk lane items enter via this path's sideload point."""
+    for idx in range(len(path) - 1, -1, -1):
+        px, py = path[idx]
+        if (px, py) in network:
+            continue
+        if idx + 1 < len(path) and path[idx + 1] in network:
+            net_x, net_y = path[idx + 1]
+            d = belt_dir_map.get((net_x, net_y))
+            if d is None:
+                return None
+            dx, dy = DIR_VEC[d]
+            left_dx, left_dy = -dy, dx
+            rel_x, rel_y = px - net_x, py - net_y
+            dot = rel_x * left_dx + rel_y * left_dy
+            if dot > 0:
+                return "left"
+            elif dot < 0:
+                return "right"
+            return None
+    return None
 
 
 def _network_upstream_ends(

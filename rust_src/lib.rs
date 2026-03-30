@@ -214,7 +214,7 @@ fn sign(v: i16) -> i16 {
 
 #[allow(clippy::too_many_arguments)]
 fn astar_inner(
-    start: (i16, i16),
+    start_set: &FxHashSet<(i16, i16)>,
     goals: &FxHashSet<(i16, i16)>,
     obstacles: &FxHashSet<(i16, i16)>,
     max_extent: i16,
@@ -225,21 +225,37 @@ fn astar_inner(
     belt_dir_map: &FxHashMap<(i16, i16), u8>,
     other_item_tiles: Option<&FxHashSet<(i16, i16)>>,
 ) -> Option<Vec<(i16, i16)>> {
-    if goals.contains(&start) {
-        return Some(vec![start]);
-    }
-    if goals.is_empty() {
+    if start_set.is_empty() || goals.is_empty() {
         return None;
     }
 
-    let (sx, sy) = start;
+    // Quick overlap check
+    for s in start_set {
+        if goals.contains(s) {
+            return Some(vec![*s]);
+        }
+    }
+
     let goal_list: Vec<(i16, i16)> = goals.iter().copied().collect();
     let single_goal = if goal_list.len() == 1 {
         Some(goal_list[0])
     } else {
         None
     };
-    let dev = DeviationLine::new(sx, sy, &goal_list);
+    // Deviation line from start centroid to goal center
+    let scx = start_set.iter().map(|s| s.0 as f32).sum::<f32>() / start_set.len() as f32;
+    let scy = start_set.iter().map(|s| s.1 as f32).sum::<f32>() / start_set.len() as f32;
+    let dev = DeviationLine {
+        sx: scx,
+        sy: scy,
+        line_dx: goal_list.iter().map(|g| g.0 as f32).sum::<f32>() / goal_list.len() as f32 - scx,
+        line_dy: goal_list.iter().map(|g| g.1 as f32).sum::<f32>() / goal_list.len() as f32 - scy,
+        line_len: 1.0, // recomputed below
+    };
+    let dev = DeviationLine {
+        line_len: (dev.line_dx * dev.line_dx + dev.line_dy * dev.line_dy).sqrt().max(1.0),
+        ..dev
+    };
     let has_belt_dir_map = !belt_dir_map.is_empty();
 
     // Heuristic dispatch
@@ -251,25 +267,30 @@ fn astar_inner(
         }
     };
 
-    let initial = State {
-        x: sx,
-        y: sy,
-        forced: None,
-        lane: start_lane,
-    };
-
     let mut counter: u32 = 0;
     let mut open_set = BinaryHeap::new();
-    open_set.push(QEntry {
-        f: OrderedFloat(heuristic(sx, sy)),
-        counter,
-        state: initial,
-    });
-    counter += 1;
-
     let mut g_score: FxHashMap<State, f32> = FxHashMap::default();
-    g_score.insert(initial, 0.0);
     let mut parent: FxHashMap<State, State> = FxHashMap::default();
+
+    // Seed open set with all start tiles
+    for &(sx, sy) in start_set {
+        if obstacles.contains(&(sx, sy)) {
+            continue;
+        }
+        let initial = State {
+            x: sx,
+            y: sy,
+            forced: None,
+            lane: start_lane,
+        };
+        g_score.insert(initial, 0.0);
+        open_set.push(QEntry {
+            f: OrderedFloat(heuristic(sx, sy)),
+            counter,
+            state: initial,
+        });
+        counter += 1;
+    }
 
     while let Some(QEntry { state, .. }) = open_set.pop() {
         let State {
@@ -613,7 +634,7 @@ fn parse_lane(s: Option<&str>) -> Option<Lane> {
 
 #[pyfunction]
 #[pyo3(signature = (
-    start,
+    starts,
     goals,
     obstacles,
     max_extent = 200,
@@ -625,7 +646,7 @@ fn parse_lane(s: Option<&str>) -> Option<Lane> {
     other_item_tiles = None,
 ))]
 fn astar_path(
-    start: (i16, i16),
+    starts: Vec<(i16, i16)>,
     goals: Vec<(i16, i16)>,
     obstacles: Vec<(i16, i16)>,
     max_extent: i16,
@@ -638,6 +659,7 @@ fn astar_path(
 ) -> Option<Vec<(i16, i16)>> {
     let goals_set: FxHashSet<(i16, i16)> = goals.into_iter().collect();
     let obstacles_set: FxHashSet<(i16, i16)> = obstacles.into_iter().collect();
+    let starts_set: FxHashSet<(i16, i16)> = starts.into_iter().collect();
     let bdm: FxHashMap<(i16, i16), u8> = belt_dir_map
         .map(|v| v.into_iter().collect())
         .unwrap_or_default();
@@ -645,7 +667,7 @@ fn astar_path(
         other_item_tiles.map(|v| v.into_iter().collect());
 
     astar_inner(
-        start,
+        &starts_set,
         &goals_set,
         &obstacles_set,
         max_extent,
