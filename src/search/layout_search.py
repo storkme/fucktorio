@@ -61,7 +61,11 @@ def evolutionary_layout(
     # Generate initial population
     base_positions = incremental_place(graph, spacing=3)
     population = _generate_initial_population(
-        graph, base_positions, num_edges, population_size, rng,
+        graph,
+        base_positions,
+        num_edges,
+        population_size,
+        rng,
     )
 
     best_overall = _Candidate(positions=base_positions)
@@ -154,11 +158,13 @@ def _generate_initial_population(
         positions = _perturb_positions(base, graph, rng, sigma=2)
         side_pref = _random_side_preference(graph, rng)
         edge_ord = _random_edge_order(num_edges, rng)
-        population.append(_Candidate(
-            positions=positions,
-            side_preference=side_pref,
-            edge_order=edge_ord,
-        ))
+        population.append(
+            _Candidate(
+                positions=positions,
+                side_preference=side_pref,
+                edge_order=edge_ord,
+            )
+        )
 
     return population
 
@@ -171,7 +177,9 @@ def _evaluate(
     """Evaluate a candidate: build layout, validate, compute score."""
     try:
         layout_result, failed_edges = build_layout(
-            solver_result, graph, candidate.positions,
+            solver_result,
+            graph,
+            candidate.positions,
             side_preference=candidate.side_preference,
             edge_order=candidate.edge_order,
         )
@@ -196,11 +204,7 @@ def _evaluate(
         error_count = len(exc.issues)
 
     belt_count = sum(1 for e in layout_result.entities if "belt" in e.name)
-    candidate.score = (
-        error_count * 100
-        + len(failed_edges) * 1000
-        + belt_count * 0.5
-    )
+    candidate.score = error_count * 100 + len(failed_edges) * 1000 + belt_count * 0.5
 
 
 def _perturb_positions(
@@ -231,9 +235,7 @@ def _perturb_positions(
     return new_pos
 
 
-def _overlaps(
-    x: int, y: int, size: int, occupied: set[tuple[int, int]]
-) -> bool:
+def _overlaps(x: int, y: int, size: int, occupied: set[tuple[int, int]]) -> bool:
     """Check if placing a machine at (x, y) would overlap occupied tiles."""
     for dx in range(size):
         for dy in range(size):
@@ -279,9 +281,7 @@ def _mutate(
         side_pref = {n.id: list(_ALL_SIDES) for n in graph.nodes}
 
     # Randomize 1-2 machines' side preferences
-    nodes_to_mutate = rng.sample(
-        graph.nodes, k=min(rng.randint(1, 2), len(graph.nodes))
-    )
+    nodes_to_mutate = rng.sample(graph.nodes, k=min(rng.randint(1, 2), len(graph.nodes)))
     for node in nodes_to_mutate:
         sides = list(_ALL_SIDES)
         rng.shuffle(sides)

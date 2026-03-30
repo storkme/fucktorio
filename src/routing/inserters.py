@@ -165,9 +165,7 @@ def assign_inserter_positions(
         # the preference order (try preferred directions first)
         if side_preference is not None and node.id in side_preference:
             pref_order = side_preference[node.id]
-            sides = sorted(sides, key=lambda s, po=pref_order: (
-                po.index(s[2]) if s[2] in po else len(po)
-            ))
+            sides = sorted(sides, key=lambda s, po=pref_order: po.index(s[2]) if s[2] in po else len(po))
 
         # Filter out sides where border tiles are already occupied
         available_sides: list[tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = []

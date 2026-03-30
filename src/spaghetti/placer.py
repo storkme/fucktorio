@@ -116,9 +116,7 @@ def _dependency_order(graph: ProductionGraph) -> list[int]:
     return order
 
 
-def _connected_placed(
-    node_id: int, graph: ProductionGraph, placed: set[int]
-) -> list[int]:
+def _connected_placed(node_id: int, graph: ProductionGraph, placed: set[int]) -> list[int]:
     """Return IDs of already-placed machines connected to node_id.
 
     Includes both direct graph edges AND machines that share external
@@ -160,9 +158,7 @@ def _connected_placed(
     return result
 
 
-def _overlaps(
-    x: int, y: int, size: int, occupied: set[tuple[int, int]]
-) -> bool:
+def _overlaps(x: int, y: int, size: int, occupied: set[tuple[int, int]]) -> bool:
     """Check if placing a machine at (x,y) would overlap occupied tiles."""
     for dx in range(size):
         for dy in range(size):
@@ -186,9 +182,7 @@ def _candidate_positions(
 
     for cid in connected:
         cx, cy = positions[cid]
-        csize = machine_size(
-            next(n for n in graph.nodes if n.id == cid).spec.entity
-        )
+        csize = machine_size(next(n for n in graph.nodes if n.id == cid).spec.entity)
 
         # Generate candidates in cardinal directions at various distances
         for dist in range(spacing, spacing + 5):
@@ -213,9 +207,7 @@ def _candidate_positions(
             candidates.append((cx - half, cy - node_size - dist))
 
     # Filter out positions that would overlap
-    valid = [
-        (x, y) for x, y in candidates if not _overlaps(x, y, node_size, occupied)
-    ]
+    valid = [(x, y) for x, y in candidates if not _overlaps(x, y, node_size, occupied)]
 
     # Deduplicate
     seen: set[tuple[int, int]] = set()
@@ -254,9 +246,7 @@ def _score_position(
 
     for cid in connected:
         cx, cy = positions[cid]
-        csize = machine_size(
-            next(n for n in graph.nodes if n.id == cid).spec.entity
-        )
+        csize = machine_size(next(n for n in graph.nodes if n.id == cid).spec.entity)
         c_center_x = cx + csize / 2
         c_center_y = cy + csize / 2
 
@@ -274,9 +264,7 @@ def _score_position(
     # Corridor penalty: check for tight spaces (< 2 tiles) between
     # this machine and any placed machine
     for pid, (px, py) in positions.items():
-        psize = machine_size(
-            next(n for n in graph.nodes if n.id == pid).spec.entity
-        )
+        psize = machine_size(next(n for n in graph.nodes if n.id == pid).spec.entity)
         # Horizontal gap
         if y < py + psize and y + node_size > py:
             # Vertically overlapping — check horizontal gap
@@ -337,32 +325,29 @@ def incremental_place(
             # Place first machine at origin
             pos = (0, 0)
         else:
-            candidates = _candidate_positions(
-                nid, size, graph, positions, occupied, spacing
-            )
+            candidates = _candidate_positions(nid, size, graph, positions, occupied, spacing)
 
             if not candidates:
                 # Fallback: generate positions in a spiral around existing machines
-                candidates = _spiral_fallback(
-                    size, positions, occupied, spacing
-                )
+                candidates = _spiral_fallback(size, positions, occupied, spacing)
 
             if candidates:
                 # Score and pick best
                 best_pos = None
                 best_score = float("inf")
                 for cx, cy in candidates:
-                    s = _score_position(
-                        cx, cy, size, nid, graph, positions, occupied
-                    )
+                    s = _score_position(cx, cy, size, nid, graph, positions, occupied)
                     if s < best_score:
                         best_score = s
                         best_pos = (cx, cy)
                 pos = best_pos if best_pos is not None else candidates[0]
             else:
                 # Last resort: place far away
-                max_x = max(x + machine_size(node_map[pid].spec.entity)
-                           for pid, (x, _) in positions.items()) if positions else 0
+                max_x = (
+                    max(x + machine_size(node_map[pid].spec.entity) for pid, (x, _) in positions.items())
+                    if positions
+                    else 0
+                )
                 pos = (max_x + spacing + size, 0)
 
         positions[nid] = pos

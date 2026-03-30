@@ -16,6 +16,7 @@ from src.validate import ValidationError, validate
 # Module-scoped fixtures (avoid re-running evolutionary search per test)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def iron_gear_2s():
     return solve("iron-gear-wheel", target_rate=2, available_inputs={"iron-plate"})
@@ -654,8 +655,11 @@ class TestSpaghettiVisualization:
         graph = build_production_graph(iron_gear_10s)
         bp = build_blueprint(iron_gear_10s_layout, label="spaghetti: 10/s iron-gear-wheel")
         viz(
-            bp, "spaghetti-iron-gear-wheel-10s",
-            solver_result=iron_gear_10s, production_graph=graph, layout_result=iron_gear_10s_layout,
+            bp,
+            "spaghetti-iron-gear-wheel-10s",
+            solver_result=iron_gear_10s,
+            production_graph=graph,
+            layout_result=iron_gear_10s_layout,
         )
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")

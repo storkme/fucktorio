@@ -99,15 +99,13 @@ def _place_poles_greedy(
                 mx, my = machine_centers[i]
                 logger.warning(
                     "No valid pole position for machine center (%d, %d)",
-                    mx, my,
+                    mx,
+                    my,
                 )
             break
 
         for px, py in candidates:
-            score = sum(
-                1 for i in unpowered
-                if _in_pole_range(machine_centers[i][0], machine_centers[i][1], px, py)
-            )
+            score = sum(1 for i in unpowered if _in_pole_range(machine_centers[i][0], machine_centers[i][1], px, py))
             dist = abs(px - centroid_x) + abs(py - centroid_y)
             if score > best_score or (score == best_score and dist < best_dist):
                 best_score = score
@@ -121,9 +119,6 @@ def _place_poles_greedy(
         entities.append(PlacedEntity(name="medium-electric-pole", x=px, y=py))
         occupied.add(best_pos)
 
-        unpowered -= {
-            i for i in unpowered
-            if _in_pole_range(machine_centers[i][0], machine_centers[i][1], px, py)
-        }
+        unpowered -= {i for i in unpowered if _in_pole_range(machine_centers[i][0], machine_centers[i][1], px, py)}
 
     return entities
