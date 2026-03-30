@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
-from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, machine_size, machine_tiles
+from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, inserter_target_lane, machine_size, machine_tiles
 from .graph import FlowEdge, ProductionGraph
 from .inserters import assign_inserter_positions, build_inserter_entities
 from .poles import place_poles
@@ -60,6 +60,23 @@ def build_layout(
                 edge_exclusions[i].add(assignment.belt_tile)
                 break
 
+    # 3b. Compute lane info for A* pathfinding
+    edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] = {}
+    for assignment in assignments:
+        for i, edge in enumerate(graph.edges):
+            if edge is assignment.edge:
+                if assignment.edge.from_node == assignment.node_id:
+                    # Output inserter: items start on a known lane
+                    edge_lane_info[i] = (assignment.target_lane, None)
+                elif assignment.edge.to_node == assignment.node_id:
+                    # Input inserter: pass inserter side vec for goal lane check
+                    ins_side = (
+                        assignment.border_tile[0] - assignment.belt_tile[0],
+                        assignment.border_tile[1] - assignment.belt_tile[1],
+                    )
+                    edge_lane_info[i] = (None, ins_side)
+                break
+
     # 4. Place machine entities
     entities: list[PlacedEntity] = []
     for node in graph.nodes:
@@ -84,6 +101,7 @@ def build_layout(
         edge_exclusions=edge_exclusions,
         edge_subgroups=plan.edge_subgroups,
         edge_order=edge_order,
+        edge_lane_info=edge_lane_info,
     )
     entities.extend(routing.entities)
 

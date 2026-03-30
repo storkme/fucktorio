@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity, SolverResult
-from .common import machine_size
+from .common import DIR_MAP, inserter_target_lane, machine_size
 from .graph import FlowEdge, ProductionGraph
 
 # Inserter faces the direction it DROPS toward.
@@ -41,6 +41,8 @@ class InserterAssignment:
     border_tile: tuple[int, int]  # where the inserter goes (1 tile from machine)
     belt_tile: tuple[int, int]  # where the belt ends (2 tiles from machine)
     direction: EntityDirection  # inserter facing direction
+    approach_vec: tuple[int, int] = (0, 0)  # direction from belt tile toward machine
+    target_lane: str = "left"  # belt lane this inserter targets ("left" or "right")
 
 
 @dataclass
@@ -209,12 +211,34 @@ def assign_inserter_positions(
             if facing is None:
                 continue
 
+            # Compute lane info: approach_vec points from belt toward machine
+            # For output inserters, belt faces away from machine → direction known
+            # For input inserters, belt direction depends on routing (lane computed at goal)
+            if is_input:
+                # Input inserter picks from near lane (lane closest to inserter).
+                # The inserter is between belt and machine, so it's on the
+                # direction_vec side of the belt. Near lane = same side as inserter.
+                # But belt direction isn't known yet — we store the approach vec
+                # and let the router compute the needed lane at goal time.
+                # target_lane here is what the inserter NEEDS (near lane).
+                # We'll use a placeholder; the actual check is dynamic in A*.
+                target_lane = "left"  # placeholder — router uses approach_vec
+            else:
+                # Output inserter: belt at belt_tile faces away from machine
+                away_vec = (-direction_vec[0], -direction_vec[1])
+                belt_dir = DIR_MAP[away_vec]
+                target_lane = inserter_target_lane(
+                    border[0], border[1], belt[0], belt[1], belt_dir
+                )
+
             assignment = InserterAssignment(
                 edge=edge,
                 node_id=node.id,
                 border_tile=border,
                 belt_tile=belt,
                 direction=facing,
+                approach_vec=direction_vec,
+                target_lane=target_lane,
             )
             assignments.append(assignment)
             used_borders.add(border)

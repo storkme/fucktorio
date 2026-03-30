@@ -81,20 +81,23 @@ def _astar_path(
     max_extent: int = 200,
     allow_underground: bool = False,
     ug_max_reach: int = 4,
+    start_lane: str | None = None,
+    goal_lane_check: tuple[int, int] | None = None,
+    belt_dir_map: dict[tuple[int, int], EntityDirection] | None = None,
 ) -> list[tuple[int, int]] | None:
-    """A* pathfinding with Manhattan heuristic and optional underground jumps.
+    """A* pathfinding with Manhattan heuristic, underground jumps, and lane awareness.
 
-    When allow_underground is True, the A* can generate "underground jump"
-    neighbors that skip over obstacles. Jump cost is higher than surface
-    (3x per tile), so surface is always preferred when available.
+    Lane-aware state tracks which belt lane (left/right) items are on:
+    - Straight moves: lane preserved
+    - Turns: lane swaps (left↔right relative to travel direction)
+    - Sideloads onto existing belts: lane forced to near side of receiver
 
-    Underground jumps appear as non-adjacent consecutive tiles in the
-    returned path (Manhattan distance > 1 between consecutive entries).
-
-    Direction-aware state: after an underground exit, the A* state carries
-    a forced direction. The next move MUST continue one tile in that
-    direction (the belt continuation after the UG exit) before any turns
-    or further underground jumps are allowed.
+    Args:
+        start_lane: Which lane items start on ("left"/"right"/None).
+        goal_lane_check: If set, the (dx, dy) vector from belt tile toward
+            the inserter at the goal. Used to dynamically compute the needed
+            lane based on the A* arrival direction.
+        belt_dir_map: Existing placed belt directions for sideload detection.
     """
     import heapq
 
@@ -140,11 +143,11 @@ def _astar_path(
                     best = d
             return best
 
-    # State: (x, y, forced) where forced is None or (dx, dy) direction.
-    # forced is set on UG exit tiles — must take one step in that direction
-    # before normal movement resumes.
-    State = tuple[int, int, tuple[int, int] | None]
-    initial: State = (sx, sy, None)
+    # State: (x, y, forced, lane) where:
+    # - forced is None or (dx, dy) direction (set on UG exit tiles)
+    # - lane is "left", "right", or None (which belt lane items are on)
+    State = tuple[int, int, tuple[int, int] | None, str | None]
+    initial: State = (sx, sy, None, start_lane)
 
     counter = 0
     open_set: list[tuple[int, int, State]] = []
@@ -156,32 +159,64 @@ def _astar_path(
 
     while open_set:
         _, _, state = heapq.heappop(open_set)
-        cx, cy, forced = state
+        cx, cy, forced, lane = state
 
         # Only reach a goal when no forced continuation pending
         if (cx, cy) in goals and forced is None:
-            path: list[tuple[int, int]] = [(cx, cy)]
-            cur = state
-            while cur in parent:
-                cur = parent[cur]
-                path.append((cur[0], cur[1]))
-            path.reverse()
-            return path
+            # Lane check at goal: if goal_lane_check is set, verify items
+            # arrive on the lane the inserter picks from (near lane).
+            if goal_lane_check is not None and lane is not None and state in parent:
+                prev_state = parent[state]
+                pdx = cx - prev_state[0]
+                pdy = cy - prev_state[1]
+                if pdx != 0:
+                    pdx = 1 if pdx > 0 else -1
+                if pdy != 0:
+                    pdy = 1 if pdy > 0 else -1
+                # Belt direction at goal = arrival direction
+                # Left perpendicular of belt direction
+                left_dx, left_dy = -pdy, pdx
+                # Dot with inserter side vector to determine needed lane
+                ins_dx, ins_dy = goal_lane_check
+                dot = ins_dx * left_dx + ins_dy * left_dy
+                needed_lane = "left" if dot > 0 else "right"
+                if lane != needed_lane:
+                    # Wrong lane — don't accept this goal, keep searching
+                    cur_g = g_score.get(state, 0)
+                    # Continue to neighbor expansion (might find goal via different path)
+                    pass
+                else:
+                    path: list[tuple[int, int]] = [(cx, cy)]
+                    cur = state
+                    while cur in parent:
+                        cur = parent[cur]
+                        path.append((cur[0], cur[1]))
+                    path.reverse()
+                    return path
+            else:
+                path = [(cx, cy)]
+                cur = state
+                while cur in parent:
+                    cur = parent[cur]
+                    path.append((cur[0], cur[1]))
+                path.reverse()
+                return path
 
         cur_g = g_score.get(state, 0)
 
         if forced is not None:
             # Prevent A* from later revisiting this position as a normal tile,
             # which would create duplicate (x, y) entries in the path.
-            none_state: State = (cx, cy, None)
+            none_state: State = (cx, cy, None, lane)
             if none_state not in g_score or g_score[none_state] > cur_g:
                 g_score[none_state] = cur_g
 
             # Must continue in forced direction (one straight step after UG exit)
+            # Lane preserved through forced continuation.
             fdx, fdy = forced
             nx, ny = cx + fdx, cy + fdy
             if not (nx < -10 or ny < -10 or nx > max_extent or ny > max_extent) and (nx, ny) not in obstacles:
-                new_state: State = (nx, ny, None)
+                new_state: State = (nx, ny, None, lane)
                 new_g = cur_g + 1.0
                 if new_state not in g_score or g_score[new_state] > new_g:
                     g_score[new_state] = new_g
@@ -200,10 +235,10 @@ def _astar_path(
             if (nx, ny) in obstacles:
                 continue
 
-            new_state = (nx, ny, None)
             new_g = cur_g + 1.0
 
-            # Turn penalty: changing direction costs extra
+            # Compute previous direction for turn detection
+            is_turn = False
             prev = parent.get(state)
             if prev is not None:
                 pdx = cx - prev[0]
@@ -215,9 +250,34 @@ def _astar_path(
                     pdy = 1 if pdy > 0 else -1
                 if (dx, dy) != (pdx, pdy):
                     new_g += 0.5
+                    is_turn = True
 
             # Deviation penalty: stay near the start→goal line
             new_g += _deviation(nx, ny) * 0.1
+
+            # Lane transition logic
+            new_lane = lane
+            if belt_dir_map is not None and (nx, ny) in belt_dir_map:
+                # Moving onto an existing belt — check for sideload
+                existing_dir = belt_dir_map[(nx, ny)]
+                edx, edy = DIR_VEC[existing_dir]
+                # Dot product: 0 = perpendicular (sideload), >0 = same dir
+                dot = dx * edx + dy * edy
+                if dot == 0:
+                    # Sideload: both lanes merge onto near lane of receiver.
+                    # Near lane = side the approach comes from.
+                    # Left perpendicular of existing belt direction
+                    left_dx, left_dy = -edy, edx
+                    # Source is at (cx, cy) relative to target (nx, ny)
+                    rel_x, rel_y = cx - nx, cy - ny
+                    side_dot = rel_x * left_dx + rel_y * left_dy
+                    new_lane = "left" if side_dot > 0 else "right"
+            elif is_turn and lane is not None:
+                # Turn on our own path: lanes swap (left↔right)
+                # This matches validate.py:2176 convention
+                new_lane = "right" if lane == "left" else "left"
+
+            new_state: State = (nx, ny, None, new_lane)
 
             if new_state in g_score and g_score[new_state] <= new_g:
                 continue
@@ -249,8 +309,31 @@ def _astar_path(
 
                     # Exit state carries forced direction — next step must
                     # continue straight before turning is allowed.
-                    new_state = (ex, ey, (dx, dy))
                     new_g = cur_g + dist * _UG_COST_MULTIPLIER + _deviation(ex, ey) * 0.1
+
+                    # Penalize perpendicular underground entries — approaching
+                    # an underground from the side creates a sideload at the
+                    # entry tile, losing one belt lane.
+                    ug_lane = lane
+                    prev = parent.get(state)
+                    if prev is not None:
+                        pdx = cx - prev[0]
+                        pdy = cy - prev[1]
+                        if pdx != 0:
+                            pdx = 1 if pdx > 0 else -1
+                        if pdy != 0:
+                            pdy = 1 if pdy > 0 else -1
+                        if pdx * dx + pdy * dy == 0:
+                            # Perpendicular approach → sideload at UG entry
+                            new_g += 10.0
+                            # Apply sideload lane transition: force to near lane
+                            if ug_lane is not None:
+                                left_dx, left_dy = -dy, dx
+                                rel_x, rel_y = prev[0] - cx, prev[1] - cy
+                                side_dot = rel_x * left_dx + rel_y * left_dy
+                                ug_lane = "left" if side_dot > 0 else "right"
+
+                    new_state = (ex, ey, (dx, dy), ug_lane)
                     if new_state in g_score and g_score[new_state] <= new_g:
                         continue
 
@@ -562,6 +645,25 @@ def _fix_belt_directions(
                 ent.direction = up_dir
                 belt_dir_map[pos] = up_dir
 
+        # If still a dead end, try to face an adjacent belt to create
+        # a sideload connection (works even without an upstream belt,
+        # e.g. belts fed directly by inserters)
+        cur_dvec2 = DIR_VEC[belt_dir_map[pos]]
+        forward2 = (pos[0] + cur_dvec2[0], pos[1] + cur_dvec2[1])
+        if forward2 not in belt_positions:
+            for nx, ny in adj[pos]:
+                if (nx, ny) == upstream:
+                    continue
+                n_dir = belt_dir_map.get((nx, ny))
+                if n_dir is None:
+                    continue
+                face_vec = (nx - pos[0], ny - pos[1])
+                face_dir = DIR_MAP.get(face_vec)
+                if face_dir is not None:
+                    ent.direction = face_dir
+                    belt_dir_map[pos] = face_dir
+                    break
+
 
 def route_connections(
     graph: ProductionGraph,
@@ -572,6 +674,7 @@ def route_connections(
     edge_exclusions: dict[int, set[tuple[int, int]]] | None = None,
     edge_subgroups: dict[str, list[list[int]]] | None = None,
     edge_order: list[int] | None = None,
+    edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using A* pathfinding.
 
@@ -591,6 +694,10 @@ def route_connections(
         edge_order: Optional custom edge routing order. When provided,
             a list of edge indices into graph.edges that overrides
             the default internal-then-input-then-output ordering.
+        edge_lane_info: Lane info for A* pathfinding. Maps edge index to
+            (start_lane, goal_inserter_side_vec). start_lane is "left"/"right"
+            for output inserters. goal_inserter_side_vec is (dx, dy) from belt
+            tile toward the input inserter, for dynamic goal lane checking.
     """
     if edge_targets is None:
         edge_targets = {}
@@ -600,6 +707,8 @@ def route_connections(
         edge_exclusions = {}
     if edge_subgroups is None:
         edge_subgroups = {}
+    if edge_lane_info is None:
+        edge_lane_info = {}
     entities: list[PlacedEntity] = []
     failed_edges: list[FlowEdge] = []
 
@@ -861,6 +970,10 @@ def route_connections(
         # The UG cost multiplier (3x) ensures surface is preferred when free.
         # For fluid edges, use pipe-to-ground reach instead of belt-tier reach.
         effective_ug_reach = _UG_PIPE_REACH if edge.is_fluid else ug_reach
+
+        # Lane info for this edge
+        s_lane, g_lane_check = edge_lane_info.get(edge_idx, (None, None))
+
         best_path = None
         for start in start_tiles:
             if start in occupied:
@@ -872,6 +985,9 @@ def route_connections(
                 max_extent,
                 allow_underground=True,
                 ug_max_reach=effective_ug_reach,
+                start_lane=s_lane,
+                goal_lane_check=g_lane_check,
+                belt_dir_map=belt_dir_map,
             )
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
@@ -916,6 +1032,9 @@ def route_connections(
                         max_extent,
                         allow_underground=True,
                         ug_max_reach=effective_ug_reach,
+                        start_lane=s_lane,
+                        goal_lane_check=g_lane_check,
+                        belt_dir_map=belt_dir_map,
                     )
                     if path and (best_path is None or len(path) < len(best_path)):
                         best_path = path
