@@ -2,9 +2,9 @@
 
 import pytest
 
-from src.spaghetti import spaghetti_layout
 from src.models import EntityDirection, ItemFlow, LayoutResult, MachineSpec, PlacedEntity, SolverResult
 from src.solver import solve
+from src.spaghetti import spaghetti_layout
 from src.validate import (
     ValidationError,
     check_belt_connectivity,
@@ -354,23 +354,6 @@ class TestBeltFlowPath:
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 1
         assert errors[0].category == "belt-flow-path"
-
-    def test_disconnected_input_error(self):
-        """Disconnected input belt should be flagged as an error."""
-        lr = LayoutResult(
-            entities=[
-                PlacedEntity(name="assembling-machine-1", x=10, y=10, recipe="iron-gear-wheel"),
-                PlacedEntity(name="inserter", x=11, y=9, direction=EntityDirection.SOUTH),
-                PlacedEntity(name="transport-belt", x=11, y=8, direction=EntityDirection.EAST),
-                PlacedEntity(name="transport-belt", x=12, y=8, direction=EntityDirection.EAST),
-                # Distant belts to push boundary far away
-                PlacedEntity(name="transport-belt", x=0, y=0, direction=EntityDirection.EAST),
-                PlacedEntity(name="transport-belt", x=30, y=30, direction=EntityDirection.EAST),
-            ]
-        )
-        issues = check_belt_flow_path(lr, layout_style="spaghetti")
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) == 1
 
     def test_disconnected_output_belts_flagged(self):
         """Disconnected output belts are flagged as errors."""

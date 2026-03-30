@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 
 from .blueprint import build_blueprint
-from .spaghetti import spaghetti_layout
 from .solver import solve
+from .spaghetti import spaghetti_layout
 from .validate import ValidationError, validate
 
 
