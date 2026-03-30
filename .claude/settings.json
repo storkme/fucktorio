@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ cmd=$(jq -r '.tool_input.command'); if echo \"$cmd\" | grep -q '^git commit'; then ruff check --fix . && ruff format . && git add -u; fi; }",
+            "command": "{ cmd=$(jq -r '.tool_input.command'); if echo \"$cmd\" | grep -q '^git commit'; then ruff format . ; ruff check --fix . ; ruff check . && ruff format --check . && git add -u; fi; }",
             "statusMessage": "Running ruff pre-commit..."
           }
         ]
