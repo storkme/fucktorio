@@ -43,6 +43,7 @@ class InserterAssignment:
     direction: EntityDirection  # inserter facing direction
     approach_vec: tuple[int, int] = (0, 0)  # direction from belt tile toward machine
     target_lane: str = "left"  # belt lane this inserter targets ("left" or "right")
+    is_direct: bool = False  # True if inserter transfers directly between machines
 
 
 @dataclass
@@ -250,7 +251,9 @@ def assign_inserter_positions(
 def _get_sides(mx: int, my: int, size: int) -> list[tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]:
     """Get (border_tile, belt_tile, direction_toward_machine) for each side.
 
-    Returns one position per side, centered on the machine.
+    Returns one centered position per side (4 total). Non-centered positions
+    are only used for direct machine-to-machine insertion, handled separately
+    in orchestrate.py.
     """
     center = size // 2
     return [

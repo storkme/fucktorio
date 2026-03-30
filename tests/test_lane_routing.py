@@ -289,6 +289,75 @@ class TestPerpendicularUGPenalty:
                     )
 
 
+class TestInserterPositions:
+    """Test that _get_sides returns centered border positions."""
+
+    def test_3x3_machine_has_4_centered_positions(self):
+        """A 3×3 machine should have 4 centered positions (1 per side)."""
+        from src.routing.inserters import _get_sides
+
+        sides = _get_sides(0, 0, 3)
+        assert len(sides) == 4
+        # All border tiles should be unique
+        border_tiles = [s[0] for s in sides]
+        assert len(set(border_tiles)) == 4
+
+
+class TestDirectInsertion:
+    """Test direct machine-to-machine insertion detection."""
+
+    def test_adjacent_machines_get_direct_inserter(self):
+        """Two machines with gap=1 should get a direct inserter."""
+        from src.routing.graph import build_production_graph
+        from src.routing.orchestrate import build_layout
+        from src.solver import solve
+
+        # electronic-circuit has internal edges (copper-cable -> circuit)
+        result = solve("electronic-circuit", target_rate=1, available_inputs={"iron-plate", "copper-plate"})
+        graph = build_production_graph(result)
+
+        # Place two connected machines adjacent (gap=1)
+        # Find an internal edge
+        internal = [(i, e) for i, e in enumerate(graph.edges) if e.from_node is not None and e.to_node is not None]
+        if not internal:
+            pytest.skip("No internal edges in this recipe")
+
+        edge_idx, edge = internal[0]
+        # Place from_node at (0,0) and to_node at (4,0) — gap of 1 tile at x=3
+        positions = {}
+        for node in graph.nodes:
+            if node.id == edge.from_node:
+                positions[node.id] = (0, 0)
+            elif node.id == edge.to_node:
+                positions[node.id] = (4, 0)
+            else:
+                positions[node.id] = (0, 10 + node.id * 5)
+
+        layout, failed, direct_count = build_layout(result, graph, positions)
+        assert direct_count >= 1, "Expected at least one direct insertion"
+
+
+class TestCompactPlacement:
+    """Test that the placer can produce tight layouts."""
+
+    def test_spacing_1_places_machines_close(self):
+        """Spacing=1 should place machines with small gaps."""
+        from src.routing.graph import build_production_graph
+        from src.solver import solve
+        from src.spaghetti.placer import incremental_place
+
+        result = solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+        graph = build_production_graph(result)
+        positions = incremental_place(graph, spacing=1)
+
+        # All machines should be within a reasonable bounding box
+        xs = [x for x, y in positions.values()]
+        ys = [y for x, y in positions.values()]
+        spread = (max(xs) - min(xs)) + (max(ys) - min(ys))
+        # With spacing=1 and 4 machines, spread should be much less than spacing=3
+        assert spread < 30, f"Layout too spread out: {spread}"
+
+
 class TestIntegration:
     """End-to-end tests with full layout generation."""
 
