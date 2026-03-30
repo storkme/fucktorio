@@ -58,4 +58,3 @@ class TestBlueprint:
         assert len(asms) > 0
         for asm in asms:
             assert asm.recipe is not None
-
