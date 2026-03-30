@@ -126,6 +126,19 @@ Belt-item-isolation is SOLVED via `other_item_tiles` hard-blocking in A* (was th
 - `src/validate.py` — functional validation (pipe isolation, fluid connectivity, inserter chains, power coverage)
 - `tests/` — pytest suite with `--viz` flag for HTML visualizations, deployed to GitHub Pages via CI
 
+## Verification protocol for layout engine changes
+
+Layout changes are easy to get wrong — errors can be masked by other changes, imports can shadow silently, and error counts can drop to zero for the wrong reason. Follow this protocol:
+
+1. **Check the viz**: After any routing/placement change, generate `test_viz/iron-gear-wheel-10s.html` and visually inspect it. Zero validation errors mean nothing if the layout looks wrong.
+   ```bash
+   pytest tests/test_spaghetti.py::TestSpaghettiVisualization::test_viz_iron_gear_wheel --viz -x
+   ```
+2. **Verify the fix is running**: If you add new logic inside the incremental builder, confirm it actually executes (e.g. add a temporary `logger.info` or check that output changes). The `_evaluate` function catches ALL exceptions silently, so broken code just scores 10000 and gets ignored.
+3. **Watch for import shadowing**: `build_layout_incremental()` is a long function. A `from .router import X` anywhere inside it makes `X` a local variable for the ENTIRE function, shadowing any module-level import of `X`. All imports from router should be at the top of the file.
+4. **Don't trust error count drops alone**: If errors go from 5 to 0, ask WHY. Check that belt types are correct (should be yellow transport-belt for 10/s), check that the topology makes sense, check that the specific fix you intended is the reason errors dropped.
+5. **One search attempt should take <2s** with the Rust A*. If it takes >10s, something is wrong (likely N×A* instead of multi-start, or an infinite loop).
+
 ## Visualizations
 
 Test visualizations are deployed to GitHub Pages on main branch pushes:
