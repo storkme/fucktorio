@@ -752,9 +752,7 @@ def route_connections(
         dict(existing_group_networks) if existing_group_networks else {}
     )
     # Track belt directions for junction-aware routing
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = (
-        dict(existing_belt_dir_map) if existing_belt_dir_map else {}
-    )
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = dict(existing_belt_dir_map) if existing_belt_dir_map else {}
 
     # --- Map each edge index to its sub-group key ---
     edge_group_key: dict[int, tuple[str, int]] = {}

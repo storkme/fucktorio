@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from src.models import EntityDirection, PlacedEntity
-from src.routing.common import LANE_LEFT, LANE_RIGHT, DIR_MAP, DIR_VEC, inserter_target_lane
+from src.routing.common import LANE_LEFT, LANE_RIGHT, inserter_target_lane
 from src.routing.router import _astar_path
 
 
@@ -285,7 +285,7 @@ class TestPerpendicularUGPenalty:
                         prev_dx = 1 if prev_dx > 0 else -1
                     # Approach direction should match jump direction (not perpendicular)
                     assert prev_dx == jump_dx or prev_dx == 0, (
-                        f"Perpendicular underground entry at path[{i-1}]→path[{i}]"
+                        f"Perpendicular underground entry at path[{i - 1}]→path[{i}]"
                     )
 
 

@@ -228,9 +228,7 @@ def assign_inserter_positions(
                 # Output inserter: belt at belt_tile faces away from machine
                 away_vec = (-direction_vec[0], -direction_vec[1])
                 belt_dir = DIR_MAP[away_vec]
-                target_lane = inserter_target_lane(
-                    border[0], border[1], belt[0], belt[1], belt_dir
-                )
+                target_lane = inserter_target_lane(border[0], border[1], belt[0], belt[1], belt_dir)
 
             assignment = InserterAssignment(
                 edge=edge,

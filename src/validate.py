@@ -2213,9 +2213,7 @@ def check_lane_throughput(
             continue
 
         belt_d = belt_dir_map[pickup_pos]
-        pickup_lane = _inserter_target_lane(
-            ins.x, ins.y, pickup_pos[0], pickup_pos[1], belt_d
-        )
+        pickup_lane = _inserter_target_lane(ins.x, ins.y, pickup_pos[0], pickup_pos[1], belt_d)
         rates = lane_rates.get(pickup_pos)
         if rates and rates[pickup_lane] <= 0.001:
             other_lane = "right" if pickup_lane == "left" else "left"
