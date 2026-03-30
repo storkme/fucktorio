@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..models import LayoutResult, SolverResult
 from .placer import place_rows
-from .poles import place_poles
+from ..routing.poles import place_poles
 from .router import route_bus
 
 

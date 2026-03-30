@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..layout.poles import place_poles
+from .poles import place_poles
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, machine_size, machine_tiles
 from .graph import FlowEdge, ProductionGraph
