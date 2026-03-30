@@ -32,8 +32,12 @@ def build_layout(
 
     # 2. Pre-assign inserter positions (lane-aware, reserves border tiles)
     plan = assign_inserter_positions(
-        graph, positions, occupied, solver_result=solver_result,
-        side_strategy=side_strategy, side_preference=side_preference,
+        graph,
+        positions,
+        occupied,
+        solver_result=solver_result,
+        side_strategy=side_strategy,
+        side_preference=side_preference,
     )
     assignments = plan.assignments
 

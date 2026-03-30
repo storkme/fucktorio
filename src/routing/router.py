@@ -121,7 +121,7 @@ def _astar_path(
     # generator/min overhead; for multi-goal, use inlined abs to avoid
     # Python function call overhead (~460k calls in a typical run).
     if len(goals) == 1:
-        (gx0, gy0), = goals
+        ((gx0, gy0),) = goals
 
         def _h(x: int, y: int) -> int:
             dx = x - gx0
@@ -288,19 +288,31 @@ def _path_to_entities(
             dx = (path[i + 1][0] - x) // next_dist
             dy = (path[i + 1][1] - y) // next_dist
             direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
-            entities.append(PlacedEntity(
-                name=ug_name, x=x, y=y,
-                direction=direction, io_type="input", carries=item,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name=ug_name,
+                    x=x,
+                    y=y,
+                    direction=direction,
+                    io_type="input",
+                    carries=item,
+                )
+            )
         elif prev_dist > 1:
             # Underground exit
             dx = (x - path[i - 1][0]) // prev_dist
             dy = (y - path[i - 1][1]) // prev_dist
             direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
-            entities.append(PlacedEntity(
-                name=ug_name, x=x, y=y,
-                direction=direction, io_type="output", carries=item,
-            ))
+            entities.append(
+                PlacedEntity(
+                    name=ug_name,
+                    x=x,
+                    y=y,
+                    direction=direction,
+                    io_type="output",
+                    carries=item,
+                )
+            )
         elif is_fluid:
             entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=item))
         else:
@@ -436,7 +448,9 @@ def _fix_belt_directions(
     """
     # Build position -> entity index mapping (belts and underground belts only)
     belt_names = {
-        "transport-belt", "fast-transport-belt", "express-transport-belt",
+        "transport-belt",
+        "fast-transport-belt",
+        "express-transport-belt",
         "underground-belt",
     }
     pos_to_idx: dict[tuple[int, int], int] = {}
@@ -482,14 +496,13 @@ def _fix_belt_directions(
 
         # Count inline feeders (same axis as belt direction)
         inline_count = sum(
-            1 for fx, fy in feeders
-            if (pos[0] - fx, pos[1] - fy) == cur_dvec
-            or (fx - pos[0], fy - pos[1]) == cur_dvec
+            1 for fx, fy in feeders if (pos[0] - fx, pos[1] - fy) == cur_dvec or (fx - pos[0], fy - pos[1]) == cur_dvec
         )
         if inline_count >= 2:
             logger.warning(
                 "Head-on belt collision at (%d, %d): feeders from opposite sides",
-                pos[0], pos[1],
+                pos[0],
+                pos[1],
             )
 
     # 3. Fix underground exit directions for sideloading

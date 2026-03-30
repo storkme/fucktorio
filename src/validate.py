@@ -930,9 +930,7 @@ def check_belt_flow_path(
         Requires at least 3 tiles to avoid falsely passing dead stubs
         that happen to sit at the layout edge.
         """
-        return len(network) >= 3 and any(
-            bx in (min_bx, max_bx) or by in (min_by, max_by) for bx, by in network
-        )
+        return len(network) >= 3 and any(bx in (min_bx, max_bx) or by in (min_by, max_by) for bx, by in network)
 
     # Build recipe -> has_solid_output lookup for output checks
     solid_output_recipes: set[str] = set()
@@ -1474,7 +1472,7 @@ def check_belt_junctions(
 
             if not is_perpendicular:
                 # Head-on collision: belt pointing opposite to the trunk
-                is_head_on = (ndx == -dx and ndy == -dy)
+                is_head_on = ndx == -dx and ndy == -dy
                 issues.append(
                     ValidationIssue(
                         severity="error" if is_head_on else "warning",
