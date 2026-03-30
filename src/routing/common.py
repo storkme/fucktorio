@@ -66,3 +66,34 @@ DIR_VEC = {
     EntityDirection.SOUTH: (0, 1),
     EntityDirection.WEST: (-1, 0),
 }
+
+# Belt lane constants (relative to belt travel direction)
+LANE_LEFT = "left"
+LANE_RIGHT = "right"
+
+
+def inserter_target_lane(
+    ins_x: int,
+    ins_y: int,
+    belt_x: int,
+    belt_y: int,
+    belt_dir: EntityDirection,
+) -> str:
+    """Return which lane an inserter places items on (the far lane).
+
+    The inserter is on one side of the belt (left or right, relative to
+    belt direction). Items go on the opposite (far) lane.
+    """
+    dx, dy = DIR_VEC[belt_dir]
+    # Left perpendicular (looking in belt direction)
+    left_dx, left_dy = -dy, dx
+    # Vector from belt to inserter
+    rel_x, rel_y = ins_x - belt_x, ins_y - belt_y
+    dot = rel_x * left_dx + rel_y * left_dy
+    # Inserter on left → items on right (far lane), and vice versa
+    if dot > 0:
+        return LANE_RIGHT
+    elif dot < 0:
+        return LANE_LEFT
+    # Directly behind/in front — default to left
+    return LANE_LEFT

@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from .models import EntityDirection, LayoutResult, MachineSpec, PlacedEntity, SolverResult
-from .routing.common import _UG_MAX_REACH
+from .routing.common import _UG_MAX_REACH, inserter_target_lane
 
 _3x3_ENTITIES = {
     "assembling-machine-1",
@@ -1960,24 +1960,8 @@ def _inserter_target_lane(
     belt_y: int,
     belt_dir: EntityDirection,
 ) -> str:
-    """Return which lane an inserter places items on (the far lane).
-
-    The inserter is on one side of the belt (left or right, relative to
-    belt direction). Items go on the opposite (far) lane.
-    """
-    dx, dy = _DIR_TO_VEC[belt_dir]
-    # Left perpendicular (looking in belt direction)
-    left_dx, left_dy = -dy, dx
-    # Vector from belt to inserter
-    rel_x, rel_y = ins_x - belt_x, ins_y - belt_y
-    dot = rel_x * left_dx + rel_y * left_dy
-    # Inserter on left → items on right (far lane), and vice versa
-    if dot > 0:
-        return "right"
-    elif dot < 0:
-        return "left"
-    # Directly behind/in front — default to left
-    return "left"
+    """Return which lane an inserter places items on (the far lane)."""
+    return inserter_target_lane(ins_x, ins_y, belt_x, belt_y, belt_dir)
 
 
 def _classify_belt_feeders(
@@ -2208,6 +2192,46 @@ def check_lane_throughput(
                         ),
                         x=pos[0],
                         y=pos[1],
+                    )
+                )
+
+    # Check input inserters: verify items reach the lane they pick from
+    for ins in layout_result.entities:
+        if ins.name not in _INSERTER_ENTITIES:
+            continue
+        direction_vec = _DIR_TO_VEC.get(ins.direction)
+        if direction_vec is None:
+            continue
+        reach = _INSERTER_REACH.get(ins.name, 1)
+        dx, dy = direction_vec
+        odx, ody = _OPPOSITE_VEC[direction_vec]
+        pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
+        drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
+
+        # Input inserter: picks from belt, drops into machine
+        if pickup_pos not in belt_dir_map or drop_pos not in machine_tiles:
+            continue
+
+        belt_d = belt_dir_map[pickup_pos]
+        pickup_lane = _inserter_target_lane(
+            ins.x, ins.y, pickup_pos[0], pickup_pos[1], belt_d
+        )
+        rates = lane_rates.get(pickup_pos)
+        if rates and rates[pickup_lane] <= 0.001:
+            other_lane = "right" if pickup_lane == "left" else "left"
+            if rates[other_lane] > 0.001:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="lane-reachability",
+                        message=(
+                            f"Input inserter at ({ins.x},{ins.y}) picks from "
+                            f"{pickup_lane} lane of belt at ({pickup_pos[0]},"
+                            f"{pickup_pos[1]}) but items only reach the "
+                            f"{other_lane} lane"
+                        ),
+                        x=ins.x,
+                        y=ins.y,
                     )
                 )
 
