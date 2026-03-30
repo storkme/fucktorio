@@ -268,7 +268,7 @@ def build_layout_incremental(
     placement_order: list[int],
     candidate_positions_fn,
     side_preference: dict[int, list[tuple[int, int]]] | None = None,
-    max_positions_per_machine: int = 8,
+    max_positions_per_machine: int = 5,
     rng=None,
 ) -> tuple[LayoutResult, list[FlowEdge], int]:
     """Build a layout incrementally: place one machine, route its edges, repeat.
@@ -413,6 +413,8 @@ def build_layout_incremental(
                         sides,
                         key=lambda s, po=pref_order: po.index(s[2]) if s[2] in po else len(po),
                     )
+                else:
+                    rng.shuffle(sides)
 
                 # Find first available side
                 for border, belt, direction_vec in sides:

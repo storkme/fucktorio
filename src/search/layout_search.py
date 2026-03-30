@@ -190,30 +190,16 @@ def _generate_initial_population(
     for _ in range(population_size - len(population)):
         side_pref = _random_side_preference(graph, rng)
 
-        if rng.random() < 0.7:
-            # Incremental candidate (70% of population)
-            # Shuffle placement order within topological levels
-            order = _shuffle_topo_order(dep_order, graph, rng)
-            population.append(
-                _Candidate(
-                    positions={},  # unused in incremental mode
-                    side_preference=side_pref,
-                    placement_order=order,
-                    position_seed=rng.randint(0, 2**31),
-                )
+        # All candidates use incremental placement
+        order = _shuffle_topo_order(dep_order, graph, rng)
+        population.append(
+            _Candidate(
+                positions={},
+                side_preference=side_pref,
+                placement_order=order,
+                position_seed=rng.randint(0, 2**31),
             )
-        else:
-            # Batch candidate (30% — keeps exploration diversity)
-            base = rng.choice(spacing_variants)
-            positions = _perturb_positions(base, graph, rng, sigma=2)
-            edge_ord = _random_edge_order(num_edges, rng)
-            population.append(
-                _Candidate(
-                    positions=positions,
-                    side_preference=side_pref,
-                    edge_order=edge_ord,
-                )
-            )
+        )
 
     return population
 
@@ -241,8 +227,17 @@ def _evaluate(
 
             def _gen_candidates(node_id, g, positions, occupied, rng):
                 node_size = machine_size(next(n for n in g.nodes if n.id == node_id).spec.entity)
-                cands = _candidate_positions(node_id, node_size, g, positions, occupied, spacing=3)
-                rng.shuffle(cands)
+                cands = _candidate_positions(node_id, node_size, g, positions, occupied, spacing=2)
+                # Sort close-first for compactness, shuffle within distance bands for variety
+                if positions:
+                    cx = sum(x for x, _ in positions.values()) / len(positions)
+                    cy = sum(y for _, y in positions.values()) / len(positions)
+                    cands.sort(key=lambda p: abs(p[0] - cx) + abs(p[1] - cy))
+                # Shuffle within groups of 4 to add variety without losing closeness
+                for i in range(0, len(cands) - 3, 4):
+                    chunk = cands[i : i + 4]
+                    rng.shuffle(chunk)
+                    cands[i : i + 4] = chunk
                 return cands
 
             layout_result, failed_edges, direct_count = build_layout_incremental(
