@@ -21,6 +21,16 @@ from .graph import FlowEdge, ProductionGraph
 
 logger = logging.getLogger(__name__)
 
+# Try to use Rust A* implementation for ~10-30x speedup
+try:
+    from fucktorio_native import astar_path as _rust_astar_path
+
+    _USE_RUST_ASTAR = True
+    logger.info("Using Rust A* implementation")
+except ImportError:
+    _USE_RUST_ASTAR = False
+    logger.debug("Rust A* not available, using Python fallback")
+
 
 @dataclass
 class RoutingResult:
@@ -104,6 +114,21 @@ def _astar_path(
         other_item_tiles: Tiles belonging to belt networks carrying a different
             item. Used to prevent cross-item contamination during pathfinding.
     """
+    # Dispatch to Rust implementation if available
+    if _USE_RUST_ASTAR:
+        return _rust_astar_path(
+            start,
+            list(goals),
+            list(obstacles),
+            max_extent,
+            allow_underground,
+            ug_max_reach,
+            start_lane,
+            goal_lane_check,
+            list(belt_dir_map.items()) if belt_dir_map else None,
+            list(other_item_tiles) if other_item_tiles else None,
+        )
+
     import heapq
 
     if start in goals:
