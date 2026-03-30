@@ -292,15 +292,14 @@ class TestPerpendicularUGPenalty:
 class TestInserterPositions:
     """Test that _get_sides returns centered border positions."""
 
-    def test_3x3_machine_has_4_centered_positions(self):
-        """A 3×3 machine should have 4 centered positions (1 per side)."""
+    def test_3x3_machine_has_12_positions(self):
+        """A 3×3 machine should have 12 border positions (3 per side)."""
         from src.routing.inserters import _get_sides
 
         sides = _get_sides(0, 0, 3)
-        assert len(sides) == 4
-        # All border tiles should be unique
+        assert len(sides) == 12
         border_tiles = [s[0] for s in sides]
-        assert len(set(border_tiles)) == 4
+        assert len(set(border_tiles)) == 12
 
 
 class TestDirectInsertion:

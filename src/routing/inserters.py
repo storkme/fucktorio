@@ -249,21 +249,19 @@ def assign_inserter_positions(
 def _get_sides(mx: int, my: int, size: int) -> list[tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]:
     """Get (border_tile, belt_tile, direction_toward_machine) for each side.
 
-    Returns one centered position per side (4 total). Non-centered positions
-    are only used for direct machine-to-machine insertion, handled separately
-    in orchestrate.py.
+    Returns all border positions — 3 per side for a 3×3 machine (12 total).
+    Center positions listed first per side.
     """
     center = size // 2
-    return [
-        # Top side
-        ((mx + center, my - 1), (mx + center, my - 2), (0, 1)),
-        # Bottom side
-        ((mx + center, my + size), (mx + center, my + size + 1), (0, -1)),
-        # Left side
-        ((mx - 1, my + center), (mx - 2, my + center), (1, 0)),
-        # Right side
-        ((mx + size, my + center), (mx + size + 1, my + center), (-1, 0)),
-    ]
+    offsets = sorted(range(size), key=lambda i: abs(i - center))
+
+    sides = []
+    for i in offsets:
+        sides.append(((mx + i, my - 1), (mx + i, my - 2), (0, 1)))
+        sides.append(((mx + i, my + size), (mx + i, my + size + 1), (0, -1)))
+        sides.append(((mx - 1, my + i), (mx - 2, my + i), (1, 0)))
+        sides.append(((mx + size, my + i), (mx + size + 1, my + i), (-1, 0)))
+    return sides
 
 
 def build_inserter_entities(assignments: list[InserterAssignment]) -> list[PlacedEntity]:
