@@ -20,7 +20,7 @@ python -m src.pipeline
 Three-stage pipeline (`src/pipeline.py` orchestrates):
 
 1. **Solver** (`src/solver/`) — Recursively resolves recipes via `draftsman.data`, calculates machine counts and flow rates. Returns `SolverResult`.
-2. **Layout** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Evolutionary search over machine placement, inserter sides, and edge routing order. Places machines on a grid, assigns inserters, then pathfinds belt/pipe routes between them using A*. Returns `LayoutResult`.
+2. **Layout** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Evolutionary search using incremental place-and-route. Each machine is placed one at a time, edges routed immediately, with retry on failure. Parallel evaluation via `multiprocessing.Pool`. Returns `LayoutResult`.
 3. **Blueprint** (`src/blueprint/`) — Thin draftsman wrapper that converts `LayoutResult` to a base64 blueprint string.
 4. **Validation** (`src/validate.py`) — Functional checks run after layout: pipe isolation, fluid port connectivity, inserter chains, power coverage.
 
@@ -36,13 +36,13 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 
 | File | Purpose |
 |------|---------|
-| `src/routing/router.py` | A* pathfinding, underground belts, belt/pipe entity placement |
-| `src/routing/inserters.py` | Lane-aware inserter assignment between machines and belts |
-| `src/routing/orchestrate.py` | Shared layout orchestration: inserters → routing → poles |
+| `src/routing/router.py` | Lane-aware A* pathfinding (state: x,y,forced,lane), underground belts, belt/pipe entity placement |
+| `src/routing/inserters.py` | Lane-aware inserter assignment (`approach_vec`, `target_lane`, `is_direct` on `InserterAssignment`) |
+| `src/routing/orchestrate.py` | Layout orchestration: batch (`build_layout`) and incremental (`build_layout_incremental`) builders, direct machine-to-machine insertion |
 | `src/routing/graph.py` | Production graph construction from solver output |
-| `src/routing/common.py` | Machine sizes, belt tier selection, direction constants |
+| `src/routing/common.py` | Machine sizes, belt tier selection, direction constants, lane constants (`LANE_LEFT`/`LANE_RIGHT`), `inserter_target_lane()` |
 | `src/routing/poles.py` | Power pole placement (greedy near-machine or grid fallback) |
-| `src/search/layout_search.py` | Evolutionary search over placement parameters |
+| `src/search/layout_search.py` | Evolutionary search with parallel evaluation (`multiprocessing.Pool`) |
 | `src/spaghetti/placer.py` | Incremental machine placement in dependency order |
 | `src/spaghetti/layout.py` | Layout orchestrator (entry point for layout engine) |
 | `src/validate.py` | 16 validation checks (pipe isolation, belt loops, throughput, etc.) |
@@ -66,7 +66,7 @@ Tracks which recipes produce zero-error blueprints. Each tier represents increas
 
 | Tier | Recipe | Complexity | Status |
 |------|--------|-----------|--------|
-| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | Working |
+| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | 0 failed edges; validation errors from route crossing |
 | 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | Failing -- cross-contamination, belt loops |
 | 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing -- pipe isolation |
 | 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing -- massive routing failures |
@@ -84,27 +84,38 @@ Tracks which recipes produce zero-error blueprints. Each tier represents increas
 
 ## Layout engine
 
-The layout pipeline: **place machines → assign inserters → route belts/pipes → place poles**.
+The layout pipeline: **place machine → assign inserters → route edges → repeat for next machine → place poles**.
+
+### Incremental place-and-route (`src/routing/orchestrate.py`)
+
+`build_layout_incremental()` places machines one at a time in dependency order. For each machine:
+1. Try candidate positions (starting at spacing=2, corridor penalty rewards gap=1 for connected machines)
+2. Assign inserters — `_get_sides()` returns all 12 border positions for 3x3 machines, shuffled by RNG
+3. Route edges immediately — if routing fails, try the next candidate position
+4. Adjacent machines (gap=1) get direct inserters via `_find_direct_gap()`, skipping belt routing entirely
+
+External edges use belt stubs + A* continuation routing instead of boundary conventions. `route_connections()` supports incremental calls via `existing_belt_dir_map`, `existing_group_networks`, `io_y_slots` parameters.
 
 ### Evolutionary search (`src/search/layout_search.py`)
 
-Generates a population of candidate layouts by varying three dimensions:
-- **Machine positions** — incremental placement in dependency order, perturbed with Gaussian noise
-- **Inserter side preferences** — which sides of each machine to place inserters on
-- **Edge routing order** — order in which belt/pipe connections are routed (earlier routes get cleaner paths)
+All candidates use the incremental builder. Three gene dimensions:
+- **Placement order** — which machine to place first
+- **Position seed** — RNG seed for candidate position shuffling
+- **Side preferences** — inserter side priority per machine
 
-Each candidate is fully built (placement + routing + inserters + poles), validated, and scored. The best survive to the next generation. 30 candidates × 5 generations = 150 full layout evaluations.
+60 candidates x 3 generations = 180 full layout evaluations. Parallel evaluation via `multiprocessing.Pool`. Candidates scored by validation errors + failed edges + belt count.
 
 ### Shared infrastructure (`src/routing/`)
 
 - **Production graph** (`graph.py`): Converts `SolverResult` into a directed graph of `MachineNode`s connected by `FlowEdge`s
-- **A* router** (`router.py`): Grid pathfinding with underground belt support, belt tier selection, direction constraints
-- **Inserter assignment** (`inserters.py`): Lane-aware inserter placement between machines and belts
-- **Common utilities** (`common.py`): Machine sizes, belt tier selection, direction constants
+- **A* router** (`router.py`): Lane-aware grid pathfinding — state is `(x, y, forced, lane)`. Tracks belt lanes (left/right) through turns and sideloads. Underground belt support with perpendicular entry penalty. `_fix_belt_directions()` turns orphan belts to face adjacent network tiles for sideloading
+- **Inserter assignment** (`inserters.py`): Lane-aware inserter placement. `InserterAssignment` includes `approach_vec`, `target_lane`, `is_direct` fields
+- **Common utilities** (`common.py`): Machine sizes, belt tier selection, direction constants, lane constants (`LANE_LEFT`/`LANE_RIGHT`), `inserter_target_lane()`
+- **Routing result** (`router.py`): `RoutingResult` exposes `belt_dir_map` and `group_networks` for incremental routing
 
-### The fundamental problem
+### The primary remaining problem
 
-Placement and routing are treated as independent sequential steps, but they're deeply coupled. Placement ignores routing feasibility, then A* routing discovers the placement is bad. The evolutionary search partially addresses this by evaluating real routing outcomes, but it's still a brute-force exploration rather than a principled joint optimization.
+A* continuation routing doesn't consider item isolation — routes for different items can cross on the same belt tile, causing belt-item-isolation validation errors. This is the main blocker for tier 1 quality and the root cause of tier 2+ failures.
 
 ## Verification & validation
 
