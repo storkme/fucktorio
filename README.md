@@ -34,4 +34,4 @@ All layout logic (recipe solving, spatial placement, routing, validation) is imp
 
 ## Direction
 
-We're building toward a **constraint-based layout engine** that doesn't use predefined patterns (no main bus, no templates). Given only Factorio's game rules, it places machines and pathfinds belt/pipe routes between them — a place-and-route approach analogous to PCB autorouting. The goal is to produce working but novel "spaghetti" factories.
+The layout engine uses evolutionary search over machine placement, inserter sides, and routing order — no predefined patterns, no templates. Given only Factorio's game rules, it places machines and pathfinds belt/pipe routes between them using A* — a place-and-route approach analogous to PCB autorouting. The goal is to produce working but novel "spaghetti" factories.
