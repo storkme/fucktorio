@@ -9,15 +9,16 @@ from ..models import LayoutResult, SolverResult
 log = logging.getLogger(__name__)
 
 
-def spaghetti_layout(solver_result: SolverResult) -> LayoutResult:
-    """Produce a factory layout using evolutionary search.
+def spaghetti_layout(solver_result: SolverResult, max_attempts: int = 5) -> LayoutResult:
+    """Produce a factory layout using evolutionary search with retries.
 
-    Explores many candidate layouts by varying machine positions, inserter
-    side preferences, and edge routing order. Returns the best layout found.
+    Runs up to max_attempts independent evolutionary searches, returning
+    the first zero-error layout or the best layout found.
     """
-    from ..search.layout_search import evolutionary_layout
+    from ..search.layout_search import search_with_retries
 
-    return evolutionary_layout(solver_result)
+    layout, stats = search_with_retries(solver_result, max_attempts=max_attempts)
+    return layout
 
 
 # --- Legacy retry loop (kept for reference/comparison) ---

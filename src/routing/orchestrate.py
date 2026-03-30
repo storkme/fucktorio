@@ -539,7 +539,17 @@ def build_layout_incremental(
                     # Also allow routing directly into existing network tiles
                     goals |= existing_network
 
+                    path = None
                     if goals:
+                        # Precompute foreign item tiles for contamination avoidance
+                        _oit: set[tuple[int, int]] | None = None
+                        if not edge.is_fluid:
+                            _oit = set()
+                            for (oi, _sg), tiles in trial_group_networks.items():
+                                if oi != edge.item:
+                                    _oit |= tiles
+                            if not _oit:
+                                _oit = None
                         path = _astar_path(
                             (bx, by),
                             goals,
@@ -547,9 +557,8 @@ def build_layout_incremental(
                             allow_underground=True,
                             ug_max_reach=6,
                             belt_dir_map=trial_belt_dir_map,
+                            other_item_tiles=_oit,
                         )
-                    else:
-                        path = None
 
                     if path:
                         belt_name = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
@@ -562,6 +571,17 @@ def build_layout_incremental(
                     else:
                         failed_count += 1
                         trial_failed.append(edge)
+                        # Still place the belt stub so the inserter has a target
+                        if not edge.is_fluid:
+                            belt_name = belt_entity_for_rate(edge.rate)
+                            trial_entities.append(
+                                PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
+                            )
+                        else:
+                            trial_entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+                        trial_belt_dir_map[(bx, by)] = direction
+                        trial_group_networks.setdefault(group_key, set()).add((bx, by))
+                        trial_occupied.add((bx, by))
                 else:
                     # First edge for this item: place a belt stub
                     if not edge.is_fluid:
