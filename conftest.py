@@ -83,6 +83,39 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
             terminalreporter.write_sep("=", f"{count} HTML visualization(s) in {VIZ_DIR}/")
 
 
+# ---------------------------------------------------------------------------
+# Shared layout fixtures (session-scoped to avoid redundant evolutionary search)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def iron_gear_solver_result():
+    from src.solver import solve
+
+    return solve("iron-gear-wheel", target_rate=10, available_inputs={"iron-plate"})
+
+
+@pytest.fixture(scope="session")
+def iron_gear_layout(iron_gear_solver_result):
+    from src.spaghetti import spaghetti_layout
+
+    return spaghetti_layout(iron_gear_solver_result)
+
+
+@pytest.fixture(scope="session")
+def electronic_circuit_solver_result():
+    from src.solver import solve
+
+    return solve("electronic-circuit", target_rate=5, available_inputs={"iron-plate", "copper-plate"})
+
+
+@pytest.fixture(scope="session")
+def electronic_circuit_layout(electronic_circuit_solver_result):
+    from src.spaghetti import spaghetti_layout
+
+    return spaghetti_layout(electronic_circuit_solver_result)
+
+
 def pytest_sessionfinish(session, exitstatus) -> None:
     """Generate visual showcase when --viz is used."""
     if session.config.getoption("--viz", default=False):

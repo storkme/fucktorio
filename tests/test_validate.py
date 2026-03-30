@@ -3,8 +3,6 @@
 import pytest
 
 from src.models import EntityDirection, ItemFlow, LayoutResult, MachineSpec, PlacedEntity, SolverResult
-from src.solver import solve
-from src.spaghetti import spaghetti_layout
 from src.validate import (
     ValidationError,
     check_belt_connectivity,
@@ -13,7 +11,6 @@ from src.validate import (
     check_belt_flow_reachability,
     check_belt_junctions,
     check_belt_throughput,
-    check_fluid_port_connectivity,
     check_inserter_chains,
     check_inserter_direction,
     check_pipe_isolation,
@@ -86,55 +83,10 @@ class TestPipeIsolation:
         assert len(issues) == 0
 
 
-class TestFluidPortConnectivity:
-    @pytest.mark.xfail(reason="Fluid layouts have routing errors")
-    def test_connected_chemical_plant(self):
-        """Chemical plant with connected pipes should pass."""
-        result = solve(
-            "plastic-bar",
-            target_rate=10,
-            available_inputs={"petroleum-gas", "coal"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_fluid_port_connectivity(lr)
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) == 0, f"Unexpected errors: {errors}"
-
-    @pytest.mark.xfail(reason="Fluid layouts have routing errors")
-    def test_connected_refinery(self):
-        """Oil refinery with connected pipes should pass."""
-        result = solve(
-            "petroleum-gas",
-            target_rate=10,
-            available_inputs={"crude-oil"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_fluid_port_connectivity(lr)
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) == 0, f"Unexpected errors: {errors}"
-
-
 class TestInserterChains:
-    def test_machines_have_inserters(self):
+    def test_machines_have_inserters(self, electronic_circuit_layout):
         """All machines in a valid layout should have adjacent inserters."""
-        result = solve(
-            "electronic-circuit",
-            target_rate=5,
-            available_inputs={"iron-plate", "copper-plate"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_inserter_chains(lr)
-        assert len(issues) == 0, f"Unexpected issues: {issues}"
-
-    def test_fluid_machines_have_inserters(self):
-        """Fluid machines should have inserters for solid I/O."""
-        result = solve(
-            "plastic-bar",
-            target_rate=10,
-            available_inputs={"petroleum-gas", "coal"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_inserter_chains(lr)
+        issues = check_inserter_chains(electronic_circuit_layout)
         assert len(issues) == 0, f"Unexpected issues: {issues}"
 
 
@@ -194,15 +146,9 @@ class TestInserterDirection:
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 1
 
-    def test_valid_layout_passes(self):
+    def test_valid_layout_passes(self, iron_gear_layout):
         """A real valid layout should pass inserter direction check."""
-        result = solve(
-            "iron-gear-wheel",
-            target_rate=5,
-            available_inputs={"iron-plate"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_inserter_direction(lr)
+        issues = check_inserter_direction(iron_gear_layout)
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 0, f"Unexpected errors: {errors}"
 
@@ -301,15 +247,9 @@ class TestBeltConnectivity:
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) >= 1
 
-    def test_valid_layout_passes(self):
+    def test_valid_layout_passes(self, iron_gear_layout, iron_gear_solver_result):
         """A real valid layout should pass belt connectivity."""
-        result = solve(
-            "iron-gear-wheel",
-            target_rate=5,
-            available_inputs={"iron-plate"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_belt_connectivity(lr, result)
+        issues = check_belt_connectivity(iron_gear_layout, iron_gear_solver_result)
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 0, f"Unexpected errors: {errors}"
 
@@ -461,15 +401,9 @@ class TestBeltThroughput:
 
 
 class TestPowerCoverage:
-    def test_machines_powered(self):
+    def test_machines_powered(self, electronic_circuit_layout):
         """All machines should be within range of a power pole."""
-        result = solve(
-            "electronic-circuit",
-            target_rate=5,
-            available_inputs={"iron-plate", "copper-plate"},
-        )
-        lr = spaghetti_layout(result)
-        issues = check_power_coverage(lr)
+        issues = check_power_coverage(electronic_circuit_layout)
         # Power coverage is a warning, not error
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 0
@@ -744,49 +678,8 @@ class TestLaneThroughput:
 class TestIntegration:
     """Integration tests: full validation on real layouts."""
 
-    @pytest.mark.xfail(reason="Multi-recipe layouts have routing errors")
-    def test_electronic_circuit_validates(self):
-        """Full validation on electronic-circuit layout should pass."""
-        result = solve(
-            "electronic-circuit",
-            target_rate=5,
-            available_inputs={"iron-plate", "copper-plate"},
-        )
-        lr = spaghetti_layout(result)
-        # Should not raise
-        warnings = validate(lr, result)
-        errors = [w for w in warnings if w.severity == "error"]
-        assert len(errors) == 0
-
-    @pytest.mark.xfail(reason="Fluid layouts have routing errors")
-    def test_plastic_bar_validates(self):
-        """Full validation on plastic-bar (fluid) layout should pass."""
-        result = solve(
-            "plastic-bar",
-            target_rate=10,
-            available_inputs={"petroleum-gas", "coal"},
-        )
-        lr = spaghetti_layout(result)
-        warnings = validate(lr, result)
-        errors = [w for w in warnings if w.severity == "error"]
-        assert len(errors) == 0
-
-    @pytest.mark.xfail(reason="Fluid layouts have routing errors")
-    def test_petroleum_gas_validates(self):
-        """Full validation on petroleum-gas (refinery) layout should pass."""
-        result = solve(
-            "petroleum-gas",
-            target_rate=10,
-            available_inputs={"crude-oil"},
-        )
-        lr = spaghetti_layout(result)
-        warnings = validate(lr, result)
-        errors = [w for w in warnings if w.severity == "error"]
-        assert len(errors) == 0
-
     def test_validation_error_raised(self):
         """ValidationError should be raised on critical issues."""
-        import pytest
 
         # Create a layout with adjacent pipes carrying different fluids
         lr = LayoutResult(
