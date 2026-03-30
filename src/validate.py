@@ -94,7 +94,7 @@ class ValidationError(Exception):
 def validate(
     layout_result: LayoutResult,
     solver_result: SolverResult | None = None,
-    layout_style: str = "bus",
+    layout_style: str = "spaghetti",
 ) -> list[ValidationIssue]:
     """Run all functional validation checks on a layout.
 
@@ -228,7 +228,7 @@ def _get_fluid_ports(entity_name: str) -> list[tuple[int, int, str]]:
 
 def check_fluid_port_connectivity(
     layout_result: LayoutResult,
-    layout_style: str = "bus",
+    layout_style: str = "spaghetti",
 ) -> list[ValidationIssue]:
     """Check that every machine's fluid ports have connected pipes.
 
