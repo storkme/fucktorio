@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
-from .common import _MACHINE_SIZE, DIR_MAP, belt_entity_for_rate, inserter_target_lane, machine_size, machine_tiles
+from .common import _MACHINE_SIZE, DIR_MAP, DIR_VEC, belt_entity_for_rate, inserter_target_lane, machine_size, machine_tiles
 from .graph import FlowEdge, ProductionGraph
 from .inserters import (
     InserterAssignment,
@@ -14,7 +14,14 @@ from .inserters import (
     build_inserter_entities,
 )
 from .poles import place_poles
-from .router import RoutingResult, _compute_io_y_slots, _fix_belt_directions, route_connections
+from .router import (
+    RoutingResult,
+    _astar_path,
+    _compute_io_y_slots,
+    _fix_belt_directions,
+    _path_to_entities,
+    route_connections,
+)
 
 
 def build_layout(
@@ -452,36 +459,140 @@ def build_layout_incremental(
                     assigned = True
                     break
 
-            # Route the edges for this machine
-            reserved = {a.border_tile for a in trial_assignments} | {
-                a.belt_tile for a in trial_assignments if not a.is_direct
-            }
-            skip = trial_direct | direct_edge_indices
+            # Route edges for this machine.
+            # External edges: place belt stubs, route continuations to existing network.
+            # Internal edges: route via A* between machines.
+            trial_entities: list[PlacedEntity] = []
+            trial_belt_dir_map = dict(belt_dir_map)
+            trial_group_networks = {k: set(v) for k, v in group_networks.items()}
+            failed_count = 0
+            trial_failed: list[FlowEdge] = []
 
-            routing = route_connections(
-                graph,
-                trial_positions,
-                edge_targets=edge_targets,
-                edge_starts=edge_starts,
-                reserved_tiles=reserved | occupied,
-                edge_exclusions=edge_exclusions,
-                edge_subgroups=edge_subgroups,
-                edge_lane_info=edge_lane_info,
-                skip_edges=skip | {i for i, _ in enumerate(graph.edges) if i not in dict(routable_edges)},
-                existing_belt_dir_map=belt_dir_map,
-                existing_group_networks=group_networks,
-            )
+            # Separate external and internal edges
+            external_edges = [(i, e) for i, e in routable_edges if i not in trial_direct and (e.from_node is None or e.to_node is None)]
+            internal_edges = [(i, e) for i, e in routable_edges if i not in trial_direct and e.from_node is not None and e.to_node is not None]
 
-            failed_count = len(routing.failed_edges)
+            # Handle external edges: place belt stubs, route continuations
+            for i, edge in external_edges:
+                if i not in edge_targets and i not in edge_starts:
+                    continue  # no inserter assigned for this edge
+                # Determine belt tile and direction
+                if i in edge_targets:
+                    bx, by = edge_targets[i]
+                    # Input: belt faces toward the inserter (toward machine)
+                    assn = next((a for a in trial_assignments if a.edge is edge), None)
+                    if assn:
+                        dx = assn.border_tile[0] - bx
+                        dy = assn.border_tile[1] - by
+                        direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+                    else:
+                        direction = EntityDirection.SOUTH
+                else:
+                    bx, by = edge_starts[i]
+                    assn = next((a for a in trial_assignments if a.edge is edge), None)
+                    if assn:
+                        dx = bx - assn.border_tile[0]
+                        dy = by - assn.border_tile[1]
+                        direction = DIR_MAP.get((dx, dy), EntityDirection.SOUTH)
+                    else:
+                        direction = EntityDirection.SOUTH
+
+                group_key = (edge.item, 0)  # default sub-group
+                for item_name, groups in edge_subgroups.items():
+                    for g_idx, indices in enumerate(groups):
+                        if i in indices:
+                            group_key = (item_name, g_idx)
+                            break
+
+                existing_network = trial_group_networks.get(group_key, set())
+
+                if existing_network:
+                    # Continuation: A* pathfind from belt tile to existing network
+                    obstacles = trial_occupied - {(bx, by)} - existing_network
+                    # Goal: any tile adjacent to the existing network that's free
+                    goals = set()
+                    for nx, ny in existing_network:
+                        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                            adj = (nx + ddx, ny + ddy)
+                            if adj not in obstacles and adj not in existing_network:
+                                goals.add(adj)
+                    # Also allow routing directly into existing network tiles
+                    goals |= existing_network
+
+                    if goals:
+                        path = _astar_path(
+                            (bx, by), goals, obstacles,
+                            allow_underground=True, ug_max_reach=6,
+                            belt_dir_map=trial_belt_dir_map,
+                        )
+                    else:
+                        path = None
+
+                    if path:
+                        belt_name = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
+                        path_ents = _path_to_entities(path, belt_name, edge.item, edge.is_fluid)
+                        trial_entities.extend(path_ents)
+                        for pe in path_ents:
+                            trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
+                            trial_occupied.add((pe.x, pe.y))
+                        trial_group_networks.setdefault(group_key, set()).update(set(path))
+                    else:
+                        failed_count += 1
+                        trial_failed.append(edge)
+                else:
+                    # First edge for this item: place a belt stub
+                    if not edge.is_fluid:
+                        belt_name = belt_entity_for_rate(edge.rate)
+                        trial_entities.append(
+                            PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
+                        )
+                    else:
+                        trial_entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+                    trial_belt_dir_map[(bx, by)] = direction
+                    trial_group_networks.setdefault(group_key, set()).add((bx, by))
+                    trial_occupied.add((bx, by))
+
+            # Handle internal edges via route_connections
+            if internal_edges:
+                internal_indices = {i for i, _ in internal_edges}
+                reserved = {a.border_tile for a in trial_assignments} | {
+                    a.belt_tile for a in trial_assignments if not a.is_direct
+                }
+                skip_all_except_internal = {j for j in range(len(graph.edges)) if j not in internal_indices}
+                routing = route_connections(
+                    graph,
+                    trial_positions,
+                    edge_targets=edge_targets,
+                    edge_starts=edge_starts,
+                    reserved_tiles=reserved | occupied,
+                    edge_exclusions=edge_exclusions,
+                    edge_subgroups=edge_subgroups,
+                    edge_lane_info=edge_lane_info,
+                    skip_edges=skip_all_except_internal | trial_direct | direct_edge_indices,
+                    existing_belt_dir_map=trial_belt_dir_map,
+                    existing_group_networks=trial_group_networks,
+                )
+                trial_entities.extend(routing.entities)
+                trial_belt_dir_map.update(routing.belt_dir_map)
+                for key, tiles in routing.group_networks.items():
+                    trial_group_networks.setdefault(key, set()).update(tiles)
+                trial_occupied |= routing.occupied
+                if routing.failed_edges:
+                    failed_count += len(routing.failed_edges)
+                    trial_failed.extend(routing.failed_edges)
+
             if failed_count < best_failed_count:
                 best_failed_count = failed_count
                 best_result = (
                     (cx, cy),
                     candidate_tiles,
                     trial_assignments,
-                    routing,
+                    trial_entities,
                     trial_direct,
                     trial_occupied,
+                    trial_belt_dir_map,
+                    trial_group_networks,
+                    trial_failed,
                 )
 
             if failed_count == 0:
@@ -497,23 +608,72 @@ def build_layout_incremental(
             continue
 
         # Accept the best position
-        pos, m_tiles, assignments, routing, direct_idxs, new_occupied = best_result
+        (pos, m_tiles, assignments, trial_ents, direct_idxs,
+         new_occupied, new_belt_dir_map, new_group_networks, failed) = best_result
         positions[node_id] = pos
         occupied = new_occupied
         placed_node_ids.add(node_id)
         direct_edge_indices |= direct_idxs
         all_assignments.extend(assignments)
-        all_failed_edges.extend(routing.failed_edges)
+        all_failed_edges.extend(failed)
 
         # Place machine entity
         entities.append(PlacedEntity(name=node.spec.entity, x=pos[0], y=pos[1], recipe=node.spec.recipe))
 
         # Merge routing results
-        entities.extend(routing.entities)
-        belt_dir_map.update(routing.belt_dir_map)
-        for key, tiles in routing.group_networks.items():
-            group_networks.setdefault(key, set()).update(tiles)
-        occupied |= routing.occupied
+        entities.extend(trial_ents)
+        belt_dir_map = new_belt_dir_map
+        group_networks = new_group_networks
+
+    # Extend trunks with entry/exit tails so the validator sees boundary connections
+    from .router import _network_downstream_ends, _network_upstream_ends
+
+    for (item, _sg_idx), network in group_networks.items():
+        if not network:
+            continue
+        # Determine if this is an input or output item
+        is_input = any(e.from_node is None and e.item == item for e in graph.edges)
+        is_output = any(e.to_node is None and e.item == item for e in graph.edges)
+
+        if is_input:
+            # Extend upstream end backward by a few tiles
+            upstream = _network_upstream_ends(network, belt_dir_map)
+            for tile in upstream:
+                d = belt_dir_map.get(tile)
+                if d is None:
+                    continue
+                dx, dy = DIR_VEC[d]
+                for ext in range(1, 4):
+                    nx, ny = tile[0] - dx * ext, tile[1] - dy * ext
+                    if (nx, ny) in occupied:
+                        break
+                    belt_name = belt_entity_for_rate(
+                        next((e.rate for e in graph.edges if e.item == item and e.from_node is None), 15)
+                    )
+                    entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
+                    belt_dir_map[(nx, ny)] = d
+                    occupied.add((nx, ny))
+                break  # only extend one upstream end
+
+        if is_output:
+            # Extend downstream end forward by a few tiles
+            downstream = _network_downstream_ends(network, belt_dir_map)
+            for tile in downstream:
+                d = belt_dir_map.get(tile)
+                if d is None:
+                    continue
+                dx, dy = DIR_VEC[d]
+                for ext in range(1, 4):
+                    nx, ny = tile[0] + dx * ext, tile[1] + dy * ext
+                    if (nx, ny) in occupied:
+                        break
+                    belt_name = belt_entity_for_rate(
+                        next((e.rate for e in graph.edges if e.item == item and e.to_node is None), 15)
+                    )
+                    entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
+                    belt_dir_map[(nx, ny)] = d
+                    occupied.add((nx, ny))
+                break  # only extend one downstream end
 
     # Place inserter entities
     entities.extend(build_inserter_entities(all_assignments))
