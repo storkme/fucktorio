@@ -86,6 +86,7 @@ def _astar_path(
     start_lane: str | None = None,
     goal_lane_check: tuple[int, int] | None = None,
     belt_dir_map: dict[tuple[int, int], EntityDirection] | None = None,
+    other_item_tiles: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]] | None:
     """A* pathfinding with Manhattan heuristic, underground jumps, and lane awareness.
 
@@ -100,6 +101,8 @@ def _astar_path(
             the inserter at the goal. Used to dynamically compute the needed
             lane based on the A* arrival direction.
         belt_dir_map: Existing placed belt directions for sideload detection.
+        other_item_tiles: Tiles belonging to belt networks carrying a different
+            item. Used to prevent cross-item contamination during pathfinding.
     """
     import heapq
 
@@ -218,14 +221,28 @@ def _astar_path(
             fdx, fdy = forced
             nx, ny = cx + fdx, cy + fdy
             if not (nx < -10 or ny < -10 or nx > max_extent or ny > max_extent) and (nx, ny) not in obstacles:
-                new_state: State = (nx, ny, None, lane)
-                new_g = cur_g + 1.0
-                if new_state not in g_score or g_score[new_state] > new_g:
-                    g_score[new_state] = new_g
-                    parent[new_state] = state
-                    f = new_g + _h(nx, ny)
-                    heapq.heappush(open_set, (f, counter, new_state))
-                    counter += 1
+                # Item contamination check on forced continuation tile
+                _forced_ok = True
+                if other_item_tiles is not None:
+                    if (nx + fdx, ny + fdy) in other_item_tiles:
+                        _forced_ok = False
+                    elif belt_dir_map is not None:
+                        for cdx, cdy in DIRECTIONS:
+                            adj = (nx + cdx, ny + cdy)
+                            if adj in other_item_tiles:
+                                adj_dir = belt_dir_map.get(adj)
+                                if adj_dir is not None and DIR_VEC[adj_dir] == (-cdx, -cdy):
+                                    _forced_ok = False
+                                    break
+                if _forced_ok:
+                    new_state: State = (nx, ny, None, lane)
+                    new_g = cur_g + 1.0
+                    if new_state not in g_score or g_score[new_state] > new_g:
+                        g_score[new_state] = new_g
+                        parent[new_state] = state
+                        f = new_g + _h(nx, ny)
+                        heapq.heappush(open_set, (f, counter, new_state))
+                        counter += 1
             continue  # No other moves when forced
 
         # Normal surface moves (cost 1 + turn penalty + deviation penalty)
@@ -237,7 +254,34 @@ def _astar_path(
             if (nx, ny) in obstacles:
                 continue
 
+            # Item contamination checks: prevent routing near foreign belt networks
+            if other_item_tiles is not None:
+                # Outgoing: belt at (nx,ny) would point (dx,dy); if the forward
+                # tile belongs to a different item's network, we'd contaminate it
+                if (nx + dx, ny + dy) in other_item_tiles:
+                    continue
+                # Incoming: if a foreign belt points AT (nx,ny), it would
+                # push foreign items onto our belt
+                _contam = False
+                if belt_dir_map is not None:
+                    for cdx, cdy in DIRECTIONS:
+                        adj = (nx + cdx, ny + cdy)
+                        if adj in other_item_tiles:
+                            adj_dir = belt_dir_map.get(adj)
+                            if adj_dir is not None and DIR_VEC[adj_dir] == (-cdx, -cdy):
+                                _contam = True
+                                break
+                if _contam:
+                    continue
+
             new_g = cur_g + 1.0
+
+            # Proximity penalty: discourage routing adjacent to foreign networks
+            if other_item_tiles is not None:
+                for cdx, cdy in DIRECTIONS:
+                    if (nx + cdx, ny + cdy) in other_item_tiles:
+                        new_g += 3.0
+                        break
 
             # Compute previous direction for turn detection
             is_turn = False
@@ -308,6 +352,30 @@ def _astar_path(
                     # Tile after exit must also be free (for forced continuation)
                     if (ex + dx, ey + dy) in obstacles:
                         continue
+
+                    # Item contamination at UG exit: the forced continuation
+                    # tile (ex+dx, ey+dy) must not feed into a foreign network,
+                    # and the tile after that (ex+2dx, ey+2dy) must not be foreign
+                    if other_item_tiles is not None:
+                        cont_tile = (ex + dx, ey + dy)
+                        after_cont = (ex + 2 * dx, ey + 2 * dy)
+                        if after_cont in other_item_tiles:
+                            continue
+                        # Incoming check at exit and continuation tiles
+                        _ug_contam = False
+                        if belt_dir_map is not None:
+                            for _tile in ((ex, ey), cont_tile):
+                                for cdx, cdy in DIRECTIONS:
+                                    adj = (_tile[0] + cdx, _tile[1] + cdy)
+                                    if adj in other_item_tiles:
+                                        adj_dir = belt_dir_map.get(adj)
+                                        if adj_dir is not None and DIR_VEC[adj_dir] == (-cdx, -cdy):
+                                            _ug_contam = True
+                                            break
+                                if _ug_contam:
+                                    break
+                        if _ug_contam:
+                            continue
 
                     # Exit state carries forced direction — next step must
                     # continue straight before turning is allowed.
@@ -548,6 +616,22 @@ def _fix_belt_directions(
 
     belt_positions = set(pos_to_idx.keys())
 
+    # Build carries map for contamination guard during direction changes
+    carries_map: dict[tuple[int, int], str | None] = {}
+    for e in entities:
+        if e.name in belt_names and e.carries:
+            carries_map[(e.x, e.y)] = e.carries
+
+    def _would_contaminate(pos: tuple[int, int], new_dir: EntityDirection) -> bool:
+        """Check if changing belt at pos to new_dir would create cross-item contamination."""
+        our_carry = carries_map.get(pos)
+        if not our_carry:
+            return False
+        dvec = DIR_VEC[new_dir]
+        fwd = (pos[0] + dvec[0], pos[1] + dvec[1])
+        fwd_carry = carries_map.get(fwd)
+        return fwd_carry is not None and fwd_carry != our_carry
+
     # 1. Build adjacency map
     adj: dict[tuple[int, int], list[tuple[int, int]]] = {pos: [] for pos in belt_positions}
     for pos in belt_positions:
@@ -609,7 +693,7 @@ def _fix_belt_directions(
             if cur_dvec[0] * target_dvec[0] + cur_dvec[1] * target_dvec[1] == 0:
                 expected_dvec = (exit_target[0] - pos[0], exit_target[1] - pos[1])
                 expected_dir = DIR_MAP.get(expected_dvec)
-                if expected_dir is not None and expected_dir != cur_dir:
+                if expected_dir is not None and expected_dir != cur_dir and not _would_contaminate(pos, expected_dir):
                     ent.direction = expected_dir
                     belt_dir_map[pos] = expected_dir
 
@@ -643,7 +727,7 @@ def _fix_belt_directions(
         if upstream is not None:
             # Orient this belt to continue in the upstream direction
             up_dir = belt_dir_map.get(upstream)
-            if up_dir is not None and up_dir != cur_dir:
+            if up_dir is not None and up_dir != cur_dir and not _would_contaminate(pos, up_dir):
                 ent.direction = up_dir
                 belt_dir_map[pos] = up_dir
 
@@ -661,7 +745,7 @@ def _fix_belt_directions(
                     continue
                 face_vec = (nx - pos[0], ny - pos[1])
                 face_dir = DIR_MAP.get(face_vec)
-                if face_dir is not None:
+                if face_dir is not None and not _would_contaminate(pos, face_dir):
                     ent.direction = face_dir
                     belt_dir_map[pos] = face_dir
                     break
@@ -997,6 +1081,16 @@ def route_connections(
         # Lane info for this edge
         s_lane, g_lane_check = edge_lane_info.get(edge_idx, (None, None))
 
+        # Precompute tiles belonging to other items' networks (for contamination avoidance)
+        other_item_tiles: set[tuple[int, int]] | None = None
+        if not edge.is_fluid:
+            other_item_tiles = set()
+            for (other_item, _sg), tiles in group_networks.items():
+                if other_item != edge.item:
+                    other_item_tiles |= tiles
+            if not other_item_tiles:
+                other_item_tiles = None  # no foreign networks yet
+
         best_path = None
         for start in start_tiles:
             if start in occupied:
@@ -1011,20 +1105,23 @@ def route_connections(
                 start_lane=s_lane,
                 goal_lane_check=g_lane_check,
                 belt_dir_map=belt_dir_map,
+                other_item_tiles=other_item_tiles,
             )
             if path and (best_path is None or len(path) < len(best_path)):
                 best_path = path
 
-        # Check for cross-item contamination: would any tile in the path
-        # output onto a belt carrying a different item? Retry up to 3 times
-        # with underground belts enabled (they can tunnel under other routes).
+        # Safety net: check for cross-item contamination that slipped past
+        # the in-A* filter (e.g. due to direction post-processing).
+        # Checks both outgoing (our belt → their network) and incoming
+        # (their belt → our tile). Retry up to 5 times.
         if best_path and not edge.is_fluid:
             all_blocked: set[tuple[int, int]] = set()
-            for _retry in range(3):
+            for _retry in range(5):
                 contaminating: set[tuple[int, int]] = set()
                 for i, (px, py) in enumerate(best_path):
                     if (px, py) in network:
                         continue
+                    # Outgoing check: infer belt direction from path neighbors
                     if i + 1 < len(best_path):
                         ddx = best_path[i + 1][0] - px
                         ddy = best_path[i + 1][1] - py
@@ -1034,10 +1131,22 @@ def route_connections(
                     else:
                         continue
                     target = (px + ddx, py + ddy)
-                    for (other_item, _sg), other_tiles in group_networks.items():
-                        if other_item != edge.item and target in other_tiles:
+                    for (oi, _sg), other_tiles in group_networks.items():
+                        if oi != edge.item and target in other_tiles:
                             contaminating.add((px, py))
                             break
+                    # Incoming check: foreign belt pointing at our tile
+                    if (px, py) not in contaminating:
+                        for cdx, cdy in DIRECTIONS:
+                            adj = (px + cdx, py + cdy)
+                            adj_dir = belt_dir_map.get(adj)
+                            if adj_dir is not None and DIR_VEC[adj_dir] == (-cdx, -cdy):
+                                for (oi, _sg), other_tiles in group_networks.items():
+                                    if oi != edge.item and adj in other_tiles:
+                                        contaminating.add((px, py))
+                                        break
+                                if (px, py) in contaminating:
+                                    break
 
                 if not contaminating:
                     break  # path is clean
@@ -1058,6 +1167,7 @@ def route_connections(
                         start_lane=s_lane,
                         goal_lane_check=g_lane_check,
                         belt_dir_map=belt_dir_map,
+                        other_item_tiles=other_item_tiles,
                     )
                     if path and (best_path is None or len(path) < len(best_path)):
                         best_path = path

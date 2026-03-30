@@ -6,7 +6,8 @@ import logging
 import multiprocessing
 import os
 import random
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from ..models import LayoutResult, SolverResult
 from ..routing.common import machine_size, machine_tiles
@@ -16,6 +17,19 @@ from ..spaghetti.placer import _candidate_positions, _dependency_order, incremen
 from ..validate import ValidationError, validate
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class SearchStats:
+    """Statistics from a search run (single evolutionary_layout call)."""
+
+    attempt: int
+    score: float
+    error_count: int
+    failed_edges: int
+    belt_count: int
+    elapsed_s: float
+    error_categories: dict[str, int] = field(default_factory=dict)
 
 # All four side direction vectors
 _ALL_SIDES = [(0, 1), (0, -1), (1, 0), (-1, 0)]
@@ -41,28 +55,28 @@ def evolutionary_layout(
     generations: int = 3,
     seed: int | None = None,
 ) -> LayoutResult:
-    """Produce a factory layout using evolutionary search over parameters.
+    """Produce a factory layout by evaluating random candidates in parallel.
 
-    Explores many candidate layouts by varying machine positions, inserter
-    side preferences, and edge routing order. Returns the best layout found.
+    Generates a pool of random candidates (varying placement order, inserter
+    side preferences, and position seeds) and evaluates them all in parallel.
+    Returns the best layout found.
 
     Args:
         solver_result: Solved recipe graph.
-        population_size: Number of candidates per generation.
-        survivors: Number of top candidates kept each generation.
-        generations: Number of evolutionary generations.
+        population_size: Total number of candidates to evaluate.
+        survivors: Unused (kept for API compatibility).
+        generations: Unused (kept for API compatibility).
         seed: Optional RNG seed for reproducible results.
     """
     rng = random.Random(seed)
     graph = build_production_graph(solver_result)
 
     if not graph.nodes:
-        # Degenerate case: no machines
         return LayoutResult(entities=[], width=0, height=0)
 
     num_edges = len(graph.edges)
 
-    # Generate initial population
+    # Generate all candidates up front
     base_positions = incremental_place(graph, spacing=3)
     population = _generate_initial_population(
         graph,
@@ -72,87 +86,123 @@ def evolutionary_layout(
         rng,
     )
 
-    best_overall = _Candidate(positions=base_positions)
-
-    # Determine worker count for parallel evaluation
+    # Evaluate all candidates in parallel (single pass, no generations)
     n_workers = min(os.cpu_count() or 1, population_size)
+    args = [(c, solver_result, graph) for c in population]
+    try:
+        with multiprocessing.Pool(n_workers) as pool:
+            results = pool.starmap(_evaluate_worker, args)
+        for candidate, (layout, score) in zip(population, results, strict=True):
+            candidate.layout = layout
+            candidate.score = score
+    except Exception:
+        log.debug("Parallel eval failed, falling back to sequential", exc_info=True)
+        for candidate in population:
+            _evaluate(candidate, solver_result, graph)
 
-    for gen in range(generations):
-        # Evaluate unevaluated candidates in parallel
-        to_eval = [c for c in population if c.layout is None]
-        if to_eval:
-            args = [(c, solver_result, graph) for c in to_eval]
-            try:
-                with multiprocessing.Pool(n_workers) as pool:
-                    results = pool.starmap(_evaluate_worker, args)
-                for candidate, (layout, score) in zip(to_eval, results, strict=True):
-                    candidate.layout = layout
-                    candidate.score = score
-            except Exception:
-                # Fallback to sequential if multiprocessing fails
-                log.debug("Parallel eval failed, falling back to sequential", exc_info=True)
-                for candidate in to_eval:
-                    _evaluate(candidate, solver_result, graph)
+    # Pick the best
+    population.sort(key=lambda c: c.score)
+    best = population[0]
 
-        # Sort by score (lower is better)
-        population.sort(key=lambda c: c.score)
+    log.info(
+        "Search: %d candidates, best=%.2f, worst=%.2f",
+        len(population),
+        best.score,
+        population[-1].score,
+    )
 
-        # Track best overall
-        if population[0].score < best_overall.score:
-            best_overall = population[0]
+    if best.layout is None:
+        _evaluate(best, solver_result, graph)
 
-        log.info(
-            "Generation %d: best=%.2f, worst=%.2f (%d candidates)",
-            gen + 1,
-            population[0].score,
-            population[-1].score,
-            len(population),
+    return best.layout
+
+
+def search_with_retries(
+    solver_result: SolverResult,
+    max_attempts: int = 5,
+    population_size: int = 60,
+    survivors: int = 10,
+    generations: int = 3,
+    seed: int | None = None,
+) -> tuple[LayoutResult, list[SearchStats]]:
+    """Run evolutionary_layout up to max_attempts times, return best zero-error layout.
+
+    Returns the first zero-error layout found, or the best layout across all
+    attempts if none are perfect. Also returns stats for every attempt.
+    """
+    rng = random.Random(seed)
+    best_layout: LayoutResult | None = None
+    best_score = float("inf")
+    all_stats: list[SearchStats] = []
+
+    for attempt in range(1, max_attempts + 1):
+        attempt_seed = rng.randint(0, 2**31)
+        t0 = time.monotonic()
+
+        layout = evolutionary_layout(
+            solver_result,
+            population_size=population_size,
+            survivors=survivors,
+            generations=generations,
+            seed=attempt_seed,
         )
 
-        # Perfect score: return immediately
-        if best_overall.score <= 0.01:
-            log.info("Found zero-error layout in generation %d", gen + 1)
-            return best_overall.layout
+        elapsed = time.monotonic() - t0
 
-        # Selection: keep top survivors
-        elite = population[:survivors]
-
-        # Mutation: produce next generation from survivors
-        population = list(elite)  # keep elites (already evaluated)
-        children_per_survivor = max(1, (population_size - survivors) // survivors)
-        for parent in elite:
-            for _ in range(children_per_survivor):
-                child = _mutate(parent, graph, num_edges, rng)
-                population.append(child)
-
-        # Fill remainder if needed (rounding)
-        while len(population) < population_size:
-            parent = rng.choice(elite)
-            population.append(_mutate(parent, graph, num_edges, rng))
-
-    # Final evaluation of any unevaluated candidates
-    final_to_eval = [c for c in population if c.layout is None]
-    if final_to_eval:
-        args = [(c, solver_result, graph) for c in final_to_eval]
+        # Score the result
+        error_count = 0
+        error_categories: dict[str, int] = {}
         try:
-            with multiprocessing.Pool(n_workers) as pool:
-                results = pool.starmap(_evaluate_worker, args)
-            for candidate, (layout, score) in zip(final_to_eval, results, strict=True):
-                candidate.layout = layout
-                candidate.score = score
-        except Exception:
-            for candidate in final_to_eval:
-                _evaluate(candidate, solver_result, graph)
-    for candidate in population:
-        if candidate.score < best_overall.score:
-            best_overall = candidate
+            validate(layout, solver_result, layout_style="spaghetti")
+        except ValidationError as exc:
+            error_count = len(exc.issues)
+            for issue in exc.issues:
+                error_categories[issue.category] = error_categories.get(issue.category, 0) + 1
 
-    if best_overall.layout is None:
-        # Fallback: evaluate the base candidate
-        _evaluate(best_overall, solver_result, graph)
+        belt_count = sum(1 for e in layout.entities if "belt" in e.name)
+        failed_edges = 0  # not easily recoverable from evolutionary_layout, use score proxy
+        score = error_count * 100 + belt_count * 0.5
 
-    log.info("Search complete: best score=%.2f", best_overall.score)
-    return best_overall.layout
+        stats = SearchStats(
+            attempt=attempt,
+            score=score,
+            error_count=error_count,
+            failed_edges=failed_edges,
+            belt_count=belt_count,
+            elapsed_s=elapsed,
+            error_categories=error_categories,
+        )
+        all_stats.append(stats)
+
+        log.info(
+            "Attempt %d/%d: %d errors, %d belts, %.1fs %s",
+            attempt,
+            max_attempts,
+            error_count,
+            belt_count,
+            elapsed,
+            dict(error_categories) if error_categories else "(clean!)",
+        )
+
+        if score < best_score:
+            best_score = score
+            best_layout = layout
+
+        if error_count == 0:
+            log.info("Found zero-error layout on attempt %d", attempt)
+            break
+
+    # Summary
+    scores = [s.error_count for s in all_stats]
+    log.info(
+        "Search summary: %d attempts, errors=[%s], best=%d",
+        len(all_stats),
+        ", ".join(str(s) for s in scores),
+        min(scores),
+    )
+
+    assert best_layout is not None
+    return best_layout, all_stats
 
 
 def _generate_initial_population(
