@@ -20,11 +20,7 @@ python -m src.pipeline
 Three-stage pipeline (`src/pipeline.py` orchestrates):
 
 1. **Solver** (`src/solver/`) — Recursively resolves recipes via `draftsman.data`, calculates machine counts and flow rates. Returns `SolverResult`.
-2. **Layout** — Converts solver output to positioned entities. Returns `LayoutResult`. Three layout engines:
-   - `src/layout/` — **Main bus** layout (template-based, human-like factory pattern). Legacy, not actively developed.
-   - `src/spaghetti/` — **Constraint-based** layout. Place-and-route approach: position machines on a grid, then pathfind belt/pipe routes between them using A*.
-   - `src/ml/` — **ML-optimized** layout (scipy L-BFGS-B placement optimization + shared routing). Uses differentiable loss functions to optimize machine placement, then routes with the same A* infrastructure.
-   Both spaghetti and ML engines share routing infrastructure (currently in `src/spaghetti/`, planned move to `src/routing/`).
+2. **Layout** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Evolutionary search over machine placement, inserter sides, and edge routing order. Places machines on a grid, assigns inserters, then pathfinds belt/pipe routes between them using A*. Returns `LayoutResult`.
 3. **Blueprint** (`src/blueprint/`) — Thin draftsman wrapper that converts `LayoutResult` to a base64 blueprint string.
 4. **Validation** (`src/validate.py`) — Functional checks run after layout: pipe isolation, fluid port connectivity, inserter chains, power coverage.
 
@@ -38,22 +34,23 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 
 ## Key source files
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/spaghetti/router.py` | ~830 | A* pathfinding, underground belts, belt/pipe entity placement |
-| `src/spaghetti/inserters.py` | ~240 | Lane-aware inserter assignment between machines and belts |
-| `src/spaghetti/layout.py` | ~230 | Spaghetti orchestrator with retry strategies |
-| `src/spaghetti/placer.py` | ~60 | Grid-based machine placement |
-| `src/spaghetti/graph.py` | ~175 | Production graph construction from solver output |
-| `src/ml/placer.py` | ~120 | Scipy-optimized machine placement |
-| `src/ml/loss.py` | ~150 | Differentiable placement loss functions |
-| `src/ml/layout.py` | ~220 | ML orchestrator (mirrors spaghetti structure) |
-| `src/validate.py` | ~2000 | 16 validation checks (pipe isolation, belt loops, throughput, etc.) |
-| `src/models.py` | ~80 | Shared data models (ItemFlow, MachineSpec, SolverResult, PlacedEntity, LayoutResult) |
+| File | Purpose |
+|------|---------|
+| `src/routing/router.py` | A* pathfinding, underground belts, belt/pipe entity placement |
+| `src/routing/inserters.py` | Lane-aware inserter assignment between machines and belts |
+| `src/routing/orchestrate.py` | Shared layout orchestration: inserters → routing → poles |
+| `src/routing/graph.py` | Production graph construction from solver output |
+| `src/routing/common.py` | Machine sizes, belt tier selection, direction constants |
+| `src/routing/poles.py` | Power pole placement (greedy near-machine or grid fallback) |
+| `src/search/layout_search.py` | Evolutionary search over placement parameters |
+| `src/spaghetti/placer.py` | Incremental machine placement in dependency order |
+| `src/spaghetti/layout.py` | Layout orchestrator (entry point for layout engine) |
+| `src/validate.py` | 16 validation checks (pipe isolation, belt loops, throughput, etc.) |
+| `src/models.py` | Shared data models (ItemFlow, MachineSpec, SolverResult, PlacedEntity, LayoutResult) |
 
-## Factorio game rules (constraints for layout engines)
+## Factorio game rules (constraints for the layout engine)
 
-These are the physical rules any layout engine must satisfy:
+These are the physical rules the layout engine must satisfy:
 
 - **Machines** craft recipes, need ingredients delivered and products extracted
 - **Inserters** pick from one side, drop to the other. Regular inserters reach 1 tile; long-handed inserters reach 2 tiles
@@ -85,33 +82,29 @@ Tracks which recipes produce zero-error blueprints. Each tier represents increas
 5. **Failed routing edges**: A* can't find any path from source to destination.
 6. **Pipe merge contamination**: Adjacent pipes carrying different fluids merge (fluids connect to all adjacent pipes).
 
-## Layout engines
+## Layout engine
 
-Both layout engines share the same pipeline: place machines -> assign inserters -> route belts/pipes -> place poles. They differ only in machine placement strategy.
+The layout pipeline: **place machines → assign inserters → route belts/pipes → place poles**.
 
-### Shared infrastructure (`src/routing/` planned, currently in `src/spaghetti/`)
+### Evolutionary search (`src/search/layout_search.py`)
+
+Generates a population of candidate layouts by varying three dimensions:
+- **Machine positions** — incremental placement in dependency order, perturbed with Gaussian noise
+- **Inserter side preferences** — which sides of each machine to place inserters on
+- **Edge routing order** — order in which belt/pipe connections are routed (earlier routes get cleaner paths)
+
+Each candidate is fully built (placement + routing + inserters + poles), validated, and scored. The best survive to the next generation. 30 candidates × 5 generations = 150 full layout evaluations.
+
+### Shared infrastructure (`src/routing/`)
 
 - **Production graph** (`graph.py`): Converts `SolverResult` into a directed graph of `MachineNode`s connected by `FlowEdge`s
 - **A* router** (`router.py`): Grid pathfinding with underground belt support, belt tier selection, direction constraints
-- **Inserter assignment** (`inserters.py`): Lane-aware inserter placement between machines and belts, supports top/bottom and left/right strategies
+- **Inserter assignment** (`inserters.py`): Lane-aware inserter placement between machines and belts
 - **Common utilities** (`common.py`): Machine sizes, belt tier selection, direction constants
-
-### Spaghetti engine (`src/spaghetti/`)
-
-- **Placer**: Simple grid layout -- `cols = ceil(sqrt(n))`, fixed spacing between machines
-- **Retry**: Escalating strategy -- varies spacing (4, 6, 8, 10) and inserter side strategy (top/bottom vs left/right)
-- **Status**: Works for tier 1 (iron-gear-wheel). Fails on multi-recipe chains due to grid placement creating unavoidable crossings.
-
-### ML engine (`src/ml/`)
-
-- **Placer**: Scipy L-BFGS-B optimization with differentiable loss (overlap penalty, edge distance, compactness, alignment)
-- **Retry**: Increases min_gap parameter on failure
-- **Loss functions** (`loss.py`): overlap_penalty, edge_distance, compactness, alignment -- combined with configurable weights
-- **Status**: Similar results to spaghetti -- placement optimization doesn't overcome fundamental routing conflicts.
 
 ### The fundamental problem
 
-Placement and routing are treated as independent sequential steps, but they're deeply coupled. Grid/optimized placement ignores routing feasibility, then A* routing discovers the placement is bad. Fixing this requires constraint-aware placement that considers routing during machine positioning.
+Placement and routing are treated as independent sequential steps, but they're deeply coupled. Placement ignores routing feasibility, then A* routing discovers the placement is bad. The evolutionary search partially addresses this by evaluating real routing outcomes, but it's still a brute-force exploration rather than a principled joint optimization.
 
 ## Verification & validation
 
