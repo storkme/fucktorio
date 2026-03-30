@@ -29,6 +29,8 @@ class RoutingResult:
     entities: list[PlacedEntity] = field(default_factory=list)
     occupied: set[tuple[int, int]] = field(default_factory=set)
     failed_edges: list[FlowEdge] = field(default_factory=list)
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = field(default_factory=dict)
+    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = field(default_factory=dict)
 
 
 def _machine_border_tiles(x: int, y: int, size: int) -> list[tuple[int, int, int, int]]:
@@ -676,6 +678,9 @@ def route_connections(
     edge_order: list[int] | None = None,
     edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] | None = None,
     skip_edges: set[int] | None = None,
+    existing_belt_dir_map: dict[tuple[int, int], EntityDirection] | None = None,
+    existing_group_networks: dict[tuple[str, int], set[tuple[int, int]]] | None = None,
+    io_y_slots: tuple[dict[str, int] | None, dict[str, int] | None] | None = None,
 ) -> RoutingResult:
     """Route all flow edges as belts/pipes using A* pathfinding.
 
@@ -716,12 +721,19 @@ def route_connections(
     failed_edges: list[FlowEdge] = []
 
     # Pre-compute y-slot assignments for external I/O boundary convention
-    input_y_slots, output_y_slots = _compute_io_y_slots(graph, positions)
+    if io_y_slots is not None:
+        input_y_slots, output_y_slots = io_y_slots
+    else:
+        input_y_slots, output_y_slots = _compute_io_y_slots(graph, positions)
 
     # Build initial obstacle set from machine footprints + reserved tiles
+    # Only include machines that have positions (supports incremental building)
     occupied: set[tuple[int, int]] = set(reserved_tiles) if reserved_tiles else set()
-    for node in graph.nodes:
-        x, y = positions[node.id]
+    node_map = {n.id: n for n in graph.nodes}
+    for node_id, (x, y) in positions.items():
+        node = node_map.get(node_id)
+        if node is None:
+            continue
         size = machine_size(node.spec.entity)
         occupied |= machine_tiles(x, y, size)
 
@@ -735,9 +747,14 @@ def route_connections(
 
     # Track belt networks per sub-group for network-aware routing
     # Key: (item, subgroup_idx) — each sub-group routes independently
-    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = {}
+    # Initialize from existing state if provided (for incremental calls)
+    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = (
+        dict(existing_group_networks) if existing_group_networks else {}
+    )
     # Track belt directions for junction-aware routing
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = (
+        dict(existing_belt_dir_map) if existing_belt_dir_map else {}
+    )
 
     # --- Map each edge index to its sub-group key ---
     edge_group_key: dict[int, tuple[str, int]] = {}
@@ -792,6 +809,8 @@ def route_connections(
         e = graph.edges[idx]
         if e.from_node is None or e.to_node is None:
             return 0
+        if e.from_node not in positions or e.to_node not in positions:
+            return 0
         fx, fy = positions[e.from_node]
         tx, ty = positions[e.to_node]
         return abs(fx - tx) + abs(fy - ty)
@@ -805,7 +824,7 @@ def route_connections(
 
         def _input_sort_key(idx: int) -> float:
             e = graph.edges[idx]
-            if e.to_node is None:
+            if e.to_node is None or e.to_node not in positions:
                 return 0
             tx, ty = positions[e.to_node]
             return tx + ty
@@ -819,7 +838,7 @@ def route_connections(
 
         def _output_sort_key(idx: int) -> float:
             e = graph.edges[idx]
-            if e.from_node is None:
+            if e.from_node is None or e.from_node not in positions:
                 return 0
             fx, fy = positions[e.from_node]
             return fx + fy
@@ -1087,7 +1106,13 @@ def route_connections(
     # Post-process belt directions to fix T-junctions, underground exits, orphans
     _fix_belt_directions(entities, belt_dir_map)
 
-    return RoutingResult(entities=entities, occupied=occupied, failed_edges=failed_edges)
+    return RoutingResult(
+        entities=entities,
+        occupied=occupied,
+        failed_edges=failed_edges,
+        belt_dir_map=belt_dir_map,
+        group_networks=group_networks,
+    )
 
 
 def _edge_endpoints(
