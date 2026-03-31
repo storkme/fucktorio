@@ -1,4 +1,4 @@
-"""Evolutionary search over placement, inserter sides, and edge routing order."""
+"""Random search over placement, inserter sides, and edge routing order."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class SearchStats:
-    """Statistics from a search run (single evolutionary_layout call)."""
+    """Statistics from a search run (single random_search_layout call)."""
 
     attempt: int
     score: float
@@ -51,11 +51,9 @@ class _Candidate:
     layout: LayoutResult | None = None
 
 
-def evolutionary_layout(
+def random_search_layout(
     solver_result: SolverResult,
     population_size: int = 60,
-    survivors: int = 10,
-    generations: int = 3,
     seed: int | None = None,
 ) -> LayoutResult:
     """Produce a factory layout by evaluating random candidates in parallel.
@@ -67,8 +65,6 @@ def evolutionary_layout(
     Args:
         solver_result: Solved recipe graph.
         population_size: Total number of candidates to evaluate.
-        survivors: Unused (kept for API compatibility).
-        generations: Unused (kept for API compatibility).
         seed: Optional RNG seed for reproducible results.
     """
     rng = random.Random(seed)
@@ -124,11 +120,9 @@ def search_with_retries(
     solver_result: SolverResult,
     max_attempts: int = 5,
     population_size: int = 60,
-    survivors: int = 10,
-    generations: int = 3,
     seed: int | None = None,
 ) -> tuple[LayoutResult, list[SearchStats]]:
-    """Run evolutionary_layout up to max_attempts times, return best zero-error layout.
+    """Run random_search_layout up to max_attempts times, return best zero-error layout.
 
     Returns the first zero-error layout found, or the best layout across all
     attempts if none are perfect. Also returns stats for every attempt.
@@ -142,11 +136,9 @@ def search_with_retries(
         attempt_seed = rng.randint(0, 2**31)
         t0 = time.monotonic()
 
-        layout = evolutionary_layout(
+        layout = random_search_layout(
             solver_result,
             population_size=population_size,
-            survivors=survivors,
-            generations=generations,
             seed=attempt_seed,
         )
 
@@ -163,7 +155,7 @@ def search_with_retries(
                 error_categories[issue.category] = error_categories.get(issue.category, 0) + 1
 
         belt_count = sum(1 for e in layout.entities if "belt" in e.name)
-        failed_edges = 0  # not easily recoverable from evolutionary_layout, use score proxy
+        failed_edges = 0  # not easily recoverable from random_search_layout, use score proxy
         score = error_count * 100 + belt_count * 0.5
 
         stats = SearchStats(
@@ -394,42 +386,6 @@ def _evaluate(
     candidate.score = error_count * 100 + len(failed_edges) * 1000 + belt_count * 0.5 + area * 0.1 - direct_count * 10
 
 
-def _perturb_positions(
-    positions: dict[int, tuple[int, int]],
-    graph: ProductionGraph,
-    rng: random.Random,
-    sigma: float = 2,
-) -> dict[int, tuple[int, int]]:
-    """Perturb machine positions with Gaussian noise, resolving overlaps."""
-    node_map = {n.id: n for n in graph.nodes}
-    new_pos: dict[int, tuple[int, int]] = {}
-    occupied: set[tuple[int, int]] = set()
-
-    for node_id, (x, y) in positions.items():
-        size = machine_size(node_map[node_id].spec.entity)
-        nx = x + int(rng.gauss(0, sigma))
-        ny = y + int(rng.gauss(0, sigma))
-
-        # Resolve overlaps by shifting right
-        attempts = 0
-        while _overlaps(nx, ny, size, occupied) and attempts < 50:
-            nx += 1
-            attempts += 1
-
-        new_pos[node_id] = (nx, ny)
-        occupied |= machine_tiles(nx, ny, size)
-
-    return new_pos
-
-
-def _overlaps(x: int, y: int, size: int, occupied: set[tuple[int, int]]) -> bool:
-    """Check if placing a machine at (x, y) would overlap occupied tiles."""
-    for dx in range(size):
-        for dy in range(size):
-            if (x + dx, y + dy) in occupied:
-                return True
-    return False
-
 
 def _random_side_preference(
     graph: ProductionGraph,
@@ -462,62 +418,3 @@ def _shuffle_topo_order(
     return order
 
 
-def _random_edge_order(num_edges: int, rng: random.Random) -> list[int]:
-    """Generate a random edge routing order."""
-    order = list(range(num_edges))
-    rng.shuffle(order)
-    return order
-
-
-def _mutate(
-    parent: _Candidate,
-    graph: ProductionGraph,
-    num_edges: int,
-    rng: random.Random,
-) -> _Candidate:
-    """Produce a child candidate by mutating a parent."""
-    # Mutate side preferences: start from parent's or generate fresh
-    if parent.side_preference is not None:
-        side_pref = dict(parent.side_preference)
-    else:
-        side_pref = {n.id: list(_ALL_SIDES) for n in graph.nodes}
-
-    # Randomize 1-2 machines' side preferences
-    nodes_to_mutate = rng.sample(graph.nodes, k=min(rng.randint(1, 2), len(graph.nodes)))
-    for node in nodes_to_mutate:
-        sides = list(_ALL_SIDES)
-        rng.shuffle(sides)
-        side_pref[node.id] = sides
-
-    if parent.placement_order is not None:
-        # Incremental mode: mutate placement order and position seed
-        order = list(parent.placement_order)
-        # Swap 1-2 adjacent pairs
-        for _ in range(rng.randint(1, 2)):
-            if len(order) >= 2:
-                idx = rng.randint(0, len(order) - 2)
-                order[idx], order[idx + 1] = order[idx + 1], order[idx]
-
-        return _Candidate(
-            positions={},
-            side_preference=side_pref,
-            placement_order=order,
-            position_seed=rng.randint(0, 2**31),
-        )
-    else:
-        # Batch mode: mutate positions and edge order
-        positions = _perturb_positions(parent.positions, graph, rng, sigma=1.5)
-
-        edge_ord = list(parent.edge_order) if parent.edge_order is not None else list(range(num_edges))
-        n_swap = max(1, rng.randint(len(edge_ord) // 4, len(edge_ord) // 2 + 1))
-        indices_to_swap = rng.sample(range(len(edge_ord)), k=min(n_swap, len(edge_ord)))
-        values = [edge_ord[i] for i in indices_to_swap]
-        rng.shuffle(values)
-        for i, idx in enumerate(indices_to_swap):
-            edge_ord[idx] = values[i]
-
-        return _Candidate(
-            positions=positions,
-            side_preference=side_pref,
-            edge_order=edge_ord,
-        )
