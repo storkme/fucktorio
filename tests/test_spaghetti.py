@@ -47,6 +47,16 @@ def iron_gear_30s_layout(iron_gear_30s):
     return spaghetti_layout(iron_gear_30s)
 
 
+@pytest.fixture(scope="module")
+def iron_gear_smelting_5s():
+    return solve("iron-gear-wheel", target_rate=5, available_inputs=set())
+
+
+@pytest.fixture(scope="module")
+def iron_gear_smelting_5s_layout(iron_gear_smelting_5s):
+    return spaghetti_layout(iron_gear_smelting_5s)
+
+
 class TestProductionGraph:
     """Tests for production graph construction."""
 
@@ -98,8 +108,43 @@ class TestProductionGraph:
             assert e.from_node is None
             assert e.to_node is not None
 
+    def test_smelting_chain_graph(self):
+        """Iron-gear-wheel with smelting has internal iron-plate edges."""
+        result = solve("iron-gear-wheel", target_rate=2, available_inputs=set())
+        graph = build_production_graph(result)
 
-_3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
+        # Should have nodes for both recipes
+        recipes = {n.spec.recipe for n in graph.nodes}
+        assert "iron-plate" in recipes
+        assert "iron-gear-wheel" in recipes
+
+        # Should have internal edges carrying iron-plate (furnace → assembler)
+        internal = [e for e in graph.edges if e.from_node is not None and e.to_node is not None]
+        assert len(internal) > 0
+        assert any(e.item == "iron-plate" for e in internal)
+
+        # External input should be iron-ore, not iron-plate
+        ext = graph.external_inputs()
+        assert all(e.item == "iron-ore" for e in ext)
+
+    def test_smelting_chain_entities(self):
+        """Smelting chain graph has correct entity types on nodes."""
+        result = solve("iron-gear-wheel", target_rate=2, available_inputs=set())
+        graph = build_production_graph(result)
+
+        furnace_nodes = [n for n in graph.nodes if n.spec.entity == "electric-furnace"]
+        assembler_nodes = [n for n in graph.nodes if n.spec.entity == "assembling-machine-3"]
+        assert len(furnace_nodes) > 0, "Should have electric-furnace nodes"
+        assert len(assembler_nodes) > 0, "Should have assembling-machine-3 nodes"
+
+
+_3x3 = {
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "electric-furnace",
+}
 _5x5 = {"oil-refinery"}
 
 
@@ -170,24 +215,38 @@ class TestSpaghettiPhase2:
         assert len(belts) >= len(machines), "Should have at least as many belt tiles as machines"
 
 
+class TestSpaghettiSmelting:
+    """Smelting chain: iron-ore → electric-furnace → iron-plate → assembler → iron-gear-wheel."""
+
+    def test_produces_layout(self, iron_gear_smelting_5s_layout):
+        assert len(iron_gear_smelting_5s_layout.entities) > 0
+
+    def test_has_electric_furnaces(self, iron_gear_smelting_5s_layout):
+        furnaces = [e for e in iron_gear_smelting_5s_layout.entities if e.name == "electric-furnace"]
+        assert len(furnaces) > 0, "Should have electric-furnace entities"
+        for f in furnaces:
+            assert f.recipe == "iron-plate"
+
+    def test_has_assemblers(self, iron_gear_smelting_5s_layout):
+        assemblers = [e for e in iron_gear_smelting_5s_layout.entities if e.name == "assembling-machine-3"]
+        assert len(assemblers) > 0, "Should have assembling-machine-3 entities"
+        for a in assemblers:
+            assert a.recipe == "iron-gear-wheel"
+
+    def test_no_overlaps(self, iron_gear_smelting_5s_layout):
+        _check_no_overlaps(iron_gear_smelting_5s_layout)
+
+    def test_external_input_is_iron_ore(self, iron_gear_smelting_5s):
+        ext_items = {f.item for f in iron_gear_smelting_5s.external_inputs}
+        assert ext_items == {"iron-ore"}
+
+
 @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
 class TestSpaghettiPhase3:
     """Phase 3: intermediates (multi-step chains)."""
 
     def _check_no_overlaps(self, lr):
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
-        _5x5 = {"oil-refinery"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _5x5:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
-            elif ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
     def test_intermediate_chain(self):
         """Electronic circuit chain should produce machines for both recipes."""
@@ -298,16 +357,7 @@ class TestSpaghettiPhase5:
         )
         lr = spaghetti_layout(result)
 
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
 
 @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
@@ -315,19 +365,7 @@ class TestSpaghettiPhase6:
     """Phase 6: complex chains (mixed solid + fluid, multi-step)."""
 
     def _check_no_overlaps(self, lr):
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant"}
-        _5x5 = {"oil-refinery"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _5x5:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
-            elif ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
     def test_advanced_circuit(self):
         """Advanced circuit: deep chain with fluid intermediates."""
@@ -662,6 +700,17 @@ class TestSpaghettiVisualization:
             solver_result=iron_gear_10s,
             production_graph=graph,
             layout_result=iron_gear_10s_layout,
+        )
+
+    def test_viz_iron_gear_smelting(self, viz, iron_gear_smelting_5s, iron_gear_smelting_5s_layout):
+        graph = build_production_graph(iron_gear_smelting_5s)
+        bp = build_blueprint(iron_gear_smelting_5s_layout, label="spaghetti: 5/s iron-gear-wheel (smelting)")
+        viz(
+            bp,
+            "iron-gear-wheel-smelting-5s",
+            solver_result=iron_gear_smelting_5s,
+            production_graph=graph,
+            layout_result=iron_gear_smelting_5s_layout,
         )
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")

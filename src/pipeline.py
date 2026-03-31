@@ -53,7 +53,11 @@ def produce(
         machine_label = (
             "chemical-plant"
             if m.entity == "chemical-plant"
-            else ("oil-refinery" if m.entity == "oil-refinery" else "asm3")
+            else (
+                "oil-refinery"
+                if m.entity == "oil-refinery"
+                else ("electric-furnace" if m.entity == "electric-furnace" else "asm3")
+            )
         )
         print(f"{prefix} {m.recipe}  ×{count_str} {machine_label}")
         # Show inputs — recurse into intermediate recipes, list externals inline
