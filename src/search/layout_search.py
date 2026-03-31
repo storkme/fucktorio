@@ -307,9 +307,7 @@ def _evaluate(
             # Compute ideal x-positions: between input and output trunks
             if trunk_x_coords:
                 input_items = sorted({e.item for e in graph.edges if e.from_node is None})
-                output_items = sorted({e.item for e in graph.edges if e.to_node is None})
                 input_trunk_xs = trunk_x_coords[: len(input_items)]
-                output_trunk_xs = trunk_x_coords[len(input_items) :]
                 # Machine x: right of rightmost input trunk, with 2 tiles gap (inserter + belt)
                 machine_ideal_x = max(input_trunk_xs) + 2 if input_trunk_xs else trunk_x_coords[0] + 2
             else:
@@ -330,9 +328,8 @@ def _evaluate(
 
                     # Also try with 1-tile vertical gap for variety
                     for y in range(0, _tlen - node_size + 1):
-                        if (_mix, y) not in set(cands):
-                            if not (machine_tiles(_mix, y, node_size) & occupied):
-                                cands.append((_mix, y))
+                        if (_mix, y) not in set(cands) and not (machine_tiles(_mix, y, node_size) & occupied):
+                            cands.append((_mix, y))
 
                     def _trunk_score(p):
                         px, py = p
