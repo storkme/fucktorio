@@ -855,6 +855,88 @@ def _fix_belt_directions(
                     break
 
 
+def _verify_flow_continuity(
+    entities: list[PlacedEntity],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+    edge_starts: dict[int, tuple[int, int]] | None,
+    edge_targets: dict[int, tuple[int, int]] | None,
+) -> None:
+    """Lightweight post-routing check: verify items can flow from start to target.
+
+    For each edge with both a start (output inserter drop) and target (input
+    inserter pickup), do a directional BFS downstream from the start tile. If
+    the target tile is unreachable, scan the path for the first direction
+    discontinuity and attempt to fix it.
+
+    This catches direction corruptions that _fix_belt_directions() may introduce
+    on non-protected tiles (e.g., mid-path tiles).
+    """
+    if not edge_starts or not edge_targets:
+        return
+
+    # Build position -> entity index for fixing directions
+    pos_to_ent: dict[tuple[int, int], int] = {}
+    belt_names = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
+    for idx, e in enumerate(entities):
+        if e.name in belt_names:
+            pos_to_ent[(e.x, e.y)] = idx
+
+    # Find edges that have both start and target
+    common_edges = set(edge_starts.keys()) & set(edge_targets.keys())
+    if not common_edges:
+        return
+
+    for edge_idx in common_edges:
+        start = edge_starts[edge_idx]
+        target = edge_targets[edge_idx]
+
+        if start not in belt_dir_map or target not in belt_dir_map:
+            continue
+
+        # BFS downstream from start
+        visited: set[tuple[int, int]] = set()
+        queue = [start]
+        visited.add(start)
+        while queue:
+            pos = queue.pop(0)
+            d = belt_dir_map.get(pos)
+            if d is None:
+                continue
+            dx, dy = DIR_VEC[d]
+            nb = (pos[0] + dx, pos[1] + dy)
+            if nb in belt_dir_map and nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+
+        if target in visited:
+            continue  # Flow is valid
+
+        # Target not reachable — try to find and fix the break.
+        # Walk backward from target to find the last reachable tile on the path.
+        # Then check if the unreachable tile's direction can be fixed.
+        for ddx, ddy in DIRECTIONS:
+            neighbor = (target[0] + ddx, target[1] + ddy)
+            if neighbor in visited and neighbor in belt_dir_map:
+                n_dir = belt_dir_map[neighbor]
+                n_vec = DIR_VEC[n_dir]
+                # If neighbor doesn't point at target, try to fix it
+                if (neighbor[0] + n_vec[0], neighbor[1] + n_vec[1]) != target:
+                    fix_vec = (target[0] - neighbor[0], target[1] - neighbor[1])
+                    fix_dir = DIR_MAP.get(fix_vec)
+                    if fix_dir is not None:
+                        logger.debug(
+                            "Flow fix at (%d,%d): %s→%s (target unreachable)",
+                            neighbor[0],
+                            neighbor[1],
+                            n_dir,
+                            fix_dir,
+                        )
+                        belt_dir_map[neighbor] = fix_dir
+                        if neighbor in pos_to_ent:
+                            entities[pos_to_ent[neighbor]].direction = fix_dir
+                        break  # Fixed one break, stop searching
+
+
 def route_connections(
     graph: ProductionGraph,
     positions: dict[int, tuple[int, int]],
@@ -1324,6 +1406,9 @@ def route_connections(
 
     # Post-process belt directions to fix T-junctions, underground exits, orphans
     _fix_belt_directions(entities, belt_dir_map, protected_tiles=_protected)
+
+    # Safety net: verify flow continuity after direction post-processing (Phase 1.3)
+    _verify_flow_continuity(entities, belt_dir_map, edge_starts, edge_targets)
 
     return RoutingResult(
         entities=entities,
