@@ -86,6 +86,9 @@ _3x3 = {
 _5x5 = {"oil-refinery"}
 _CRAFTING = _3x3 | _5x5
 
+# Non-crafting 3x3 entities (no recipe, fixed color)
+_SUPPORT_3x3 = {"beacon"}
+
 
 def visualize(
     bp_string: str,
@@ -158,7 +161,22 @@ def visualize(
         direction = int(getattr(e, "direction", 0) or 0)
         carries = carries_lookup.get((tx, ty)) or getattr(e, "carries", None) or ""
 
-        if e.name in _CRAFTING:
+        if e.name in _SUPPORT_3x3:
+            tiles.append(
+                {
+                    "x": tx,
+                    "y": ty,
+                    "w": 3,
+                    "h": 3,
+                    "color": "#4a6080",
+                    "entity": e.name,
+                    "recipe": "",
+                    "tooltip": e.name,
+                    "dir": direction,
+                    "carries": carries,
+                }
+            )
+        elif e.name in _CRAFTING:
             size = 5 if e.name in _5x5 else 3
             color = recipe_colors.get(e.recipe, "#888")
             tooltip = f"{e.name}\\n{e.recipe}"

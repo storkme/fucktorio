@@ -36,6 +36,7 @@ function isFurnace(name) {
   return name === 'stone-furnace' || name === 'steel-furnace'
     || name === 'electric-furnace';
 }
+function isBeacon(name) { return name === 'beacon'; }
 function isUnderground(name) {
   return name === 'underground-belt' || name === 'fast-underground-belt'
     || name === 'express-underground-belt';
@@ -595,6 +596,28 @@ const schematic = {
         ctx.quadraticCurveTo(iconSize * 0.25, iconSize * 0.15, 0, iconSize * 0.35);
         ctx.quadraticCurveTo(-iconSize * 0.25, iconSize * 0.15, 0, -iconSize * 0.25);
         ctx.fill();
+      } else if (isBeacon(t.entity)) {
+        // Beacon: broadcast/signal icon — concentric arcs radiating outward
+        ctx.strokeStyle = 'rgba(120,180,255,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineCap = 'round';
+        // Central dot
+        ctx.fillStyle = 'rgba(120,180,255,0.7)';
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        // Signal arcs
+        for (let i = 1; i <= 3; i++) {
+          const r = iconSize * 0.2 * i;
+          ctx.globalAlpha = 0.6 - i * 0.12;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, -Math.PI * 0.4, Math.PI * 0.4);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(0, 0, r, Math.PI * 0.6, Math.PI * 1.4);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
       } else {
         ctx.strokeStyle = 'rgba(255,255,255,0.45)';
         ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
@@ -1340,6 +1363,28 @@ const factorio = {
         ctx.quadraticCurveTo(iconSize * 0.2, iconSize * 0.15, 0, iconSize * 0.35);
         ctx.quadraticCurveTo(-iconSize * 0.2, iconSize * 0.15, 0, -iconSize * 0.2);
         ctx.fill();
+      } else if (isBeacon(t.entity)) {
+        // Beacon: broadcast signal arcs
+        ctx.strokeStyle = 'rgba(80,140,220,0.55)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineCap = 'round';
+        // Central dot
+        ctx.fillStyle = 'rgba(80,140,220,0.6)';
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        // Signal arcs
+        for (let i = 1; i <= 3; i++) {
+          const r = iconSize * 0.2 * i;
+          ctx.globalAlpha = 0.5 - i * 0.1;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, -Math.PI * 0.4, Math.PI * 0.4);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(0, 0, r, Math.PI * 0.6, Math.PI * 1.4);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
       } else {
         // Assembler gear icon — more prominent and metallic like the in-game icons
         const gearColor = 'rgba(190,185,170,0.6)';
