@@ -48,13 +48,13 @@ def iron_gear_30s_layout(iron_gear_30s):
 
 
 @pytest.fixture(scope="module")
-def iron_gear_smelting_2s():
-    return solve("iron-gear-wheel", target_rate=2, available_inputs=set())
+def iron_gear_smelting_5s():
+    return solve("iron-gear-wheel", target_rate=5, available_inputs=set())
 
 
 @pytest.fixture(scope="module")
-def iron_gear_smelting_2s_layout(iron_gear_smelting_2s):
-    return spaghetti_layout(iron_gear_smelting_2s)
+def iron_gear_smelting_5s_layout(iron_gear_smelting_5s):
+    return spaghetti_layout(iron_gear_smelting_5s)
 
 
 class TestProductionGraph:
@@ -209,30 +209,29 @@ class TestSpaghettiPhase2:
         assert len(belts) >= len(machines), "Should have at least as many belt tiles as machines"
 
 
-@pytest.mark.skip(reason="Smelting layout search not yet optimised for CI")
 class TestSpaghettiSmelting:
     """Smelting chain: iron-ore → electric-furnace → iron-plate → assembler → iron-gear-wheel."""
 
-    def test_produces_layout(self, iron_gear_smelting_2s_layout):
-        assert len(iron_gear_smelting_2s_layout.entities) > 0
+    def test_produces_layout(self, iron_gear_smelting_5s_layout):
+        assert len(iron_gear_smelting_5s_layout.entities) > 0
 
-    def test_has_electric_furnaces(self, iron_gear_smelting_2s_layout):
-        furnaces = [e for e in iron_gear_smelting_2s_layout.entities if e.name == "electric-furnace"]
+    def test_has_electric_furnaces(self, iron_gear_smelting_5s_layout):
+        furnaces = [e for e in iron_gear_smelting_5s_layout.entities if e.name == "electric-furnace"]
         assert len(furnaces) > 0, "Should have electric-furnace entities"
         for f in furnaces:
             assert f.recipe == "iron-plate"
 
-    def test_has_assemblers(self, iron_gear_smelting_2s_layout):
-        assemblers = [e for e in iron_gear_smelting_2s_layout.entities if e.name == "assembling-machine-3"]
+    def test_has_assemblers(self, iron_gear_smelting_5s_layout):
+        assemblers = [e for e in iron_gear_smelting_5s_layout.entities if e.name == "assembling-machine-3"]
         assert len(assemblers) > 0, "Should have assembling-machine-3 entities"
         for a in assemblers:
             assert a.recipe == "iron-gear-wheel"
 
-    def test_no_overlaps(self, iron_gear_smelting_2s_layout):
-        _check_no_overlaps(iron_gear_smelting_2s_layout)
+    def test_no_overlaps(self, iron_gear_smelting_5s_layout):
+        _check_no_overlaps(iron_gear_smelting_5s_layout)
 
-    def test_external_input_is_iron_ore(self, iron_gear_smelting_2s):
-        ext_items = {f.item for f in iron_gear_smelting_2s.external_inputs}
+    def test_external_input_is_iron_ore(self, iron_gear_smelting_5s):
+        ext_items = {f.item for f in iron_gear_smelting_5s.external_inputs}
         assert ext_items == {"iron-ore"}
 
 
@@ -730,16 +729,15 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_10s_layout,
         )
 
-    @pytest.mark.skip(reason="Smelting layout search not yet optimised for CI")
-    def test_viz_iron_gear_smelting(self, viz, iron_gear_smelting_2s, iron_gear_smelting_2s_layout):
-        graph = build_production_graph(iron_gear_smelting_2s)
-        bp = build_blueprint(iron_gear_smelting_2s_layout, label="spaghetti: 2/s iron-gear-wheel (smelting)")
+    def test_viz_iron_gear_smelting(self, viz, iron_gear_smelting_5s, iron_gear_smelting_5s_layout):
+        graph = build_production_graph(iron_gear_smelting_5s)
+        bp = build_blueprint(iron_gear_smelting_5s_layout, label="spaghetti: 5/s iron-gear-wheel (smelting)")
         viz(
             bp,
-            "iron-gear-wheel-smelting-2s",
-            solver_result=iron_gear_smelting_2s,
+            "iron-gear-wheel-smelting-5s",
+            solver_result=iron_gear_smelting_5s,
             production_graph=graph,
-            layout_result=iron_gear_smelting_2s_layout,
+            layout_result=iron_gear_smelting_5s_layout,
         )
 
     @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
