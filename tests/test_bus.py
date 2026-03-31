@@ -81,13 +81,9 @@ class TestBusLayout:
         try:
             validate(layout, result, layout_style="bus")
         except ValidationError as e:
-            non_throughput = [i for i in e.issues if i.category != "lane-throughput"]
             for issue in e.issues:
                 print(f"  [{issue.severity}] {issue.category}: {issue.message}")
-            if non_throughput:
-                pytest.fail(
-                    f"Validation failed with {len(non_throughput)} non-throughput errors"
-                )
+            pytest.fail(f"Validation failed with {len(e.issues)} errors")
 
     def test_no_entity_overlaps(self):
         """All entities must occupy unique tile positions."""
