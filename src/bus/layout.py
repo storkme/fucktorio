@@ -9,13 +9,16 @@ from .bus_router import bus_width_for_lanes, plan_bus_lanes, route_bus
 from .placer import place_rows
 
 
-def bus_layout(solver_result: SolverResult) -> LayoutResult:
+def bus_layout(
+    solver_result: SolverResult,
+    max_belt_tier: str | None = None,
+) -> LayoutResult:
     """Convert a SolverResult into a bus-style LayoutResult.
 
-    1. Plan bus lanes (external inputs + intermediate items)
-    2. Place machine rows (stacked vertically in dependency order)
-    3. Route bus lanes (vertical belts, underground tunnels, tap-offs)
-    4. Place power poles
+    Args:
+        solver_result: Solved recipe graph.
+        max_belt_tier: Constrain belt tier (e.g. "transport-belt" for
+            early game). Rows auto-split to stay within capacity.
     """
     # 1. Pre-plan bus lanes to know bus width before placing rows
     # We need row spans first to know where rows land, but we need bus width
@@ -37,6 +40,7 @@ def bus_layout(solver_result: SolverResult) -> LayoutResult:
         solver_result.dependency_order,
         bus_width=temp_bw,
         y_offset=BUS_HEADER,
+        max_belt_tier=max_belt_tier,
     )
 
     lanes = plan_bus_lanes(solver_result, row_spans)
@@ -49,11 +53,12 @@ def bus_layout(solver_result: SolverResult) -> LayoutResult:
             solver_result.dependency_order,
             bus_width=actual_bw,
             y_offset=BUS_HEADER,
+            max_belt_tier=max_belt_tier,
         )
         lanes = plan_bus_lanes(solver_result, row_spans)
 
     # 3. Route bus lanes
-    bus_entities = route_bus(lanes, row_spans, total_height, actual_bw)
+    bus_entities = route_bus(lanes, row_spans, total_height, actual_bw, max_belt_tier=max_belt_tier)
 
     # 4. Collect occupied tiles for pole placement
     occupied: set[tuple[int, int]] = set()

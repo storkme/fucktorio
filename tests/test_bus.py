@@ -85,6 +85,25 @@ class TestBusLayout:
                 print(f"  [{issue.severity}] {issue.category}: {issue.message}")
             pytest.fail(f"Validation failed with {len(e.issues)} errors")
 
+    def test_yellow_belt_constraint(self):
+        """Belt tier constraint forces yellow belts, splitting rows as needed."""
+        result = solve("iron-gear-wheel", 2.0)
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+
+        # Verify all belts are yellow
+        for e in layout.entities:
+            if "belt" in e.name:
+                assert e.name in ("transport-belt", "underground-belt"), (
+                    f"Expected yellow belt, got {e.name} at ({e.x},{e.y})"
+                )
+
+        try:
+            validate(layout, result, layout_style="bus")
+        except ValidationError as e:
+            for issue in e.issues:
+                print(f"  [{issue.severity}] {issue.category}: {issue.message}")
+            pytest.fail(f"Validation failed with {len(e.issues)} errors")
+
     def test_row_splitting(self):
         """High throughput triggers row splitting when output exceeds belt capacity."""
         # 40/s copper-cable = 8 machines. Express belt max 2 per row → split to 2x4.

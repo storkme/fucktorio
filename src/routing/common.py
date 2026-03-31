@@ -42,12 +42,24 @@ _UG_COST_MULTIPLIER = 5  # underground costs 5x per tile vs surface
 _UG_PIPE_REACH = 10  # pipe-to-ground max reach (tiles between entry and exit)
 
 
-def belt_entity_for_rate(rate: float) -> str:
-    """Pick the cheapest belt tier that can handle the given rate."""
-    for name, throughput in _BELT_TIERS:
+def belt_entity_for_rate(rate: float, max_tier: str | None = None) -> str:
+    """Pick the cheapest belt tier that can handle the given rate.
+
+    If max_tier is set (e.g. "transport-belt"), never select a higher tier.
+    """
+    max_idx = len(_BELT_TIERS) - 1
+    if max_tier:
+        for i, (name, _) in enumerate(_BELT_TIERS):
+            if name == max_tier:
+                max_idx = i
+                break
+
+    for i, (name, throughput) in enumerate(_BELT_TIERS):
+        if i > max_idx:
+            break
         if rate <= throughput:
             return name
-    return _BELT_TIERS[-1][0]  # express if rate exceeds all
+    return _BELT_TIERS[max_idx][0]
 
 
 # Per-lane capacity (half of total belt throughput)
