@@ -119,6 +119,7 @@ def validate(
     issues.extend(check_underground_belt_sideloading(layout_result))
     issues.extend(check_belt_loops(layout_result))
     issues.extend(check_belt_item_isolation(layout_result))
+    issues.extend(check_belt_inserter_conflict(layout_result))
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style=layout_style))
     issues.extend(check_lane_throughput(layout_result, solver_result))
     issues.extend(check_power_coverage(layout_result))
@@ -430,11 +431,15 @@ def check_inserter_chains(
             if not has_solid:
                 fluid_only_recipes.add(spec.recipe)
 
-    # Build inserter positions
-    inserter_positions: set[tuple[int, int]] = set()
+    # Build inserter positions by reach category
+    short_inserter_positions: set[tuple[int, int]] = set()
+    long_inserter_positions: set[tuple[int, int]] = set()
     for e in layout_result.entities:
-        if e.name == "inserter":
-            inserter_positions.add((e.x, e.y))
+        if e.name in _INSERTER_ENTITIES:
+            if e.name == "long-handed-inserter":
+                long_inserter_positions.add((e.x, e.y))
+            else:
+                short_inserter_positions.add((e.x, e.y))
 
     # Each machine with solid I/O should have at least one adjacent inserter
     checked_machines: set[tuple[int, int]] = set()
@@ -451,14 +456,23 @@ def check_inserter_chains(
 
         size = _machine_size(e.name)
         has_inserter = False
-        # Check tiles adjacent to the machine border
+        # Check for short-reach inserters (1 tile from border)
         for dx in range(-1, size + 1):
             for dy in range(-1, size + 1):
-                if (e.x + dx, e.y + dy) in inserter_positions:
+                if (e.x + dx, e.y + dy) in short_inserter_positions:
                     has_inserter = True
                     break
             if has_inserter:
                 break
+        # Check for long-handed inserters (2 tiles from border)
+        if not has_inserter:
+            for dx in range(-2, size + 2):
+                for dy in range(-2, size + 2):
+                    if (e.x + dx, e.y + dy) in long_inserter_positions:
+                        has_inserter = True
+                        break
+                if has_inserter:
+                    break
 
         if not has_inserter:
             issues.append(
@@ -1783,6 +1797,46 @@ def check_belt_item_isolation(
                         y=ay,
                     )
                 )
+
+    return issues
+
+
+def check_belt_inserter_conflict(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+
+    belt_tiles: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_tiles.add((e.x, e.y))
+
+    drop_map: dict[tuple[int, int], list[tuple[PlacedEntity, str]]] = defaultdict(list)
+    for e in layout_result.entities:
+        if e.name not in _INSERTER_ENTITIES or e.carries is None:
+            continue
+        dv = _DIR_TO_VEC.get(e.direction)
+        if dv is None:
+            continue
+        reach = 2 if e.name == "long-handed-inserter" else 1
+        drop_x = e.x + dv[0] * reach
+        drop_y = e.y + dv[1] * reach
+        if (drop_x, drop_y) in belt_tiles:
+            drop_map[(drop_x, drop_y)].append((e, e.carries))
+
+    for (bx, by), inserters in drop_map.items():
+        items = {item for _, item in inserters}
+        if len(items) >= 2:
+            sorted_items = sorted(items)
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    category="belt-item-isolation",
+                    message=f"Belt at ({bx},{by}): inserters drop conflicting items {sorted_items[0]!r} and {sorted_items[1]!r}",
+                    x=bx,
+                    y=by,
+                )
+            )
 
     return issues
 
