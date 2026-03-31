@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity, SolverResult
+from ..routing.common import belt_entity_for_rate
 from .placer import RowSpan
 
 
@@ -23,6 +24,7 @@ class BusLane:
     source_y: int  # where items enter (0 for external, output_y for intermediate)
     consumer_rows: list[int]  # indices into row_spans
     producer_row: int | None  # index or None for external
+    rate: float = 0.0  # total throughput for belt tier selection
     tap_off_ys: list[int] = field(default_factory=list)
 
 
@@ -52,7 +54,8 @@ def plan_bus_lanes(
         if consumers:
             lanes.append(
                 BusLane(item=ext.item, x=0, source_y=0,
-                        consumer_rows=consumers, producer_row=None)
+                        consumer_rows=consumers, producer_row=None,
+                        rate=ext.rate)
             )
             seen_items.add(ext.item)
 
@@ -63,9 +66,11 @@ def plan_bus_lanes(
                 continue
             consumers = item_to_consumers.get(out.item, [])
             if consumers:
+                total_rate = out.rate * rs.machine_count
                 lanes.append(
                     BusLane(item=out.item, x=0, source_y=rs.output_belt_y,
-                            consumer_rows=consumers, producer_row=idx)
+                            consumer_rows=consumers, producer_row=idx,
+                            rate=total_rate)
                 )
                 seen_items.add(out.item)
 
@@ -128,13 +133,16 @@ def _route_lane(
     start_y = lane.source_y
     end_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
 
+    # All inserters drop on one lane, so use 2x rate for per-lane capacity
+    belt_name = belt_entity_for_rate(lane.rate * 2)
+
     # Vertical surface belts (SOUTH), skipping tap-off positions
     for y in range(start_y, end_y + 1):
         if y in tap_off_set:
             continue
         entities.append(
             PlacedEntity(
-                name="transport-belt", x=x, y=y,
+                name=belt_name, x=x, y=y,
                 direction=EntityDirection.SOUTH, carries=lane.item,
             )
         )
@@ -142,7 +150,7 @@ def _route_lane(
     # Tap-off horizontal belts (EAST) from bus column to row start.
     # When crossing another lane's vertical segment, go underground.
     for tap_y in lane.tap_off_ys:
-        _route_tap_off(entities, lane, tap_y, all_lanes, bw)
+        _route_tap_off(entities, lane, tap_y, all_lanes, bw, belt_name)
 
     # Output return: WEST belts from row edge back to bus column
     if lane.producer_row is not None:
@@ -150,10 +158,21 @@ def _route_lane(
         for hx in range(x + 1, bw):
             entities.append(
                 PlacedEntity(
-                    name="transport-belt", x=hx, y=out_y,
+                    name=belt_name, x=hx, y=out_y,
                     direction=EntityDirection.WEST, carries=lane.item,
                 )
             )
+
+
+_UG_MAP = {
+    "transport-belt": "underground-belt",
+    "fast-transport-belt": "fast-underground-belt",
+    "express-transport-belt": "express-underground-belt",
+}
+
+
+def _underground_for(belt: str) -> str:
+    return _UG_MAP.get(belt, "underground-belt")
 
 
 def _route_tap_off(
@@ -162,6 +181,7 @@ def _route_tap_off(
     tap_y: int,
     all_lanes: list[BusLane],
     bw: int,
+    belt_name: str = "transport-belt",
 ) -> None:
     """Route a horizontal tap-off from the bus lane to the row input belt.
 
@@ -202,16 +222,17 @@ def _route_tap_off(
                             and e.name == "transport-belt"
                             and e.direction == EntityDirection.EAST)
                 ]
+                ug_name = _underground_for(belt_name)
                 entities.append(
                     PlacedEntity(
-                        name="underground-belt", x=entry_x, y=tap_y,
+                        name=ug_name, x=entry_x, y=tap_y,
                         direction=EntityDirection.EAST, io_type="input",
                         carries=lane.item,
                     )
                 )
                 entities.append(
                     PlacedEntity(
-                        name="underground-belt", x=exit_x, y=tap_y,
+                        name=ug_name, x=exit_x, y=tap_y,
                         direction=EntityDirection.EAST, io_type="output",
                         carries=lane.item,
                     )
@@ -224,7 +245,7 @@ def _route_tap_off(
         # Normal surface belt
         entities.append(
             PlacedEntity(
-                name="transport-belt", x=hx, y=tap_y,
+                name=belt_name, x=hx, y=tap_y,
                 direction=EntityDirection.EAST, carries=lane.item,
             )
         )

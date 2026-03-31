@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 
 from ..models import MachineSpec, PlacedEntity
+from ..routing.common import belt_entity_for_rate
 from .templates import dual_input_row, single_input_row
 
 
@@ -45,8 +46,16 @@ def place_rows(
 
         output_item = solid_outputs[0].item if solid_outputs else ""
 
+        # Pick belt tiers based on total throughput across all machines.
+        # All inserters drop on the same lane, so we need 2x the total rate
+        # to ensure per-lane capacity is sufficient.
+        output_rate = solid_outputs[0].rate * count if solid_outputs else 0
+        out_belt = belt_entity_for_rate(output_rate * 2)
+
         if len(solid_inputs) <= 1:
             input_item = solid_inputs[0].item if solid_inputs else ""
+            input_rate = solid_inputs[0].rate * count if solid_inputs else 0
+            in_belt = belt_entity_for_rate(input_rate * 2)
             row_ents, row_h = single_input_row(
                 recipe=spec.recipe,
                 machine_entity=spec.entity,
@@ -55,6 +64,8 @@ def place_rows(
                 x_offset=bus_width,
                 input_item=input_item,
                 output_item=output_item,
+                input_belt=in_belt,
+                output_belt=out_belt,
             )
             input_belt_ys = [y_cursor]  # y+0
             output_belt_y = y_cursor + 6  # y+6
@@ -63,6 +74,8 @@ def place_rows(
                 solid_inputs[0].item,
                 solid_inputs[1].item,
             )
+            in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2)
+            in_belt2 = belt_entity_for_rate(solid_inputs[1].rate * count * 2)
             row_ents, row_h = dual_input_row(
                 recipe=spec.recipe,
                 machine_entity=spec.entity,
@@ -71,6 +84,8 @@ def place_rows(
                 x_offset=bus_width,
                 input_items=input_items,
                 output_item=output_item,
+                input_belts=(in_belt1, in_belt2),
+                output_belt=out_belt,
             )
             input_belt_ys = [y_cursor, y_cursor + 1]  # y+0, y+1
             output_belt_y = y_cursor + 7  # y+7
