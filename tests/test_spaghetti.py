@@ -138,7 +138,10 @@ class TestProductionGraph:
         assert len(assembler_nodes) > 0, "Should have assembling-machine-3 nodes"
 
 
-_3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant", "electric-furnace"}
+_3x3 = {
+    "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+    "chemical-plant", "electric-furnace",
+}
 _5x5 = {"oil-refinery"}
 
 
@@ -240,19 +243,7 @@ class TestSpaghettiPhase3:
     """Phase 3: intermediates (multi-step chains)."""
 
     def _check_no_overlaps(self, lr):
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant", "electric-furnace"}
-        _5x5 = {"oil-refinery"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _5x5:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
-            elif ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
     def test_intermediate_chain(self):
         """Electronic circuit chain should produce machines for both recipes."""
@@ -363,16 +354,7 @@ class TestSpaghettiPhase5:
         )
         lr = spaghetti_layout(result)
 
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant", "electric-furnace"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
 
 @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
@@ -380,19 +362,7 @@ class TestSpaghettiPhase6:
     """Phase 6: complex chains (mixed solid + fluid, multi-step)."""
 
     def _check_no_overlaps(self, lr):
-        _3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant", "electric-furnace"}
-        _5x5 = {"oil-refinery"}
-        occupied: dict[tuple[int, int], str] = {}
-        for ent in lr.entities:
-            if ent.name in _5x5:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(5) for dy in range(5)]
-            elif ent.name in _3x3:
-                tiles = [(ent.x + dx, ent.y + dy) for dx in range(3) for dy in range(3)]
-            else:
-                tiles = [(ent.x, ent.y)]
-            for tile in tiles:
-                assert tile not in occupied, f"Overlap at {tile}: {ent.name} vs {occupied[tile]}"
-                occupied[tile] = ent.name
+        _check_no_overlaps(lr)
 
     def test_advanced_circuit(self):
         """Advanced circuit: deep chain with fluid intermediates."""
