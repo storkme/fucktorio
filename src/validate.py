@@ -2015,11 +2015,12 @@ def check_lane_throughput(
     if solver_result is None:
         return issues
 
-    # Build belt maps
+    # Build belt maps — surface belts only (underground belts don't
+    # sideload into adjacent belts or propagate lane throughput)
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
     belt_name_map: dict[tuple[int, int], str] = {}
     for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
+        if e.name in _SURFACE_BELT_ENTITIES:
             belt_dir_map[(e.x, e.y)] = e.direction
             belt_name_map[(e.x, e.y)] = e.name
 
