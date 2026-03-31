@@ -103,10 +103,10 @@ def place_rows(
             )
         )
 
-        machine_pitch = 6 if spec.entity == "oil-refinery" else 4
+        machine_pitch = 5 if spec.entity == "oil-refinery" else 3
         row_width = bus_width + count * machine_pitch
         max_width = max(max_width, row_width)
-        y_cursor += row_h + 1  # 1-tile gap between rows
+        y_cursor += row_h  # no gap between rows
 
     return entities, row_spans, max_width, y_cursor
 

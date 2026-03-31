@@ -2,11 +2,16 @@
 
 Every belt and inserter entity is tagged with ``carries`` so the validator
 can trace item flow through the layout.
+
+Machines are packed with zero gap (3-tile pitch for 3x3 machines).
 """
 
 from __future__ import annotations
 
 from ..models import EntityDirection, PlacedEntity
+
+# Horizontal pitch: machine width with no gap
+MACHINE_PITCH = 3
 
 
 def single_input_row(
@@ -22,7 +27,7 @@ def single_input_row(
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 1 solid input.
 
-    Layout per machine (4-tile horizontal pitch):
+    Layout per machine (3-tile horizontal pitch, no gaps):
         y+0 : input belt (EAST)
         y+1 : input inserter (SOUTH)
         y+2..y+4 : machine (3x3)
@@ -33,21 +38,13 @@ def single_input_row(
     ROW_HEIGHT = 7
 
     for i in range(machine_count):
-        mx = x_offset + i * 4
+        mx = x_offset + i * MACHINE_PITCH
 
-        # Input belt (3 tiles wide, flowing EAST along the row)
+        # Input belt (3 tiles wide, continuous with adjacent machines)
         for dx in range(3):
             entities.append(
                 PlacedEntity(
                     name=input_belt, x=mx + dx, y=y_offset,
-                    direction=EntityDirection.EAST, carries=input_item,
-                )
-            )
-        # Gap belt (keeps input belt continuous between machines)
-        if i < machine_count - 1:
-            entities.append(
-                PlacedEntity(
-                    name=input_belt, x=mx + 3, y=y_offset,
                     direction=EntityDirection.EAST, carries=input_item,
                 )
             )
@@ -84,13 +81,6 @@ def single_input_row(
                     direction=EntityDirection.WEST, carries=output_item,
                 )
             )
-        if i < machine_count - 1:
-            entities.append(
-                PlacedEntity(
-                    name=output_belt, x=mx + 3, y=y_offset + 6,
-                    direction=EntityDirection.WEST, carries=output_item,
-                )
-            )
 
     return entities, ROW_HEIGHT
 
@@ -108,7 +98,7 @@ def dual_input_row(
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 2 solid inputs.
 
-    Layout per machine (4-tile horizontal pitch):
+    Layout per machine (3-tile horizontal pitch, no gaps):
         y+0 : input belt 1 (EAST) — far belt
         y+1 : input belt 2 (EAST) — close belt
         y+2 : long-handed inserter (picks y+0) + inserter (picks y+1)
@@ -122,7 +112,7 @@ def dual_input_row(
     belt1, belt2 = input_belts
 
     for i in range(machine_count):
-        mx = x_offset + i * 4
+        mx = x_offset + i * MACHINE_PITCH
 
         # Input belt 1 — far belt
         for dx in range(3):
@@ -132,26 +122,12 @@ def dual_input_row(
                     direction=EntityDirection.EAST, carries=input1,
                 )
             )
-        if i < machine_count - 1:
-            entities.append(
-                PlacedEntity(
-                    name=belt1, x=mx + 3, y=y_offset,
-                    direction=EntityDirection.EAST, carries=input1,
-                )
-            )
 
         # Input belt 2 — close belt
         for dx in range(3):
             entities.append(
                 PlacedEntity(
                     name=belt2, x=mx + dx, y=y_offset + 1,
-                    direction=EntityDirection.EAST, carries=input2,
-                )
-            )
-        if i < machine_count - 1:
-            entities.append(
-                PlacedEntity(
-                    name=belt2, x=mx + 3, y=y_offset + 1,
                     direction=EntityDirection.EAST, carries=input2,
                 )
             )
@@ -193,13 +169,6 @@ def dual_input_row(
             entities.append(
                 PlacedEntity(
                     name=output_belt, x=mx + dx, y=y_offset + 7,
-                    direction=EntityDirection.WEST, carries=output_item,
-                )
-            )
-        if i < machine_count - 1:
-            entities.append(
-                PlacedEntity(
-                    name=output_belt, x=mx + 3, y=y_offset + 7,
                     direction=EntityDirection.WEST, carries=output_item,
                 )
             )
