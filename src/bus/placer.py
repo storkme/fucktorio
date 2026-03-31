@@ -45,6 +45,7 @@ def place_rows(
     dependency_order: list[str],
     bus_width: int,
     y_offset: int = 0,
+    max_belt_tier: str | None = None,
 ) -> tuple[list[PlacedEntity], list[RowSpan], int, int]:
     """Place assembly rows stacked vertically.
 
@@ -66,14 +67,14 @@ def place_rows(
         # Determine belt tier and max machines per row
         solid_outputs = [f for f in spec.outputs if not f.is_fluid]
         output_rate = solid_outputs[0].rate * total_count if solid_outputs else 0
-        out_belt = belt_entity_for_rate(output_rate * 2)
+        out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
         max_per_row = _max_machines_for_belt(spec, out_belt)
 
         # Split into chunks
         remaining = total_count
         while remaining > 0:
             chunk = min(remaining, max_per_row)
-            ents, span, width = _build_one_row(spec, chunk, bus_width, y_cursor)
+            ents, span, width = _build_one_row(spec, chunk, bus_width, y_cursor, max_belt_tier)
             entities.extend(ents)
             row_spans.append(span)
             max_width = max(max_width, width)
@@ -88,6 +89,7 @@ def _build_one_row(
     count: int,
     bus_width: int,
     y_cursor: int,
+    max_belt_tier: str | None = None,
 ) -> tuple[list[PlacedEntity], RowSpan, int]:
     """Build a single row of machines. Returns (entities, span, width)."""
     solid_inputs = [f for f in spec.inputs if not f.is_fluid]
@@ -98,7 +100,7 @@ def _build_one_row(
 
     # Belt tiers based on THIS chunk's throughput (not total)
     output_rate = solid_outputs[0].rate * count if solid_outputs else 0
-    out_belt = belt_entity_for_rate(output_rate * 2)
+    out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
 
     fluid_port_ys: list[int] = []
     fluid_port_pipes: list[tuple[int, int]] = []
@@ -107,7 +109,7 @@ def _build_one_row(
         input_item = solid_inputs[0].item
         fluid_item = fluid_inputs[0].item
         input_rate = solid_inputs[0].rate * count
-        in_belt = belt_entity_for_rate(input_rate * 2)
+        in_belt = belt_entity_for_rate(input_rate * 2, max_tier=max_belt_tier)
         row_ents, row_h, port_pipes = fluid_input_row(
             recipe=spec.recipe,
             machine_entity=spec.entity,
@@ -127,7 +129,7 @@ def _build_one_row(
     elif len(solid_inputs) <= 1:
         input_item = solid_inputs[0].item if solid_inputs else ""
         input_rate = solid_inputs[0].rate * count if solid_inputs else 0
-        in_belt = belt_entity_for_rate(input_rate * 2)
+        in_belt = belt_entity_for_rate(input_rate * 2, max_tier=max_belt_tier)
         row_ents, row_h = single_input_row(
             recipe=spec.recipe,
             machine_entity=spec.entity,
@@ -143,8 +145,8 @@ def _build_one_row(
         output_belt_y = y_cursor + 6
     else:
         input_items = (solid_inputs[0].item, solid_inputs[1].item)
-        in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2)
-        in_belt2 = belt_entity_for_rate(solid_inputs[1].rate * count * 2)
+        in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2, max_tier=max_belt_tier)
+        in_belt2 = belt_entity_for_rate(solid_inputs[1].rate * count * 2, max_tier=max_belt_tier)
         row_ents, row_h = dual_input_row(
             recipe=spec.recipe,
             machine_entity=spec.entity,

@@ -142,11 +142,12 @@ def route_bus(
     row_spans: list[RowSpan],
     total_height: int,
     bw: int,
+    max_belt_tier: str | None = None,
 ) -> list[PlacedEntity]:
     """Create all bus belt entities."""
     entities: list[PlacedEntity] = []
     for lane in lanes:
-        _route_lane(entities, lane, lanes, row_spans, bw)
+        _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier)
     return entities
 
 
@@ -156,12 +157,13 @@ def _route_lane(
     all_lanes: list[BusLane],
     row_spans: list[RowSpan],
     bw: int,
+    max_belt_tier: str | None = None,
 ) -> None:
     """Route a single bus lane: vertical segment + tap-offs + output return."""
     if lane.is_fluid:
         _route_fluid_lane(entities, lane, bw)
     else:
-        _route_belt_lane(entities, lane, all_lanes, row_spans, bw)
+        _route_belt_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier)
 
 
 def _route_belt_lane(
@@ -170,6 +172,7 @@ def _route_belt_lane(
     all_lanes: list[BusLane],
     row_spans: list[RowSpan],
     bw: int,
+    max_belt_tier: str | None = None,
 ) -> None:
     """Route a solid-item bus lane with belts."""
     x = lane.x
@@ -183,7 +186,7 @@ def _route_belt_lane(
     end_y = max(all_ys) if all_ys else start_y
 
     # All inserters drop on one lane, so use 2x rate for per-lane capacity
-    belt_name = belt_entity_for_rate(lane.rate * 2)
+    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
 
     # Vertical surface belts (SOUTH), skipping tap-off positions
     for y in range(start_y, end_y + 1):
