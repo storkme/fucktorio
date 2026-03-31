@@ -42,10 +42,10 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 | `src/routing/graph.py` | Production graph construction from solver output |
 | `src/routing/common.py` | Machine sizes, belt tier selection, direction constants, lane constants (`LANE_LEFT`/`LANE_RIGHT`), `inserter_target_lane()` |
 | `src/routing/poles.py` | Power pole placement (greedy near-machine or grid fallback) |
-| `src/search/layout_search.py` | Single-pass parallel random search (`evolutionary_layout`) + `search_with_retries()` wrapper (up to 5 independent attempts), `SearchStats` dataclass |
+| `src/search/layout_search.py` | Single-pass parallel random search (`random_search_layout`) + `search_with_retries()` wrapper (up to 5 independent attempts), `SearchStats` dataclass |
 | `src/spaghetti/placer.py` | Incremental machine placement in dependency order |
 | `src/spaghetti/layout.py` | Layout orchestrator — calls `search_with_retries()`, entry point for layout engine |
-| `src/validate.py` | 16 validation checks (pipe isolation, belt loops, throughput, etc.) |
+| `src/validate.py` | 18 validation checks (pipe isolation, belt loops, throughput, etc.) |
 | `src/models.py` | Shared data models (ItemFlow, MachineSpec, SolverResult, PlacedEntity, LayoutResult) |
 
 ## Factorio game rules (constraints for the layout engine)
@@ -116,7 +116,7 @@ Single-pass evaluation of 60 random candidates in parallel (evolution was tried 
 
 ### The primary remaining problem
 
-Belt-flow-reachability: continuation routing connects source to destination topologically, but belt directions can point the wrong way for input edges (items can't flow upstream). This produces 2-5 errors per layout on tier 1 and is the main blocker for consistent zero-error output. The fix needs to happen at the `route_connections()` level. When continuation routing fails entirely, a belt stub is still placed so inserters have a target.
+Belt-flow-reachability: continuation routing connects source to destination topologically, but belt directions can point the wrong way for input edges (items can't flow upstream). Tier 1 (iron-gear-wheel) is now solved, but this remains the main blocker for tier 2+ recipes. The fix needs to happen at the `route_connections()` level. When continuation routing fails entirely, a belt stub is still placed so inserters have a target.
 
 Belt-item-isolation is SOLVED via `other_item_tiles` hard-blocking in A* (was the previous primary blocker).
 
