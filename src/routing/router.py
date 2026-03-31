@@ -684,11 +684,19 @@ def _compute_io_y_slots(
 def _fix_belt_directions(
     entities: list[PlacedEntity],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
+    protected_tiles: set[tuple[int, int]] | None = None,
 ) -> None:
     """Post-process belt directions to fix T-junctions, underground exits, and orphans.
 
     Modifies entities in-place and updates belt_dir_map.
+
+    Args:
+        protected_tiles: Belt tiles adjacent to inserter pickup/drop points.
+            These are NOT reoriented by the orphan stub fixer, since their
+            direction was set intentionally by the routing pipeline.
     """
+    if protected_tiles is None:
+        protected_tiles = set()
     # Build position -> entity index mapping (belts and underground belts only)
     belt_names = {
         "transport-belt",
@@ -793,6 +801,12 @@ def _fix_belt_directions(
         ent = entities[idx]
         if ent.name == "underground-belt":
             continue
+
+        # Never reorient inserter-adjacent belt tiles — their direction
+        # was set intentionally by the routing pipeline.
+        if pos in protected_tiles:
+            continue
+
         cur_dir = belt_dir_map.get(pos)
         if cur_dir is None:
             continue
@@ -1301,8 +1315,15 @@ def route_connections(
         group_networks.setdefault(group_key, set()).update(path_set)
         occupied |= path_set
 
+    # Collect inserter-adjacent belt tiles that must not be reoriented
+    _protected: set[tuple[int, int]] = set()
+    if edge_targets:
+        _protected.update(edge_targets.values())
+    if edge_starts:
+        _protected.update(edge_starts.values())
+
     # Post-process belt directions to fix T-junctions, underground exits, orphans
-    _fix_belt_directions(entities, belt_dir_map)
+    _fix_belt_directions(entities, belt_dir_map, protected_tiles=_protected)
 
     return RoutingResult(
         entities=entities,
