@@ -147,6 +147,20 @@ class TestInserterDirection:
         errors = [i for i in issues if i.severity == "error"]
         assert len(errors) == 1
 
+    def test_inserter_facing_electric_furnace_ok(self):
+        """Inserter adjacent to electric-furnace should pass."""
+        lr = LayoutResult(
+            entities=[
+                # 3x3 electric-furnace at (0,0)
+                PlacedEntity(name="electric-furnace", x=0, y=0, recipe="iron-plate"),
+                # Inserter at (1,-1) facing SOUTH → drops into furnace at (1,0)
+                PlacedEntity(name="inserter", x=1, y=-1, direction=EntityDirection.SOUTH),
+            ]
+        )
+        issues = check_inserter_direction(lr)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0
+
     def test_valid_layout_passes(self, iron_gear_layout):
         """A real valid layout should pass inserter direction check."""
         issues = check_inserter_direction(iron_gear_layout)

@@ -6,16 +6,12 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from .models import EntityDirection, LayoutResult, MachineSpec, PlacedEntity, SolverResult
-from .routing.common import _UG_MAX_REACH, inserter_target_lane
+from .routing.common import _MACHINE_SIZE, _UG_MAX_REACH, inserter_target_lane
 
-_3x3_ENTITIES = {
-    "assembling-machine-1",
-    "assembling-machine-2",
-    "assembling-machine-3",
-    "chemical-plant",
-}
-_5x5_ENTITIES = {"oil-refinery"}
-_MACHINE_ENTITIES = _3x3_ENTITIES | _5x5_ENTITIES
+# Derive machine entity sets from the single source of truth in routing.common.
+_MACHINE_ENTITIES = set(_MACHINE_SIZE.keys())
+_3x3_ENTITIES = {k for k, v in _MACHINE_SIZE.items() if v == 3}
+_5x5_ENTITIES = {k for k, v in _MACHINE_SIZE.items() if v == 5}
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
 _SURFACE_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
 _UG_BELT_ENTITIES = {"underground-belt", "fast-underground-belt", "express-underground-belt"}

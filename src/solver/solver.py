@@ -27,6 +27,7 @@ def solve(
     external_inputs: dict[str, float] = {}  # item → total rate
     external_inputs_fluid: dict[str, bool] = {}  # item → is_fluid
     dependency_order: list[str] = []
+    resolving: set[str] = set()  # cycle detection
 
     def _resolve(item: str, rate: float, is_fluid: bool = False) -> None:
         """Resolve *item* at *rate* items/sec, accumulating into outer lists."""
@@ -36,10 +37,12 @@ def solve(
             return
 
         recipe = find_recipe_for_item(item)
-        if recipe is None:
+        if recipe is None or item in resolving:
             external_inputs[item] = external_inputs.get(item, 0.0) + rate
             external_inputs_fluid[item] = is_fluid
             return
+
+        resolving.add(item)
 
         # Pick the right machine for this recipe's category
         entity = machine_for_recipe(recipe, default=machine_entity)
@@ -97,6 +100,8 @@ def solve(
         for ing in recipe.ingredients:
             ingredient_rate = ing.amount * crafts_per_sec * count
             _resolve(ing.name, ingredient_rate, is_fluid=(ing.type == "fluid"))
+
+        resolving.discard(item)
 
     _resolve(target_item, target_rate)
 

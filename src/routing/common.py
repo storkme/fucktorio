@@ -10,6 +10,7 @@ _MACHINE_SIZE: dict[str, int] = {
     "assembling-machine-2": 3,
     "assembling-machine-3": 3,
     "chemical-plant": 3,
+    "electric-furnace": 3,
     "oil-refinery": 5,
 }
 _DEFAULT_SIZE = 3

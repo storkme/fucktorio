@@ -68,12 +68,19 @@ def get_recipe(name: str) -> Recipe:
     )
 
 
+# Recipe categories that should never be used for production chains.
+_EXCLUDED_CATEGORIES = {"recycling", "crushing", "recycling-or-hand-crafting"}
+
+
 def find_recipe_for_item(item: str) -> Recipe | None:
     """Find the first recipe whose products include *item*.
 
+    Skips recycling/crushing recipes that aren't useful for production.
     Returns None if no recipe produces this item.
     """
     for name, raw in _recipes.raw.items():
+        if raw.get("category", "crafting") in _EXCLUDED_CATEGORIES:
+            continue
         results = raw.get("results", [])
         for prod in results:
             if prod["name"] == item:
@@ -101,6 +108,10 @@ _CATEGORY_TO_MACHINE: list[tuple[set[str], str]] = [
     (
         {"oil-processing"},
         "oil-refinery",
+    ),
+    (
+        {"smelting"},
+        "electric-furnace",
     ),
     # assembling-machine-3 covers everything else we care about
 ]
