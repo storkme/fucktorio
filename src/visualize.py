@@ -47,6 +47,8 @@ _INFRA_COLORS = {
     "fast-transport-belt": "#e05050",
     "express-transport-belt": "#50a0e0",
     "underground-belt": "#a89040",
+    "fast-underground-belt": "#e05050",
+    "express-underground-belt": "#50a0e0",
     "inserter": "#6a8e3e",
     "fast-inserter": "#4a90d0",
     "long-handed-inserter": "#d04040",
@@ -61,6 +63,8 @@ _INFRA_LABELS = {
     "fast-transport-belt": "Belt (red)",
     "express-transport-belt": "Belt (blue)",
     "underground-belt": "UG Belt",
+    "fast-underground-belt": "UG Belt (red)",
+    "express-underground-belt": "UG Belt (blue)",
     "inserter": "Inserter",
     "fast-inserter": "Fast Inserter",
     "long-handed-inserter": "Long Inserter",
@@ -75,6 +79,9 @@ _3x3 = {
     "assembling-machine-2",
     "assembling-machine-3",
     "chemical-plant",
+    "stone-furnace",
+    "steel-furnace",
+    "electric-furnace",
 }
 _5x5 = {"oil-refinery"}
 _CRAFTING = _3x3 | _5x5
@@ -175,10 +182,11 @@ def visualize(
             tooltip = label
             if carries:
                 tooltip += f" [{carries}]"
-            if e.name == "underground-belt":
-                io = getattr(e, "io_type", None)
-                if io:
-                    tooltip += f" ({io})"
+            io_type = ""
+            if e.name in ("underground-belt", "fast-underground-belt", "express-underground-belt"):
+                io_type = getattr(e, "io_type", None) or ""
+                if io_type:
+                    tooltip += f" ({io_type})"
             tiles.append(
                 {
                     "x": tx,
@@ -191,6 +199,7 @@ def visualize(
                     "tooltip": tooltip,
                     "dir": direction,
                     "carries": carries,
+                    "ioType": io_type,
                 }
             )
 
@@ -739,6 +748,8 @@ function draw() {{
 
     if (isBelt(t.entity)) {{
       theme.drawBelt(ctx, px, py, s, t);
+    }} else if (isUnderground(t.entity)) {{
+      theme.drawUnderground(ctx, px, py, s, t);
     }} else if (isPipe(t.entity)) {{
       theme.drawPipe(ctx, px, py, s, t);
     }} else if (isInserter(t.entity)) {{
