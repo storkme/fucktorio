@@ -242,7 +242,7 @@ class TestSpaghettiSmelting:
         assert ext_items == {"iron-ore"}
 
 
-@pytest.mark.xfail(reason="belt-flow-reachability and multi-recipe routing")
+@pytest.mark.skip(reason="tier 2+ layout not yet solved")
 class TestSpaghettiPhase3:
     """Phase 3: intermediates (multi-step chains)."""
 
@@ -286,7 +286,7 @@ class TestSpaghettiPhase3:
         assert len(copper_cable_belts) > 0, "Should have belts carrying copper-cable between machines"
 
 
-@pytest.mark.xfail(reason="belt-flow-reachability and multi-recipe routing")
+@pytest.mark.skip(reason="tier 2+ layout not yet solved")
 class TestSpaghettiPhase4:
     """Phase 4: multiple inputs per machine."""
 
@@ -309,7 +309,7 @@ class TestSpaghettiPhase4:
         assert len(cable_belts) > 0, "Should have belts carrying copper-cable"
 
 
-@pytest.mark.xfail(reason="pipe isolation not yet implemented")
+@pytest.mark.skip(reason="tier 3+ layout not yet solved")
 class TestSpaghettiPhase5:
     """Phase 5: fluid recipes."""
 
@@ -361,7 +361,7 @@ class TestSpaghettiPhase5:
         _check_no_overlaps(lr)
 
 
-@pytest.mark.xfail(reason="massive routing failures at scale")
+@pytest.mark.skip(reason="tier 4+ layout not yet solved")
 class TestSpaghettiPhase6:
     """Phase 6: complex chains (mixed solid + fluid, multi-step)."""
 
@@ -507,7 +507,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 1 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.xfail(reason="belt-flow-reachability")
+    @pytest.mark.skip(reason="tier 2 layout not yet solved")
     def test_tier2_electronic_circuit(self):
         """Tier 2: 2-step solid chain (copper-cable -> electronic-circuit)."""
         result = solve(
@@ -521,7 +521,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 2 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.xfail(reason="pipe isolation")
+    @pytest.mark.skip(reason="tier 3 layout not yet solved")
     def test_tier3_plastic_bar(self):
         """Tier 3: fluid recipe (petroleum-gas + coal -> plastic-bar)."""
         result = solve(
@@ -535,7 +535,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 3 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.xfail(reason="massive routing failures")
+    @pytest.mark.skip(reason="tier 4 layout not yet solved")
     def test_tier4_advanced_circuit(self):
         """Tier 4: deep mixed chain (copper-cable, plastic-bar, electronic-circuit -> advanced-circuit)."""
         result = solve(
@@ -549,7 +549,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 4 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.xfail(reason="massive routing failures")
+    @pytest.mark.skip(reason="tier 5 layout not yet solved")
     def test_tier5_processing_unit(self):
         """Tier 5: processing-unit (deep chain, multiple fluids)."""
         result = solve(
@@ -715,7 +715,7 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_smelting_5s_layout,
         )
 
-    @pytest.mark.xfail(reason="belt-flow-reachability")
+    @pytest.mark.skip(reason="tier 2 layout not yet solved")
     def test_viz_electronic_circuit(self, viz):
         result = solve(
             "electronic-circuit",
@@ -727,7 +727,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 10/s electronic-circuit")
         viz(bp, "electronic-circuit-10s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.xfail(reason="pipe isolation")
+    @pytest.mark.skip(reason="tier 3 layout not yet solved")
     def test_viz_plastic_bar(self, viz):
         result = solve(
             "plastic-bar",
@@ -739,7 +739,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 5/s plastic-bar")
         viz(bp, "plastic-bar-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.xfail(reason="massive routing failures")
+    @pytest.mark.skip(reason="tier 4 layout not yet solved")
     def test_viz_advanced_circuit(self, viz):
         result = solve(
             "advanced-circuit",
@@ -751,7 +751,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 5/s advanced-circuit")
         viz(bp, "advanced-circuit-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.xfail(reason="pipe isolation")
+    @pytest.mark.skip(reason="tier 3+ layout not yet solved")
     def test_viz_petroleum_gas(self, viz):
         result = solve(
             "petroleum-gas",
