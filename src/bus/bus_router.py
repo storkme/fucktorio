@@ -27,6 +27,7 @@ class BusLane:
     rate: float = 0.0  # total throughput for belt tier selection
     is_fluid: bool = False
     tap_off_ys: list[int] = field(default_factory=list)
+    extra_producer_rows: list[int] = field(default_factory=list)  # additional sub-rows
     # For fluid lanes: (row_index, x, y) of pipe-to-ground exit positions
     fluid_port_positions: list[tuple[int, int, int]] = field(default_factory=list)
 
@@ -61,20 +62,35 @@ def plan_bus_lanes(
             )
             seen_items.add(ext.item)
 
-    # Intermediate items (solid AND fluid)
+    # Intermediate items (solid AND fluid).
+    # A recipe split across multiple sub-rows produces the same item from
+    # each sub-row. Aggregate rate and track all producer rows.
+    item_to_producers: dict[str, list[int]] = {}
+    item_to_rate: dict[str, float] = {}
+    item_is_fluid: dict[str, bool] = {}
     for idx, rs in enumerate(row_spans):
         for out in rs.spec.outputs:
-            if out.item in seen_items:
-                continue
-            consumers = item_to_consumers.get(out.item, [])
-            if consumers:
-                total_rate = out.rate * rs.machine_count
-                lanes.append(
-                    BusLane(item=out.item, x=0, source_y=rs.output_belt_y,
-                            consumer_rows=consumers, producer_row=idx,
-                            rate=total_rate, is_fluid=out.is_fluid)
-                )
-                seen_items.add(out.item)
+            item_to_producers.setdefault(out.item, []).append(idx)
+            item_to_rate[out.item] = item_to_rate.get(out.item, 0) + out.rate * rs.machine_count
+            item_is_fluid[out.item] = out.is_fluid
+
+    for item, producer_rows in item_to_producers.items():
+        if item in seen_items:
+            continue
+        consumers = item_to_consumers.get(item, [])
+        if not consumers:
+            continue
+        first_producer = producer_rows[0]
+        lanes.append(
+            BusLane(item=item, x=0,
+                    source_y=row_spans[first_producer].output_belt_y,
+                    consumer_rows=consumers,
+                    producer_row=first_producer,
+                    rate=item_to_rate[item],
+                    is_fluid=item_is_fluid[item],
+                    extra_producer_rows=producer_rows[1:])
+        )
+        seen_items.add(item)
 
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
@@ -130,7 +146,7 @@ def route_bus(
     """Create all bus belt entities."""
     entities: list[PlacedEntity] = []
     for lane in lanes:
-        _route_lane(entities, lane, lanes, bw)
+        _route_lane(entities, lane, lanes, row_spans, bw)
     return entities
 
 
@@ -138,19 +154,21 @@ def _route_lane(
     entities: list[PlacedEntity],
     lane: BusLane,
     all_lanes: list[BusLane],
+    row_spans: list[RowSpan],
     bw: int,
 ) -> None:
     """Route a single bus lane: vertical segment + tap-offs + output return."""
     if lane.is_fluid:
         _route_fluid_lane(entities, lane, bw)
     else:
-        _route_belt_lane(entities, lane, all_lanes, bw)
+        _route_belt_lane(entities, lane, all_lanes, row_spans, bw)
 
 
 def _route_belt_lane(
     entities: list[PlacedEntity],
     lane: BusLane,
     all_lanes: list[BusLane],
+    row_spans: list[RowSpan],
     bw: int,
 ) -> None:
     """Route a solid-item bus lane with belts."""
@@ -158,7 +176,11 @@ def _route_belt_lane(
     tap_off_set = set(lane.tap_off_ys)
 
     start_y = lane.source_y
-    end_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
+    # End y must cover all tap-offs AND all extra producer output belts
+    all_ys = list(lane.tap_off_ys)
+    for pri in lane.extra_producer_rows:
+        all_ys.append(row_spans[pri].output_belt_y)
+    end_y = max(all_ys) if all_ys else start_y
 
     # All inserters drop on one lane, so use 2x rate for per-lane capacity
     belt_name = belt_entity_for_rate(lane.rate * 2)
@@ -181,8 +203,13 @@ def _route_belt_lane(
 
     # Output return: WEST belts from row edge back to bus column.
     # Must go underground past other lanes' vertical segments (same as tap-offs).
+    # Route returns for ALL producer rows (including extra sub-rows).
+    all_producers = []
     if lane.producer_row is not None:
-        out_y = lane.source_y
+        all_producers.append(lane.producer_row)
+    all_producers.extend(lane.extra_producer_rows)
+    for pri in all_producers:
+        out_y = row_spans[pri].output_belt_y
         _route_output_return(entities, lane, out_y, all_lanes, bw, belt_name)
 
 
