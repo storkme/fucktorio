@@ -242,7 +242,7 @@ class TestSpaghettiSmelting:
         assert ext_items == {"iron-ore"}
 
 
-@pytest.mark.skip(reason="tier 2+ layout not yet solved")
+@pytest.mark.xfail(reason="belt-flow-reachability")
 class TestSpaghettiPhase3:
     """Phase 3: intermediates (multi-step chains)."""
 
@@ -286,7 +286,7 @@ class TestSpaghettiPhase3:
         assert len(copper_cable_belts) > 0, "Should have belts carrying copper-cable between machines"
 
 
-@pytest.mark.skip(reason="tier 2+ layout not yet solved")
+@pytest.mark.xfail(reason="belt-flow-reachability")
 class TestSpaghettiPhase4:
     """Phase 4: multiple inputs per machine."""
 
@@ -507,7 +507,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 1 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.skip(reason="tier 2 layout not yet solved")
+    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_tier2_electronic_circuit(self):
         """Tier 2: 2-step solid chain (copper-cable -> electronic-circuit)."""
         result = solve(
@@ -715,7 +715,7 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_smelting_5s_layout,
         )
 
-    @pytest.mark.skip(reason="tier 2 layout not yet solved")
+    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_viz_electronic_circuit(self, viz):
         result = solve(
             "electronic-circuit",
