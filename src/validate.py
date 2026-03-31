@@ -2192,43 +2192,8 @@ def check_lane_throughput(
                     )
                 )
 
-    # Check input inserters: verify items reach the lane they pick from
-    for ins in layout_result.entities:
-        if ins.name not in _INSERTER_ENTITIES:
-            continue
-        direction_vec = _DIR_TO_VEC.get(ins.direction)
-        if direction_vec is None:
-            continue
-        reach = _INSERTER_REACH.get(ins.name, 1)
-        dx, dy = direction_vec
-        odx, ody = _OPPOSITE_VEC[direction_vec]
-        pickup_pos = (ins.x + odx * reach, ins.y + ody * reach)
-        drop_pos = (ins.x + dx * reach, ins.y + dy * reach)
-
-        # Input inserter: picks from belt, drops into machine
-        if pickup_pos not in belt_dir_map or drop_pos not in machine_tiles:
-            continue
-
-        belt_d = belt_dir_map[pickup_pos]
-        pickup_lane = _inserter_target_lane(ins.x, ins.y, pickup_pos[0], pickup_pos[1], belt_d)
-        rates = lane_rates.get(pickup_pos)
-        if rates and rates[pickup_lane] <= 0.001:
-            other_lane = "right" if pickup_lane == "left" else "left"
-            if rates[other_lane] > 0.001:
-                issues.append(
-                    ValidationIssue(
-                        severity="error",
-                        category="lane-reachability",
-                        message=(
-                            f"Input inserter at ({ins.x},{ins.y}) picks from "
-                            f"{pickup_lane} lane of belt at ({pickup_pos[0]},"
-                            f"{pickup_pos[1]}) but items only reach the "
-                            f"{other_lane} lane"
-                        ),
-                        x=ins.x,
-                        y=ins.y,
-                    )
-                )
+    # NOTE: lane-reachability check removed — inserters pick from both
+    # lanes of a belt, so checking single-lane reachability is a false positive.
 
     return issues
 
