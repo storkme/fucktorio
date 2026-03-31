@@ -913,8 +913,14 @@ def build_layout_incremental(
     # Place inserter entities
     entities.extend(build_inserter_entities(all_assignments))
 
+    # Collect inserter-adjacent belt tiles that must not be reoriented
+    _protected_tiles: set[tuple[int, int]] = set()
+    for asgn in all_assignments:
+        if not asgn.is_direct:
+            _protected_tiles.add(asgn.belt_tile)
+
     # Post-process belt directions
-    _fix_belt_directions(entities, belt_dir_map)
+    _fix_belt_directions(entities, belt_dir_map, protected_tiles=_protected_tiles)
 
     # Collect occupied tiles for pole placement
     all_occupied: set[tuple[int, int]] = set()
