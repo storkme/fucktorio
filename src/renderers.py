@@ -36,6 +36,33 @@ function isFurnace(name) {
   return name === 'stone-furnace' || name === 'steel-furnace'
     || name === 'electric-furnace';
 }
+function isUnderground(name) {
+  return name === 'underground-belt' || name === 'fast-underground-belt'
+    || name === 'express-underground-belt';
+}
+
+// Find the paired underground belt for a given one (scan along its direction)
+function findUndergroundPair(t) {
+  const d = t.dir || 0;
+  const dx = dirDx(d);
+  const dy = dirDy(d);
+  // input faces the direction it swallows from; output faces the direction it spits to
+  // Scan forward (in belt direction) for input, backward for output
+  const isInput = t.ioType === 'input';
+  const scanDx = isInput ? dx : -dx;
+  const scanDy = isInput ? dy : -dy;
+  // Underground belts can span up to 4 tiles apart (5 tiles gap) in vanilla
+  for (let dist = 1; dist <= 6; dist++) {
+    const nx = t.x + scanDx * dist;
+    const ny = t.y + scanDy * dist;
+    const nb = tileMap[nx + ',' + ny];
+    if (nb && isUnderground(nb.entity) && nb.ioType && nb.ioType !== t.ioType) {
+      const nd = nb.dir || 0;
+      if (nd === d) return { x: nx, y: ny, dist };
+    }
+  }
+  return null;
+}
 
 function pipeNeighbors(t) {
   const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
@@ -482,9 +509,11 @@ const schematic = {
   },
 
   drawMachine(ctx, px, py, pw, ph, t) {
-    const gap = scale >= 4 ? 1 : 0;
-    const w = pw - gap;
-    const h = ph - gap;
+    const gap = Math.max(1, scale * 0.08);
+    const w = pw - gap * 2;
+    const h = ph - gap * 2;
+    px += gap;
+    py += gap;
     const cx = px + w / 2;
     const cy = py + h / 2;
 
@@ -640,6 +669,81 @@ const schematic = {
       ctx.arc(cx, cy, 3.5 * scale, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+  },
+
+  drawUnderground(ctx, px, py, s, t) {
+    const gap = Math.max(1, scale * 0.08);
+    const w = s - gap * 2;
+    const cx = px + s / 2;
+    const cy = py + s / 2;
+    const beltColors = {
+      'underground-belt': '#a89030',
+      'fast-underground-belt': '#b03030',
+      'express-underground-belt': '#3070b0',
+    };
+    const chevColors = {
+      'underground-belt': '#e0d070',
+      'fast-underground-belt': '#ff6060',
+      'express-underground-belt': '#70b0f0',
+    };
+    const base = beltColors[t.entity] || '#a89030';
+    const chev = chevColors[t.entity] || '#e0d070';
+    const isInput = t.ioType === 'input';
+
+    // Base tile with inset
+    ctx.fillStyle = darkenColor(base, 0.5);
+    ctx.fillRect(px + gap, py + gap, w, w);
+
+    // Inner belt surface
+    const frame = Math.max(1, w * 0.12);
+    ctx.fillStyle = base;
+    ctx.fillRect(px + gap + frame, py + gap + frame, w - frame * 2, w - frame * 2);
+
+    // Dark center hole for underground entry/exit
+    ctx.fillStyle = isInput ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.35)';
+    const holeR = w * 0.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (scale >= 4) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(dirAngle(t.dir || 0));
+
+      // Direction chevron — points inward for input, outward for output
+      ctx.strokeStyle = chev;
+      ctx.lineWidth = Math.max(1.5, s * 0.12);
+      ctx.lineCap = 'round';
+      const aSize = w * 0.22;
+      const yOff = isInput ? -w * 0.28 : w * 0.28;
+      const yTip = isInput ? -w * 0.08 : w * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(-aSize, yOff);
+      ctx.lineTo(0, yTip);
+      ctx.lineTo(aSize, yOff);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Faint trace line to paired underground belt
+    const pair = findUndergroundPair(t);
+    if (pair) {
+      const pairPx = (pair.x - t.x) * scale;
+      const pairPy = (pair.y - t.y) * scale;
+      ctx.save();
+      ctx.strokeStyle = base;
+      ctx.globalAlpha = 0.2;
+      ctx.lineWidth = Math.max(2, w * 0.3);
+      ctx.setLineDash([Math.max(2, scale * 0.15), Math.max(2, scale * 0.15)]);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + pairPx, cy + pairPy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
     }
   },
 
@@ -1099,9 +1203,11 @@ const factorio = {
   },
 
   drawMachine(ctx, px, py, pw, ph, t) {
-    const gap = scale >= 4 ? 1 : 0;
-    const w = pw - gap;
-    const h = ph - gap;
+    const gap = Math.max(1, scale * 0.08);
+    const w = pw - gap * 2;
+    const h = ph - gap * 2;
+    px += gap;
+    py += gap;
     const cx = px + w / 2;
     const cy = py + h / 2;
 
@@ -1346,6 +1452,90 @@ const factorio = {
       ctx.arc(cx, cy, 3.5 * scale, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+  },
+
+  drawUnderground(ctx, px, py, s, t) {
+    const gap = Math.max(1, scale * 0.08);
+    const w = s - gap * 2;
+    const cx = px + s / 2;
+    const cy = py + s / 2;
+    const baseColors = {
+      'underground-belt': '#484840',
+      'fast-underground-belt': '#443838',
+      'express-underground-belt': '#383844',
+    };
+    const arrowColors = {
+      'underground-belt': '#d4a820',
+      'fast-underground-belt': '#cc3030',
+      'express-underground-belt': '#3080cc',
+    };
+    const base = baseColors[t.entity] || '#484840';
+    const arrow = arrowColors[t.entity] || '#d4a820';
+    const isInput = t.ioType === 'input';
+
+    // Dark metallic frame with inset
+    ctx.fillStyle = '#1a1810';
+    ctx.fillRect(px + gap, py + gap, w, w);
+
+    // Inner belt surface
+    const frame = Math.max(1, w * 0.12);
+    ctx.fillStyle = base;
+    ctx.fillRect(px + gap + frame, py + gap + frame, w - frame * 2, w - frame * 2);
+
+    // Dark underground hole
+    ctx.fillStyle = isInput ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.4)';
+    const holeR = w * 0.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Rim around hole
+    if (scale >= 6) {
+      ctx.strokeStyle = 'rgba(100,95,80,0.5)';
+      ctx.lineWidth = Math.max(1, w * 0.06);
+      ctx.beginPath();
+      ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (scale >= 4) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(dirAngle(t.dir || 0));
+
+      // Direction chevron
+      ctx.strokeStyle = arrow;
+      ctx.lineWidth = Math.max(1.5, s * 0.12);
+      ctx.lineCap = 'round';
+      const aSize = w * 0.22;
+      const yOff = isInput ? -w * 0.28 : w * 0.28;
+      const yTip = isInput ? -w * 0.08 : w * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(-aSize, yOff);
+      ctx.lineTo(0, yTip);
+      ctx.lineTo(aSize, yOff);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Faint trace line to paired underground belt
+    const pair = findUndergroundPair(t);
+    if (pair) {
+      const pairPx = (pair.x - t.x) * scale;
+      const pairPy = (pair.y - t.y) * scale;
+      ctx.save();
+      ctx.strokeStyle = arrow;
+      ctx.globalAlpha = 0.15;
+      ctx.lineWidth = Math.max(2, w * 0.3);
+      ctx.setLineDash([Math.max(2, scale * 0.15), Math.max(2, scale * 0.15)]);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + pairPx, cy + pairPy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
     }
   },
 
