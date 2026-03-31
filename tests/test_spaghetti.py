@@ -13,7 +13,7 @@ from src.spaghetti.placer import place_machines
 from src.validate import ValidationError, validate
 
 # ---------------------------------------------------------------------------
-# Module-scoped fixtures (avoid re-running evolutionary search per test)
+# Module-scoped fixtures (avoid re-running layout search per test)
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +195,7 @@ class TestSpaghettiPhase1:
         assert len(poles) > 0, "Should have power poles"
 
 
-@pytest.mark.skip(reason="30/s iron-gear layout too slow; focus on 10/s for now")
+@pytest.mark.xfail(reason="30/s iron-gear layout may still be too slow or produce errors")
 class TestSpaghettiPhase2:
     """Phase 2: multiple machines, one input each."""
 
@@ -204,7 +204,7 @@ class TestSpaghettiPhase2:
         expected = math.ceil(iron_gear_30s.machines[0].count)
         assert len(machines) == expected, f"Expected {expected} machines, got {len(machines)}"
 
-    @pytest.mark.xfail(reason="Evolutionary search position perturbation may cause overlaps at high machine counts")
+    @pytest.mark.xfail(reason="High machine counts may cause overlaps")
     def test_multiple_machines_no_overlaps(self, iron_gear_30s_layout):
         _check_no_overlaps(iron_gear_30s_layout)
 
@@ -241,7 +241,7 @@ class TestSpaghettiSmelting:
         assert ext_items == {"iron-ore"}
 
 
-@pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+@pytest.mark.xfail(reason="belt-flow-reachability and multi-recipe routing")
 class TestSpaghettiPhase3:
     """Phase 3: intermediates (multi-step chains)."""
 
@@ -285,7 +285,7 @@ class TestSpaghettiPhase3:
         assert len(copper_cable_belts) > 0, "Should have belts carrying copper-cable between machines"
 
 
-@pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+@pytest.mark.xfail(reason="belt-flow-reachability and multi-recipe routing")
 class TestSpaghettiPhase4:
     """Phase 4: multiple inputs per machine."""
 
@@ -308,7 +308,7 @@ class TestSpaghettiPhase4:
         assert len(cable_belts) > 0, "Should have belts carrying copper-cable"
 
 
-@pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+@pytest.mark.xfail(reason="pipe isolation not yet implemented")
 class TestSpaghettiPhase5:
     """Phase 5: fluid recipes."""
 
@@ -360,7 +360,7 @@ class TestSpaghettiPhase5:
         _check_no_overlaps(lr)
 
 
-@pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+@pytest.mark.xfail(reason="massive routing failures at scale")
 class TestSpaghettiPhase6:
     """Phase 6: complex chains (mixed solid + fluid, multi-step)."""
 
@@ -435,14 +435,14 @@ class TestSpaghettiPhase6:
 class TestSpaghettiValidation:
     """Tests that spaghetti layouts pass functional validation."""
 
-    @pytest.mark.xfail(reason="Evolutionary search may produce disconnected output networks")
+    @pytest.mark.xfail(reason="Search may produce disconnected output networks")
     def test_iron_gear_wheel_validates(self, iron_gear_10s, iron_gear_10s_layout):
         """Simple solid recipe should pass validation."""
         issues = validate(iron_gear_10s_layout, iron_gear_10s, layout_style="spaghetti")
         errors = [i for i in issues if i.severity == "error"]
         assert not errors, f"Validation errors: {[e.message for e in errors]}"
 
-    @pytest.mark.skip(reason="30/s iron-gear layout too slow; focus on 10/s for now")
+    @pytest.mark.xfail(reason="30/s iron-gear layout may still be too slow or produce errors")
     def test_layout_returns_best_effort(self, iron_gear_30s_layout):
         """Multi-machine layout returns a result even if validation has errors."""
         machines = [e for e in iron_gear_30s_layout.entities if e.name == "assembling-machine-3"]
@@ -471,12 +471,12 @@ class TestSpaghettiValidation:
         machines = [e for e in iron_gear_10s_layout.entities if e.name == "assembling-machine-3"]
         assert len(gear_belts) >= len(machines), f"Expected >= {len(machines)} output belt stubs, got {len(gear_belts)}"
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_internal_edge_output_belt(self):
         """Internal edges should connect through the output inserter's belt tile."""
         pass
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="pipe isolation")
     def test_spaghetti_fluid_check_no_bus_false_positive(self):
         """Spaghetti mode should not error about missing 'bus' for fluid layouts."""
         pass
@@ -498,7 +498,7 @@ class TestRecipeLadder:
     | 6    | rocket-control-unit | Very deep chain                     |
     """
 
-    @pytest.mark.xfail(reason="Evolutionary search may produce disconnected output networks")
+    @pytest.mark.xfail(reason="Search may produce disconnected output networks")
     def test_tier1_iron_gear_wheel(self, iron_gear_10s, iron_gear_10s_layout):
         """Tier 1: single recipe, single solid input."""
         try:
@@ -506,7 +506,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 1 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_tier2_electronic_circuit(self):
         """Tier 2: 2-step solid chain (copper-cable -> electronic-circuit)."""
         result = solve(
@@ -520,7 +520,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 2 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="pipe isolation")
     def test_tier3_plastic_bar(self):
         """Tier 3: fluid recipe (petroleum-gas + coal -> plastic-bar)."""
         result = solve(
@@ -534,7 +534,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 3 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="massive routing failures")
     def test_tier4_advanced_circuit(self):
         """Tier 4: deep mixed chain (copper-cable, plastic-bar, electronic-circuit -> advanced-circuit)."""
         result = solve(
@@ -548,7 +548,7 @@ class TestRecipeLadder:
         except ValidationError as exc:
             pytest.fail(f"Tier 4 validation errors: {[e.message for e in exc.issues]}")
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="massive routing failures")
     def test_tier5_processing_unit(self):
         """Tier 5: processing-unit (deep chain, multiple fluids)."""
         result = solve(
@@ -713,7 +713,7 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_smelting_5s_layout,
         )
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_viz_electronic_circuit(self, viz):
         result = solve(
             "electronic-circuit",
@@ -725,7 +725,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 10/s electronic-circuit")
         viz(bp, "electronic-circuit-10s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="pipe isolation")
     def test_viz_plastic_bar(self, viz):
         result = solve(
             "plastic-bar",
@@ -737,7 +737,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 5/s plastic-bar")
         viz(bp, "plastic-bar-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="massive routing failures")
     def test_viz_advanced_circuit(self, viz):
         result = solve(
             "advanced-circuit",
@@ -749,7 +749,7 @@ class TestSpaghettiVisualization:
         bp = build_blueprint(lr, label="spaghetti: 5/s advanced-circuit")
         viz(bp, "advanced-circuit-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
-    @pytest.mark.skip(reason="Evolutionary search too slow for CI on multi-recipe layouts")
+    @pytest.mark.xfail(reason="pipe isolation")
     def test_viz_petroleum_gas(self, viz):
         result = solve(
             "petroleum-gas",
