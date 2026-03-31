@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from .common import (
     _MACHINE_SIZE,
@@ -32,6 +34,89 @@ from .router import (
     _perpendicular_approach_tiles,
     route_connections,
 )
+
+_log = logging.getLogger(__name__)
+
+
+def _validate_junction_direction(
+    path: list[tuple[int, int]],
+    path_ents: list[PlacedEntity],
+    existing_network: set[tuple[int, int]],
+    belt_dir_map: dict[tuple[int, int], EntityDirection],
+    is_input: bool,
+) -> None:
+    """Validate and fix belt direction at the junction where a new path meets the existing network.
+
+    For input continuations: the path flows from the network toward the stub.
+    The junction tile (network side) must not point head-on against the trunk.
+
+    For output continuations: the path flows from the stub toward the network.
+    The last new tile must be perpendicular (sideload) or same-direction as the trunk.
+
+    Modifies path_ents and belt_dir_map in-place if a fix is needed.
+    """
+    if len(path) < 2:
+        return
+
+    # Build position -> entity mapping for the path
+    ent_by_pos: dict[tuple[int, int], PlacedEntity] = {}
+    for pe in path_ents:
+        ent_by_pos[(pe.x, pe.y)] = pe
+
+    # Find the junction: the tile in the path that is adjacent to the network
+    # but is NOT itself in the network (the new tile touching the trunk)
+    junction_pos = None
+    trunk_neighbor = None
+
+    if is_input:
+        # Input: path goes network→stub. path[0] may be IN the network.
+        # Find the first path tile NOT in the network.
+        for k, tile in enumerate(path):
+            if tile not in existing_network:
+                junction_pos = tile
+                # The trunk neighbor is the previous tile (which IS in the network)
+                if k > 0 and path[k - 1] in existing_network:
+                    trunk_neighbor = path[k - 1]
+                break
+    else:
+        # Output: path goes stub→network. path[-1] may be IN the network.
+        # Find the last path tile NOT in the network.
+        for k in range(len(path) - 1, -1, -1):
+            if path[k] not in existing_network:
+                junction_pos = path[k]
+                # The trunk neighbor is the next tile (which IS in the network)
+                if k + 1 < len(path) and path[k + 1] in existing_network:
+                    trunk_neighbor = path[k + 1]
+                break
+
+    if junction_pos is None or trunk_neighbor is None:
+        return
+
+    trunk_dir = belt_dir_map.get(trunk_neighbor)
+    junction_dir = belt_dir_map.get(junction_pos)
+    if trunk_dir is None or junction_dir is None:
+        return
+
+    trunk_vec = DIR_VEC[trunk_dir]
+    junction_vec = DIR_VEC[junction_dir]
+
+    # Check for head-on collision: junction direction is opposite to trunk
+    dot = trunk_vec[0] * junction_vec[0] + trunk_vec[1] * junction_vec[1]
+    if dot == -1:
+        # Head-on: flip to perpendicular (sideload toward trunk)
+        face_vec = (trunk_neighbor[0] - junction_pos[0], trunk_neighbor[1] - junction_pos[1])
+        face_dir = DIR_MAP.get(face_vec)
+        if face_dir is not None:
+            _log.debug(
+                "Junction fix at (%d,%d): %s→%s (was head-on against trunk)",
+                junction_pos[0],
+                junction_pos[1],
+                junction_dir,
+                face_dir,
+            )
+            belt_dir_map[junction_pos] = face_dir
+            if junction_pos in ent_by_pos:
+                ent_by_pos[junction_pos].direction = face_dir
 
 
 def build_layout(
@@ -747,6 +832,11 @@ def build_layout_incremental(
                             trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
                             trial_occupied.add((pe.x, pe.y))
                         trial_group_networks.setdefault(group_key, set()).update(set(path))
+                        # Validate junction direction (Phase 1.2)
+                        if not edge.is_fluid and existing_network:
+                            _validate_junction_direction(
+                                path, path_ents, existing_network, trial_belt_dir_map, is_input
+                            )
                         # Track lane load for output continuations
                         is_output = i in edge_starts
                         if is_output and not edge.is_fluid and existing_network:
