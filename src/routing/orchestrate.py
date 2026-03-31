@@ -655,9 +655,7 @@ def build_layout_incremental(
                     path = None
                     if is_input and not edge.is_fluid:
                         # Input: multi-source A* from network toward stub
-                        downstream_ends = _network_downstream_ends(
-                            existing_network, trial_belt_dir_map
-                        )
+                        downstream_ends = _network_downstream_ends(existing_network, trial_belt_dir_map)
                         forward_tiles = set()
                         for tile in downstream_ends:
                             d = trial_belt_dir_map.get(tile)
@@ -666,9 +664,7 @@ def build_layout_incremental(
                                 ft = (tile[0] + dvx, tile[1] + dvy)
                                 if ft not in existing_network:
                                     forward_tiles.add(ft)
-                        approach = _perpendicular_approach_tiles(
-                            existing_network, trial_belt_dir_map, trial_occupied
-                        )
+                        approach = _perpendicular_approach_tiles(existing_network, trial_belt_dir_map, trial_occupied)
                         all_starts = (forward_tiles | approach) - obstacles
                         if all_starts:
                             path = _astar_path(
@@ -702,27 +698,43 @@ def build_layout_incremental(
                                 preferred, fallback = right_goals, left_goals
                             if preferred:
                                 path = _astar_path(
-                                    start=(bx, by), goals=preferred, obstacles=obstacles,
-                                    allow_underground=True, ug_max_reach=6,
-                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                    start=(bx, by),
+                                    goals=preferred,
+                                    obstacles=obstacles,
+                                    allow_underground=True,
+                                    ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map,
+                                    other_item_tiles=_oit,
                                 )
                             if not path and fallback:
                                 path = _astar_path(
-                                    start=(bx, by), goals=fallback, obstacles=obstacles,
-                                    allow_underground=True, ug_max_reach=6,
-                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                    start=(bx, by),
+                                    goals=fallback,
+                                    obstacles=obstacles,
+                                    allow_underground=True,
+                                    ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map,
+                                    other_item_tiles=_oit,
                                 )
                             if not path and all_goals:
                                 path = _astar_path(
-                                    start=(bx, by), goals=all_goals, obstacles=obstacles,
-                                    allow_underground=True, ug_max_reach=6,
-                                    belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                    start=(bx, by),
+                                    goals=all_goals,
+                                    obstacles=obstacles,
+                                    allow_underground=True,
+                                    ug_max_reach=6,
+                                    belt_dir_map=trial_belt_dir_map,
+                                    other_item_tiles=_oit,
                                 )
                         elif all_goals:
                             path = _astar_path(
-                                start=(bx, by), goals=all_goals, obstacles=obstacles,
-                                allow_underground=True, ug_max_reach=6,
-                                belt_dir_map=trial_belt_dir_map, other_item_tiles=_oit,
+                                start=(bx, by),
+                                goals=all_goals,
+                                obstacles=obstacles,
+                                allow_underground=True,
+                                ug_max_reach=6,
+                                belt_dir_map=trial_belt_dir_map,
+                                other_item_tiles=_oit,
                             )
 
                     if path:

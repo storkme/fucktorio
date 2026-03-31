@@ -31,6 +31,7 @@ class SearchStats:
     elapsed_s: float
     error_categories: dict[str, int] = field(default_factory=dict)
 
+
 # All four side direction vectors
 _ALL_SIDES = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
@@ -288,7 +289,9 @@ def _evaluate(
             trunk_x_coords: list[int] = []
             if candidate.use_trunks:
                 t_ents, t_bdm, t_gn, t_occ = plan_trunks(
-                    graph, solver_result, trunk_spacing=candidate.trunk_spacing,
+                    graph,
+                    solver_result,
+                    trunk_spacing=candidate.trunk_spacing,
                 )
                 trunk_kwargs = dict(
                     trunk_entities=t_ents,
@@ -305,16 +308,16 @@ def _evaluate(
             if trunk_x_coords:
                 input_items = sorted({e.item for e in graph.edges if e.from_node is None})
                 output_items = sorted({e.item for e in graph.edges if e.to_node is None})
-                input_trunk_xs = trunk_x_coords[:len(input_items)]
-                output_trunk_xs = trunk_x_coords[len(input_items):]
+                input_trunk_xs = trunk_x_coords[: len(input_items)]
+                output_trunk_xs = trunk_x_coords[len(input_items) :]
                 # Machine x: right of rightmost input trunk, with 2 tiles gap (inserter + belt)
                 machine_ideal_x = max(input_trunk_xs) + 2 if input_trunk_xs else trunk_x_coords[0] + 2
             else:
                 machine_ideal_x = 0
 
-            def _gen_candidates(node_id, g, positions, occupied, rng,
-                                _txc=trunk_x_coords, _tlen=trunk_length,
-                                _mix=machine_ideal_x):
+            def _gen_candidates(
+                node_id, g, positions, occupied, rng, _txc=trunk_x_coords, _tlen=trunk_length, _mix=machine_ideal_x
+            ):
                 node_size = machine_size(next(n for n in g.nodes if n.id == node_id).spec.entity)
 
                 if _txc:
