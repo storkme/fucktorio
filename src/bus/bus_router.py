@@ -25,7 +25,10 @@ class BusLane:
     consumer_rows: list[int]  # indices into row_spans
     producer_row: int | None  # index or None for external
     rate: float = 0.0  # total throughput for belt tier selection
+    is_fluid: bool = False
     tap_off_ys: list[int] = field(default_factory=list)
+    # For fluid lanes: (row_index, x, y) of pipe-to-ground exit positions
+    fluid_port_positions: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 def plan_bus_lanes(
@@ -43,26 +46,25 @@ def plan_bus_lanes(
     item_to_consumers: dict[str, list[int]] = {}
     for idx, rs in enumerate(row_spans):
         for inp in rs.spec.inputs:
-            if not inp.is_fluid:
-                item_to_consumers.setdefault(inp.item, []).append(idx)
+            item_to_consumers.setdefault(inp.item, []).append(idx)
 
-    # External inputs
+    # External inputs (solid AND fluid)
     for ext in solver_result.external_inputs:
-        if ext.is_fluid or ext.item in seen_items:
+        if ext.item in seen_items:
             continue
         consumers = item_to_consumers.get(ext.item, [])
         if consumers:
             lanes.append(
                 BusLane(item=ext.item, x=0, source_y=0,
                         consumer_rows=consumers, producer_row=None,
-                        rate=ext.rate)
+                        rate=ext.rate, is_fluid=ext.is_fluid)
             )
             seen_items.add(ext.item)
 
-    # Intermediate items
+    # Intermediate items (solid AND fluid)
     for idx, rs in enumerate(row_spans):
         for out in rs.spec.outputs:
-            if out.is_fluid or out.item in seen_items:
+            if out.item in seen_items:
                 continue
             consumers = item_to_consumers.get(out.item, [])
             if consumers:
@@ -70,13 +72,19 @@ def plan_bus_lanes(
                 lanes.append(
                     BusLane(item=out.item, x=0, source_y=rs.output_belt_y,
                             consumer_rows=consumers, producer_row=idx,
-                            rate=total_rate)
+                            rate=total_rate, is_fluid=out.is_fluid)
                 )
                 seen_items.add(out.item)
 
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
         lane.tap_off_ys = _find_tap_off_ys(lane, row_spans)
+        if lane.is_fluid:
+            # Collect fluid port pipe positions for tap-off routing
+            for ri in lane.consumer_rows:
+                rs = row_spans[ri]
+                for px, py in rs.fluid_port_pipes:
+                    lane.fluid_port_positions.append((ri, px, py))
 
     # Sort: earliest first tap-off on LEFT, so their tap-offs cross fewer lanes
     lanes.sort(key=lambda ln: (min(ln.tap_off_ys) if ln.tap_off_ys else 9999, ln.source_y))
@@ -93,11 +101,17 @@ def _find_tap_off_ys(lane: BusLane, row_spans: list[RowSpan]) -> list[int]:
     tap_ys: list[int] = []
     for ri in lane.consumer_rows:
         rs = row_spans[ri]
-        solid_inputs = [f for f in rs.spec.inputs if not f.is_fluid]
-        for input_idx, inp in enumerate(solid_inputs):
-            if inp.item == lane.item and input_idx < len(rs.input_belt_y):
-                tap_ys.append(rs.input_belt_y[input_idx])
-                break
+        if lane.is_fluid:
+            # Fluid lanes tap off at the fluid port y positions
+            for port_y in rs.fluid_port_ys:
+                tap_ys.append(port_y)
+                break  # one tap per consumer row
+        else:
+            solid_inputs = [f for f in rs.spec.inputs if not f.is_fluid]
+            for input_idx, inp in enumerate(solid_inputs):
+                if inp.item == lane.item and input_idx < len(rs.input_belt_y):
+                    tap_ys.append(rs.input_belt_y[input_idx])
+                    break
     return tap_ys
 
 
@@ -126,7 +140,20 @@ def _route_lane(
     all_lanes: list[BusLane],
     bw: int,
 ) -> None:
-    """Route a single bus lane: vertical belts + tap-offs + output return."""
+    """Route a single bus lane: vertical segment + tap-offs + output return."""
+    if lane.is_fluid:
+        _route_fluid_lane(entities, lane, bw)
+    else:
+        _route_belt_lane(entities, lane, all_lanes, bw)
+
+
+def _route_belt_lane(
+    entities: list[PlacedEntity],
+    lane: BusLane,
+    all_lanes: list[BusLane],
+    bw: int,
+) -> None:
+    """Route a solid-item bus lane with belts."""
     x = lane.x
     tap_off_set = set(lane.tap_off_ys)
 
@@ -162,6 +189,53 @@ def _route_lane(
                     direction=EntityDirection.WEST, carries=lane.item,
                 )
             )
+
+
+def _route_fluid_lane(
+    entities: list[PlacedEntity],
+    lane: BusLane,
+    bw: int,
+) -> None:
+    """Route a fluid bus lane with pipes + pipe-to-ground tap-offs."""
+    x = lane.x
+
+    start_y = lane.source_y
+    end_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
+
+    # Vertical pipe run on the bus
+    for y in range(start_y, end_y + 1):
+        entities.append(
+            PlacedEntity(name="pipe", x=x, y=y, carries=lane.item)
+        )
+
+    # Pipe-to-ground tap-offs: tunnel EAST from bus+1 to the machine port
+    for _ri, port_x, port_y in lane.fluid_port_positions:
+        # Entry: one tile right of the bus pipe (x+1), at the port's y
+        entry_x = x + 1
+        # Exit: one tile left of the port pipe position
+        exit_x = port_x - 1
+
+        if exit_x > entry_x:
+            entities.append(
+                PlacedEntity(
+                    name="pipe-to-ground", x=entry_x, y=port_y,
+                    direction=EntityDirection.EAST, io_type="input",
+                    carries=lane.item,
+                )
+            )
+            entities.append(
+                PlacedEntity(
+                    name="pipe-to-ground", x=exit_x, y=port_y,
+                    direction=EntityDirection.EAST, io_type="output",
+                    carries=lane.item,
+                )
+            )
+        elif exit_x == entry_x:
+            # Adjacent — just a surface pipe
+            entities.append(
+                PlacedEntity(name="pipe", x=entry_x, y=port_y, carries=lane.item)
+            )
+        # The port pipe itself is placed by the template
 
 
 _UG_MAP = {
