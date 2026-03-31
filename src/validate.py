@@ -325,54 +325,53 @@ def check_fluid_port_connectivity(
 def _find_ptg_pairs(layout_result: LayoutResult) -> dict[tuple[int, int], tuple[int, int]]:
     """Find pipe-to-ground pairs and return a bidirectional map.
 
-    Pairs pipe-to-ground entities that face each other on the same row/column.
+    In Factorio, pipe-to-ground entry and exit both face the SAME direction
+    (the direction of flow), distinguished by io_type ("input"/"output").
+    Entry at position A facing EAST pairs with the nearest output facing
+    EAST to its right on the same y.
+
     Returns {pos_a: pos_b, pos_b: pos_a} for each pair.
     """
     from .models import EntityDirection
 
     pairs: dict[tuple[int, int], tuple[int, int]] = {}
-
-    # Group by axis: horizontal pairs share y, vertical pairs share x
-    # EAST-facing entry pairs with WEST-facing exit (same y, increasing x)
-    # SOUTH-facing entry pairs with NORTH-facing exit (same x, increasing y)
     ptg_entities = [e for e in layout_result.entities if e.name == "pipe-to-ground"]
 
-    # Horizontal pairs (EAST/WEST on same y)
-    by_y: dict[int, list] = {}
+    # Group by (direction, axis_value): EAST/WEST share y, SOUTH/NORTH share x
+    groups: dict[tuple[int, int], list] = {}
     for e in ptg_entities:
-        if e.direction in (EntityDirection.EAST, EntityDirection.WEST):
-            by_y.setdefault(e.y, []).append(e)
+        key = (e.direction, e.y) if e.direction in (EntityDirection.EAST, EntityDirection.WEST) else (e.direction, e.x)
+        groups.setdefault(key, []).append(e)
 
-    for _y, group in by_y.items():
-        east_facing = sorted([e for e in group if e.direction == EntityDirection.EAST], key=lambda e: e.x)
-        west_facing = sorted([e for e in group if e.direction == EntityDirection.WEST], key=lambda e: e.x)
-        # Pair each EAST with the nearest WEST to its right
-        for ef in east_facing:
-            for wf in west_facing:
-                if wf.x > ef.x:
-                    a, b = (ef.x, ef.y), (wf.x, wf.y)
-                    pairs[a] = b
-                    pairs[b] = a
-                    west_facing.remove(wf)
-                    break
+    for (_dir, _axis), group in groups.items():
+        inputs = sorted(
+            [e for e in group if e.io_type == "input"],
+            key=lambda e: (e.x, e.y),
+        )
+        outputs = sorted(
+            [e for e in group if e.io_type == "output"],
+            key=lambda e: (e.x, e.y),
+        )
 
-    # Vertical pairs (SOUTH/NORTH on same x)
-    by_x: dict[int, list] = {}
-    for e in ptg_entities:
-        if e.direction in (EntityDirection.SOUTH, EntityDirection.NORTH):
-            by_x.setdefault(e.x, []).append(e)
+        # Pair each input with the nearest output in the flow direction
+        remaining_outputs = list(outputs)
+        for inp in inputs:
+            for out in remaining_outputs:
+                # Output must be "ahead" of input in the flow direction
+                ahead = (
+                    (_dir == EntityDirection.EAST and out.x > inp.x)
+                    or (_dir == EntityDirection.WEST and out.x < inp.x)
+                    or (_dir == EntityDirection.SOUTH and out.y > inp.y)
+                    or (_dir == EntityDirection.NORTH and out.y < inp.y)
+                )
+                if not ahead:
+                    continue
 
-    for _x, group in by_x.items():
-        south_facing = sorted([e for e in group if e.direction == EntityDirection.SOUTH], key=lambda e: e.y)
-        north_facing = sorted([e for e in group if e.direction == EntityDirection.NORTH], key=lambda e: e.y)
-        for sf in south_facing:
-            for nf in north_facing:
-                if nf.y > sf.y:
-                    a, b = (sf.x, sf.y), (nf.x, nf.y)
-                    pairs[a] = b
-                    pairs[b] = a
-                    north_facing.remove(nf)
-                    break
+                a, b = (inp.x, inp.y), (out.x, out.y)
+                pairs[a] = b
+                pairs[b] = a
+                remaining_outputs.remove(out)
+                break
 
     return pairs
 

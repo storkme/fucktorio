@@ -57,6 +57,20 @@ class TestBusLayout:
                 print(f"  [{issue.severity}] {issue.category}: {issue.message}")
             pytest.fail(f"Validation failed with {len(e.issues)} errors")
 
+    def test_plastic_bar(self):
+        """Fluid recipe: coal + petroleum-gas -> plastic-bar."""
+        result = solve("plastic-bar", 5.0, available_inputs={"coal", "petroleum-gas"})
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+
+        try:
+            validate(layout, result, layout_style="bus")
+        except ValidationError as e:
+            for issue in e.issues:
+                print(f"  [{issue.severity}] {issue.category}: {issue.message}")
+            pytest.fail(f"Validation failed with {len(e.issues)} errors")
+
     def test_no_entity_overlaps(self):
         """All entities must occupy unique tile positions."""
         result = solve("iron-gear-wheel", 5.0)

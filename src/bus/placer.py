@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..models import MachineSpec, PlacedEntity
 from ..routing.common import belt_entity_for_rate
-from .templates import dual_input_row, single_input_row
+from .templates import dual_input_row, fluid_input_row, single_input_row
 
 
 @dataclass
@@ -20,6 +20,9 @@ class RowSpan:
     machine_count: int
     input_belt_y: list[int]  # y-coordinates of input belt rows
     output_belt_y: int  # y-coordinate of output belt row
+    fluid_port_ys: list[int] = field(default_factory=list)  # y-coords of fluid input ports
+    # (x, y) of each machine's fluid input port pipe position
+    fluid_port_pipes: list[tuple[int, int]] = field(default_factory=list)
 
 
 def place_rows(
@@ -43,16 +46,41 @@ def place_rows(
         count = max(1, math.ceil(spec.count))
         solid_inputs = [f for f in spec.inputs if not f.is_fluid]
         solid_outputs = [f for f in spec.outputs if not f.is_fluid]
+        fluid_inputs = [f for f in spec.inputs if f.is_fluid]
 
         output_item = solid_outputs[0].item if solid_outputs else ""
 
         # Pick belt tiers based on total throughput across all machines.
-        # All inserters drop on the same lane, so we need 2x the total rate
-        # to ensure per-lane capacity is sufficient.
+        # All inserters drop on the same lane, so we need 2x the total rate.
         output_rate = solid_outputs[0].rate * count if solid_outputs else 0
         out_belt = belt_entity_for_rate(output_rate * 2)
 
-        if len(solid_inputs) <= 1:
+        fluid_port_ys: list[int] = []
+        fluid_port_pipes: list[tuple[int, int]] = []
+
+        if fluid_inputs and solid_inputs:
+            # Mixed recipe: solid belt + fluid pipe-to-ground
+            input_item = solid_inputs[0].item
+            fluid_item = fluid_inputs[0].item
+            input_rate = solid_inputs[0].rate * count
+            in_belt = belt_entity_for_rate(input_rate * 2)
+            row_ents, row_h, port_pipes = fluid_input_row(
+                recipe=spec.recipe,
+                machine_entity=spec.entity,
+                machine_count=count,
+                y_offset=y_cursor,
+                x_offset=bus_width,
+                solid_item=input_item,
+                fluid_item=fluid_item,
+                output_item=output_item,
+                input_belt=in_belt,
+                output_belt=out_belt,
+            )
+            input_belt_ys = [y_cursor]  # y+0 (solid belt)
+            output_belt_y = y_cursor + 6  # y+6
+            fluid_port_ys = [port_pipes[0][1]] if port_pipes else []
+            fluid_port_pipes = port_pipes
+        elif len(solid_inputs) <= 1:
             input_item = solid_inputs[0].item if solid_inputs else ""
             input_rate = solid_inputs[0].rate * count if solid_inputs else 0
             in_belt = belt_entity_for_rate(input_rate * 2)
@@ -100,6 +128,8 @@ def place_rows(
                 machine_count=count,
                 input_belt_y=input_belt_ys,
                 output_belt_y=output_belt_y,
+                fluid_port_ys=fluid_port_ys,
+                fluid_port_pipes=fluid_port_pipes,
             )
         )
 
