@@ -18,6 +18,7 @@ def produce(
     label: str | None = None,
     visualize: bool = False,
     open_browser: bool = True,
+    layout_engine: str = "spaghetti",
 ) -> str:
     """One-call interface: item + rate → Factorio blueprint string.
 
@@ -81,7 +82,12 @@ def produce(
     print(f"  External inputs: {ext_items}")
 
     # 2. Layout
-    layout_result = spaghetti_layout(solver_result)
+    if layout_engine == "bus":
+        from .bus import bus_layout
+
+        layout_result = bus_layout(solver_result)
+    else:
+        layout_result = spaghetti_layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
 
     # 3. Validate (log issues but continue with best-effort layout)

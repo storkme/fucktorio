@@ -715,6 +715,17 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_smelting_5s_layout,
         )
 
+    def test_viz_copper_cable_smelting(self, viz):
+        result = solve(
+            "copper-cable",
+            target_rate=5,
+            available_inputs={"copper-ore"},
+        )
+        lr = spaghetti_layout(result)
+        graph = build_production_graph(result)
+        bp = build_blueprint(lr, label="spaghetti: 5/s copper-cable (smelting)")
+        viz(bp, "copper-cable-smelting-5s", solver_result=result, production_graph=graph, layout_result=lr)
+
     def test_viz_electronic_circuit(self, viz):
         result = solve(
             "electronic-circuit",
