@@ -646,6 +646,18 @@ const schematic = {
       ctx.restore();
     }
 
+    // Beacon supply area radius (9x9 = 4.5 tiles from center)
+    if (isBeacon(t.entity) && scale >= 4) {
+      ctx.strokeStyle = 'rgba(120,180,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      const beaconR = 4.5 * scale;
+      ctx.beginPath();
+      ctx.rect(cx - beaconR, cy - beaconR, beaconR * 2, beaconR * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     if (t.recipe && scale >= 14) {
       const fontSize = Math.max(8, scale * 0.45);
       ctx.fillStyle = 'rgba(0,0,0,0.7)';
@@ -1428,6 +1440,18 @@ const factorio = {
         }
       }
       ctx.restore();
+    }
+
+    // Beacon supply area radius (9x9 = 4.5 tiles from center)
+    if (isBeacon(t.entity) && scale >= 4) {
+      ctx.strokeStyle = 'rgba(80,140,220,0.12)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      const beaconR = 4.5 * scale;
+      ctx.beginPath();
+      ctx.rect(cx - beaconR, cy - beaconR, beaconR * 2, beaconR * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     if (t.recipe && scale >= 14) {
