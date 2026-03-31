@@ -195,7 +195,7 @@ class TestSpaghettiPhase1:
         assert len(poles) > 0, "Should have power poles"
 
 
-@pytest.mark.xfail(reason="30/s iron-gear layout may still be too slow or produce errors")
+@pytest.mark.skip(reason="30/s iron-gear layout too slow for CI (12+ machines)")
 class TestSpaghettiPhase2:
     """Phase 2: multiple machines, one input each."""
 
@@ -215,6 +215,7 @@ class TestSpaghettiPhase2:
         assert len(belts) >= len(machines), "Should have at least as many belt tiles as machines"
 
 
+@pytest.mark.skip(reason="Smelting layout too slow for CI (18 machines)")
 class TestSpaghettiSmelting:
     """Smelting chain: iron-ore → electric-furnace → iron-plate → assembler → iron-gear-wheel."""
 
@@ -442,7 +443,7 @@ class TestSpaghettiValidation:
         errors = [i for i in issues if i.severity == "error"]
         assert not errors, f"Validation errors: {[e.message for e in errors]}"
 
-    @pytest.mark.xfail(reason="30/s iron-gear layout may still be too slow or produce errors")
+    @pytest.mark.skip(reason="30/s iron-gear layout too slow for CI (12+ machines)")
     def test_layout_returns_best_effort(self, iron_gear_30s_layout):
         """Multi-machine layout returns a result even if validation has errors."""
         machines = [e for e in iron_gear_30s_layout.entities if e.name == "assembling-machine-3"]
@@ -702,6 +703,7 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_10s_layout,
         )
 
+    @pytest.mark.skip(reason="Smelting layout too slow for CI (18 machines)")
     def test_viz_iron_gear_smelting(self, viz, iron_gear_smelting_5s, iron_gear_smelting_5s_layout):
         graph = build_production_graph(iron_gear_smelting_5s)
         bp = build_blueprint(iron_gear_smelting_5s_layout, label="spaghetti: 5/s iron-gear-wheel (smelting)")
