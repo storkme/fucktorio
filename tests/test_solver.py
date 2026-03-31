@@ -188,6 +188,67 @@ class TestSolver:
         assert "crude-oil" in ext
         assert ext["crude-oil"].is_fluid is True
 
+    def test_smelting_uses_electric_furnace(self):
+        """Smelting recipes should auto-select electric-furnace."""
+        r = get_recipe("iron-plate")
+        assert r.category == "smelting"
+        assert machine_for_recipe(r) == "electric-furnace"
+
+    def test_electric_furnace_crafting_speed(self):
+        """Electric furnace has crafting speed 2."""
+        speed = get_crafting_speed("electric-furnace")
+        assert speed == 2.0
+
+    def test_iron_gear_wheel_with_smelting(self):
+        """Full chain: iron-ore → electric-furnace → iron-plate → assembler → iron-gear-wheel."""
+        result = solve(
+            "iron-gear-wheel",
+            10,
+            available_inputs=set(),
+        )
+        # Should have 2 machine specs: iron-plate (furnace) and iron-gear-wheel (assembler)
+        recipes = {m.recipe for m in result.machines}
+        assert "iron-plate" in recipes
+        assert "iron-gear-wheel" in recipes
+        assert len(result.machines) == 2
+
+        # Check entities
+        ip = next(m for m in result.machines if m.recipe == "iron-plate")
+        igw = next(m for m in result.machines if m.recipe == "iron-gear-wheel")
+        assert ip.entity == "electric-furnace"
+        assert igw.entity == "assembling-machine-3"
+
+        # Check iron-gear-wheel machine count (same as before: 4 machines)
+        assert math.isclose(igw.count, 4.0, rel_tol=1e-6)
+
+        # Check iron-plate machine count:
+        # iron-gear-wheel needs 2 iron-plate per craft, asm3 does 2.5 crafts/s → 5 iron-plate/s per machine
+        # 4 machines × 5 iron-plate/s = 20 iron-plate/s total
+        # electric-furnace: speed=2, energy=3.2 → crafts/s = 2/3.2 = 0.625, output = 0.625/s per machine
+        # 20/0.625 = 32 machines
+        assert math.isclose(ip.count, 32.0, rel_tol=1e-6)
+
+        # Only external input should be iron-ore
+        ext_items = {f.item for f in result.external_inputs}
+        assert ext_items == {"iron-ore"}
+
+    def test_iron_plate_standalone(self):
+        """Smelting iron-plate from iron-ore uses electric-furnace."""
+        result = solve(
+            "iron-plate",
+            10,
+            available_inputs=set(),
+        )
+        assert len(result.machines) == 1
+        m = result.machines[0]
+        assert m.entity == "electric-furnace"
+        assert m.recipe == "iron-plate"
+        # speed=2, energy=3.2 → crafts/s=0.625, output=0.625/s → 10/0.625 = 16
+        assert math.isclose(m.count, 16.0, rel_tol=1e-6)
+
+        ext_items = {f.item for f in result.external_inputs}
+        assert ext_items == {"iron-ore"}
+
     def test_coal_liquefaction_uses_refinery(self):
         """Coal liquefaction (oil-processing category) should use oil-refinery."""
         r = get_recipe("simple-coal-liquefaction")
