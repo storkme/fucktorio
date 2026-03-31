@@ -267,6 +267,67 @@ def build_layout(
     )
 
 
+def plan_trunks(
+    graph: ProductionGraph,
+    solver_result: SolverResult,
+    trunk_x: int = 0,
+    trunk_spacing: int = 7,
+    trunk_length: int | None = None,
+) -> tuple[
+    list[PlacedEntity],
+    dict[tuple[int, int], EntityDirection],
+    dict[tuple[str, int], set[tuple[int, int]]],
+    set[tuple[int, int]],
+]:
+    """Pre-lay straight vertical belt trunks for each external input/output item.
+
+    Returns (entities, belt_dir_map, group_networks, occupied).
+    """
+    if trunk_length is None:
+        trunk_length = max(len(graph.nodes) * 5, 12)
+
+    entities: list[PlacedEntity] = []
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = {}
+    occupied: set[tuple[int, int]] = set()
+
+    direction = EntityDirection.SOUTH
+
+    # Input trunks (one per external input item)
+    input_items = sorted({e.item for e in graph.edges if e.from_node is None})
+    for item_idx, item in enumerate(input_items):
+        x = trunk_x + item_idx * trunk_spacing
+        rate = sum(e.rate for e in graph.edges if e.from_node is None and e.item == item)
+        belt_name = belt_entity_for_rate(rate)
+        group_key = (item, 0)
+        network: set[tuple[int, int]] = set()
+        for y in range(trunk_length):
+            entities.append(PlacedEntity(name=belt_name, x=x, y=y, direction=direction, carries=item))
+            belt_dir_map[(x, y)] = direction
+            occupied.add((x, y))
+            network.add((x, y))
+        group_networks[group_key] = network
+
+    # Output trunks (one per external output item, offset from last input trunk)
+    output_items = sorted({e.item for e in graph.edges if e.to_node is None})
+    base_output_x = trunk_x + max(len(input_items), 1) * trunk_spacing
+    for item_idx, item in enumerate(output_items):
+        x = base_output_x + item_idx * trunk_spacing
+        # Use 2x total rate for belt tier: worst case all inserters sideload to same lane
+        rate = sum(e.rate for e in graph.edges if e.to_node is None and e.item == item) * 2
+        belt_name = belt_entity_for_rate(rate)
+        group_key = (item, 0)
+        network = set()
+        for y in range(trunk_length):
+            entities.append(PlacedEntity(name=belt_name, x=x, y=y, direction=direction, carries=item))
+            belt_dir_map[(x, y)] = direction
+            occupied.add((x, y))
+            network.add((x, y))
+        group_networks[group_key] = network
+
+    return entities, belt_dir_map, group_networks, occupied
+
+
 def build_layout_incremental(
     solver_result: SolverResult,
     graph: ProductionGraph,
@@ -275,6 +336,10 @@ def build_layout_incremental(
     side_preference: dict[int, list[tuple[int, int]]] | None = None,
     max_positions_per_machine: int = 5,
     rng=None,
+    trunk_entities: list[PlacedEntity] | None = None,
+    trunk_belt_dir_map: dict[tuple[int, int], EntityDirection] | None = None,
+    trunk_group_networks: dict[tuple[str, int], set[tuple[int, int]]] | None = None,
+    trunk_occupied: set[tuple[int, int]] | None = None,
 ) -> tuple[LayoutResult, list[FlowEdge], int]:
     """Build a layout incrementally: place one machine, route its edges, repeat.
 
@@ -289,6 +354,10 @@ def build_layout_incremental(
         side_preference: Per-machine inserter side priority.
         max_positions_per_machine: Max candidates to try before accepting best-effort.
         rng: Random number generator for position shuffling.
+        trunk_entities: Pre-placed trunk belt entities from plan_trunks().
+        trunk_belt_dir_map: Belt direction map from pre-placed trunks.
+        trunk_group_networks: Group networks from pre-placed trunks.
+        trunk_occupied: Occupied tiles from pre-placed trunks.
     """
     import random as _random
 
@@ -301,19 +370,21 @@ def build_layout_incremental(
     # imprecision in y-slot assignment for incremental builds)
     edge_subgroups = _compute_edge_subgroups(graph, solver_result)
 
-    # Accumulated state
-    occupied: set[tuple[int, int]] = set()
-    entities: list[PlacedEntity] = []
+    # Accumulated state — seed from trunk data if provided
+    occupied: set[tuple[int, int]] = set(trunk_occupied) if trunk_occupied else set()
+    entities: list[PlacedEntity] = list(trunk_entities) if trunk_entities else []
     all_assignments: list[InserterAssignment] = []
     all_failed_edges: list[FlowEdge] = []
     direct_edge_indices: set[int] = set()
     positions: dict[int, tuple[int, int]] = {}
     placed_node_ids: set[int] = set()
 
-    # Routing state carried across incremental calls
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    # Routing state carried across incremental calls — seed from trunks
+    belt_dir_map: dict[tuple[int, int], EntityDirection] = dict(trunk_belt_dir_map) if trunk_belt_dir_map else {}
     lane_loads: dict[tuple[str, int], dict[str, float]] = {}  # per-group lane throughput
-    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = {}
+    group_networks: dict[tuple[str, int], set[tuple[int, int]]] = (
+        {k: set(v) for k, v in trunk_group_networks.items()} if trunk_group_networks else {}
+    )
 
     node_map = {n.id: n for n in graph.nodes}
 
@@ -324,8 +395,17 @@ def build_layout_incremental(
         # Generate candidate positions for this machine
         candidates = candidate_positions_fn(node_id, graph, positions, occupied, rng)
         if not candidates:
-            # Fallback: place at origin offset
-            candidates = [(len(positions) * 6, 0)]
+            # Fallback: place offset from origin, avoiding trunk tiles
+            fx = len(positions) * 6
+            fy = len(positions) * (size + 1)
+            if trunk_occupied:
+                # Place between trunks: find first x where machine fits without overlapping trunks
+                for try_x in range(0, 30):
+                    trial = machine_tiles(try_x, fy, size)
+                    if not (trial & occupied):
+                        fx, fy = try_x, fy
+                        break
+            candidates = [(fx, fy)]
 
         # Limit candidates to try
         candidates = candidates[:max_positions_per_machine]
@@ -413,7 +493,22 @@ def build_layout_incremental(
                     continue
 
                 sides = _get_sides(mx, my, size)
-                if side_preference is not None and node_id in side_preference:
+                is_input = edge.to_node == node_id
+                trunk_tiles_for_item: set[tuple[int, int]] = set()
+                if trunk_group_networks:
+                    # Trunk mode: prefer sides where belt tile lands on the correct trunk
+                    edge_item = edge.item
+                    trunk_tiles_for_item = set()
+                    for (ti, _sg), tiles in group_networks.items():
+                        if ti == edge_item:
+                            trunk_tiles_for_item |= tiles
+
+                    def _trunk_side_score(s, _tt=trunk_tiles_for_item):
+                        _, belt, _ = s
+                        return 0 if belt in _tt else 1
+
+                    sides = sorted(sides, key=_trunk_side_score)
+                elif side_preference is not None and node_id in side_preference:
                     pref_order = side_preference[node_id]
                     sides = sorted(
                         sides,
@@ -424,7 +519,12 @@ def build_layout_incremental(
 
                 # Find first available side
                 for border, belt, direction_vec in sides:
-                    if border in trial_occupied or belt in trial_occupied:
+                    if border in trial_occupied:
+                        continue
+                    # Allow belt tile if it's on the correct trunk (inserter picks/drops
+                    # directly from/to the trunk belt)
+                    belt_on_trunk = trunk_group_networks and belt in trunk_tiles_for_item
+                    if belt in trial_occupied and not belt_on_trunk:
                         continue
                     is_input = edge.to_node == node_id
                     if is_input:
@@ -532,7 +632,12 @@ def build_layout_incremental(
 
                 existing_network = trial_group_networks.get(group_key, set())
 
-                if existing_network:
+                if (bx, by) in existing_network:
+                    # Belt stub is already on the trunk — no routing needed.
+                    # The inserter directly picks from / drops onto the trunk belt.
+                    # Don't place a new entity or change direction — trunk is already there.
+                    pass
+                elif existing_network:
                     # Continuation: connect stub to existing network.
                     is_input = i in edge_targets
                     obstacles = trial_occupied - {(bx, by)} - existing_network
@@ -623,8 +728,10 @@ def build_layout_incremental(
                     if path:
                         belt_name = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
                         path_ents = _path_to_entities(path, belt_name, edge.item, edge.is_fluid)
-                        trial_entities.extend(path_ents)
+                        # Skip entities for tiles already in the existing network (e.g. trunk tiles)
                         for pe in path_ents:
+                            if (pe.x, pe.y) not in existing_network:
+                                trial_entities.append(pe)
                             trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
                             trial_occupied.add((pe.x, pe.y))
                         trial_group_networks.setdefault(group_key, set()).update(set(path))
@@ -755,18 +862,17 @@ def build_layout_incremental(
         if is_input:
             # Extend upstream end backward by a few tiles
             upstream = _network_upstream_ends(network, belt_dir_map)
+            total_rate = sum(e.rate for e in graph.edges if e.item == item and e.from_node is None) or 15
             for tile in upstream:
                 d = belt_dir_map.get(tile)
                 if d is None:
                     continue
                 dx, dy = DIR_VEC[d]
+                belt_name = belt_entity_for_rate(total_rate)
                 for ext in range(1, 4):
                     nx, ny = tile[0] - dx * ext, tile[1] - dy * ext
                     if (nx, ny) in occupied:
                         break
-                    belt_name = belt_entity_for_rate(
-                        next((e.rate for e in graph.edges if e.item == item and e.from_node is None), 15)
-                    )
                     entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
                     belt_dir_map[(nx, ny)] = d
                     occupied.add((nx, ny))
@@ -775,6 +881,9 @@ def build_layout_incremental(
         if is_output:
             # Extend downstream end forward by a few tiles
             downstream = _network_downstream_ends(network, belt_dir_map)
+            total_rate = sum(e.rate for e in graph.edges if e.item == item and e.to_node is None) or 15
+            # Use 2x rate for belt tier: inserters may sideload to same lane
+            belt_name = belt_entity_for_rate(total_rate * 2)
             for tile in downstream:
                 d = belt_dir_map.get(tile)
                 if d is None:
@@ -784,9 +893,6 @@ def build_layout_incremental(
                     nx, ny = tile[0] + dx * ext, tile[1] + dy * ext
                     if (nx, ny) in occupied:
                         break
-                    belt_name = belt_entity_for_rate(
-                        next((e.rate for e in graph.edges if e.item == item and e.to_node is None), 15)
-                    )
                     entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
                     belt_dir_map[(nx, ny)] = d
                     occupied.add((nx, ny))
