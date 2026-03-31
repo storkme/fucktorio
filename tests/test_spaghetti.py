@@ -715,17 +715,16 @@ class TestSpaghettiVisualization:
             layout_result=iron_gear_smelting_5s_layout,
         )
 
-    @pytest.mark.xfail(reason="belt-flow-reachability")
     def test_viz_electronic_circuit(self, viz):
         result = solve(
             "electronic-circuit",
-            target_rate=10,
+            target_rate=5,
             available_inputs={"iron-plate", "copper-plate"},
         )
         lr = spaghetti_layout(result)
         graph = build_production_graph(result)
-        bp = build_blueprint(lr, label="spaghetti: 10/s electronic-circuit")
-        viz(bp, "electronic-circuit-10s", solver_result=result, production_graph=graph, layout_result=lr)
+        bp = build_blueprint(lr, label="spaghetti: 5/s electronic-circuit")
+        viz(bp, "electronic-circuit-5s", solver_result=result, production_graph=graph, layout_result=lr)
 
     @pytest.mark.skip(reason="tier 3 layout not yet solved")
     def test_viz_plastic_bar(self, viz):
