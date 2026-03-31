@@ -85,6 +85,21 @@ class TestBusLayout:
                 print(f"  [{issue.severity}] {issue.category}: {issue.message}")
             pytest.fail(f"Validation failed with {len(e.issues)} errors")
 
+    def test_row_splitting(self):
+        """High throughput triggers row splitting when output exceeds belt capacity."""
+        # 40/s copper-cable = 8 machines. Express belt max 2 per row → split to 2x4.
+        result = solve("copper-cable", 40.0, available_inputs={"copper-plate"})
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+
+        try:
+            validate(layout, result, layout_style="bus")
+        except ValidationError as e:
+            for issue in e.issues:
+                print(f"  [{issue.severity}] {issue.category}: {issue.message}")
+            pytest.fail(f"Validation failed with {len(e.issues)} errors")
+
     def test_no_entity_overlaps(self):
         """All entities must occupy unique tile positions."""
         result = solve("iron-gear-wheel", 5.0)

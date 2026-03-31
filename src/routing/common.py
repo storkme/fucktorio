@@ -50,6 +50,14 @@ def belt_entity_for_rate(rate: float) -> str:
     return _BELT_TIERS[-1][0]  # express if rate exceeds all
 
 
+# Per-lane capacity (half of total belt throughput)
+_LANE_CAPACITY = {
+    "transport-belt": 7.5,
+    "fast-transport-belt": 15.0,
+    "express-transport-belt": 22.5,
+}
+
+
 # Direction vectors: (dx, dy) for each cardinal direction
 DIRECTIONS = [(0, -1), (1, 0), (0, 1), (-1, 0)]  # N, E, S, W
 
