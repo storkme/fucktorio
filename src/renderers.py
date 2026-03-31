@@ -32,6 +32,10 @@ function isInserter(name) {
     || name === 'long-handed-inserter';
 }
 function isPipe(name) { return name === 'pipe' || name === 'pipe-to-ground'; }
+function isFurnace(name) {
+  return name === 'stone-furnace' || name === 'steel-furnace'
+    || name === 'electric-furnace';
+}
 
 function pipeNeighbors(t) {
   const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
@@ -65,6 +69,29 @@ function beltTurnInfo(t) {
     }
   }
   if (perpFeeder && !hasStraightFeeder) return perpFeeder;
+  return null;
+}
+
+function beltMergeInfo(t) {
+  // Detect double-sideload merge: two perpendicular feeders from opposite sides,
+  // no straight feeder from behind. Returns { feeders: [{dx,dy}, ...] } or null.
+  const d = t.dir || 0;
+  const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
+  let hasStraightFeeder = false;
+  const perpFeeders = [];
+  for (const [dx,dy] of dirs) {
+    const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
+    if (!nb || !isBelt(nb.entity)) continue;
+    const nd = nb.dir || 0;
+    if (nb.x + dirDx(nd) !== t.x || nb.y + dirDy(nd) !== t.y) continue;
+    if (nd === d) {
+      hasStraightFeeder = true;
+    } else {
+      const cross = dirDx(nd) * dirDy(d) - dirDy(nd) * dirDx(d);
+      if (cross !== 0) perpFeeders.push({dx, dy});
+    }
+  }
+  if (perpFeeders.length === 2 && !hasStraightFeeder) return { feeders: perpFeeders };
   return null;
 }
 
@@ -156,6 +183,37 @@ function drawItemBadge(ctx, px, py, w, carries) {
   ctx.fillStyle = itemColor(carries);
   ctx.fillText(abbr, tx, ty);
 }
+
+function wrapText(ctx, text, maxWidth, maxLines) {
+  // Split on hyphens (Factorio recipe names use hyphens as word separators)
+  const words = text.split('-');
+  const lines = [];
+  let current = words[0] || '';
+  for (let i = 1; i < words.length; i++) {
+    const test = current + '-' + words[i];
+    if (ctx.measureText(test).width <= maxWidth) {
+      current = test;
+    } else {
+      lines.push(current);
+      current = words[i];
+      if (lines.length >= maxLines - 1) {
+        // Remaining words go on last line
+        current = words.slice(i).join('-');
+        break;
+      }
+    }
+  }
+  if (current.length > 0) {
+    if (ctx.measureText(current).width > maxWidth) {
+      while (current.length > 1 && ctx.measureText(current + '\u2026').width > maxWidth) {
+        current = current.slice(0, -1);
+      }
+      current += '\u2026';
+    }
+    lines.push(current);
+  }
+  return lines;
+}
 """
 
 # ---------------------------------------------------------------------------
@@ -186,6 +244,7 @@ const schematic = {
     const cx = px + w / 2;
     const cy = py + w / 2;
     const turn = beltTurnInfo(t);
+    const merge = !turn ? beltMergeInfo(t) : null;
 
     // Belt track background — curved for turns, rectangular for straight
     ctx.fillStyle = base;
@@ -285,6 +344,27 @@ const schematic = {
         ctx.moveTo(w / 2, -w / 2);
         ctx.lineTo(w / 2, w / 2);
         ctx.stroke();
+
+        // Merge indicators: small inward arrows from each feeder side
+        if (merge) {
+          ctx.strokeStyle = chev;
+          ctx.lineWidth = Math.max(1, s * 0.1);
+          ctx.lineCap = 'round';
+          const aSize = w * 0.18;
+          for (const f of merge.feeders) {
+            // f.dx/dy point from the tile toward the feeder, so the arrow comes from that side
+            const ex = f.dx * w * 0.42;
+            const ey = f.dy * w * 0.42;
+            const ix = f.dx * w * 0.12;
+            const iy = f.dy * w * 0.12;
+            // Arrowhead pointing inward
+            ctx.beginPath();
+            ctx.moveTo(ex - f.dy * aSize * 0.5, ey - (-f.dx) * aSize * 0.5);
+            ctx.lineTo(ix, iy);
+            ctx.lineTo(ex + f.dy * aSize * 0.5, ey + (-f.dx) * aSize * 0.5);
+            ctx.stroke();
+          }
+        }
       }
       ctx.restore();
     }
@@ -467,6 +547,25 @@ const schematic = {
           ctx.fillRect(-tw / 2, ty, tw, iconSize * 0.35);
           ctx.strokeRect(-tw / 2, ty, tw, iconSize * 0.35);
         }
+      } else if (isFurnace(t.entity)) {
+        // Furnace: trapezoid body + flame
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, iconSize * 0.5);
+        ctx.lineTo(-iconSize * 0.35, -iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, -iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
+        ctx.closePath();
+        ctx.stroke();
+        // Flame
+        ctx.fillStyle = 'rgba(255,160,40,0.5)';
+        ctx.beginPath();
+        ctx.moveTo(0, -iconSize * 0.25);
+        ctx.quadraticCurveTo(iconSize * 0.25, iconSize * 0.15, 0, iconSize * 0.35);
+        ctx.quadraticCurveTo(-iconSize * 0.25, iconSize * 0.15, 0, -iconSize * 0.25);
+        ctx.fill();
       } else {
         ctx.strokeStyle = 'rgba(255,255,255,0.45)';
         ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
@@ -496,11 +595,18 @@ const schematic = {
     }
 
     if (t.recipe && scale >= 14) {
+      const fontSize = Math.max(8, scale * 0.45);
       ctx.fillStyle = 'rgba(0,0,0,0.7)';
-      ctx.font = 'bold ' + Math.max(8, scale * 0.5) + 'px sans-serif';
+      ctx.font = 'bold ' + fontSize + 'px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(t.recipe.substring(0, 8), cx, py + h - Math.max(2, h * 0.05));
+      const maxW = w * 0.9;
+      const lines = wrapText(ctx, t.recipe, maxW, 3);
+      const lineH = fontSize * 1.15;
+      const baseY = py + h - Math.max(2, h * 0.05);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        ctx.fillText(lines[i], cx, baseY - (lines.length - 1 - i) * lineH);
+      }
     }
   },
 
@@ -598,6 +704,7 @@ const factorio = {
     const cx = px + w / 2;
     const cy = py + w / 2;
     const turn = beltTurnInfo(t);
+    const merge = !turn ? beltMergeInfo(t) : null;
     const frame = Math.max(1, w * 0.1);
 
     // Background — curved for turns, rectangular for straight
@@ -730,6 +837,25 @@ const factorio = {
         ctx.moveTo(w / 2, -w / 2);
         ctx.lineTo(w / 2, w / 2);
         ctx.stroke();
+
+        // Merge indicators: inward arrows from each feeder side
+        if (merge) {
+          ctx.strokeStyle = arrow;
+          ctx.lineWidth = Math.max(1, s * 0.1);
+          ctx.lineCap = 'round';
+          const aSize = w * 0.18;
+          for (const f of merge.feeders) {
+            const ex = f.dx * w * 0.42;
+            const ey = f.dy * w * 0.42;
+            const ix = f.dx * w * 0.12;
+            const iy = f.dy * w * 0.12;
+            ctx.beginPath();
+            ctx.moveTo(ex - f.dy * aSize * 0.5, ey - (-f.dx) * aSize * 0.5);
+            ctx.lineTo(ix, iy);
+            ctx.lineTo(ex + f.dy * aSize * 0.5, ey + (-f.dx) * aSize * 0.5);
+            ctx.stroke();
+          }
+        }
       }
       ctx.restore();
     }
@@ -1087,6 +1213,27 @@ const factorio = {
         ctx.moveTo(-iconSize * 0.15, -iconSize * 0.35);
         ctx.lineTo(-iconSize * 0.35, -iconSize * 0.5);
         ctx.stroke();
+      } else if (isFurnace(t.entity)) {
+        // Furnace: industrial trapezoid + flame glow
+        ctx.strokeStyle = 'rgba(200,160,100,0.55)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, iconSize * 0.5);
+        ctx.lineTo(-iconSize * 0.35, -iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, -iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.5, iconSize * 0.5);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(180,120,60,0.15)';
+        ctx.fill();
+        ctx.stroke();
+        // Flame glow
+        ctx.fillStyle = 'rgba(255,120,20,0.35)';
+        ctx.beginPath();
+        ctx.moveTo(0, -iconSize * 0.2);
+        ctx.quadraticCurveTo(iconSize * 0.2, iconSize * 0.15, 0, iconSize * 0.35);
+        ctx.quadraticCurveTo(-iconSize * 0.2, iconSize * 0.15, 0, -iconSize * 0.2);
+        ctx.fill();
       } else {
         // Assembler gear icon — more prominent and metallic like the in-game icons
         const gearColor = 'rgba(190,185,170,0.6)';
@@ -1133,11 +1280,18 @@ const factorio = {
     }
 
     if (t.recipe && scale >= 14) {
+      const fontSize = Math.max(8, scale * 0.42);
       ctx.fillStyle = 'rgba(220,210,190,0.65)';
-      ctx.font = 'bold ' + Math.max(8, scale * 0.45) + 'px sans-serif';
+      ctx.font = 'bold ' + fontSize + 'px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(t.recipe.substring(0, 10), cx, py + h - Math.max(2, h * 0.05));
+      const maxW = w * 0.9;
+      const lines = wrapText(ctx, t.recipe, maxW, 3);
+      const lineH = fontSize * 1.15;
+      const baseY = py + h - Math.max(2, h * 0.05);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        ctx.fillText(lines[i], cx, baseY - (lines.length - 1 - i) * lineH);
+      }
     }
   },
 

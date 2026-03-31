@@ -75,6 +75,9 @@ _3x3 = {
     "assembling-machine-2",
     "assembling-machine-3",
     "chemical-plant",
+    "stone-furnace",
+    "steel-furnace",
+    "electric-furnace",
 }
 _5x5 = {"oil-refinery"}
 _CRAFTING = _3x3 | _5x5
