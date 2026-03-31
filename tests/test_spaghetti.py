@@ -139,8 +139,11 @@ class TestProductionGraph:
 
 
 _3x3 = {
-    "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
-    "chemical-plant", "electric-furnace",
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "electric-furnace",
 }
 _5x5 = {"oil-refinery"}
 
