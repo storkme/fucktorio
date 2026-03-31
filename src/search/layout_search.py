@@ -386,7 +386,6 @@ def _evaluate(
     candidate.score = error_count * 100 + len(failed_edges) * 1000 + belt_count * 0.5 + area * 0.1 - direct_count * 10
 
 
-
 def _random_side_preference(
     graph: ProductionGraph,
     rng: random.Random,
@@ -416,5 +415,3 @@ def _shuffle_topo_order(
     order = list(base_order)
     rng.shuffle(order)
     return order
-
-
