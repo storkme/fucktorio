@@ -7,6 +7,7 @@ import logging
 from ..models import EntityDirection, LayoutResult, PlacedEntity, SolverResult
 from .common import (
     _MACHINE_SIZE,
+    _UG_MAX_REACH,
     DIR_MAP,
     DIR_VEC,
     belt_entity_for_rate,
@@ -467,6 +468,7 @@ def build_layout_incremental(
     # Routing state carried across incremental calls — seed from trunks
     belt_dir_map: dict[tuple[int, int], EntityDirection] = dict(trunk_belt_dir_map) if trunk_belt_dir_map else {}
     lane_loads: dict[tuple[str, int], dict[str, float]] = {}  # per-group lane throughput
+    trunk_protected_tiles: set[tuple[int, int]] = set()  # trunk tiles that must not be reoriented
     group_networks: dict[tuple[str, int], set[tuple[int, int]]] = (
         {k: set(v) for k, v in trunk_group_networks.items()} if trunk_group_networks else {}
     )
@@ -563,25 +565,36 @@ def build_layout_incremental(
                     trial_occupied.add(gap_tile)
                     trial_direct.add(i)
 
-            # Assign belt-based inserters for remaining routable edges
+            # Assign belt-based inserters for remaining routable edges.
+            # For internal edges, assign inserters on BOTH machines:
+            #   - the currently-placed machine (node_id)
+            #   - the already-placed other machine (if any)
+            # Build list of (edge_index, edge, machine_node_id, mx, my, msize, is_input)
+            _inserter_jobs: list[tuple[int, FlowEdge, int, int, int, int, bool]] = []
             for i, edge in routable_edges:
                 if i in trial_direct:
                     continue
-                # Determine which node this inserter serves
+                # Current machine side
                 if edge.to_node == node_id:
-                    # Input inserter on this machine
-                    mx, my = cx, cy
+                    _inserter_jobs.append((i, edge, node_id, cx, cy, size, True))
                 elif edge.from_node == node_id:
-                    # Output inserter on this machine
-                    mx, my = cx, cy
-                else:
-                    continue
+                    _inserter_jobs.append((i, edge, node_id, cx, cy, size, False))
+                # Other machine side (for internal edges where other end is already placed)
+                if edge.from_node is not None and edge.from_node != node_id and edge.from_node in placed_node_ids:
+                    other_id = edge.from_node
+                    ox, oy = positions[other_id]
+                    o_size = machine_size(node_map[other_id].spec.entity)
+                    _inserter_jobs.append((i, edge, other_id, ox, oy, o_size, False))
+                if edge.to_node is not None and edge.to_node != node_id and edge.to_node in placed_node_ids:
+                    other_id = edge.to_node
+                    ox, oy = positions[other_id]
+                    o_size = machine_size(node_map[other_id].spec.entity)
+                    _inserter_jobs.append((i, edge, other_id, ox, oy, o_size, True))
 
-                sides = _get_sides(mx, my, size)
-                is_input = edge.to_node == node_id
+            for i, edge, m_node_id, mx, my, m_size, is_input in _inserter_jobs:
+                sides = _get_sides(mx, my, m_size)
                 trunk_tiles_for_item: set[tuple[int, int]] = set()
                 if trunk_group_networks:
-                    # Trunk mode: prefer sides where belt tile lands on the correct trunk
                     edge_item = edge.item
                     trunk_tiles_for_item = set()
                     for (ti, _sg), tiles in group_networks.items():
@@ -593,8 +606,8 @@ def build_layout_incremental(
                         return 0 if belt in _tt else 1
 
                     sides = sorted(sides, key=_trunk_side_score)
-                elif side_preference is not None and node_id in side_preference:
-                    pref_order = side_preference[node_id]
+                elif side_preference is not None and m_node_id in side_preference:
+                    pref_order = side_preference[m_node_id]
                     sides = sorted(
                         sides,
                         key=lambda s, po=pref_order: po.index(s[2]) if s[2] in po else len(po),
@@ -606,12 +619,9 @@ def build_layout_incremental(
                 for border, belt, direction_vec in sides:
                     if border in trial_occupied:
                         continue
-                    # Allow belt tile if it's on the correct trunk (inserter picks/drops
-                    # directly from/to the trunk belt)
                     belt_on_trunk = trunk_group_networks and belt in trunk_tiles_for_item
                     if belt in trial_occupied and not belt_on_trunk:
                         continue
-                    is_input = edge.to_node == node_id
                     if is_input:
                         facing = {
                             (0, 1): EntityDirection.SOUTH,
@@ -639,7 +649,7 @@ def build_layout_incremental(
 
                     assignment = InserterAssignment(
                         edge=edge,
-                        node_id=node_id,
+                        node_id=m_node_id,
                         border_tile=border,
                         belt_tile=belt,
                         direction=facing,
@@ -649,12 +659,12 @@ def build_layout_incremental(
                     trial_assignments.append(assignment)
                     trial_occupied.add(border)
 
-                    # Build routing targets
-                    if is_input:
+                    # Build routing targets (only for first assignment of each edge)
+                    if is_input and i not in edge_targets:
                         edge_targets[i] = belt
                         ins_side = (border[0] - belt[0], border[1] - belt[1])
                         edge_lane_info[i] = (None, ins_side)
-                    else:
+                    elif not is_input and i not in edge_starts:
                         edge_starts[i] = belt
                         edge_lane_info[i] = (target_lane, None)
                     if i not in edge_exclusions:
@@ -738,6 +748,8 @@ def build_layout_incremental(
                             _oit = None
 
                     path = None
+                    cont_belt = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
+                    cont_ug_reach = _UG_MAX_REACH.get(cont_belt, 4)
                     if is_input and not edge.is_fluid:
                         # Input: multi-source A* from network toward stub
                         downstream_ends = _network_downstream_ends(existing_network, trial_belt_dir_map)
@@ -757,7 +769,7 @@ def build_layout_incremental(
                                 goals={(bx, by)},
                                 obstacles=obstacles,
                                 allow_underground=True,
-                                ug_max_reach=6,
+                                ug_max_reach=cont_ug_reach,
                                 belt_dir_map=trial_belt_dir_map,
                                 other_item_tiles=_oit,
                             )
@@ -787,7 +799,7 @@ def build_layout_incremental(
                                     goals=preferred,
                                     obstacles=obstacles,
                                     allow_underground=True,
-                                    ug_max_reach=6,
+                                    ug_max_reach=cont_ug_reach,
                                     belt_dir_map=trial_belt_dir_map,
                                     other_item_tiles=_oit,
                                 )
@@ -797,7 +809,7 @@ def build_layout_incremental(
                                     goals=fallback,
                                     obstacles=obstacles,
                                     allow_underground=True,
-                                    ug_max_reach=6,
+                                    ug_max_reach=cont_ug_reach,
                                     belt_dir_map=trial_belt_dir_map,
                                     other_item_tiles=_oit,
                                 )
@@ -807,7 +819,7 @@ def build_layout_incremental(
                                     goals=all_goals,
                                     obstacles=obstacles,
                                     allow_underground=True,
-                                    ug_max_reach=6,
+                                    ug_max_reach=cont_ug_reach,
                                     belt_dir_map=trial_belt_dir_map,
                                     other_item_tiles=_oit,
                                 )
@@ -817,7 +829,7 @@ def build_layout_incremental(
                                 goals=all_goals,
                                 obstacles=obstacles,
                                 allow_underground=True,
-                                ug_max_reach=6,
+                                ug_max_reach=cont_ug_reach,
                                 belt_dir_map=trial_belt_dir_map,
                                 other_item_tiles=_oit,
                             )
@@ -845,31 +857,213 @@ def build_layout_incremental(
                                 loads = lane_loads.setdefault(group_key, {"left": 0.0, "right": 0.0})
                                 loads[sl] += edge.rate
                     else:
-                        failed_count += 1
-                        trial_failed.append(edge)
-                        # Still place the belt stub so the inserter has a target
+                        # Surface routing failed — try underground escape
+                        ug_escaped = False
                         if not edge.is_fluid:
-                            belt_name = belt_entity_for_rate(edge.rate)
-                            trial_entities.append(
-                                PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
-                            )
-                        else:
-                            trial_entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
-                        trial_belt_dir_map[(bx, by)] = direction
-                        trial_group_networks.setdefault(group_key, set()).add((bx, by))
-                        trial_occupied.add((bx, by))
+                            ug_belt = belt_entity_for_rate(edge.rate)
+                            ug_name = "underground-belt"
+                            ug_reach = _UG_MAX_REACH.get(ug_belt, 4)
+
+                            # Direction away from machine (opposite of approach vector)
+                            assn = next((a for a in trial_assignments if a.edge is edge), None)
+                            if assn and assn.approach_vec:
+                                # approach_vec points from machine toward belt tile
+                                escape_dx, escape_dy = assn.approach_vec
+                            else:
+                                # Fallback: use stub direction for outputs, opposite for inputs
+                                dvx, dvy = DIR_VEC[direction]
+                                if is_input:
+                                    escape_dx, escape_dy = -dvx, -dvy
+                                else:
+                                    escape_dx, escape_dy = dvx, dvy
+
+                            escape_dir = DIR_MAP.get((escape_dx, escape_dy), direction)
+
+                            # Find first clear exit tile along escape direction
+                            exit_tile = None
+                            for dist in range(2, ug_reach + 1):
+                                ex, ey = bx + escape_dx * dist, by + escape_dy * dist
+                                if (ex, ey) not in trial_occupied:
+                                    exit_tile = (ex, ey)
+                                    break
+
+                            if exit_tile:
+                                # Place underground pair: entrance at stub, exit at found tile
+                                trial_entities.append(
+                                    PlacedEntity(
+                                        name=ug_name, x=bx, y=by, direction=escape_dir,
+                                        io_type="input", carries=edge.item,
+                                    )
+                                )
+                                trial_entities.append(
+                                    PlacedEntity(
+                                        name=ug_name, x=exit_tile[0], y=exit_tile[1],
+                                        direction=escape_dir, io_type="output", carries=edge.item,
+                                    )
+                                )
+                                trial_belt_dir_map[(bx, by)] = escape_dir
+                                trial_belt_dir_map[exit_tile] = escape_dir
+                                trial_occupied.add((bx, by))
+                                trial_occupied.add(exit_tile)
+                                trial_group_networks.setdefault(group_key, set()).update({(bx, by), exit_tile})
+
+                                # Retry A* from exit tile to network (or network to exit tile)
+                                retry_obstacles = trial_occupied - {exit_tile} - existing_network
+                                retry_path = None
+                                if is_input:
+                                    # Recompute network approach tiles for retry
+                                    r_downstream = _network_downstream_ends(existing_network, trial_belt_dir_map)
+                                    r_forward = set()
+                                    for tile in r_downstream:
+                                        d = trial_belt_dir_map.get(tile)
+                                        if d is not None:
+                                            _dvx, _dvy = DIR_VEC[d]
+                                            ft = (tile[0] + _dvx, tile[1] + _dvy)
+                                            if ft not in existing_network:
+                                                r_forward.add(ft)
+                                    r_approach = _perpendicular_approach_tiles(existing_network, trial_belt_dir_map, trial_occupied)
+                                    r_starts = (r_forward | r_approach) - retry_obstacles
+                                    if r_starts:
+                                        retry_path = _astar_path(
+                                            starts=r_starts,
+                                            goals={exit_tile},
+                                            obstacles=retry_obstacles,
+                                            allow_underground=True,
+                                            ug_max_reach=ug_reach,
+                                            belt_dir_map=trial_belt_dir_map,
+                                            other_item_tiles=_oit,
+                                        )
+                                else:
+                                    retry_goals = set()
+                                    for nx, ny in existing_network:
+                                        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                                            adj = (nx + ddx, ny + ddy)
+                                            if adj not in retry_obstacles and adj not in existing_network:
+                                                retry_goals.add(adj)
+                                    retry_goals |= existing_network
+                                    if retry_goals:
+                                        retry_path = _astar_path(
+                                            start=exit_tile,
+                                            goals=retry_goals,
+                                            obstacles=retry_obstacles,
+                                            allow_underground=True,
+                                            ug_max_reach=ug_reach,
+                                            belt_dir_map=trial_belt_dir_map,
+                                            other_item_tiles=_oit,
+                                        )
+
+                                if retry_path:
+                                    retry_ents = _path_to_entities(retry_path, ug_belt, edge.item, False)
+                                    for pe in retry_ents:
+                                        if (pe.x, pe.y) not in existing_network and (pe.x, pe.y) != exit_tile:
+                                            trial_entities.append(pe)
+                                        trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
+                                        trial_occupied.add((pe.x, pe.y))
+                                    trial_group_networks.setdefault(group_key, set()).update(set(retry_path))
+                                    ug_escaped = True
+
+                        if not ug_escaped:
+                            failed_count += 1
+                            trial_failed.append(edge)
+                            # Still place the belt stub so the inserter has a target
+                            if not edge.is_fluid:
+                                belt_name = belt_entity_for_rate(edge.rate)
+                                trial_entities.append(
+                                    PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
+                                )
+                            else:
+                                trial_entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+                            trial_belt_dir_map[(bx, by)] = direction
+                            trial_group_networks.setdefault(group_key, set()).add((bx, by))
+                            trial_occupied.add((bx, by))
                 else:
-                    # First edge for this item: place a belt stub
+                    # First edge for this item: place stub + route a trunk toward boundary
+                    is_input = i in edge_targets
                     if not edge.is_fluid:
                         belt_name = belt_entity_for_rate(edge.rate)
-                        trial_entities.append(
-                            PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
-                        )
                     else:
-                        trial_entities.append(PlacedEntity(name="pipe", x=bx, y=by, carries=edge.item))
+                        belt_name = "pipe"
+
+                    # Place the stub itself
+                    trial_entities.append(
+                        PlacedEntity(name=belt_name, x=bx, y=by, direction=direction, carries=edge.item)
+                    )
                     trial_belt_dir_map[(bx, by)] = direction
                     trial_group_networks.setdefault(group_key, set()).add((bx, by))
                     trial_occupied.add((bx, by))
+
+                    # Route a trunk from the stub toward the layout boundary via A*
+                    if not edge.is_fluid:
+                        # Compute boundary x from machine positions AND existing belt extents
+                        # (validator boundary = min/max of all belt tiles, so we must go at least
+                        # as far as the most extreme belt tile from other items)
+                        all_pos_x = [px for px, _ in trial_positions.values()]
+                        max_msz = max(
+                            (machine_size(node_map[nid].spec.entity) for nid in trial_positions),
+                            default=3,
+                        )
+                        existing_belt_xs = [tx for (tx, _) in trial_belt_dir_map]
+                        num_ext = len({e.item for e in graph.edges if e.from_node is None})
+                        if is_input:
+                            machine_boundary = min(all_pos_x) - max(3, num_ext * 3)
+                            belt_boundary = min(existing_belt_xs) if existing_belt_xs else machine_boundary
+                            boundary_x = min(machine_boundary, belt_boundary)
+                        else:
+                            num_ext_out = len({e.item for e in graph.edges if e.to_node is None})
+                            machine_boundary = max(all_pos_x) + max_msz + max(3, num_ext_out * 3)
+                            belt_boundary = max(existing_belt_xs) if existing_belt_xs else machine_boundary
+                            boundary_x = max(machine_boundary, belt_boundary)
+
+                        # Goal: a column of tiles at the boundary x, near the stub's y
+                        trunk_goals = set()
+                        for ty in range(by - 6, by + 7):
+                            t = (boundary_x, ty)
+                            if t not in trial_occupied:
+                                trunk_goals.add(t)
+
+                        if trunk_goals:
+                            # Precompute foreign item tiles for contamination avoidance
+                            _oit_trunk: set[tuple[int, int]] | None = None
+                            if not edge.is_fluid:
+                                _oit_trunk = set()
+                                for (oi, _sg), tiles in trial_group_networks.items():
+                                    if oi != edge.item:
+                                        _oit_trunk |= tiles
+                                if not _oit_trunk:
+                                    _oit_trunk = None
+
+                            obstacles_trunk = trial_occupied - {(bx, by)}
+                            ug_reach = _UG_MAX_REACH.get(belt_name, 4)
+                            if is_input:
+                                # Route from boundary toward stub (items flow boundary→stub)
+                                trunk_path = _astar_path(
+                                    starts=trunk_goals,
+                                    goals={(bx, by)},
+                                    obstacles=obstacles_trunk,
+                                    allow_underground=True,
+                                    ug_max_reach=ug_reach,
+                                    other_item_tiles=_oit_trunk,
+                                )
+                            else:
+                                # Route from stub toward boundary (items flow stub→boundary)
+                                trunk_path = _astar_path(
+                                    start=(bx, by),
+                                    goals=trunk_goals,
+                                    obstacles=obstacles_trunk,
+                                    allow_underground=True,
+                                    ug_max_reach=ug_reach,
+                                    other_item_tiles=_oit_trunk,
+                                )
+
+                            if trunk_path:
+                                trunk_ents = _path_to_entities(trunk_path, belt_name, edge.item, edge.is_fluid)
+                                for pe in trunk_ents:
+                                    if (pe.x, pe.y) != (bx, by):
+                                        trial_entities.append(pe)
+                                    trial_belt_dir_map[(pe.x, pe.y)] = pe.direction
+                                    trial_group_networks.setdefault(group_key, set()).add((pe.x, pe.y))
+                                    trial_occupied.add((pe.x, pe.y))
+                                    trunk_protected_tiles.add((pe.x, pe.y))
 
             # Handle internal edges via route_connections
             if internal_edges:
@@ -953,16 +1147,28 @@ def build_layout_incremental(
         belt_dir_map = new_belt_dir_map
         group_networks = new_group_networks
 
-    # Extend trunks with entry/exit tails so the validator sees boundary connections
+    # Extend trunks with entry/exit tails (fallback: only if trunk routing didn't reach boundary)
+    # Compute boundary from all belt tile positions
+    all_belt_xs = [x for (x, _) in belt_dir_map]
+    all_belt_ys = [y for (_, y) in belt_dir_map]
+    if all_belt_xs:
+        _ext_min_bx, _ext_max_bx = min(all_belt_xs), max(all_belt_xs)
+        _ext_min_by, _ext_max_by = min(all_belt_ys), max(all_belt_ys)
+    else:
+        _ext_min_bx = _ext_max_bx = _ext_min_by = _ext_max_by = 0
+
+    def _network_on_boundary(net: set[tuple[int, int]]) -> bool:
+        return any(
+            t[0] in (_ext_min_bx, _ext_max_bx) or t[1] in (_ext_min_by, _ext_max_by) for t in net
+        )
+
     for (item, _sg_idx), network in group_networks.items():
         if not network:
             continue
-        # Determine if this is an input or output item
         is_input = any(e.from_node is None and e.item == item for e in graph.edges)
         is_output = any(e.to_node is None and e.item == item for e in graph.edges)
 
-        if is_input:
-            # Extend upstream end backward by a few tiles
+        if is_input and not _network_on_boundary(network):
             upstream = _network_upstream_ends(network, belt_dir_map)
             total_rate = sum(e.rate for e in graph.edges if e.item == item and e.from_node is None) or 15
             for tile in upstream:
@@ -978,13 +1184,11 @@ def build_layout_incremental(
                     entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
                     belt_dir_map[(nx, ny)] = d
                     occupied.add((nx, ny))
-                break  # only extend one upstream end
+                break
 
-        if is_output:
-            # Extend downstream end forward by a few tiles
+        if is_output and not _network_on_boundary(network):
             downstream = _network_downstream_ends(network, belt_dir_map)
             total_rate = sum(e.rate for e in graph.edges if e.item == item and e.to_node is None) or 15
-            # Use 2x rate for belt tier: inserters may sideload to same lane
             belt_name = belt_entity_for_rate(total_rate * 2)
             for tile in downstream:
                 d = belt_dir_map.get(tile)
@@ -998,13 +1202,13 @@ def build_layout_incremental(
                     entities.append(PlacedEntity(name=belt_name, x=nx, y=ny, direction=d, carries=item))
                     belt_dir_map[(nx, ny)] = d
                     occupied.add((nx, ny))
-                break  # only extend one downstream end
+                break
 
     # Place inserter entities
     entities.extend(build_inserter_entities(all_assignments))
 
-    # Collect inserter-adjacent belt tiles that must not be reoriented
-    _protected_tiles: set[tuple[int, int]] = set()
+    # Collect inserter-adjacent belt tiles and trunk tiles that must not be reoriented
+    _protected_tiles: set[tuple[int, int]] = set(trunk_protected_tiles)
     for asgn in all_assignments:
         if not asgn.is_direct:
             _protected_tiles.add(asgn.belt_tile)

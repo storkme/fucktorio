@@ -1561,8 +1561,9 @@ def check_underground_belt_pairs(
         used_outputs.add((best_out.x, best_out.y))
 
         # Check distance does not exceed max reach
+        # max_reach = underground gap tiles, so max entry-to-exit distance = max_reach + 1
         dist = best_dist
-        if dist > max_reach:
+        if dist > max_reach + 1:
             issues.append(
                 ValidationIssue(
                     severity="error",
