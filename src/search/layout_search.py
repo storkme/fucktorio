@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from ..models import LayoutResult, SolverResult
 from ..routing.common import machine_size, machine_tiles
 from ..routing.graph import ProductionGraph, build_production_graph
-from ..routing.orchestrate import build_layout, build_layout_incremental
+from ..routing.orchestrate import build_layout, build_layout_incremental, plan_trunks
 from ..spaghetti.placer import _candidate_positions, _dependency_order, incremental_place
 from ..validate import ValidationError, validate
 
@@ -31,6 +31,7 @@ class SearchStats:
     elapsed_s: float
     error_categories: dict[str, int] = field(default_factory=dict)
 
+
 # All four side direction vectors
 _ALL_SIDES = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
@@ -44,6 +45,8 @@ class _Candidate:
     edge_order: list[int] | None = None
     position_seed: int = 0  # RNG seed for incremental position selection
     placement_order: list[int] | None = None  # machine placement order
+    use_trunks: bool = False  # whether to pre-lay belt trunks
+    trunk_spacing: int = 7  # x gap between input and output trunks
     score: float = float("inf")
     layout: LayoutResult | None = None
 
@@ -234,20 +237,26 @@ def _generate_initial_population(
         spacing_variants.append(positions_s5)
         population.append(_Candidate(positions=positions_s5))
 
-    # Remaining candidates: mix of incremental and batch
+    # Remaining candidates: mix of incremental and trunk-based
     dep_order = _dependency_order(graph)
 
-    for _ in range(population_size - len(population)):
-        side_pref = _random_side_preference(graph, rng)
+    remaining = population_size - len(population)
+    # Half of remaining candidates use trunk planning
+    trunk_count = remaining // 2
 
-        # All candidates use incremental placement
+    for idx in range(remaining):
+        side_pref = _random_side_preference(graph, rng)
         order = _shuffle_topo_order(dep_order, graph, rng)
+        use_trunks = idx < trunk_count
+        trunk_spacing = rng.choice([6, 7, 8]) if use_trunks else 7
         population.append(
             _Candidate(
                 positions={},
                 side_preference=side_pref,
                 placement_order=order,
                 position_seed=rng.randint(0, 2**31),
+                use_trunks=use_trunks,
+                trunk_spacing=trunk_spacing,
             )
         )
 
@@ -275,14 +284,69 @@ def _evaluate(
             # Incremental mode
             inc_rng = random.Random(candidate.position_seed)
 
-            def _gen_candidates(node_id, g, positions, occupied, rng):
+            # Pre-lay trunks if this candidate uses trunk planning
+            trunk_kwargs: dict = {}
+            trunk_x_coords: list[int] = []
+            if candidate.use_trunks:
+                t_ents, t_bdm, t_gn, t_occ = plan_trunks(
+                    graph,
+                    solver_result,
+                    trunk_spacing=candidate.trunk_spacing,
+                )
+                trunk_kwargs = dict(
+                    trunk_entities=t_ents,
+                    trunk_belt_dir_map=t_bdm,
+                    trunk_group_networks=t_gn,
+                    trunk_occupied=t_occ,
+                )
+                trunk_x_coords = sorted({e.x for e in t_ents})
+
+            # Compute trunk length for generating positions along trunks
+            trunk_length = max(len(graph.nodes) * 4, 8) if candidate.use_trunks else 0
+
+            # Compute ideal x-positions: between input and output trunks
+            if trunk_x_coords:
+                input_items = sorted({e.item for e in graph.edges if e.from_node is None})
+                output_items = sorted({e.item for e in graph.edges if e.to_node is None})
+                input_trunk_xs = trunk_x_coords[: len(input_items)]
+                output_trunk_xs = trunk_x_coords[len(input_items) :]
+                # Machine x: right of rightmost input trunk, with 2 tiles gap (inserter + belt)
+                machine_ideal_x = max(input_trunk_xs) + 2 if input_trunk_xs else trunk_x_coords[0] + 2
+            else:
+                machine_ideal_x = 0
+
+            def _gen_candidates(
+                node_id, g, positions, occupied, rng, _txc=trunk_x_coords, _tlen=trunk_length, _mix=machine_ideal_x
+            ):
                 node_size = machine_size(next(n for n in g.nodes if n.id == node_id).spec.entity)
-                cands = _candidate_positions(node_id, node_size, g, positions, occupied, spacing=2)
-                # Sort close-first for compactness, shuffle within distance bands for variety
-                if positions:
-                    cx = sum(x for x, _ in positions.values()) / len(positions)
-                    cy = sum(y for _, y in positions.values()) / len(positions)
-                    cands.sort(key=lambda p: abs(p[0] - cx) + abs(p[1] - cy))
+
+                if _txc:
+                    # Trunk mode: place machines in a column between input and output trunks.
+                    # Generate positions at the ideal x, spaced vertically.
+                    cands = []
+                    for y in range(0, _tlen - node_size + 1, node_size + 1):
+                        if not (machine_tiles(_mix, y, node_size) & occupied):
+                            cands.append((_mix, y))
+
+                    # Also try with 1-tile vertical gap for variety
+                    for y in range(0, _tlen - node_size + 1):
+                        if (_mix, y) not in set(cands):
+                            if not (machine_tiles(_mix, y, node_size) & occupied):
+                                cands.append((_mix, y))
+
+                    def _trunk_score(p):
+                        px, py = p
+                        x_dist = abs(px - _mix)
+                        return x_dist * 10 + py * 0.1
+
+                    cands.sort(key=_trunk_score)
+                else:
+                    cands = _candidate_positions(node_id, node_size, g, positions, occupied, spacing=2)
+                    if positions:
+                        cx = sum(x for x, _ in positions.values()) / len(positions)
+                        cy = sum(y for _, y in positions.values()) / len(positions)
+                        cands.sort(key=lambda p: abs(p[0] - cx) + abs(p[1] - cy))
+
                 # Shuffle within groups of 4 to add variety without losing closeness
                 for i in range(0, len(cands) - 3, 4):
                     chunk = cands[i : i + 4]
@@ -297,6 +361,7 @@ def _evaluate(
                 _gen_candidates,
                 side_preference=candidate.side_preference,
                 rng=inc_rng,
+                **trunk_kwargs,
             )
         else:
             # Batch mode (legacy)
