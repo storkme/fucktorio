@@ -56,11 +56,7 @@ def produce(
             else (
                 "oil-refinery"
                 if m.entity == "oil-refinery"
-                else (
-                    "electric-furnace"
-                    if m.entity == "electric-furnace"
-                    else "asm3"
-                )
+                else ("electric-furnace" if m.entity == "electric-furnace" else "asm3")
             )
         )
         print(f"{prefix} {m.recipe}  ×{count_str} {machine_label}")
