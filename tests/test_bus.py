@@ -87,43 +87,25 @@ class TestBusLayout:
 class TestBusVisualization:
     """Visualization tests — run with --viz flag."""
 
-    @pytest.fixture(autouse=True)
-    def _skip_without_viz(self, request):
-        if not request.config.getoption("--viz", default=False):
-            pytest.skip("Use --viz to generate visualizations")
-
-    def test_viz_iron_gear_wheel(self):
+    def test_viz_iron_gear_wheel(self, viz):
         result = solve("iron-gear-wheel", 10.0)
         layout = bus_layout(result)
-        _generate_viz(layout, result, "bus-iron-gear-wheel-10s")
+        bp = _make_blueprint(layout, "bus: 10/s iron-gear-wheel")
+        viz(bp, "bus-iron-gear-wheel-10s", solver_result=result, layout_result=layout)
 
-    def test_viz_copper_cable_smelting(self):
+    def test_viz_copper_cable_smelting(self, viz):
         result = solve("copper-cable", 5.0)
         layout = bus_layout(result)
-        _generate_viz(layout, result, "bus-copper-cable-5s")
+        bp = _make_blueprint(layout, "bus: 5/s copper-cable (smelting)")
+        viz(bp, "bus-copper-cable-5s", solver_result=result, layout_result=layout)
 
-    def test_viz_electronic_circuit(self):
+    def test_viz_electronic_circuit(self, viz):
         result = solve("electronic-circuit", 5.0, available_inputs={"iron-plate", "copper-plate"})
         layout = bus_layout(result)
-        _generate_viz(layout, result, "bus-electronic-circuit-5s")
+        bp = _make_blueprint(layout, "bus: 5/s electronic-circuit")
+        viz(bp, "bus-electronic-circuit-5s", solver_result=result, layout_result=layout)
 
 
-def _generate_viz(layout, solver_result, name):
-    """Generate HTML visualization for a bus layout."""
-    from src.validate import ValidationError, validate
-    from src.verify import ascii_map
-
-    errors = []
-    try:
-        validate(layout, solver_result, layout_style="bus")
-    except ValidationError as e:
-        errors = e.issues
-
-    print(f"\n=== {name} ===")
-    print(f"Entities: {len(layout.entities)}, Size: {layout.width}x{layout.height}")
-    print(f"Errors: {len(errors)}")
-    for err in errors:
-        print(f"  [{err.severity}] {err.category}: {err.message}")
-
-    print("\nASCII map:")
-    print(ascii_map(layout.entities))
+def _make_blueprint(layout, label):
+    from src.blueprint import build_blueprint
+    return build_blueprint(layout, label=label)

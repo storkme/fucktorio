@@ -3,7 +3,7 @@
 Each item that flows between rows gets a dedicated vertical bus lane.
 Lanes run SOUTH (top to bottom).  At the consuming row, the lane turns
 EAST into the row's input belt (tap-off).  When a tap-off crosses another
-lane's vertical segment, that segment goes underground at the crossing point.
+lane's vertical segment, the tap-off goes underground (EAST) past it.
 """
 
 from __future__ import annotations
@@ -73,8 +73,7 @@ def plan_bus_lanes(
     for lane in lanes:
         lane.tap_off_ys = _find_tap_off_ys(lane, row_spans)
 
-    # Sort lanes: earliest first tap-off on LEFT (lowest x), so their
-    # tap-offs cross fewer active vertical segments to the right.
+    # Sort: earliest first tap-off on LEFT, so their tap-offs cross fewer lanes
     lanes.sort(key=lambda ln: (min(ln.tap_off_ys) if ln.tap_off_ys else 9999, ln.source_y))
 
     # Assign x-columns after sorting
@@ -111,86 +110,27 @@ def route_bus(
 ) -> list[PlacedEntity]:
     """Create all bus belt entities."""
     entities: list[PlacedEntity] = []
-
-    # Collect all tap-off positions: (y, lane_x) pairs
-    all_tap_offs: dict[int, set[int]] = {}
     for lane in lanes:
-        for ty in lane.tap_off_ys:
-            all_tap_offs.setdefault(ty, set()).add(lane.x)
-
-    for lane in lanes:
-        _route_lane(entities, lane, bw, all_tap_offs)
-
+        _route_lane(entities, lane, lanes, bw)
     return entities
 
 
 def _route_lane(
     entities: list[PlacedEntity],
     lane: BusLane,
+    all_lanes: list[BusLane],
     bw: int,
-    all_tap_offs: dict[int, set[int]],
 ) -> None:
-    """Route a single bus lane: vertical belts + tap-offs + output return.
-
-    Uses a tile-by-tile approach: for each y in the active range, decide
-    whether to place a surface belt, underground pair, or tap-off.
-    """
+    """Route a single bus lane: vertical belts + tap-offs + output return."""
     x = lane.x
     tap_off_set = set(lane.tap_off_ys)
 
     start_y = lane.source_y
     end_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
 
-    # Find y positions where other lanes' tap-offs cross this lane
-    crossing_ys: set[int] = set()
-    for ty, tap_xs in all_tap_offs.items():
-        if ty in tap_off_set:
-            continue  # Our own tap-off
-        if start_y <= ty <= end_y:
-            for tap_x in tap_xs:
-                if tap_x < x:
-                    crossing_ys.add(ty)
-                    break
-
-    # Build the vertical segment tile-by-tile
-    # Track which y's get underground pairs so we don't double-place
-    underground_tiles: set[int] = set()
-
-    for cy in sorted(crossing_ys):
-        # Need to go underground to skip this crossing.
-        # Entry at cy-1 (or cy if cy == start_y), exit at cy+1.
-        entry = max(start_y, cy - 1)
-        exit_ = cy + 1
-
-        # If exit lands on a tap-off or another crossing, extend
-        while exit_ in crossing_ys or exit_ in tap_off_set:
-            exit_ += 1
-
-        if exit_ > end_y:
-            exit_ = end_y  # clamp
-
-        # Only place if entry != exit and distance is reasonable
-        if entry < exit_:
-            entities.append(
-                PlacedEntity(
-                    name="underground-belt", x=x, y=entry,
-                    direction=EntityDirection.SOUTH, io_type="input",
-                    carries=lane.item,
-                )
-            )
-            entities.append(
-                PlacedEntity(
-                    name="underground-belt", x=x, y=exit_,
-                    direction=EntityDirection.SOUTH, io_type="output",
-                    carries=lane.item,
-                )
-            )
-            for uy in range(entry, exit_ + 1):
-                underground_tiles.add(uy)
-
-    # Place surface belts for remaining positions
+    # Vertical surface belts (SOUTH), skipping tap-off positions
     for y in range(start_y, end_y + 1):
-        if y in underground_tiles or y in tap_off_set:
+        if y in tap_off_set:
             continue
         entities.append(
             PlacedEntity(
@@ -199,19 +139,14 @@ def _route_lane(
             )
         )
 
-    # Tap-off horizontal belts (EAST)
+    # Tap-off horizontal belts (EAST) from bus column to row start.
+    # When crossing another lane's vertical segment, go underground.
     for tap_y in lane.tap_off_ys:
-        for hx in range(x, bw):
-            entities.append(
-                PlacedEntity(
-                    name="transport-belt", x=hx, y=tap_y,
-                    direction=EntityDirection.EAST, carries=lane.item,
-                )
-            )
+        _route_tap_off(entities, lane, tap_y, all_lanes, bw)
 
     # Output return: WEST belts from row edge back to bus column
     if lane.producer_row is not None:
-        out_y = lane.source_y  # source_y IS the output belt y
+        out_y = lane.source_y
         for hx in range(x + 1, bw):
             entities.append(
                 PlacedEntity(
@@ -219,3 +154,78 @@ def _route_lane(
                     direction=EntityDirection.WEST, carries=lane.item,
                 )
             )
+
+
+def _route_tap_off(
+    entities: list[PlacedEntity],
+    lane: BusLane,
+    tap_y: int,
+    all_lanes: list[BusLane],
+    bw: int,
+) -> None:
+    """Route a horizontal tap-off from the bus lane to the row input belt.
+
+    When the tap-off crosses another lane's active vertical segment,
+    use underground belts (EAST) to tunnel past it without collision.
+    """
+    # Find x-columns of other lanes that have active vertical belts at tap_y
+    blocked_xs: set[int] = set()
+    for other in all_lanes:
+        if other is lane:
+            continue
+        other_start = other.source_y
+        other_end = max(other.tap_off_ys) if other.tap_off_ys else other_start
+        other_taps = set(other.tap_off_ys)
+        # The other lane has a vertical belt at tap_y if it's in its active
+        # range and not one of its own tap-off positions
+        if other_start <= tap_y <= other_end and tap_y not in other_taps:
+            blocked_xs.add(other.x)
+
+    # Route from lane.x to bw-1, going underground past blocked columns
+    hx = lane.x
+    while hx < bw:
+        if hx in blocked_xs:
+            # Go underground: entry 1 tile before, exit 1 tile after
+            entry_x = hx - 1
+            exit_x = hx + 1
+
+            # Extend to cover consecutive blocked columns
+            while exit_x in blocked_xs:
+                exit_x += 2  # lanes are 2 apart
+
+            if entry_x >= lane.x and exit_x < bw:
+                # Replace the surface belt at entry_x with underground entry
+                # (remove the belt we just placed there)
+                entities[:] = [
+                    e for e in entities
+                    if not (e.x == entry_x and e.y == tap_y
+                            and e.name == "transport-belt"
+                            and e.direction == EntityDirection.EAST)
+                ]
+                entities.append(
+                    PlacedEntity(
+                        name="underground-belt", x=entry_x, y=tap_y,
+                        direction=EntityDirection.EAST, io_type="input",
+                        carries=lane.item,
+                    )
+                )
+                entities.append(
+                    PlacedEntity(
+                        name="underground-belt", x=exit_x, y=tap_y,
+                        direction=EntityDirection.EAST, io_type="output",
+                        carries=lane.item,
+                    )
+                )
+                hx = exit_x + 1
+                continue
+            # Fallback: can't go underground (too close to edge), just place belt
+            # This shouldn't happen with proper lane ordering
+
+        # Normal surface belt
+        entities.append(
+            PlacedEntity(
+                name="transport-belt", x=hx, y=tap_y,
+                direction=EntityDirection.EAST, carries=lane.item,
+            )
+        )
+        hx += 1
