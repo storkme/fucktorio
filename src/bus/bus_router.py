@@ -179,16 +179,11 @@ def _route_belt_lane(
     for tap_y in lane.tap_off_ys:
         _route_tap_off(entities, lane, tap_y, all_lanes, bw, belt_name)
 
-    # Output return: WEST belts from row edge back to bus column
+    # Output return: WEST belts from row edge back to bus column.
+    # Must go underground past other lanes' vertical segments (same as tap-offs).
     if lane.producer_row is not None:
         out_y = lane.source_y
-        for hx in range(x + 1, bw):
-            entities.append(
-                PlacedEntity(
-                    name=belt_name, x=hx, y=out_y,
-                    direction=EntityDirection.WEST, carries=lane.item,
-                )
-            )
+        _route_output_return(entities, lane, out_y, all_lanes, bw, belt_name)
 
 
 def _route_fluid_lane(
@@ -249,6 +244,115 @@ def _underground_for(belt: str) -> str:
     return _UG_MAP.get(belt, "underground-belt")
 
 
+def _blocked_xs_at(lane: BusLane, y: int, all_lanes: list[BusLane]) -> set[int]:
+    """Find x-columns of other lanes that have active vertical segments at y."""
+    blocked: set[int] = set()
+    for other in all_lanes:
+        if other is lane:
+            continue
+        other_start = other.source_y
+        other_end = max(other.tap_off_ys) if other.tap_off_ys else other_start
+        other_taps = set(other.tap_off_ys)
+        if other_start <= y <= other_end and y not in other_taps:
+            blocked.add(other.x)
+    return blocked
+
+
+def _route_horizontal(
+    entities: list[PlacedEntity],
+    lane: BusLane,
+    y: int,
+    x_from: int,
+    x_to: int,
+    direction: EntityDirection,
+    blocked_xs: set[int],
+    belt_name: str,
+) -> None:
+    """Route a horizontal belt run, going underground past blocked columns."""
+    ug_name = _underground_for(belt_name)
+
+    if direction == EntityDirection.EAST:
+        hx = x_from
+        while hx <= x_to:
+            if hx in blocked_xs:
+                entry_x = hx - 1
+                exit_x = hx + 1
+                while exit_x in blocked_xs:
+                    exit_x += 2
+                if entry_x >= x_from and exit_x <= x_to:
+                    # Remove surface belt we may have just placed at entry_x
+                    entities[:] = [
+                        e for e in entities
+                        if not (e.x == entry_x and e.y == y
+                                and e.name == belt_name
+                                and e.direction == direction)
+                    ]
+                    entities.append(
+                        PlacedEntity(
+                            name=ug_name, x=entry_x, y=y,
+                            direction=EntityDirection.EAST, io_type="input",
+                            carries=lane.item,
+                        )
+                    )
+                    entities.append(
+                        PlacedEntity(
+                            name=ug_name, x=exit_x, y=y,
+                            direction=EntityDirection.EAST, io_type="output",
+                            carries=lane.item,
+                        )
+                    )
+                    hx = exit_x + 1
+                    continue
+            entities.append(
+                PlacedEntity(
+                    name=belt_name, x=hx, y=y,
+                    direction=direction, carries=lane.item,
+                )
+            )
+            hx += 1
+    else:  # WEST — items flow right-to-left
+        hx = x_to
+        while hx >= x_from:
+            if hx in blocked_xs:
+                # For WEST: entry (input) is on the RIGHT (high x),
+                # exit (output) is on the LEFT (low x)
+                ug_input_x = hx + 1  # items enter underground here
+                ug_output_x = hx - 1  # items emerge here
+                while ug_output_x in blocked_xs:
+                    ug_output_x -= 2
+                if ug_output_x >= x_from and ug_input_x <= x_to:
+                    # Remove surface belt at ug_input_x (already placed)
+                    entities[:] = [
+                        e for e in entities
+                        if not (e.x == ug_input_x and e.y == y
+                                and e.name == belt_name
+                                and e.direction == direction)
+                    ]
+                    entities.append(
+                        PlacedEntity(
+                            name=ug_name, x=ug_input_x, y=y,
+                            direction=EntityDirection.WEST, io_type="input",
+                            carries=lane.item,
+                        )
+                    )
+                    entities.append(
+                        PlacedEntity(
+                            name=ug_name, x=ug_output_x, y=y,
+                            direction=EntityDirection.WEST, io_type="output",
+                            carries=lane.item,
+                        )
+                    )
+                    hx = ug_output_x - 1
+                    continue
+            entities.append(
+                PlacedEntity(
+                    name=belt_name, x=hx, y=y,
+                    direction=direction, carries=lane.item,
+                )
+            )
+            hx -= 1
+
+
 def _route_tap_off(
     entities: list[PlacedEntity],
     lane: BusLane,
@@ -257,70 +361,19 @@ def _route_tap_off(
     bw: int,
     belt_name: str = "transport-belt",
 ) -> None:
-    """Route a horizontal tap-off from the bus lane to the row input belt.
+    """Route a horizontal tap-off (EAST) from bus lane to row input belt."""
+    blocked = _blocked_xs_at(lane, tap_y, all_lanes)
+    _route_horizontal(entities, lane, tap_y, lane.x, bw - 1, EntityDirection.EAST, blocked, belt_name)
 
-    When the tap-off crosses another lane's active vertical segment,
-    use underground belts (EAST) to tunnel past it without collision.
-    """
-    # Find x-columns of other lanes that have active vertical belts at tap_y
-    blocked_xs: set[int] = set()
-    for other in all_lanes:
-        if other is lane:
-            continue
-        other_start = other.source_y
-        other_end = max(other.tap_off_ys) if other.tap_off_ys else other_start
-        other_taps = set(other.tap_off_ys)
-        # The other lane has a vertical belt at tap_y if it's in its active
-        # range and not one of its own tap-off positions
-        if other_start <= tap_y <= other_end and tap_y not in other_taps:
-            blocked_xs.add(other.x)
 
-    # Route from lane.x to bw-1, going underground past blocked columns
-    hx = lane.x
-    while hx < bw:
-        if hx in blocked_xs:
-            # Go underground: entry 1 tile before, exit 1 tile after
-            entry_x = hx - 1
-            exit_x = hx + 1
-
-            # Extend to cover consecutive blocked columns
-            while exit_x in blocked_xs:
-                exit_x += 2  # lanes are 2 apart
-
-            if entry_x >= lane.x and exit_x < bw:
-                # Replace the surface belt at entry_x with underground entry
-                # (remove the belt we just placed there)
-                entities[:] = [
-                    e for e in entities
-                    if not (e.x == entry_x and e.y == tap_y
-                            and e.name == "transport-belt"
-                            and e.direction == EntityDirection.EAST)
-                ]
-                ug_name = _underground_for(belt_name)
-                entities.append(
-                    PlacedEntity(
-                        name=ug_name, x=entry_x, y=tap_y,
-                        direction=EntityDirection.EAST, io_type="input",
-                        carries=lane.item,
-                    )
-                )
-                entities.append(
-                    PlacedEntity(
-                        name=ug_name, x=exit_x, y=tap_y,
-                        direction=EntityDirection.EAST, io_type="output",
-                        carries=lane.item,
-                    )
-                )
-                hx = exit_x + 1
-                continue
-            # Fallback: can't go underground (too close to edge), just place belt
-            # This shouldn't happen with proper lane ordering
-
-        # Normal surface belt
-        entities.append(
-            PlacedEntity(
-                name=belt_name, x=hx, y=tap_y,
-                direction=EntityDirection.EAST, carries=lane.item,
-            )
-        )
-        hx += 1
+def _route_output_return(
+    entities: list[PlacedEntity],
+    lane: BusLane,
+    out_y: int,
+    all_lanes: list[BusLane],
+    bw: int,
+    belt_name: str = "transport-belt",
+) -> None:
+    """Route output return (WEST) from row edge back to bus column."""
+    blocked = _blocked_xs_at(lane, out_y, all_lanes)
+    _route_horizontal(entities, lane, out_y, lane.x + 1, bw - 1, EntityDirection.WEST, blocked, belt_name)
