@@ -388,6 +388,29 @@ for (const t of TILES) {
   }
 }
 
+// Find source tiles (no belt feeds into them) and sink tiles (nowhere to go)
+// Used to show item icons only at network entry/exit points.
+const beltSourceKeys = new Set();
+const beltSinkKeys = new Set();
+for (const [key, t] of Object.entries(beltTileMap)) {
+  if (!t.carries) continue;
+  const d = t.dir || 0;
+  // Sink: no downstream belt carrying same item
+  const fwdKey = (t.x + dirDx(d)) + ',' + (t.y + dirDy(d));
+  const fwd = beltTileMap[fwdKey];
+  if (!fwd || fwd.carries !== t.carries) beltSinkKeys.add(key);
+  // Source: no adjacent belt whose output points into this tile
+  let hasFeeder = false;
+  for (const [ndx, ndy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+    const nk = (t.x + ndx) + ',' + (t.y + ndy);
+    const nt = beltTileMap[nk];
+    if (!nt || nt.carries !== t.carries) continue;
+    const nd = nt.dir || 0;
+    if (nt.x + dirDx(nd) === t.x && nt.y + dirDy(nd) === t.y) { hasFeeder = true; break; }
+  }
+  if (!hasFeeder) beltSourceKeys.add(key);
+}
+
 /**
  * BFS to find all belt tiles connected to the given tile carrying the same item.
  * Follows belt adjacency (including underground pairs).
@@ -666,18 +689,20 @@ function draw() {
     }
   }
 
-  // Item icons on belt tiles (when zoomed in enough)
-  if (scale >= 14) {
+  // Item icons at belt network entry (sources) and exit (sinks) points
+  if (scale >= 6) {
     for (const t of infra) {
       if (!t.carries) continue;
+      const key = t.x + ',' + t.y;
+      if (!beltSourceKeys.has(key) && !beltSinkKeys.has(key)) continue;
       const img = itemIconImages[t.carries];
       if (!img || !img.complete) continue;
       const px = offsetX + (t.x - MIN_X) * scale;
       const py = offsetY + (t.y - MIN_Y) * scale;
-      const iconSize = scale * 0.55;
+      const iconSize = Math.max(12, scale * 0.8);
       const ix = px + (scale - iconSize) / 2;
       const iy = py + (scale - iconSize) / 2;
-      ctx.globalAlpha = 0.75;
+      ctx.globalAlpha = 0.9;
       ctx.drawImage(img, ix, iy, iconSize, iconSize);
     }
     ctx.globalAlpha = 1.0;
