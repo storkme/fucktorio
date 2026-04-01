@@ -275,7 +275,10 @@
 <div id="tooltip">
   <div class="tt-entity"></div>
   <div class="tt-recipe"></div>
-  <div class="tt-carries"></div>
+  <div class="tt-carries" style="display:flex;align-items:center;gap:6px">
+    <img class="tt-carries-icon" style="width:20px;height:20px;display:none;image-rendering:pixelated">
+    <span class="tt-carries-text"></span>
+  </div>
   <div class="tt-throughput"></div>
   <div class="tt-pos"></div>
 </div>
@@ -288,6 +291,18 @@ const SOLVER_INFO = __SOLVER_INFO__;
 const GRAPH_DATA = __GRAPH_DATA__;
 const VALIDATION_DATA = __VALIDATION_DATA__;
 const LANE_RATES = __LANE_RATES__;
+const ITEM_ICONS = __ITEM_ICONS__;
+
+// Preload item icon images for canvas drawing
+const itemIconImages = {};
+if (ITEM_ICONS) {
+  for (const [item, url] of Object.entries(ITEM_ICONS)) {
+    const img = new Image();
+    img.src = url;
+    img.onload = () => draw();
+    itemIconImages[item] = img;
+  }
+}
 const MIN_X = __MIN_X__;
 const MIN_Y = __MIN_Y__;
 const GRID_W = __GRID_W__;
@@ -328,6 +343,7 @@ let highlightRecipe = null;
 let highlightNetwork = null;  // Set of "x,y" keys for hovered belt network
 let hoveredLane = null;       // {x, y, lane: "left"|"right"}
 let lanePath = null;          // Map: "x,y" -> "left"|"right" for lane trace
+let laneDownstream = null;    // Set of "x,y" keys that are downstream of the hovered tile
 
 function resize() {
   canvas.width = wrap.clientWidth;
@@ -523,8 +539,10 @@ function traceLanePath(startTile, startLane) {
   }
 
   _traceForward(startTile, startLane);
+  const downstreamKeys = new Set(path.keys());
+  downstreamKeys.delete(startTile.x + ',' + startTile.y);
   _traceBackward(startTile, startLane);
-  return path;
+  return {path, downstreamKeys};
 }
 
 /**
@@ -648,6 +666,23 @@ function draw() {
     }
   }
 
+  // Item icons on belt tiles (when zoomed in enough)
+  if (scale >= 14) {
+    for (const t of infra) {
+      if (!t.carries) continue;
+      const img = itemIconImages[t.carries];
+      if (!img || !img.complete) continue;
+      const px = offsetX + (t.x - MIN_X) * scale;
+      const py = offsetY + (t.y - MIN_Y) * scale;
+      const iconSize = scale * 0.55;
+      const ix = px + (scale - iconSize) / 2;
+      const iy = py + (scale - iconSize) / 2;
+      ctx.globalAlpha = 0.75;
+      ctx.drawImage(img, ix, iy, iconSize, iconSize);
+    }
+    ctx.globalAlpha = 1.0;
+  }
+
   // Belt network highlight (hovered belt and its connected network)
   if (highlightNetwork && highlightNetwork.size > 0) {
     for (const key of highlightNetwork) {
@@ -671,11 +706,21 @@ function draw() {
         const hw = scale * 0.5;
         // Brighter on hovered tile, softer on rest of path
         const isHovered = hoveredLane && bt.x === hoveredLane.x && bt.y === hoveredLane.y;
+        const isDownstream = laneDownstream && laneDownstream.has(key);
         ctx.fillStyle = isHovered ? 'rgba(130,220,255,0.45)' : 'rgba(130,220,255,0.25)';
-        if (pathLane === 'left') {
-          ctx.fillRect(-hw, -hw, hw, scale);
-        } else {
-          ctx.fillRect(0, -hw, hw, scale);
+        const laneX = pathLane === 'left' ? -hw : 0;
+        ctx.fillRect(laneX, -hw, hw, scale);
+
+        // Dotted line overlay on downstream tiles
+        if (isDownstream) {
+          ctx.strokeStyle = 'rgba(255,255,180,0.85)';
+          ctx.lineWidth = Math.max(1, scale * 0.1);
+          ctx.setLineDash([scale * 0.18, scale * 0.14]);
+          ctx.beginPath();
+          ctx.moveTo(laneX + hw * 0.5, -hw);
+          ctx.lineTo(laneX + hw * 0.5, hw);
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
         ctx.restore();
       }
@@ -737,11 +782,14 @@ window.addEventListener('mousemove', (e) => {
     const fracY = ((my - offsetY) / scale) - (found.y - MIN_Y);
     const lane = detectLane(fracX, fracY, found.dir || 0);
     hoveredLane = {x: found.x, y: found.y, lane: lane};
-    lanePath = traceLanePath(found, lane);
+    const laneTrace = traceLanePath(found, lane);
+    lanePath = laneTrace.path;
+    laneDownstream = laneTrace.downstreamKeys;
   } else {
     highlightNetwork = null;
     hoveredLane = null;
     lanePath = null;
+    laneDownstream = null;
   }
   // Redraw if network highlight changed
   if (highlightNetwork !== prevNetwork) draw();
@@ -752,7 +800,17 @@ window.addEventListener('mousemove', (e) => {
     tooltip.style.top = (e.clientY + 12) + 'px';
     tooltip.querySelector('.tt-entity').textContent = found.entity;
     tooltip.querySelector('.tt-recipe').textContent = found.recipe || '';
-    tooltip.querySelector('.tt-carries').textContent = found.carries ? '\u2192 ' + found.carries : '';
+    const carriesIcon = tooltip.querySelector('.tt-carries-icon');
+    const carriesText = tooltip.querySelector('.tt-carries-text');
+    if (found.carries) {
+      carriesText.textContent = '\u2192 ' + found.carries;
+      const iconUrl = ITEM_ICONS && ITEM_ICONS[found.carries];
+      if (iconUrl) { carriesIcon.src = iconUrl; carriesIcon.style.display = ''; }
+      else { carriesIcon.style.display = 'none'; }
+    } else {
+      carriesText.textContent = '';
+      carriesIcon.style.display = 'none';
+    }
 
     // 3-level throughput: lane, belt, network
     let throughputText = '';

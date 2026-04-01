@@ -10,6 +10,7 @@ Generates a self-contained HTML file with:
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
@@ -123,6 +124,21 @@ _SUPPORT_SIZES: dict[str, tuple[int, int, str]] = {
     "substation": (2, 2, "#6a6a8b"),
     "electric-mining-drill": (3, 3, "#7a6a30"),
 }
+
+
+_ICONS_DIR = Path(__file__).parent.parent / "graphics" / "icons"
+
+
+def _icon_data_url(item: str) -> str | None:
+    """Return a base64 data URL for an item's icon, or None if not found."""
+    for candidate in [
+        _ICONS_DIR / f"{item}.png",
+        _ICONS_DIR / "fluid" / f"{item}.png",
+    ]:
+        if candidate.exists():
+            data = candidate.read_bytes()
+            return "data:image/png;base64," + base64.b64encode(data).decode()
+    return None
 
 
 def _serialize_lane_rates(lane_rates: dict | None) -> str:
@@ -272,6 +288,14 @@ def visualize(
                 }
             )
 
+    # Build item icon map for all carried items
+    carried_items = {t["carries"] for t in tiles if t.get("carries")}
+    item_icons: dict[str, str] = {}
+    for item in carried_items:
+        url = _icon_data_url(item)
+        if url:
+            item_icons[item] = url
+
     # Bounding box
     if not tiles:
         min_x = min_y = max_x = max_y = 0
@@ -389,6 +413,7 @@ def visualize(
         "__GRAPH_DATA__": graph_data,
         "__VALIDATION_DATA__": validation_data,
         "__LANE_RATES__": _serialize_lane_rates(lane_rates),
+        "__ITEM_ICONS__": json.dumps(item_icons),
         "/* __THEME_JS__ */": THEME_JS,
     }
     for token, value in replacements.items():
