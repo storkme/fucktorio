@@ -56,9 +56,15 @@ def plan_bus_lanes(
         consumers = item_to_consumers.get(ext.item, [])
         if consumers:
             lanes.append(
-                BusLane(item=ext.item, x=0, source_y=0,
-                        consumer_rows=consumers, producer_row=None,
-                        rate=ext.rate, is_fluid=ext.is_fluid)
+                BusLane(
+                    item=ext.item,
+                    x=0,
+                    source_y=0,
+                    consumer_rows=consumers,
+                    producer_row=None,
+                    rate=ext.rate,
+                    is_fluid=ext.is_fluid,
+                )
             )
             seen_items.add(ext.item)
 
@@ -82,13 +88,16 @@ def plan_bus_lanes(
             continue
         first_producer = producer_rows[0]
         lanes.append(
-            BusLane(item=item, x=0,
-                    source_y=row_spans[first_producer].output_belt_y,
-                    consumer_rows=consumers,
-                    producer_row=first_producer,
-                    rate=item_to_rate[item],
-                    is_fluid=item_is_fluid[item],
-                    extra_producer_rows=producer_rows[1:])
+            BusLane(
+                item=item,
+                x=0,
+                source_y=row_spans[first_producer].output_belt_y,
+                consumer_rows=consumers,
+                producer_row=first_producer,
+                rate=item_to_rate[item],
+                is_fluid=item_is_fluid[item],
+                extra_producer_rows=producer_rows[1:],
+            )
         )
         seen_items.add(item)
 
@@ -194,8 +203,11 @@ def _route_belt_lane(
             continue
         entities.append(
             PlacedEntity(
-                name=belt_name, x=x, y=y,
-                direction=EntityDirection.SOUTH, carries=lane.item,
+                name=belt_name,
+                x=x,
+                y=y,
+                direction=EntityDirection.SOUTH,
+                carries=lane.item,
             )
         )
 
@@ -229,9 +241,7 @@ def _route_fluid_lane(
 
     # Vertical pipe run on the bus
     for y in range(start_y, end_y + 1):
-        entities.append(
-            PlacedEntity(name="pipe", x=x, y=y, carries=lane.item)
-        )
+        entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=lane.item))
 
     # Pipe-to-ground tap-offs: tunnel EAST from bus+1 to the machine port
     for _ri, port_x, port_y in lane.fluid_port_positions:
@@ -243,23 +253,27 @@ def _route_fluid_lane(
         if exit_x > entry_x:
             entities.append(
                 PlacedEntity(
-                    name="pipe-to-ground", x=entry_x, y=port_y,
-                    direction=EntityDirection.EAST, io_type="input",
+                    name="pipe-to-ground",
+                    x=entry_x,
+                    y=port_y,
+                    direction=EntityDirection.EAST,
+                    io_type="input",
                     carries=lane.item,
                 )
             )
             entities.append(
                 PlacedEntity(
-                    name="pipe-to-ground", x=exit_x, y=port_y,
-                    direction=EntityDirection.EAST, io_type="output",
+                    name="pipe-to-ground",
+                    x=exit_x,
+                    y=port_y,
+                    direction=EntityDirection.EAST,
+                    io_type="output",
                     carries=lane.item,
                 )
             )
         elif exit_x == entry_x:
             # Adjacent — just a surface pipe
-            entities.append(
-                PlacedEntity(name="pipe", x=entry_x, y=port_y, carries=lane.item)
-            )
+            entities.append(PlacedEntity(name="pipe", x=entry_x, y=port_y, carries=lane.item))
         # The port pipe itself is placed by the template
 
 
@@ -312,22 +326,27 @@ def _route_horizontal(
                 if entry_x >= x_from and exit_x <= x_to:
                     # Remove surface belt we may have just placed at entry_x
                     entities[:] = [
-                        e for e in entities
-                        if not (e.x == entry_x and e.y == y
-                                and e.name == belt_name
-                                and e.direction == direction)
+                        e
+                        for e in entities
+                        if not (e.x == entry_x and e.y == y and e.name == belt_name and e.direction == direction)
                     ]
                     entities.append(
                         PlacedEntity(
-                            name=ug_name, x=entry_x, y=y,
-                            direction=EntityDirection.EAST, io_type="input",
+                            name=ug_name,
+                            x=entry_x,
+                            y=y,
+                            direction=EntityDirection.EAST,
+                            io_type="input",
                             carries=lane.item,
                         )
                     )
                     entities.append(
                         PlacedEntity(
-                            name=ug_name, x=exit_x, y=y,
-                            direction=EntityDirection.EAST, io_type="output",
+                            name=ug_name,
+                            x=exit_x,
+                            y=y,
+                            direction=EntityDirection.EAST,
+                            io_type="output",
                             carries=lane.item,
                         )
                     )
@@ -335,8 +354,11 @@ def _route_horizontal(
                     continue
             entities.append(
                 PlacedEntity(
-                    name=belt_name, x=hx, y=y,
-                    direction=direction, carries=lane.item,
+                    name=belt_name,
+                    x=hx,
+                    y=y,
+                    direction=direction,
+                    carries=lane.item,
                 )
             )
             hx += 1
@@ -353,22 +375,27 @@ def _route_horizontal(
                 if ug_output_x >= x_from and ug_input_x <= x_to:
                     # Remove surface belt at ug_input_x (already placed)
                     entities[:] = [
-                        e for e in entities
-                        if not (e.x == ug_input_x and e.y == y
-                                and e.name == belt_name
-                                and e.direction == direction)
+                        e
+                        for e in entities
+                        if not (e.x == ug_input_x and e.y == y and e.name == belt_name and e.direction == direction)
                     ]
                     entities.append(
                         PlacedEntity(
-                            name=ug_name, x=ug_input_x, y=y,
-                            direction=EntityDirection.WEST, io_type="input",
+                            name=ug_name,
+                            x=ug_input_x,
+                            y=y,
+                            direction=EntityDirection.WEST,
+                            io_type="input",
                             carries=lane.item,
                         )
                     )
                     entities.append(
                         PlacedEntity(
-                            name=ug_name, x=ug_output_x, y=y,
-                            direction=EntityDirection.WEST, io_type="output",
+                            name=ug_name,
+                            x=ug_output_x,
+                            y=y,
+                            direction=EntityDirection.WEST,
+                            io_type="output",
                             carries=lane.item,
                         )
                     )
@@ -376,8 +403,11 @@ def _route_horizontal(
                     continue
             entities.append(
                 PlacedEntity(
-                    name=belt_name, x=hx, y=y,
-                    direction=direction, carries=lane.item,
+                    name=belt_name,
+                    x=hx,
+                    y=y,
+                    direction=direction,
+                    carries=lane.item,
                 )
             )
             hx -= 1

@@ -37,6 +37,17 @@ function isFurnace(name) {
     || name === 'electric-furnace';
 }
 function isBeacon(name) { return name === 'beacon'; }
+function isSplitter(name) {
+  return name === 'splitter' || name === 'fast-splitter'
+    || name === 'express-splitter';
+}
+function isPump(name) { return name === 'pump'; }
+function isStorageTank(name) { return name === 'storage-tank'; }
+function isMiningDrill(name) { return name === 'electric-mining-drill'; }
+function isPowerPole(name) {
+  return name === 'medium-electric-pole' || name === 'big-electric-pole'
+    || name === 'substation';
+}
 function isUnderground(name) {
   return name === 'underground-belt' || name === 'fast-underground-belt'
     || name === 'express-underground-belt';
@@ -618,6 +629,190 @@ const schematic = {
           ctx.stroke();
         }
         ctx.globalAlpha = 1;
+      } else if (t.entity === 'centrifuge') {
+        // Spinning radial icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.5, 0, Math.PI * 2);
+        ctx.stroke();
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * iconSize * 0.5, Math.sin(a) * iconSize * 0.5);
+          ctx.stroke();
+        }
+      } else if (t.entity === 'lab' || t.entity === 'biolab') {
+        // Science flask icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.1, -iconSize * 0.6);
+        ctx.lineTo(-iconSize * 0.1, -iconSize * 0.15);
+        ctx.lineTo(-iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.1, -iconSize * 0.15);
+        ctx.lineTo(iconSize * 0.1, -iconSize * 0.6);
+        ctx.stroke();
+        ctx.fillStyle = t.entity === 'biolab' ? 'rgba(80,220,120,0.3)' : 'rgba(200,80,200,0.3)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.3, iconSize * 0.2);
+        ctx.lineTo(-iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.3, iconSize * 0.2);
+        ctx.fill();
+      } else if (t.entity === 'storage-tank') {
+        // Cylinder/tank icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.ellipse(0, -iconSize * 0.35, iconSize * 0.4, iconSize * 0.15, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.4, -iconSize * 0.35);
+        ctx.lineTo(-iconSize * 0.4, iconSize * 0.35);
+        ctx.ellipse(0, iconSize * 0.35, iconSize * 0.4, iconSize * 0.15, 0, Math.PI, 0, true);
+        ctx.lineTo(iconSize * 0.4, -iconSize * 0.35);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(80,160,220,0.2)';
+        ctx.fillRect(-iconSize * 0.4, -iconSize * 0.1, iconSize * 0.8, iconSize * 0.6);
+      } else if (t.entity === 'electric-mining-drill') {
+        // Pickaxe icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(iconSize * 0.3, -iconSize * 0.5);
+        ctx.lineTo(-iconSize * 0.3, iconSize * 0.3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.1, -iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.3, -iconSize * 0.5);
+        ctx.stroke();
+      } else if (t.entity === 'foundry') {
+        // Crucible/molten icon
+        ctx.strokeStyle = 'rgba(255,200,100,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, -iconSize * 0.3);
+        ctx.lineTo(-iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.3);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,140,20,0.4)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.4, iconSize * 0.1);
+        ctx.lineTo(-iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.4, iconSize * 0.1);
+        ctx.fill();
+      } else if (t.entity === 'biochamber') {
+        // Organic cell icon
+        ctx.strokeStyle = 'rgba(80,220,80,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(80,220,80,0.2)';
+        ctx.fill();
+        ctx.fillStyle = 'rgba(80,220,80,0.4)';
+        ctx.beginPath();
+        ctx.arc(-iconSize * 0.15, -iconSize * 0.1, iconSize * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (t.entity === 'electromagnetic-plant') {
+        // Lightning bolt icon
+        ctx.fillStyle = 'rgba(120,180,255,0.6)';
+        ctx.beginPath();
+        ctx.moveTo(iconSize * 0.1, -iconSize * 0.6);
+        ctx.lineTo(-iconSize * 0.25, iconSize * 0.05);
+        ctx.lineTo(iconSize * 0.05, iconSize * 0.05);
+        ctx.lineTo(-iconSize * 0.1, iconSize * 0.6);
+        ctx.lineTo(iconSize * 0.25, -iconSize * 0.05);
+        ctx.lineTo(-iconSize * 0.05, -iconSize * 0.05);
+        ctx.closePath();
+        ctx.fill();
+      } else if (t.entity === 'cryogenic-plant') {
+        // Snowflake/crystal icon
+        ctx.strokeStyle = 'rgba(160,220,255,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * iconSize * 0.55, Math.sin(a) * iconSize * 0.55);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.15, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(160,220,255,0.3)';
+        ctx.fill();
+      } else if (t.entity === 'recycler') {
+        // Recycle arrows icon
+        ctx.strokeStyle = 'rgba(100,200,100,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+          const na = ((i + 1) / 3) * Math.PI * 2 - Math.PI / 2;
+          const r = iconSize * 0.4;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, a + 0.3, na - 0.3);
+          ctx.stroke();
+          // Arrowhead
+          const tipA = na - 0.3;
+          const tx = Math.cos(tipA) * r;
+          const ty = Math.sin(tipA) * r;
+          const aS = iconSize * 0.15;
+          ctx.beginPath();
+          ctx.moveTo(tx + Math.cos(tipA + 0.5) * aS, ty + Math.sin(tipA + 0.5) * aS);
+          ctx.lineTo(tx, ty);
+          ctx.lineTo(tx + Math.cos(tipA - 1.2) * aS, ty + Math.sin(tipA - 1.2) * aS);
+          ctx.stroke();
+        }
+      } else if (t.entity === 'crusher') {
+        // Crushing jaws icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, -iconSize * 0.4);
+        ctx.lineTo(0, iconSize * 0.1);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.4);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, iconSize * 0.4);
+        ctx.lineTo(0, -iconSize * 0.1);
+        ctx.lineTo(iconSize * 0.5, iconSize * 0.4);
+        ctx.stroke();
+      } else if (t.entity === 'rocket-silo') {
+        // Rocket icon
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(0, -iconSize * 0.7);
+        ctx.lineTo(-iconSize * 0.2, iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.2, iconSize * 0.3);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,100,30,0.4)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.12, iconSize * 0.3);
+        ctx.lineTo(0, iconSize * 0.6);
+        ctx.lineTo(iconSize * 0.12, iconSize * 0.3);
+        ctx.fill();
+      } else if (isPowerPole(t.entity)) {
+        // Power pole cross icon
+        ctx.strokeStyle = 'rgba(200,180,50,0.6)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.15);
+        ctx.lineCap = 'round';
+        const arm = iconSize * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(-arm, 0); ctx.lineTo(arm, 0);
+        ctx.moveTo(0, -arm); ctx.lineTo(0, arm);
+        ctx.stroke();
       } else {
         ctx.strokeStyle = 'rgba(255,255,255,0.45)';
         ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
@@ -782,14 +977,58 @@ const schematic = {
     }
   },
 
+  drawPump(ctx, px, py, pw, ph, t) {
+    const gap = Math.max(1, scale * 0.08);
+    const w = pw - gap * 2;
+    const h = ph - gap * 2;
+    px += gap;
+    py += gap;
+    const cx = px + w / 2;
+    const cy = py + h / 2;
+
+    // Base
+    ctx.fillStyle = '#2a4a3a';
+    ctx.fillRect(px, py, w, h);
+
+    // Pipe sections
+    ctx.fillStyle = '#5a9ad0';
+    const pipeW = Math.min(w, h) * 0.3;
+    ctx.fillRect(cx - pipeW / 2, py, pipeW, h);
+
+    // Direction arrow
+    if (scale >= 4) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(dirAngle(t.dir || 0));
+      ctx.fillStyle = '#90d0ff';
+      const aSize = Math.min(w, h) * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(0, -aSize);
+      ctx.lineTo(aSize * 0.7, aSize * 0.3);
+      ctx.lineTo(-aSize * 0.7, aSize * 0.3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  },
+
   drawSplitter(ctx, px, py, pw, ph, t) {
-    const gap = scale >= 4 ? 1 : 0;
-    const w = pw - gap;
-    const h = ph - gap;
-    ctx.fillStyle = '#a89030';
+    const gap = Math.max(1, scale * 0.08);
+    pw -= gap * 2;
+    ph -= gap * 2;
+    px += gap;
+    py += gap;
+    const w = pw;
+    const h = ph;
+    const splitterColors = {
+      'splitter': '#a89030',
+      'fast-splitter': '#b03030',
+      'express-splitter': '#3070b0',
+    };
+    ctx.fillStyle = splitterColors[t.entity] || '#a89030';
     ctx.fillRect(px, py, w, h);
     if (scale >= 6) {
-      ctx.strokeStyle = '#706020';
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
       ctx.lineWidth = Math.max(1, Math.min(w, h) * 0.08);
       ctx.beginPath();
       if (t.w > t.h) {
@@ -1397,6 +1636,177 @@ const factorio = {
           ctx.stroke();
         }
         ctx.globalAlpha = 1;
+      } else if (t.entity === 'centrifuge') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.5, 0, Math.PI * 2);
+        ctx.stroke();
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * iconSize * 0.5, Math.sin(a) * iconSize * 0.5);
+          ctx.stroke();
+        }
+      } else if (t.entity === 'lab' || t.entity === 'biolab') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.1, -iconSize * 0.6);
+        ctx.lineTo(-iconSize * 0.1, -iconSize * 0.15);
+        ctx.lineTo(-iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.1, -iconSize * 0.15);
+        ctx.lineTo(iconSize * 0.1, -iconSize * 0.6);
+        ctx.stroke();
+        ctx.fillStyle = t.entity === 'biolab' ? 'rgba(60,180,100,0.25)' : 'rgba(160,60,160,0.25)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.3, iconSize * 0.2);
+        ctx.lineTo(-iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.45, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.3, iconSize * 0.2);
+        ctx.fill();
+      } else if (t.entity === 'storage-tank') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.ellipse(0, -iconSize * 0.35, iconSize * 0.4, iconSize * 0.15, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.4, -iconSize * 0.35);
+        ctx.lineTo(-iconSize * 0.4, iconSize * 0.35);
+        ctx.ellipse(0, iconSize * 0.35, iconSize * 0.4, iconSize * 0.15, 0, Math.PI, 0, true);
+        ctx.lineTo(iconSize * 0.4, -iconSize * 0.35);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(40,120,180,0.15)';
+        ctx.fillRect(-iconSize * 0.4, -iconSize * 0.1, iconSize * 0.8, iconSize * 0.6);
+      } else if (t.entity === 'electric-mining-drill') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(iconSize * 0.3, -iconSize * 0.5);
+        ctx.lineTo(-iconSize * 0.3, iconSize * 0.3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.1, -iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.3, -iconSize * 0.5);
+        ctx.stroke();
+      } else if (t.entity === 'foundry') {
+        ctx.strokeStyle = 'rgba(220,180,80,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, -iconSize * 0.3);
+        ctx.lineTo(-iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.3);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,120,20,0.3)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.4, iconSize * 0.1);
+        ctx.lineTo(-iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.35, iconSize * 0.5);
+        ctx.lineTo(iconSize * 0.4, iconSize * 0.1);
+        ctx.fill();
+      } else if (t.entity === 'biochamber') {
+        ctx.strokeStyle = 'rgba(60,180,60,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(60,180,60,0.15)';
+        ctx.fill();
+        ctx.fillStyle = 'rgba(60,180,60,0.3)';
+        ctx.beginPath();
+        ctx.arc(-iconSize * 0.15, -iconSize * 0.1, iconSize * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (t.entity === 'electromagnetic-plant') {
+        ctx.fillStyle = 'rgba(80,140,220,0.5)';
+        ctx.beginPath();
+        ctx.moveTo(iconSize * 0.1, -iconSize * 0.6);
+        ctx.lineTo(-iconSize * 0.25, iconSize * 0.05);
+        ctx.lineTo(iconSize * 0.05, iconSize * 0.05);
+        ctx.lineTo(-iconSize * 0.1, iconSize * 0.6);
+        ctx.lineTo(iconSize * 0.25, -iconSize * 0.05);
+        ctx.lineTo(-iconSize * 0.05, -iconSize * 0.05);
+        ctx.closePath();
+        ctx.fill();
+      } else if (t.entity === 'cryogenic-plant') {
+        ctx.strokeStyle = 'rgba(130,190,230,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * iconSize * 0.55, Math.sin(a) * iconSize * 0.55);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize * 0.15, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(130,190,230,0.2)';
+        ctx.fill();
+      } else if (t.entity === 'recycler') {
+        ctx.strokeStyle = 'rgba(80,170,80,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+          const na = ((i + 1) / 3) * Math.PI * 2 - Math.PI / 2;
+          const r = iconSize * 0.4;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, a + 0.3, na - 0.3);
+          ctx.stroke();
+          const tipA = na - 0.3;
+          const tx = Math.cos(tipA) * r;
+          const ty = Math.sin(tipA) * r;
+          const aS = iconSize * 0.15;
+          ctx.beginPath();
+          ctx.moveTo(tx + Math.cos(tipA + 0.5) * aS, ty + Math.sin(tipA + 0.5) * aS);
+          ctx.lineTo(tx, ty);
+          ctx.lineTo(tx + Math.cos(tipA - 1.2) * aS, ty + Math.sin(tipA - 1.2) * aS);
+          ctx.stroke();
+        }
+      } else if (t.entity === 'crusher') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.12);
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, -iconSize * 0.4);
+        ctx.lineTo(0, iconSize * 0.1);
+        ctx.lineTo(iconSize * 0.5, -iconSize * 0.4);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.5, iconSize * 0.4);
+        ctx.lineTo(0, -iconSize * 0.1);
+        ctx.lineTo(iconSize * 0.5, iconSize * 0.4);
+        ctx.stroke();
+      } else if (t.entity === 'rocket-silo') {
+        ctx.strokeStyle = 'rgba(190,185,170,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(0, -iconSize * 0.7);
+        ctx.lineTo(-iconSize * 0.2, iconSize * 0.3);
+        ctx.lineTo(iconSize * 0.2, iconSize * 0.3);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,80,20,0.3)';
+        ctx.beginPath();
+        ctx.moveTo(-iconSize * 0.12, iconSize * 0.3);
+        ctx.lineTo(0, iconSize * 0.6);
+        ctx.lineTo(iconSize * 0.12, iconSize * 0.3);
+        ctx.fill();
+      } else if (isPowerPole(t.entity)) {
+        ctx.strokeStyle = 'rgba(180,160,40,0.5)';
+        ctx.lineWidth = Math.max(1.5, iconSize * 0.15);
+        ctx.lineCap = 'round';
+        const arm = iconSize * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(-arm, 0); ctx.lineTo(arm, 0);
+        ctx.moveTo(0, -arm); ctx.lineTo(0, arm);
+        ctx.stroke();
       } else {
         // Assembler gear icon — more prominent and metallic like the in-game icons
         const gearColor = 'rgba(190,185,170,0.6)';
@@ -1608,10 +2018,53 @@ const factorio = {
     }
   },
 
+  drawPump(ctx, px, py, pw, ph, t) {
+    const gap = Math.max(1, scale * 0.08);
+    const w = pw - gap * 2;
+    const h = ph - gap * 2;
+    px += gap;
+    py += gap;
+    const cx = px + w / 2;
+    const cy = py + h / 2;
+
+    // Dark metallic base
+    ctx.fillStyle = '#1a2a24';
+    ctx.fillRect(px, py, w, h);
+
+    // Pipe body
+    const pipeW = Math.min(w, h) * 0.35;
+    ctx.fillStyle = '#5a5540';
+    ctx.fillRect(cx - pipeW / 2, py, pipeW, h);
+
+    // Highlight ridge
+    ctx.fillStyle = '#7a7558';
+    ctx.fillRect(cx - pipeW / 4, py, pipeW / 3, h);
+
+    // Direction arrow
+    if (scale >= 4) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(dirAngle(t.dir || 0));
+      ctx.fillStyle = '#90c0a0';
+      const aSize = Math.min(w, h) * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(0, -aSize);
+      ctx.lineTo(aSize * 0.7, aSize * 0.3);
+      ctx.lineTo(-aSize * 0.7, aSize * 0.3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  },
+
   drawSplitter(ctx, px, py, pw, ph, t) {
-    const gap = scale >= 4 ? 1 : 0;
-    const w = pw - gap;
-    const h = ph - gap;
+    const gap = Math.max(1, scale * 0.08);
+    pw -= gap * 2;
+    ph -= gap * 2;
+    px += gap;
+    py += gap;
+    const w = pw;
+    const h = ph;
     // Heavy dark iron frame like the splitter icon
     ctx.fillStyle = '#282420';
     ctx.fillRect(px, py, w, h);
