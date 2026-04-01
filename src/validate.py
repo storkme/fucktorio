@@ -699,16 +699,22 @@ def check_belt_connectivity(
 def _bfs_belt_reach(
     starts: set[tuple[int, int]],
     belt_tiles: set[tuple[int, int]],
+    ug_pairs: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
-    """BFS flood-fill through adjacent belt tiles from start positions."""
+    """BFS flood-fill through adjacent belt tiles from start positions.
+
+    Traverses underground belt tunnels via ug_pairs mapping.
+    """
     visited: set[tuple[int, int]] = set()
     queue = deque(starts)
     visited.update(starts)
 
     while queue:
         x, y = queue.popleft()
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            nb = (x + dx, y + dy)
+        neighbors: list[tuple[int, int]] = [(x + dx, y + dy) for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]]
+        if ug_pairs and (x, y) in ug_pairs:
+            neighbors.append(ug_pairs[(x, y)])
+        for nb in neighbors:
             if nb in belt_tiles and nb not in visited:
                 visited.add(nb)
                 queue.append(nb)
@@ -1256,8 +1262,8 @@ def check_belt_network_topology(
     machine_tiles = _build_machine_tile_set(layout_result)
 
     # Identify inserters and classify as input/output
-    input_inserter_belt_tiles: dict[tuple[int, int], tuple[int, int]] = {}  # machine_pos → belt tile
-    output_inserter_belt_tiles: dict[tuple[int, int], tuple[int, int]] = {}
+    input_inserter_belt_tiles: dict[tuple[int, int], list[tuple[int, int]]] = {}  # machine_pos → belt tiles
+    output_inserter_belt_tiles: dict[tuple[int, int], list[tuple[int, int]]] = {}
     machine_positions: dict[tuple[int, int], PlacedEntity] = {}
     for e in layout_result.entities:
         if e.name in _MACHINE_ENTITIES:
@@ -1287,11 +1293,13 @@ def check_belt_network_topology(
         if drop_pos in machine_tiles and pickup_pos in belt_tiles:
             mpos = machine_by_tile.get(drop_pos)
             if mpos:
-                input_inserter_belt_tiles.setdefault(mpos, pickup_pos)
+                input_inserter_belt_tiles.setdefault(mpos, []).append(pickup_pos)
         elif pickup_pos in machine_tiles and drop_pos in belt_tiles:
             mpos = machine_by_tile.get(pickup_pos)
             if mpos:
-                output_inserter_belt_tiles.setdefault(mpos, drop_pos)
+                output_inserter_belt_tiles.setdefault(mpos, []).append(drop_pos)
+
+    ug_pairs = _build_ug_pairs(layout_result)
 
     # Layout boundary
     all_xs = [x for x, _ in belt_tiles]
@@ -1346,21 +1354,19 @@ def check_belt_network_topology(
         item_belt_tiles = {pos for pos, carry in belt_carries.items() if carry == item}
 
         # BFS the full network from all start tiles
-        full_network = _bfs_belt_reach(set(belt_starts), item_belt_tiles)
+        full_network = _bfs_belt_reach(set(belt_starts), item_belt_tiles, ug_pairs)
 
         # Check connectivity: BFS from just the first start should reach all others
         if len(belt_starts) > 1:
-            first_network = _bfs_belt_reach({belt_starts[0]}, item_belt_tiles)
-            disconnected = [
-                mpos for bt, mpos in zip(belt_starts[1:], machine_list[1:], strict=True) if bt not in first_network
-            ]
-            if disconnected:
+            first_network = _bfs_belt_reach({belt_starts[0]}, item_belt_tiles, ug_pairs)
+            unreachable = [bt for bt in belt_starts[1:] if bt not in first_network]
+            if unreachable:
                 issues.append(
                     ValidationIssue(
                         severity="error",
                         category="belt-topology",
                         message=(
-                            f"{item} {direction}: {len(disconnected) + 1} disconnected "
+                            f"{item} {direction}: {len(unreachable) + 1} disconnected "
                             f"belt networks for {len(machine_list)} machines "
                             f"(should be a single connected network)"
                         ),
@@ -1414,8 +1420,10 @@ def check_belt_network_topology(
         for recipe in recipes:
             for mpos in recipe_machines.get(recipe, []):
                 if mpos in input_inserter_belt_tiles:
-                    input_belt_starts.append(input_inserter_belt_tiles[mpos])
-                    consuming_machines.append(mpos)
+                    matched = [p for p in input_inserter_belt_tiles[mpos] if belt_carries.get(p) == item]
+                    if matched:
+                        input_belt_starts.extend(matched)
+                        consuming_machines.append(mpos)
         _check_network(item, "input", input_belt_starts, consuming_machines)
 
     # CHECK: Output networks
@@ -1425,8 +1433,10 @@ def check_belt_network_topology(
         for recipe in recipes:
             for mpos in recipe_machines.get(recipe, []):
                 if mpos in output_inserter_belt_tiles:
-                    output_belt_starts.append(output_inserter_belt_tiles[mpos])
-                    producing_machines.append(mpos)
+                    matched = [p for p in output_inserter_belt_tiles[mpos] if belt_carries.get(p) == item]
+                    if matched:
+                        output_belt_starts.extend(matched)
+                        producing_machines.append(mpos)
         _check_network(item, "output", output_belt_starts, producing_machines)
 
     return issues
