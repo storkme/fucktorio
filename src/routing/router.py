@@ -360,9 +360,8 @@ def _astar_path(
                     side_dot = rel_x * left_dx + rel_y * left_dy
                     new_lane = "left" if side_dot > 0 else "right"
             elif is_turn and lane is not None:
-                # Turn on our own path: lanes swap (left↔right)
-                # This matches validate.py:2176 convention
-                new_lane = "right" if lane == "left" else "left"
+                # Turn on our own path: lane is preserved (left stays left through corners)
+                pass
 
             new_state: State = (nx, ny, None, new_lane)
 

@@ -2215,9 +2215,9 @@ def compute_lane_rates(
             # If we're directly behind the downstream tile, it's a turn (direction changed)
             behind_downstream = (downstream[0] - downstream_dx, downstream[1] - downstream_dy)
             if pos == behind_downstream:
-                # Turn: lanes swap
-                lane_rates[downstream]["left"] += my_rates["right"]
-                lane_rates[downstream]["right"] += my_rates["left"]
+                # Turn: lanes preserved (left stays left through corners)
+                lane_rates[downstream]["left"] += my_rates["left"]
+                lane_rates[downstream]["right"] += my_rates["right"]
             else:
                 # Sideload: total goes to near lane
                 rel_x = pos[0] - downstream[0]
