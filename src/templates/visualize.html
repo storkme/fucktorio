@@ -388,6 +388,36 @@ for (const t of TILES) {
   }
 }
 
+// Corner arc geometry lookup: (inDir,outDir) -> {cx,cy in [0..1], startAngle, endAngle, cw}
+// cw=true = clockwise arc in canvas (anticlockwise=false), cw=false = CCW (anticlockwise=true)
+// cx,cy are the arc center as a fraction of tile size from the tile's top-left.
+const CORNER_ARC = {
+  '0,4':  {cx:1, cy:1, sa:Math.PI,       ea:3*Math.PI/2, cw:true},  // N→E right
+  '4,8':  {cx:0, cy:1, sa:3*Math.PI/2,   ea:2*Math.PI,   cw:true},  // E→S right
+  '8,12': {cx:0, cy:0, sa:0,             ea:Math.PI/2,   cw:true},  // S→W right
+  '12,0': {cx:1, cy:0, sa:Math.PI/2,     ea:Math.PI,     cw:true},  // W→N right
+  '0,12': {cx:0, cy:1, sa:0,             ea:3*Math.PI/2, cw:false}, // N→W left
+  '12,8': {cx:1, cy:1, sa:3*Math.PI/2,   ea:Math.PI,     cw:false}, // W→S left
+  '8,4':  {cx:1, cy:0, sa:Math.PI,       ea:Math.PI/2,   cw:false}, // S→E left
+  '4,0':  {cx:0, cy:0, sa:Math.PI/2,     ea:0,           cw:false}, // E→N left
+};
+
+// Return the incoming direction for a belt tile (direction of its upstream feeder, or own dir if straight/source)
+function getBeltIncomingDir(t) {
+  const d = t.dir || 0;
+  const bk = (t.x - dirDx(d)) + ',' + (t.y - dirDy(d));
+  const bt = beltTileMap[bk];
+  if (bt && bt.carries === t.carries && (bt.dir || 0) === d) return d; // straight upstream
+  for (const [ndx, ndy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+    const nk = (t.x + ndx) + ',' + (t.y + ndy);
+    const nt = beltTileMap[nk];
+    if (!nt || nt.carries !== t.carries) continue;
+    const nd = nt.dir || 0;
+    if (nt.x + dirDx(nd) === t.x && nt.y + dirDy(nd) === t.y && nd !== d) return nd;
+  }
+  return d; // no perpendicular feeder found — treat as straight
+}
+
 // Find source tiles (no belt feeds into them) and sink tiles (nowhere to go)
 // Used to show item icons only at network entry/exit points.
 const beltSourceKeys = new Set();
@@ -457,8 +487,8 @@ function traceBeltNetwork(startTile) {
 /**
  * Trace which lane carries flow from a specific starting lane through
  * the connected belt network. Returns Map: "x,y" -> "left"|"right".
- * Follows belt direction downstream and against it upstream, tracking
- * lane swaps on turns.
+ * Lanes do NOT swap at corners — "left" always means the left side
+ * relative to the tile's outgoing direction.
  */
 function traceLanePath(startTile, startLane) {
   const path = new Map();
@@ -498,8 +528,7 @@ function traceLanePath(startTile, startLane) {
         if (behindNext && (behindNext.dir || 0) === nd && behindNext.carries === item) {
           break; // Sideload — the next tile is fed straight from behind; we're merging from the side
         }
-        // Otherwise it's a corner turn — lanes swap
-        curLane = curLane === 'left' ? 'right' : 'left';
+        // Corner turn — lanes do NOT swap (left stays left through all corners)
       }
       path.set(nextKey, curLane);
       cur = next;
@@ -547,9 +576,8 @@ function traceLanePath(startTile, startLane) {
           const nd = nt.dir || 0;
           // Does this neighbor output to cur?
           if (nt.x + dirDx(nd) === cur.x && nt.y + dirDy(nd) === cur.y) {
-            // Corner turn: lanes swap
+            // Corner turn: lanes do NOT swap
             next = nt; nextKey = nk;
-            curLane = curLane === 'left' ? 'right' : 'left';
             break;
           }
         }
@@ -733,31 +761,62 @@ function draw() {
       // Lane path highlight — trace the hovered lane across all connected tiles
       const pathLane = lanePath ? lanePath.get(key) : null;
       if (pathLane) {
-        ctx.save();
-        const cx = px + scale * 0.5;
-        const cy = py + scale * 0.5;
-        ctx.translate(cx, cy);
-        ctx.rotate(dirAngle(bt.dir || 0));
-        const hw = scale * 0.5;
-        // Brighter on hovered tile, softer on rest of path
         const isHovered = hoveredLane && bt.x === hoveredLane.x && bt.y === hoveredLane.y;
         const isDownstream = laneDownstream && laneDownstream.has(key);
-        ctx.fillStyle = isHovered ? 'rgba(130,220,255,0.45)' : 'rgba(130,220,255,0.25)';
-        const laneX = pathLane === 'left' ? -hw : 0;
-        ctx.fillRect(laneX, -hw, hw, scale);
+        const laneColor = isHovered ? 'rgba(130,220,255,0.45)' : 'rgba(130,220,255,0.25)';
+        const dotColor = 'rgba(255,255,180,0.85)';
 
-        // Dotted line overlay on downstream tiles
-        if (isDownstream) {
-          ctx.strokeStyle = 'rgba(255,255,180,0.85)';
-          ctx.lineWidth = Math.max(1, scale * 0.1);
-          ctx.setLineDash([scale * 0.18, scale * 0.14]);
+        const outDir = bt.dir || 0;
+        const inDir = getBeltIncomingDir(bt);
+        const arcData = inDir !== outDir ? CORNER_ARC[inDir + ',' + outDir] : null;
+
+        if (arcData) {
+          // Corner tile — draw an annular sector arc for the lane
+          const acx = px + arcData.cx * scale;
+          const acy = py + arcData.cy * scale;
+          const isCW = arcData.cw;
+          // CW turn: left=outer(3/4), right=inner(1/4). CCW turn: left=inner(1/4), right=outer(3/4)
+          const isOuter = isCW === (pathLane === 'left');
+          const rMid = isOuter ? scale * 3 / 4 : scale / 4;
+          const rOuter = Math.min(scale, rMid + scale / 4 - 1);
+          const rInner = Math.max(0, rMid - scale / 4 + 1);
+          const mainACW = !isCW; // anticlockwise param for canvas arc (inverted from cw)
+          ctx.fillStyle = laneColor;
           ctx.beginPath();
-          ctx.moveTo(laneX + hw * 0.5, -hw);
-          ctx.lineTo(laneX + hw * 0.5, hw);
-          ctx.stroke();
-          ctx.setLineDash([]);
+          ctx.arc(acx, acy, rOuter, arcData.sa, arcData.ea, mainACW);
+          ctx.arc(acx, acy, rInner, arcData.ea, arcData.sa, isCW);
+          ctx.closePath();
+          ctx.fill();
+          if (isDownstream) {
+            ctx.strokeStyle = dotColor;
+            ctx.lineWidth = Math.max(1, scale * 0.12);
+            ctx.setLineDash([scale * 0.18, scale * 0.14]);
+            ctx.beginPath();
+            ctx.arc(acx, acy, rMid, arcData.sa, arcData.ea, mainACW);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        } else {
+          // Straight tile — draw half-tile bar along belt direction
+          ctx.save();
+          ctx.translate(px + scale * 0.5, py + scale * 0.5);
+          ctx.rotate(dirAngle(outDir));
+          const hw = scale * 0.5;
+          ctx.fillStyle = laneColor;
+          const laneX = pathLane === 'left' ? -hw : 0;
+          ctx.fillRect(laneX, -hw, hw, scale);
+          if (isDownstream) {
+            ctx.strokeStyle = dotColor;
+            ctx.lineWidth = Math.max(1, scale * 0.1);
+            ctx.setLineDash([scale * 0.18, scale * 0.14]);
+            ctx.beginPath();
+            ctx.moveTo(laneX + hw * 0.5, -hw);
+            ctx.lineTo(laneX + hw * 0.5, hw);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          ctx.restore();
         }
-        ctx.restore();
       }
     }
   }
