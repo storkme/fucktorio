@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import statistics
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -102,7 +104,7 @@ def _load_json_file(filepath: Path) -> list[tuple[str, str]]:
         # Single object with blueprint string
         bp_str = _extract_bp_string(data)
         if bp_str:
-            return [(name, bp_str)]
+            return _expand_bp_string(name, bp_str)
 
     return []
 
@@ -112,22 +114,58 @@ def _load_json_file_from_data(data: list, name: str) -> list[tuple[str, str]]:
     results = []
     for i, item in enumerate(data):
         if isinstance(item, str) and item.startswith("0"):
-            results.append((f"{name}[{i}]", item))
+            results.extend(_expand_bp_string(f"{name}[{i}]", item))
         elif isinstance(item, dict):
             bp_str = _extract_bp_string(item)
             if bp_str:
                 item_name = item.get("name", item.get("label", f"{name}[{i}]"))
-                results.append((str(item_name), bp_str))
+                results.extend(_expand_bp_string(str(item_name), bp_str))
     return results
 
 
 def _extract_bp_string(obj: dict) -> str | None:
     """Extract a blueprint string from a JSON object, trying common field names."""
-    for key in ("blueprint_string", "blueprint", "string", "bp", "data"):
+    for key in ("blueprint_string", "blueprintString", "blueprint", "string", "bp", "data"):
         val = obj.get(key)
         if isinstance(val, str) and val.startswith("0"):
             return val
     return None
+
+
+def _encode_bp_string(obj: dict) -> str:
+    """Re-encode a blueprint dict (e.g. {"blueprint": {...}}) as a blueprint string."""
+    payload = json.dumps(obj, separators=(",", ":")).encode()
+    return "0" + base64.b64encode(zlib.compress(payload, level=9)).decode()
+
+
+def _expand_bp_string(name: str, bp_string: str) -> list[tuple[str, str]]:
+    """Expand a blueprint string into (name, string) pairs.
+
+    For regular blueprints returns a single item.
+    For blueprint books, returns one item per sub-blueprint.
+    """
+    try:
+        raw = json.loads(zlib.decompress(base64.b64decode(bp_string[1:])))
+    except Exception:
+        return [(name, bp_string)]
+
+    if "blueprint" in raw:
+        return [(name, bp_string)]
+
+    if "blueprint_book" in raw:
+        results = []
+        for i, entry in enumerate(raw["blueprint_book"].get("blueprints", [])):
+            if "blueprint" not in entry:
+                continue
+            label = entry["blueprint"].get("label", f"blueprint_{i}")
+            sub_name = f"{name}/{label}"
+            try:
+                results.append((sub_name, _encode_bp_string({"blueprint": entry["blueprint"]})))
+            except Exception as e:
+                logger.warning("Failed to re-encode sub-blueprint %s: %s", sub_name, e)
+        return results
+
+    return [(name, bp_string)]
 
 
 def _load_text_file(filepath: Path) -> list[tuple[str, str]]:
@@ -141,12 +179,12 @@ def _load_text_file(filepath: Path) -> list[tuple[str, str]]:
         for i, line in enumerate(text.splitlines()):
             line = line.strip()
             if line.startswith("0") and len(line) > 10:
-                results.append((f"{name}[{i}]", line))
+                results.extend(_expand_bp_string(f"{name}[{i}]", line))
         return results
 
     # Single string
     if text.startswith("0") and len(text) > 10:
-        return [(name, text)]
+        return _expand_bp_string(name, text)
 
     return []
 

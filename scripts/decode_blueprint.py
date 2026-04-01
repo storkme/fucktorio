@@ -22,6 +22,7 @@ import base64
 import json
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 import zlib
@@ -123,6 +124,7 @@ def search_factorio_school(query: str, recent: bool = False, fetch_count: int | 
                 print(f"  [{i}/{len(to_fetch)}] OK  {title}")
             except Exception as e:
                 print(f"  [{i}/{len(to_fetch)}] ERR {title}: {e}", file=sys.stderr)
+            time.sleep(2)
 
 
 def fetch_factorio_school(url: str, quiet: bool = False) -> tuple[str, dict]:
