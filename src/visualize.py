@@ -23,24 +23,33 @@ from draftsman.blueprintable import get_blueprintable_from_string
 
 from src.renderers import THEME_JS
 
-# Distinct, colorblind-friendly palette for recipes
-_RECIPE_COLORS = [
-    "#4e79a7",  # steel blue
-    "#f28e2b",  # orange
-    "#e15759",  # red
-    "#76b7b2",  # teal
-    "#59a14f",  # green
-    "#edc948",  # yellow
-    "#b07aa1",  # purple
-    "#ff9da7",  # pink
-    "#9c755f",  # brown
-    "#bab0ac",  # grey
-    "#86bcb6",  # light teal
-    "#d37295",  # rose
-    "#a0cbe8",  # light blue
-    "#ffbe7d",  # light orange
-    "#8cd17d",  # light green
-]
+# Standard colors by machine type — consistent regardless of recipe
+_MACHINE_COLORS: dict[str, str] = {
+    # Assemblers — blue-grey family
+    "assembling-machine-1": "#5a6e82",
+    "assembling-machine-2": "#4a6278",
+    "assembling-machine-3": "#3a526a",
+    # Furnaces — warm orange/brown
+    "stone-furnace": "#8a6040",
+    "steel-furnace": "#7a5030",
+    "electric-furnace": "#6a5a80",  # electric = purple tint
+    # Specialised
+    "chemical-plant": "#3a7a50",
+    "oil-refinery": "#5a3a8a",
+    "centrifuge": "#3a7a80",
+    "lab": "#4a6a50",
+    "rocket-silo": "#4a4a6a",
+    # Space Age
+    "foundry": "#8a6a30",
+    "electromagnetic-plant": "#2a5a9a",
+    "cryogenic-plant": "#4a7a8a",
+    "biochamber": "#4a7a3a",
+    "biolab": "#3a6a5a",
+    "recycler": "#6a5a4a",
+    "crusher": "#5a4a3a",
+    "captive-biter-spawner": "#6a3a3a",
+}
+_DEFAULT_MACHINE_COLOR = "#4a5a6a"
 
 # Fixed colors for infrastructure entities
 _INFRA_COLORS = {
@@ -183,22 +192,26 @@ def visualize(
         output_path = "blueprint_viz.html"
 
     # --- Collect data ---
-    # Assign colors to recipes
-    recipe_colors: dict[str, str] = {}
+    # Recipe order + counts
     recipe_order: list[str] = []
-    for e in bp.entities:
-        recipe = getattr(e, "recipe", None)
-        if e.name in _CRAFTING and recipe and recipe not in recipe_colors:
-            idx = len(recipe_order)
-            recipe_colors[recipe] = _RECIPE_COLORS[idx % len(_RECIPE_COLORS)]
-            recipe_order.append(recipe)
-
-    # Recipe counts
     recipe_counts: Counter = Counter()
     for e in bp.entities:
         recipe = getattr(e, "recipe", None)
         if e.name in _CRAFTING and recipe:
             recipe_counts[recipe] += 1
+            if recipe not in recipe_counts or recipe not in recipe_order:
+                if recipe not in recipe_order:
+                    recipe_order.append(recipe)
+
+    # Build recipe → primary output item map.
+    # Use solver_result when available; fall back to recipe name (works for most Factorio recipes).
+    recipe_output_map: dict[str, str] = {}
+    if solver_result:
+        for spec in solver_result.machines:
+            if spec.outputs:
+                recipe_output_map[spec.recipe] = spec.outputs[0].item
+    for recipe in recipe_order:
+        recipe_output_map.setdefault(recipe, recipe)
 
     # Entity counts
     entity_counts: Counter = Counter()
@@ -241,7 +254,8 @@ def visualize(
         elif e.name in _CRAFTING_SIZES:
             cw, ch = _CRAFTING_SIZES[e.name]
             recipe = getattr(e, "recipe", None)
-            color = recipe_colors.get(recipe, "#888")
+            color = _MACHINE_COLORS.get(e.name, _DEFAULT_MACHINE_COLOR)
+            output_item = recipe_output_map.get(recipe, recipe) if recipe else ""
             tooltip = f"{e.name}\\n{recipe}"
             tiles.append(
                 {
@@ -252,6 +266,7 @@ def visualize(
                     "color": color,
                     "entity": e.name,
                     "recipe": recipe or "",
+                    "output_item": output_item,
                     "tooltip": tooltip,
                     "dir": direction,
                     "carries": carries,
@@ -288,10 +303,11 @@ def visualize(
                 }
             )
 
-    # Build item icon map for all carried items
-    carried_items = {t["carries"] for t in tiles if t.get("carries")}
+    # Build item icon map for carried items + recipe outputs
+    icon_items = {t["carries"] for t in tiles if t.get("carries")}
+    icon_items |= {t["output_item"] for t in tiles if t.get("output_item")}
     item_icons: dict[str, str] = {}
-    for item in carried_items:
+    for item in icon_items:
         url = _icon_data_url(item)
         if url:
             item_icons[item] = url
@@ -336,7 +352,14 @@ def visualize(
 
     # Build legend data
     legend_recipes = json.dumps(
-        [{"recipe": r, "color": recipe_colors[r], "count": recipe_counts[r]} for r in recipe_order]
+        [
+            {
+                "recipe": r,
+                "output_item": recipe_output_map.get(r, r),
+                "count": recipe_counts[r],
+            }
+            for r in recipe_order
+        ]
     )
     legend_infra = json.dumps(
         [
@@ -365,7 +388,7 @@ def visualize(
                     "recipe": node.spec.recipe,
                     "entity": node.spec.entity,
                     "instance": node.instance,
-                    "color": recipe_colors.get(node.spec.recipe, "#888"),
+                    "color": _MACHINE_COLORS.get(node.spec.entity, _DEFAULT_MACHINE_COLOR),
                 }
             )
         graph_edges = []

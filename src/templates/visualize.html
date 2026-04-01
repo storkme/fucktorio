@@ -640,6 +640,16 @@ function draw() {
     } else {
       theme.drawMachine(ctx, px, py, pw, ph, t);
     }
+
+    // Recipe output icon centered on machine
+    if (t.output_item && scale >= 4) {
+      const img = itemIconImages[t.output_item];
+      if (img && img.complete) {
+        const iconSize = Math.min(pw, ph) * 0.5;
+        ctx.globalAlpha = alpha * 0.92;
+        ctx.drawImage(img, px + (pw - iconSize) / 2, py + (ph - iconSize) / 2, iconSize, iconSize);
+      }
+    }
   }
 
   for (const t of infra) {
@@ -877,7 +887,11 @@ function buildLegend() {
   for (const item of LEGEND_RECIPES) {
     const div = document.createElement('div');
     div.className = 'legend-item';
-    div.innerHTML = `<div class="legend-swatch" style="background:${item.color}"></div>` +
+    const iconUrl = ITEM_ICONS && item.output_item && ITEM_ICONS[item.output_item];
+    const swatchHtml = iconUrl
+      ? `<img src="${iconUrl}" style="width:16px;height:16px;image-rendering:pixelated;flex-shrink:0">`
+      : `<div class="legend-swatch" style="background:#4a5a6a"></div>`;
+    div.innerHTML = swatchHtml +
       `<span class="legend-label">${item.recipe}</span>` +
       `<span class="legend-count">&times;${item.count}</span>`;
     div.addEventListener('click', () => {
