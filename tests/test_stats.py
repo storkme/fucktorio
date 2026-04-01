@@ -3,9 +3,8 @@
 import pytest
 
 from src.analysis import analyze_blueprint
-from src.analysis.stats import BlueprintStats, detect_final_product, estimate_throughput, extract_stats
+from src.analysis.stats import detect_final_product, estimate_throughput, extract_stats
 from src.blueprint import build_blueprint
-
 
 # The processing-unit blueprint from earlier testing
 PROCESSING_UNIT_BP = (
@@ -83,7 +82,7 @@ class TestExtractStats:
         assert stats.machines_without_inserters == 0
         assert "iron-gear-wheel" in stats.throughput_estimates
 
-        print(f"\n--- Iron Gear Wheel Stats ---")
+        print("\n--- Iron Gear Wheel Stats ---")
         print(f"  Final product: {stats.final_product}")
         print(f"  Machines: {stats.machine_count}")
         print(f"  Belts/machine: {stats.belts_per_machine:.1f}")
@@ -110,7 +109,7 @@ class TestExtractStats:
         assert len(stats.machine_gaps) > 0
         assert 1 in stats.machine_gaps
 
-        print(f"\n--- Processing Unit Stats ---")
+        print("\n--- Processing Unit Stats ---")
         print(f"  Final product: {stats.final_product}")
         print(f"  Machines: {stats.machine_count}, Recipes: {stats.recipe_count}")
         print(f"  Belts/machine: {stats.belts_per_machine:.1f}")

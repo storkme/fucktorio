@@ -6,7 +6,6 @@ import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from ..routing.common import _MACHINE_SIZE
 from ..solver.recipe_db import get_crafting_speed, get_recipe
 from .models import BlueprintGraph
 
@@ -109,11 +108,7 @@ def extract_stats(graph: BlueprintGraph) -> BlueprintStats:
         stats.bbox_height = max(ys) - min(ys) + 1
         stats.bbox_area = stats.bbox_width * stats.bbox_height
         total_entities = (
-            stats.machine_count
-            + stats.belt_tiles
-            + stats.pipe_tiles
-            + stats.inserter_count
-            + len(graph.unhandled)
+            stats.machine_count + stats.belt_tiles + stats.pipe_tiles + stats.inserter_count + len(graph.unhandled)
         )
         stats.density = total_entities / stats.bbox_area if stats.bbox_area > 0 else 0.0
 
