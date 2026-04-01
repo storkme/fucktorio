@@ -76,10 +76,14 @@ def infer_items(
     # items on different belt lanes or segments). Mark as conflicted.
     for machine in machines:
         input_nets = {
-            lk.network_id for lk in inserter_links if lk.machine_id == machine.id and lk.role == "input" and lk.network_id is not None
+            lk.network_id
+            for lk in inserter_links
+            if lk.machine_id == machine.id and lk.role == "input" and lk.network_id is not None
         }
         output_nets = {
-            lk.network_id for lk in inserter_links if lk.machine_id == machine.id and lk.role == "output" and lk.network_id is not None
+            lk.network_id
+            for lk in inserter_links
+            if lk.machine_id == machine.id and lk.role == "output" and lk.network_id is not None
         }
         bidirectional = input_nets & output_nets
         conflicted.update(bidirectional)
