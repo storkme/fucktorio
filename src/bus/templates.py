@@ -58,29 +58,47 @@ def _sideload_bridge(
     return [
         # Bridge row (y+5 or y+6 depending on template)
         PlacedEntity(
-            name=belt, x=gap_start_x, y=bridge_y,
-            direction=EntityDirection.SOUTH, carries=item,
+            name=belt,
+            x=gap_start_x,
+            y=bridge_y,
+            direction=EntityDirection.SOUTH,
+            carries=item,
         ),
         PlacedEntity(
-            name=belt, x=gap_start_x + 1, y=bridge_y,
-            direction=EntityDirection.WEST, carries=item,
+            name=belt,
+            x=gap_start_x + 1,
+            y=bridge_y,
+            direction=EntityDirection.WEST,
+            carries=item,
         ),
         PlacedEntity(
-            name=belt, x=gap_start_x + 2, y=bridge_y,
-            direction=EntityDirection.WEST, carries=item,
+            name=belt,
+            x=gap_start_x + 2,
+            y=bridge_y,
+            direction=EntityDirection.WEST,
+            carries=item,
         ),
         # Output belt row — gap tiles
         PlacedEntity(
-            name=belt, x=gap_start_x, y=output_y,
-            direction=EntityDirection.WEST, carries=item,
+            name=belt,
+            x=gap_start_x,
+            y=output_y,
+            direction=EntityDirection.WEST,
+            carries=item,
         ),  # sideload target (through-belt)
         PlacedEntity(
-            name=belt, x=gap_start_x + 1, y=output_y,
-            direction=EntityDirection.WEST, carries=item,
+            name=belt,
+            x=gap_start_x + 1,
+            y=output_y,
+            direction=EntityDirection.WEST,
+            carries=item,
         ),  # through-belt filler
         PlacedEntity(
-            name=belt, x=gap_start_x + 2, y=output_y,
-            direction=EntityDirection.NORTH, carries=item,
+            name=belt,
+            x=gap_start_x + 2,
+            y=output_y,
+            direction=EntityDirection.NORTH,
+            carries=item,
         ),  # lifts group2 items up to bridge
     ]
 
@@ -116,7 +134,7 @@ def single_input_row(
     mxs = _machine_xs(x_offset, machine_count, lane_split)
     g1 = machine_count // 2 if lane_split else machine_count
 
-    for idx, mx in enumerate(mxs):
+    for mx in mxs:
         # Input belt (3 tiles wide, continuous with adjacent machines)
         for dx in range(3):
             entities.append(
@@ -188,9 +206,7 @@ def single_input_row(
                 )
             )
         # Sideload bridge
-        entities.extend(
-            _sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item)
-        )
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item))
 
     return entities, ROW_HEIGHT
 
@@ -229,7 +245,7 @@ def dual_input_row(
     mxs = _machine_xs(x_offset, machine_count, lane_split)
     g1 = machine_count // 2 if lane_split else machine_count
 
-    for idx, mx in enumerate(mxs):
+    for mx in mxs:
         # Input belt 1 -- far belt
         for dx in range(3):
             entities.append(
@@ -333,9 +349,7 @@ def dual_input_row(
                 )
             )
         # Sideload bridge (output belt at y+7, bridge at y+6)
-        entities.extend(
-            _sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item)
-        )
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item))
 
     return entities, ROW_HEIGHT
 

@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 
 from ..models import MachineSpec, PlacedEntity
-from ..routing.common import _BELT_THROUGHPUT, _LANE_CAPACITY, belt_entity_for_rate
+from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate
 from .templates import LANE_SPLIT_GAP, dual_input_row, fluid_input_row, single_input_row
 
 
@@ -128,9 +128,7 @@ def _build_one_row(
 
     # Belt tiers based on THIS chunk's throughput
     output_rate = solid_outputs[0].rate * count if solid_outputs else 0
-    out_belt = belt_entity_for_rate(
-        output_rate * (1 if lane_split else 2), max_tier=max_belt_tier
-    )
+    out_belt = belt_entity_for_rate(output_rate * (1 if lane_split else 2), max_tier=max_belt_tier)
 
     fluid_port_ys: list[int] = []
     fluid_port_pipes: list[tuple[int, int]] = []
