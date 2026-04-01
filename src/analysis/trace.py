@@ -217,11 +217,30 @@ def _find_ptg_pairs(
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Find pipe-to-ground entry/exit pairs.
 
-    Same logic as underground belts but with pipe-specific reach.
+    Handles two formats:
+    - Modern: both PTGs face the same direction, distinguished by io_type
+    - Old (pre-0.17): PTGs face opposite directions toward each other, no io_type
     """
     pairs: dict[tuple[int, int], tuple[int, int]] = {}
 
     ptg = [s for s in segments if s.is_underground]
+    if not ptg:
+        return pairs
+
+    # Check if any PTG has io_type — determines which pairing strategy to use
+    has_io_type = any(s.io_type is not None for s in ptg)
+
+    if has_io_type:
+        return _find_ptg_pairs_modern(ptg)
+    else:
+        return _find_ptg_pairs_old(ptg)
+
+
+def _find_ptg_pairs_modern(
+    ptg: list[TransportSegment],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Pair PTGs using io_type (modern format)."""
+    pairs: dict[tuple[int, int], tuple[int, int]] = {}
 
     groups: dict[tuple[EntityDirection, int], list[TransportSegment]] = {}
     for seg in ptg:
@@ -263,6 +282,92 @@ def _find_ptg_pairs(
                 pairs[inp.position] = out.position
                 pairs[out.position] = inp.position
                 remaining.remove(out)
+                break
+
+    return pairs
+
+
+_OPPOSITE_DIR: dict[EntityDirection, EntityDirection] = {
+    EntityDirection.NORTH: EntityDirection.SOUTH,
+    EntityDirection.SOUTH: EntityDirection.NORTH,
+    EntityDirection.EAST: EntityDirection.WEST,
+    EntityDirection.WEST: EntityDirection.EAST,
+}
+
+
+def _find_ptg_pairs_old(
+    ptg: list[TransportSegment],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Pair PTGs by opposite directions on same axis (old format).
+
+    In old Factorio, PTG pairs face toward each other:
+    - EAST ↔ WEST on the same y
+    - NORTH ↔ SOUTH on the same x
+    """
+    pairs: dict[tuple[int, int], tuple[int, int]] = {}
+
+    # Group by axis only (not direction) — we need to match opposite directions
+    # Horizontal tunnels: group by y, pair EAST with WEST
+    # Vertical tunnels: group by x, pair NORTH with SOUTH
+    horizontal: dict[int, list[TransportSegment]] = {}
+    vertical: dict[int, list[TransportSegment]] = {}
+
+    for seg in ptg:
+        d = seg.direction
+        x, y = seg.position
+        if d in (EntityDirection.EAST, EntityDirection.WEST):
+            horizontal.setdefault(y, []).append(seg)
+        else:
+            vertical.setdefault(x, []).append(seg)
+
+    # Pair horizontal: EAST entries with nearest WEST exit to their right
+    for _y, group in horizontal.items():
+        east_facing = sorted(
+            [s for s in group if s.direction == EntityDirection.EAST],
+            key=lambda s: s.position[0],
+        )
+        west_facing = sorted(
+            [s for s in group if s.direction == EntityDirection.WEST],
+            key=lambda s: s.position[0],
+        )
+        remaining = list(west_facing)
+        for entry in east_facing:
+            ex = entry.position[0]
+            for exit_ in remaining:
+                wx = exit_.position[0]
+                if wx <= ex:
+                    continue
+                dist = wx - ex - 1
+                if dist > _UG_PIPE_REACH:
+                    continue
+                pairs[entry.position] = exit_.position
+                pairs[exit_.position] = entry.position
+                remaining.remove(exit_)
+                break
+
+    # Pair vertical: NORTH entries with nearest SOUTH exit below
+    for _x, group in vertical.items():
+        north_facing = sorted(
+            [s for s in group if s.direction == EntityDirection.NORTH],
+            key=lambda s: s.position[1],
+        )
+        south_facing = sorted(
+            [s for s in group if s.direction == EntityDirection.SOUTH],
+            key=lambda s: s.position[1],
+        )
+        remaining = list(south_facing)
+        for entry in north_facing:
+            ey = entry.position[1]
+            for exit_ in remaining:
+                sy = exit_.position[1]
+                if sy <= ey:
+                    continue
+                dist = sy - ey - 1
+                if dist > _UG_PIPE_REACH:
+                    continue
+                pairs[entry.position] = exit_.position
+                pairs[exit_.position] = entry.position
+                remaining.remove(exit_)
                 break
 
     return pairs
