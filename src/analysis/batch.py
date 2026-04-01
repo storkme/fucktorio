@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import analyze_blueprint
@@ -237,12 +237,12 @@ def aggregate_stats(results: list[tuple[str, BlueprintStats | None]]) -> Aggrega
 def print_summary(agg: AggregateStats) -> None:
     """Print a formatted summary of aggregate statistics."""
     print(f"\n{'=' * 60}")
-    print(f"BLUEPRINT ANALYSIS SUMMARY")
+    print("BLUEPRINT ANALYSIS SUMMARY")
     print(f"{'=' * 60}")
     print(f"  Analyzed: {agg.count} blueprints ({agg.success_count} ok, {agg.failure_count} failed)")
 
     if agg.by_product:
-        print(f"\n--- By Final Product ---")
+        print("\n--- By Final Product ---")
         for product, stats_list in sorted(agg.by_product.items(), key=lambda x: -len(x[1])):
             print(f"  {product}: {len(stats_list)} blueprints")
 
@@ -261,7 +261,7 @@ def print_summary(agg: AggregateStats) -> None:
             ("output_inserters_per_machine", "Output inserters/machine"),
         ]
 
-        print(f"\n--- Key Ratios (for tuning layout engine) ---")
+        print("\n--- Key Ratios (for tuning layout engine) ---")
         print(f"  {'Metric':<30} {'Mean':>8} {'Median':>8} {'Min':>8} {'Max':>8} {'StdDev':>8}")
         print(f"  {'-' * 78}")
         for field_name, label in key_metrics:
@@ -270,6 +270,6 @@ def print_summary(agg: AggregateStats) -> None:
                 continue
             print(f"  {label:<30} {d.mean:>8.2f} {d.median:>8.2f} {d.min:>8.2f} {d.max:>8.2f} {d.stdev:>8.2f}")
 
-        print(f"\n--- All Distributions ---")
+        print("\n--- All Distributions ---")
         for field_name, d in sorted(agg.distributions.items()):
             print(f"  {field_name}: mean={d.mean:.2f}, median={d.median:.2f}, range=[{d.min:.1f}, {d.max:.1f}]")
