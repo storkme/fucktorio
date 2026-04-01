@@ -203,9 +203,9 @@ def analyse(bp: dict, verbose: bool = False):
             y = e["position"]["y"] - oy
             extras = []
             if e.get("recipe"):
-                extras.append(f'recipe={e["recipe"]}')
+                extras.append(f"recipe={e['recipe']}")
             if e.get("direction"):
-                extras.append(f'dir={DIR_NAMES.get(e["direction"], e["direction"])}')
+                extras.append(f"dir={DIR_NAMES.get(e['direction'], e['direction'])}")
             mods = [item["id"]["name"] for item in e.get("items", []) if "id" in item]
             if mods:
                 extras.append(f"mods={mods}")
@@ -234,8 +234,14 @@ def main():
     parser.add_argument(
         "--recent", action="store_true", help="With --search: sort by most recent instead of most popular"
     )
-    parser.add_argument("--fetch-all", metavar="N", nargs="?", const=0, type=int,
-                        help="With --search: download all results, or top N if given")
+    parser.add_argument(
+        "--fetch-all",
+        metavar="N",
+        nargs="?",
+        const=0,
+        type=int,
+        help="With --search: download all results, or top N if given",
+    )
     args = parser.parse_args()
 
     if args.search:
@@ -273,9 +279,9 @@ def main():
             print(f"\nRendered: {out}")
     elif "blueprint_book" in decoded:
         book = decoded["blueprint_book"]
-        print(f"Blueprint book: {book.get('label','(no label)')} — {len(book.get('blueprints',[]))} blueprints")
+        print(f"Blueprint book: {book.get('label', '(no label)')} — {len(book.get('blueprints', []))} blueprints")
         for i, entry in enumerate(book.get("blueprints", [])):
-            print(f"\n=== Blueprint {i+1} ===")
+            print(f"\n=== Blueprint {i + 1} ===")
             if "blueprint" in entry:
                 analyse(entry["blueprint"], verbose=args.verbose)
         if args.render:
