@@ -46,7 +46,7 @@ class _Candidate:
     position_seed: int = 0  # RNG seed for incremental position selection
     placement_order: list[int] | None = None  # machine placement order
     use_trunks: bool = False  # whether to pre-lay belt trunks
-    trunk_spacing: int = 7  # x gap between input and output trunks
+    trunk_spacing: int = 2  # x gap between input and output trunks
     score: float = float("inf")
     layout: LayoutResult | None = None
 
@@ -240,7 +240,7 @@ def _generate_initial_population(
         side_pref = _random_side_preference(graph, rng)
         order = _shuffle_topo_order(dep_order, graph, rng)
         use_trunks = idx < trunk_count
-        trunk_spacing = rng.choice([6, 7, 8]) if use_trunks else 7
+        trunk_spacing = rng.choice([2, 2, 3]) if use_trunks else 7
         population.append(
             _Candidate(
                 positions={},

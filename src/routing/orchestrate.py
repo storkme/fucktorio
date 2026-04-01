@@ -357,7 +357,7 @@ def plan_trunks(
     graph: ProductionGraph,
     solver_result: SolverResult,
     trunk_x: int = 0,
-    trunk_spacing: int = 7,
+    trunk_spacing: int = 2,
     trunk_length: int | None = None,
 ) -> tuple[
     list[PlacedEntity],
@@ -380,7 +380,11 @@ def plan_trunks(
     direction = EntityDirection.SOUTH
 
     # Input trunks (one per external input item)
-    input_items = sorted({e.item for e in graph.edges if e.from_node is None})
+    # Sort ascending by usage count so most-consumed item is rightmost (direct inserter access)
+    def _usage_count(item: str) -> int:
+        return sum(1 for e in graph.edges if e.from_node is None and e.item == item)
+
+    input_items = sorted({e.item for e in graph.edges if e.from_node is None}, key=_usage_count)
     for item_idx, item in enumerate(input_items):
         x = trunk_x + item_idx * trunk_spacing
         rate = sum(e.rate for e in graph.edges if e.from_node is None and e.item == item)
@@ -394,9 +398,12 @@ def plan_trunks(
             network.add((x, y))
         group_networks[group_key] = network
 
-    # Output trunks (one per external output item, offset from last input trunk)
+    # Output trunks (one per external output item, placed right of machine column)
+    # machine_col_x = max(input_trunk_xs) + 2 = (n_inputs-1)*spacing + 2
+    # output starts 2 tiles right of machine right edge (machine_col_x + _MACHINE_SIZE + 2)
     output_items = sorted({e.item for e in graph.edges if e.to_node is None})
-    base_output_x = trunk_x + max(len(input_items), 1) * trunk_spacing
+    n_inputs = max(len(input_items), 1)
+    base_output_x = trunk_x + (n_inputs - 1) * trunk_spacing + 2 + _MACHINE_SIZE + 2
     for item_idx, item in enumerate(output_items):
         x = base_output_x + item_idx * trunk_spacing
         # Use 2x total rate for belt tier: worst case all inserters sideload to same lane
