@@ -4,10 +4,9 @@ import pytest
 
 from src.analysis import analyze_blueprint
 from src.analysis.classify import classify_entities
-from src.analysis.trace import trace_belt_networks, trace_pipe_networks
+from src.analysis.trace import trace_belt_networks
 from src.blueprint import build_blueprint
 from src.models import EntityDirection, LayoutResult, PlacedEntity
-
 
 # ---------------------------------------------------------------------------
 # Hand-crafted minimal blueprints for unit testing
@@ -192,7 +191,7 @@ class TestRoundTrip:
         inferred_count = len(iron_plate_nets) + len(gear_nets)
 
         # Print diagnostic info
-        print(f"\nAnalysis results:")
+        print("\nAnalysis results:")
         print(f"  Machines: {len(graph.machines)}")
         print(f"  Networks: {len(graph.networks)} ({len(belt_nets)} belt)")
         print(f"  Inserter links: {len(graph.inserter_links)}")
@@ -202,10 +201,7 @@ class TestRoundTrip:
         print(f"  iron-plate networks: {len(iron_plate_nets)}")
         print(f"  iron-gear-wheel networks: {len(gear_nets)}")
         for n in graph.networks:
-            print(
-                f"    net {n.id} ({n.type}): {n.path_length} tiles, "
-                f"{n.turn_count} turns, item={n.inferred_item}"
-            )
+            print(f"    net {n.id} ({n.type}): {n.path_length} tiles, {n.turn_count} turns, item={n.inferred_item}")
 
     @pytest.mark.skip(reason="Electronic circuit layout search too slow without Rust A*")
     def test_electronic_circuit_roundtrip(self, electronic_circuit_solver_result, electronic_circuit_layout):
@@ -219,14 +215,11 @@ class TestRoundTrip:
         # copper-cable is an intermediate
         assert "copper-cable" in recipes_found, f"Missing copper-cable in {recipes_found}"
 
-        print(f"\nElectronic circuit analysis:")
+        print("\nElectronic circuit analysis:")
         print(f"  Machines: {len(graph.machines)}")
         print(f"  Recipes: {recipes_found}")
         print(f"  Networks: {len(graph.networks)}")
         print(f"  Inserter links: {len(graph.inserter_links)}")
         print(f"  Edges: {len(graph.edges)}")
         for n in graph.networks:
-            print(
-                f"    net {n.id} ({n.type}): {n.path_length} tiles, "
-                f"item={n.inferred_item}"
-            )
+            print(f"    net {n.id} ({n.type}): {n.path_length} tiles, item={n.inferred_item}")

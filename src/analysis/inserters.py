@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ..models import EntityDirection
 from ..routing.common import DIR_VEC, machine_tiles
 from .classify import _RawInserter
 from .models import (
@@ -10,7 +9,6 @@ from .models import (
     FluidLink,
     InserterLink,
     TransportNetwork,
-    TransportSegment,
 )
 
 # Inserter reach by entity name
