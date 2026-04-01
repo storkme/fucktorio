@@ -70,8 +70,18 @@ jobs:
 
           files = sorted(f for f in os.listdir('.') if f.endswith('.html') and f != 'index.html')
 
-          layouts = [f for f in files if f != 'showcase.html']
+          bus = [f for f in files if f.startswith('bus-')]
+          spaghetti = [f for f in files if f != 'showcase.html' and not f.startswith('bus-')]
           tools = [f for f in files if f == 'showcase.html']
+
+          def write_section(out, title, items):
+              if not items:
+                  return
+              out.write(f'<h2>{title}</h2><ul>')
+              for f in items:
+                  label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
+                  out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
+              out.write('</ul>')
 
           with open('index.html', 'w') as out:
               out.write('<!DOCTYPE html><html><head><meta charset="utf-8">')
@@ -85,19 +95,9 @@ jobs:
               out.write('</style></head><body>')
               out.write('<h1>Fucktorio Test Visualizations</h1>')
 
-              if layouts:
-                  out.write('<h2>Layouts</h2><ul>')
-                  for f in layouts:
-                      label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
-                      out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
-                  out.write('</ul>')
-
-              if tools:
-                  out.write('<h2>Tools</h2><ul>')
-                  for f in tools:
-                      label = f.replace('.html', '').replace('-', ' ').replace('_', ' ')
-                      out.write(f'<li><a href="{html.escape(f)}">{html.escape(label)}</a></li>')
-                  out.write('</ul>')
+              write_section(out, 'Bus Designs', bus)
+              write_section(out, 'Spaghetti Layouts', spaghetti)
+              write_section(out, 'Tools', tools)
 
               out.write('</body></html>')
           PYEOF
