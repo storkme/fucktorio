@@ -163,16 +163,18 @@ def visualize(
     recipe_colors: dict[str, str] = {}
     recipe_order: list[str] = []
     for e in bp.entities:
-        if e.name in _CRAFTING and e.recipe and e.recipe not in recipe_colors:
+        recipe = getattr(e, "recipe", None)
+        if e.name in _CRAFTING and recipe and recipe not in recipe_colors:
             idx = len(recipe_order)
-            recipe_colors[e.recipe] = _RECIPE_COLORS[idx % len(_RECIPE_COLORS)]
-            recipe_order.append(e.recipe)
+            recipe_colors[recipe] = _RECIPE_COLORS[idx % len(_RECIPE_COLORS)]
+            recipe_order.append(recipe)
 
     # Recipe counts
     recipe_counts: Counter = Counter()
     for e in bp.entities:
-        if e.name in _CRAFTING and e.recipe:
-            recipe_counts[e.recipe] += 1
+        recipe = getattr(e, "recipe", None)
+        if e.name in _CRAFTING and recipe:
+            recipe_counts[recipe] += 1
 
     # Entity counts
     entity_counts: Counter = Counter()
@@ -214,8 +216,9 @@ def visualize(
             )
         elif e.name in _CRAFTING_SIZES:
             cw, ch = _CRAFTING_SIZES[e.name]
-            color = recipe_colors.get(e.recipe, "#888")
-            tooltip = f"{e.name}\\n{e.recipe}"
+            recipe = getattr(e, "recipe", None)
+            color = recipe_colors.get(recipe, "#888")
+            tooltip = f"{e.name}\\n{recipe}"
             tiles.append(
                 {
                     "x": tx,
@@ -224,7 +227,7 @@ def visualize(
                     "h": ch,
                     "color": color,
                     "entity": e.name,
-                    "recipe": e.recipe or "",
+                    "recipe": recipe or "",
                     "tooltip": tooltip,
                     "dir": direction,
                     "carries": carries,
