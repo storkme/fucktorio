@@ -62,6 +62,9 @@ def belt_entity_for_rate(rate: float, max_tier: str | None = None) -> str:
     return _BELT_TIERS[max_idx][0]
 
 
+# Full belt throughput (both lanes combined)
+_BELT_THROUGHPUT = {name: rate for name, rate in _BELT_TIERS}
+
 # Per-lane capacity (half of total belt throughput)
 _LANE_CAPACITY = {
     "transport-belt": 7.5,
