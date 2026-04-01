@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__ — Fucktorio Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    width: 320px;
+    min-width: 320px;
+    background: #16213e;
+    border-right: 2px solid #0f3460;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #sidebar h1 {
+    font-size: 18px;
+    color: #e94560;
+    margin-bottom: 4px;
+  }
+  #sidebar h2 {
+    font-size: 14px;
+    color: #0f3460;
+    background: #e94560;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .stat {
+    font-size: 13px;
+    color: #a0a0b0;
+    margin-bottom: 2px;
+  }
+  .stat b { color: #e0e0e0; }
+
+  /* Legend */
+  .legend-section { margin-bottom: 8px; }
+  .val-item { padding: 3px 0; border-bottom: 1px solid #1a1a2e; }
+  .val-error { color: #ff6b6b; }
+  .val-warning { color: #ffd93d; }
+  .val-category { font-weight: bold; font-size: 10px; text-transform: uppercase; opacity: 0.7; }
+  .val-msg { word-break: break-word; }
+  .val-pos { font-size: 10px; opacity: 0.5; cursor: pointer; }
+  .val-pos:hover { opacity: 1; }
+  .val-summary { margin-bottom: 6px; font-weight: bold; }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .legend-item:hover { background: rgba(255,255,255,0.08); }
+  .legend-item.active { background: rgba(255,255,255,0.15); }
+  .legend-swatch {
+    width: 16px; height: 16px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+  .legend-label { flex: 1; }
+  .legend-count {
+    color: #888;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Solver info */
+  .solver-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .solver-table th {
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid #0f3460;
+    color: #888;
+    font-weight: normal;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+  .solver-table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid rgba(15,52,96,0.5);
+  }
+  .solver-table tr:hover { background: rgba(255,255,255,0.05); }
+  .solver-recipe-swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .fluid-tag {
+    font-size: 10px;
+    background: #4a7ab5;
+    color: white;
+    padding: 1px 4px;
+    border-radius: 2px;
+    margin-left: 4px;
+  }
+
+  /* Canvas area */
+  #canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background: #0f0f23;
+  }
+  canvas {
+    position: absolute;
+    top: 0; left: 0;
+    image-rendering: pixelated;
+  }
+
+  /* Tooltip */
+  #tooltip {
+    position: fixed;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    pointer-events: none;
+    display: none;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    max-width: 250px;
+  }
+  #tooltip .tt-entity { color: #e94560; font-weight: 600; }
+  #tooltip .tt-recipe { color: #76b7b2; }
+  #tooltip .tt-carries { color: #c8b560; font-size: 12px; }
+  #tooltip .tt-throughput { color: #8ecf8e; font-size: 12px; font-family: monospace; }
+  #tooltip .tt-pos { color: #888; font-size: 11px; }
+
+  /* Tabs */
+  #tab-bar {
+    display: flex;
+    gap: 2px;
+    padding: 8px 8px 0 8px;
+    background: #0f0f23;
+  }
+  .tab-btn {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-bottom: none;
+    color: #a0a0b0;
+    padding: 8px 16px;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .tab-btn:hover { background: #1a3a6e; color: #e0e0e0; }
+  .tab-btn.active { background: #0f0f23; color: #e94560; border-color: #e94560; }
+  .tab-panel { display: none; flex: 1; position: relative; overflow: hidden; background: #0f0f23; }
+  .tab-panel.active { display: block; }
+
+  /* Main content area */
+  #main-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Controls */
+  #controls {
+    position: absolute;
+    bottom: 12px; right: 12px;
+    display: flex;
+    gap: 6px;
+  }
+  #controls button {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    color: #e0e0e0;
+    width: 36px; height: 36px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  #controls button:hover { background: #1a3a6e; }
+
+  /* Graph panel */
+  #graph-panel canvas {
+    position: absolute;
+    top: 0; left: 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div>
+    <h1>__TITLE__</h1>
+    <div class="stat"><b>__TOTAL_ENTITIES__</b> entities &middot; <b>__GRID_W__</b>&times;<b>__GRID_H__</b> tiles</div>
+  </div>
+
+  <div class="legend-section">
+    <h2>Recipes</h2>
+    <div id="legend-recipes"></div>
+  </div>
+
+  <div class="legend-section">
+    <h2>Infrastructure</h2>
+    <div id="legend-infra"></div>
+  </div>
+
+  <div id="solver-section" style="display:none">
+    <h2>Production</h2>
+    <table class="solver-table">
+      <thead><tr><th>Recipe</th><th>Count</th><th>Inputs</th></tr></thead>
+      <tbody id="solver-body"></tbody>
+    </table>
+  </div>
+
+  <div id="validation-section" style="display:none">
+    <h2 id="validation-header">Validation</h2>
+    <div id="validation-list" style="font-size:11px;max-height:300px;overflow-y:auto"></div>
+  </div>
+</div>
+
+<div id="main-area">
+  <div id="tab-bar">
+    <button class="tab-btn active" data-tab="layout-panel">Layout</button>
+    <button class="tab-btn" data-tab="graph-panel" id="graph-tab" style="display:none">Flow Graph</button>
+    <span style="flex:1"></span>
+    <span style="font-size:12px;color:#666;margin-right:6px">Theme:</span>
+    <button class="tab-btn theme-switch active" data-theme="schematic">Schematic</button>
+    <button class="tab-btn theme-switch" data-theme="factorio">Factorio</button>
+  </div>
+
+  <div id="layout-panel" class="tab-panel active">
+    <canvas id="grid"></canvas>
+    <div id="controls">
+      <button id="btn-fit" title="Fit to view">&#8982;</button>
+      <button id="btn-zin" title="Zoom in">+</button>
+      <button id="btn-zout" title="Zoom out">&minus;</button>
+      <label id="throughput-toggle" title="Show per-lane throughput" style="display:flex;align-items:center;gap:4px;font-size:11px;color:#888;margin-left:8px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="cb-throughput"> Throughput
+      </label>
+    </div>
+  </div>
+
+  <div id="graph-panel" class="tab-panel">
+    <canvas id="graph-canvas"></canvas>
+  </div>
+</div>
+
+<div id="tooltip">
+  <div class="tt-entity"></div>
+  <div class="tt-recipe"></div>
+  <div class="tt-carries"></div>
+  <div class="tt-throughput"></div>
+  <div class="tt-pos"></div>
+</div>
+
+<script>
+const TILES = __TILES_JSON__;
+const LEGEND_RECIPES = __LEGEND_RECIPES__;
+const LEGEND_INFRA = __LEGEND_INFRA__;
+const SOLVER_INFO = __SOLVER_INFO__;
+const GRAPH_DATA = __GRAPH_DATA__;
+const VALIDATION_DATA = __VALIDATION_DATA__;
+const LANE_RATES = __LANE_RATES__;
+const MIN_X = __MIN_X__;
+const MIN_Y = __MIN_Y__;
+const GRID_W = __GRID_W__;
+const GRID_H = __GRID_H__;
+
+// --- Tab switching ---
+document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'graph-panel') renderGraph();
+  });
+});
+if (GRAPH_DATA) document.getElementById('graph-tab').style.display = '';
+
+// --- Theme switching ---
+document.querySelectorAll('.theme-switch').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.theme-switch').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTheme = btn.dataset.theme;
+    draw();
+  });
+});
+
+// --- Canvas setup ---
+const wrap = document.getElementById('layout-panel');
+const canvas = document.getElementById('grid');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+
+let scale = 1;
+let offsetX = 0, offsetY = 0;
+let dragging = false, dragStartX = 0, dragStartY = 0;
+let highlightRecipe = null;
+let highlightNetwork = null;  // Set of "x,y" keys for hovered belt network
+let hoveredLane = null;       // {x, y, lane: "left"|"right"}
+let lanePath = null;          // Map: "x,y" -> "left"|"right" for lane trace
+
+function resize() {
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+function fitToView() {
+  const pad = 40;
+  const scaleX = (wrap.clientWidth - pad * 2) / GRID_W;
+  const scaleY = (wrap.clientHeight - pad * 2) / GRID_H;
+  scale = Math.min(scaleX, scaleY, 24);
+  scale = Math.max(scale, 1);
+  offsetX = (wrap.clientWidth - GRID_W * scale) / 2;
+  offsetY = (wrap.clientHeight - GRID_H * scale) / 2;
+  draw();
+}
+
+let currentTheme = 'schematic';
+
+/* __THEME_JS__ */
+
+// Build adjacency lookup for pipe connectivity
+const tileMap = {};
+for (const t of TILES) {
+  for (let dx = 0; dx < t.w; dx++) {
+    for (let dy = 0; dy < t.h; dy++) {
+      const key = (t.x + dx) + ',' + (t.y + dy);
+      tileMap[key] = t;
+    }
+  }
+}
+
+// pipeNeighbors is provided by __THEME_JS__ above
+
+// Build belt-only tile index for network tracing
+const beltTileMap = {};
+for (const t of TILES) {
+  if (isBelt(t.entity) || isUnderground(t.entity)) {
+    beltTileMap[t.x + ',' + t.y] = t;
+  }
+}
+
+/**
+ * BFS to find all belt tiles connected to the given tile carrying the same item.
+ * Follows belt adjacency (including underground pairs).
+ */
+function traceBeltNetwork(startTile) {
+  if (!startTile || !startTile.carries) return new Set();
+  const item = startTile.carries;
+  const visited = new Set();
+  const queue = [startTile.x + ',' + startTile.y];
+  visited.add(queue[0]);
+
+  while (queue.length > 0) {
+    const key = queue.shift();
+    const [x, y] = key.split(',').map(Number);
+    const t = beltTileMap[key];
+    if (!t) continue;
+
+    // Check 4 neighbors
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nk = (x+dx) + ',' + (y+dy);
+      if (visited.has(nk)) continue;
+      const nt = beltTileMap[nk];
+      if (nt && nt.carries === item) {
+        visited.add(nk);
+        queue.push(nk);
+      }
+    }
+
+    // Underground belt pair jump
+    if (isUnderground(t.entity)) {
+      const pair = findUndergroundPair(t);
+      if (pair) {
+        const pk = pair.x + ',' + pair.y;
+        if (!visited.has(pk)) {
+          visited.add(pk);
+          queue.push(pk);
+        }
+      }
+    }
+  }
+  return visited;
+}
+
+/**
+ * Trace which lane carries flow from a specific starting lane through
+ * the connected belt network. Returns Map: "x,y" -> "left"|"right".
+ * Follows belt direction downstream and against it upstream, tracking
+ * lane swaps on turns.
+ */
+function traceLanePath(startTile, startLane) {
+  const path = new Map();
+  const item = startTile.carries;
+  if (!item) return path;
+  path.set(startTile.x + ',' + startTile.y, startLane);
+
+  // Forward: follow belt output direction
+  function _traceForward(tile, lane) {
+    let cur = tile;
+    let curLane = lane;
+    for (let steps = 0; steps < 500; steps++) {
+      const cd = cur.dir || 0;
+      const nx = cur.x + dirDx(cd);
+      const ny = cur.y + dirDy(cd);
+
+      let next = null;
+      let nextKey = nx + ',' + ny;
+      let candidate = beltTileMap[nextKey];
+      if (candidate && candidate.carries === item) {
+        next = candidate;
+      } else if (isUnderground(cur.entity)) {
+        const pair = findUndergroundPair(cur);
+        if (pair) {
+          const pk = pair.x + ',' + pair.y;
+          const pt = beltTileMap[pk];
+          if (pt && !path.has(pk)) { next = pt; nextKey = pk; }
+        }
+      }
+      if (!next || path.has(nextKey)) break;
+
+      const nd = next.dir || 0;
+      if (nd !== cd) {
+        // Different direction: is it a turn or a sideload?
+        // It's a sideload if the next tile has a straight upstream feeder
+        const behindNext = beltTileMap[(next.x - dirDx(nd)) + ',' + (next.y - dirDy(nd))];
+        if (behindNext && (behindNext.dir || 0) === nd && behindNext.carries === item) {
+          break; // Sideload — the next tile is fed straight from behind; we're merging from the side
+        }
+        // Otherwise it's a corner turn — lanes swap
+        curLane = curLane === 'left' ? 'right' : 'left';
+      }
+      path.set(nextKey, curLane);
+      cur = next;
+    }
+  }
+
+  // Backward: find which neighbor feeds into the current tile
+  function _traceBackward(tile, lane) {
+    let cur = tile;
+    let curLane = lane;
+    for (let steps = 0; steps < 500; steps++) {
+      let next = null;
+      let nextKey = null;
+      const cd = cur.dir || 0;
+
+      // First check straight upstream (same direction behind)
+      const bx = cur.x - dirDx(cd);
+      const by = cur.y - dirDy(cd);
+      const bk = bx + ',' + by;
+      const bt = beltTileMap[bk];
+      if (bt && bt.carries === item && !path.has(bk) && (bt.dir || 0) === cd) {
+        next = bt; nextKey = bk;
+        // Straight: lane preserved
+      }
+
+      // Check underground pair
+      if (!next && isUnderground(cur.entity)) {
+        const pair = findUndergroundPair(cur);
+        if (pair) {
+          const pk = pair.x + ',' + pair.y;
+          const pt = beltTileMap[pk];
+          if (pt && !path.has(pk)) { next = pt; nextKey = pk; }
+        }
+      }
+
+      // Check for corner feeder (perpendicular neighbor whose output points to cur)
+      if (!next) {
+        for (const [ddx, ddy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nx = cur.x + ddx;
+          const ny = cur.y + ddy;
+          const nk = nx + ',' + ny;
+          if (path.has(nk)) continue;
+          const nt = beltTileMap[nk];
+          if (!nt || nt.carries !== item) continue;
+          const nd = nt.dir || 0;
+          // Does this neighbor output to cur?
+          if (nt.x + dirDx(nd) === cur.x && nt.y + dirDy(nd) === cur.y) {
+            // Corner turn: lanes swap
+            next = nt; nextKey = nk;
+            curLane = curLane === 'left' ? 'right' : 'left';
+            break;
+          }
+        }
+      }
+
+      if (!next || path.has(nextKey)) break;
+      path.set(nextKey, curLane);
+      cur = next;
+    }
+  }
+
+  _traceForward(startTile, startLane);
+  _traceBackward(startTile, startLane);
+  return path;
+}
+
+/**
+ * Determine which lane the mouse is over based on belt direction.
+ * Returns "left" or "right".
+ */
+function detectLane(mouseXInTile, mouseYInTile, dir) {
+  // In belt's local frame: left lane is the left side when facing the direction
+  // For dir 0 (N): left is west (-x), right is east (+x)
+  // For dir 4 (E): left is north (-y), right is south (+y)
+  // For dir 8 (S): left is east (+x), right is west (-x)
+  // For dir 12 (W): left is south (+y), right is north (-y)
+  const cx = mouseXInTile - 0.5;  // center-relative (-0.5 to 0.5)
+  const cy = mouseYInTile - 0.5;
+  switch (dir) {
+    case 0:  return cx < 0 ? 'left' : 'right';  // N
+    case 4:  return cy < 0 ? 'left' : 'right';  // E
+    case 8:  return cx > 0 ? 'left' : 'right';  // S
+    case 12: return cy > 0 ? 'left' : 'right';  // W
+    default: return 'right';
+  }
+}
+
+// Individual draw functions (drawBelt, drawPipe, drawInserter, drawMachine, drawPole)
+// are provided by the theme objects in __THEME_JS__ above.
+// REMOVED_DRAW_FUNCTIONS_START
+function draw() {
+  const theme = getTheme();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Grid background
+  ctx.fillStyle = theme.background;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw grid lines if zoomed in enough
+  if (scale >= 6) {
+    ctx.strokeStyle = theme.gridLine;
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= GRID_W; x++) {
+      const px = offsetX + x * scale;
+      ctx.beginPath(); ctx.moveTo(px, offsetY); ctx.lineTo(px, offsetY + GRID_H * scale); ctx.stroke();
+    }
+    for (let y = 0; y <= GRID_H; y++) {
+      const py = offsetY + y * scale;
+      ctx.beginPath(); ctx.moveTo(offsetX, py); ctx.lineTo(offsetX + GRID_W * scale, py); ctx.stroke();
+    }
+  }
+
+  // Draw tiles — machines first (larger, behind), then 1x1 entities on top
+  const machines = [];
+  const infra = [];
+  for (const t of TILES) {
+    if (t.w > 1 || t.h > 1) machines.push(t);
+    else infra.push(t);
+  }
+
+  for (const t of machines) {
+    const px = offsetX + (t.x - MIN_X) * scale;
+    const py = offsetY + (t.y - MIN_Y) * scale;
+    const pw = t.w * scale;
+    const ph = t.h * scale;
+
+    let alpha = 1.0;
+    if (highlightRecipe) {
+      alpha = t.recipe === highlightRecipe ? 1.0 : t.recipe ? 0.15 : 0.3;
+    }
+    ctx.globalAlpha = alpha;
+    if (isSplitter(t.entity)) {
+      theme.drawSplitter(ctx, px, py, pw, ph, t);
+    } else if (isPump(t.entity)) {
+      theme.drawPump(ctx, px, py, pw, ph, t);
+    } else {
+      theme.drawMachine(ctx, px, py, pw, ph, t);
+    }
+  }
+
+  for (const t of infra) {
+    const px = offsetX + (t.x - MIN_X) * scale;
+    const py = offsetY + (t.y - MIN_Y) * scale;
+    const s = scale;
+
+    let alpha = 1.0;
+    if (highlightRecipe) {
+      alpha = 0.3;
+    }
+    ctx.globalAlpha = alpha;
+
+    if (isBelt(t.entity)) {
+      theme.drawBelt(ctx, px, py, s, t);
+    } else if (isUnderground(t.entity)) {
+      theme.drawUnderground(ctx, px, py, s, t);
+    } else if (isPipe(t.entity)) {
+      theme.drawPipe(ctx, px, py, s, t);
+    } else if (isInserter(t.entity)) {
+      theme.drawInserter(ctx, px, py, s, t);
+    } else if (isPowerPole(t.entity)) {
+      theme.drawPole(ctx, px, py, s, t);
+    } else {
+      // Fallback: colored rect
+      const gap = scale >= 4 ? 1 : 0;
+      ctx.fillStyle = t.color;
+      ctx.fillRect(px, py, s - gap, s - gap);
+    }
+  }
+
+  ctx.globalAlpha = 1.0;
+
+  // Throughput overlay (second pass over belt tiles)
+  const showThroughput = document.getElementById('cb-throughput')?.checked;
+  if (showThroughput && LANE_RATES) {
+    for (const t of infra) {
+      if (isBelt(t.entity) || isUnderground(t.entity)) {
+        const key = t.x + ',' + t.y;
+        const rates = LANE_RATES[key];
+        if (rates) {
+          const px = offsetX + (t.x - MIN_X) * scale;
+          const py = offsetY + (t.y - MIN_Y) * scale;
+          drawThroughputOverlay(ctx, px, py, scale, t, rates);
+        }
+      }
+    }
+  }
+
+  // Belt network highlight (hovered belt and its connected network)
+  if (highlightNetwork && highlightNetwork.size > 0) {
+    for (const key of highlightNetwork) {
+      const bt = beltTileMap[key];
+      if (!bt) continue;
+      const px = offsetX + (bt.x - MIN_X) * scale;
+      const py = offsetY + (bt.y - MIN_Y) * scale;
+
+      // Subtle highlight on the whole network
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(px, py, scale, scale);
+
+      // Lane path highlight — trace the hovered lane across all connected tiles
+      const pathLane = lanePath ? lanePath.get(key) : null;
+      if (pathLane) {
+        ctx.save();
+        const cx = px + scale * 0.5;
+        const cy = py + scale * 0.5;
+        ctx.translate(cx, cy);
+        ctx.rotate(dirAngle(bt.dir || 0));
+        const hw = scale * 0.5;
+        // Brighter on hovered tile, softer on rest of path
+        const isHovered = hoveredLane && bt.x === hoveredLane.x && bt.y === hoveredLane.y;
+        ctx.fillStyle = isHovered ? 'rgba(130,220,255,0.45)' : 'rgba(130,220,255,0.25)';
+        if (pathLane === 'left') {
+          ctx.fillRect(-hw, -hw, hw, scale);
+        } else {
+          ctx.fillRect(0, -hw, hw, scale);
+        }
+        ctx.restore();
+      }
+    }
+  }
+}
+
+// --- Pan & zoom ---
+wrap.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = wrap.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const oldScale = scale;
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  scale = Math.min(Math.max(scale * factor, 0.5), 48);
+
+  // Zoom toward mouse position
+  offsetX = mx - (mx - offsetX) * (scale / oldScale);
+  offsetY = my - (my - offsetY) * (scale / oldScale);
+  draw();
+});
+
+wrap.addEventListener('mousedown', (e) => {
+  dragging = true;
+  dragStartX = e.clientX - offsetX;
+  dragStartY = e.clientY - offsetY;
+  wrap.style.cursor = 'grabbing';
+});
+window.addEventListener('mousemove', (e) => {
+  if (dragging) {
+    offsetX = e.clientX - dragStartX;
+    offsetY = e.clientY - dragStartY;
+    draw();
+  }
+  // Tooltip
+  const rect = wrap.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const tileX = Math.floor((mx - offsetX) / scale) + MIN_X;
+  const tileY = Math.floor((my - offsetY) / scale) + MIN_Y;
+
+  let found = null;
+  for (const t of TILES) {
+    if (tileX >= t.x && tileX < t.x + t.w && tileY >= t.y && tileY < t.y + t.h) {
+      found = t;
+      break;
+    }
+  }
+
+  // Belt network highlighting
+  const isBeltTile = found && (isBelt(found.entity) || isUnderground(found.entity));
+  const prevNetwork = highlightNetwork;
+  if (isBeltTile) {
+    highlightNetwork = traceBeltNetwork(found);
+    // Detect which lane the mouse is over
+    const fracX = ((mx - offsetX) / scale) - (found.x - MIN_X);
+    const fracY = ((my - offsetY) / scale) - (found.y - MIN_Y);
+    const lane = detectLane(fracX, fracY, found.dir || 0);
+    hoveredLane = {x: found.x, y: found.y, lane: lane};
+    lanePath = traceLanePath(found, lane);
+  } else {
+    highlightNetwork = null;
+    hoveredLane = null;
+    lanePath = null;
+  }
+  // Redraw if network highlight changed
+  if (highlightNetwork !== prevNetwork) draw();
+
+  if (found && mx >= 0 && my >= 0 && mx <= rect.width && my <= rect.height) {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY + 12) + 'px';
+    tooltip.querySelector('.tt-entity').textContent = found.entity;
+    tooltip.querySelector('.tt-recipe').textContent = found.recipe || '';
+    tooltip.querySelector('.tt-carries').textContent = found.carries ? '\u2192 ' + found.carries : '';
+
+    // 3-level throughput: lane, belt, network
+    let throughputText = '';
+    if (isBeltTile && LANE_RATES) {
+      const rateKey = found.x + ',' + found.y;
+      const rates = LANE_RATES[rateKey];
+      if (rates) {
+        const lane = hoveredLane ? hoveredLane.lane : 'right';
+        const laneRate = rates[lane];
+        const beltTotal = rates.left + rates.right;
+        throughputText = `Lane (${lane[0].toUpperCase()}): ${laneRate.toFixed(1)}/s | Belt: ${beltTotal.toFixed(1)}/s`;
+
+        // Network total: sum both lanes of all tiles at network entry/exit
+        // (use max throughput across any tile in the network as the "flow")
+        if (highlightNetwork && highlightNetwork.size > 1) {
+          let maxBelt = 0;
+          for (const k of highlightNetwork) {
+            const r = LANE_RATES[k];
+            if (r) maxBelt = Math.max(maxBelt, r.left + r.right);
+          }
+          throughputText += ` | Network: ${maxBelt.toFixed(1)}/s`;
+        }
+      }
+    }
+    tooltip.querySelector('.tt-throughput').textContent = throughputText;
+    tooltip.querySelector('.tt-pos').textContent = `(${tileX}, ${tileY})`;
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+window.addEventListener('mouseup', () => {
+  dragging = false;
+  wrap.style.cursor = 'default';
+});
+
+// --- Legend ---
+function buildLegend() {
+  const recipesEl = document.getElementById('legend-recipes');
+  for (const item of LEGEND_RECIPES) {
+    const div = document.createElement('div');
+    div.className = 'legend-item';
+    div.innerHTML = `<div class="legend-swatch" style="background:${item.color}"></div>` +
+      `<span class="legend-label">${item.recipe}</span>` +
+      `<span class="legend-count">&times;${item.count}</span>`;
+    div.addEventListener('click', () => {
+      if (highlightRecipe === item.recipe) {
+        highlightRecipe = null;
+        div.classList.remove('active');
+      } else {
+        highlightRecipe = item.recipe;
+        recipesEl.querySelectorAll('.legend-item').forEach(el => el.classList.remove('active'));
+        div.classList.add('active');
+      }
+      draw();
+    });
+    recipesEl.appendChild(div);
+  }
+
+  const infraEl = document.getElementById('legend-infra');
+  for (const item of LEGEND_INFRA) {
+    const div = document.createElement('div');
+    div.className = 'legend-item';
+    div.innerHTML = `<div class="legend-swatch" style="background:${item.color}"></div>` +
+      `<span class="legend-label">${item.label}</span>` +
+      `<span class="legend-count">&times;${item.count}</span>`;
+    infraEl.appendChild(div);
+  }
+}
+
+// --- Solver info table ---
+function buildSolverTable() {
+  if (!SOLVER_INFO) return;
+  document.getElementById('solver-section').style.display = 'block';
+  const tbody = document.getElementById('solver-body');
+  for (const row of SOLVER_INFO) {
+    // Find color for this recipe
+    const legendItem = LEGEND_RECIPES.find(l => l.recipe === row.recipe);
+    const color = legendItem ? legendItem.color : '#888';
+    const tr = document.createElement('tr');
+    const inputStr = row.inputs.map(i =>
+      i.item + ' ' + i.rate + (i.fluid ? '<span class="fluid-tag">fluid</span>' : '')
+    ).join('<br>');
+    tr.innerHTML = `<td><span class="solver-recipe-swatch" style="background:${color}"></span>${row.recipe}</td>` +
+      `<td>${row.placed}</td>` +
+      `<td>${inputStr}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// --- Validation issues ---
+function buildValidation() {
+  if (!VALIDATION_DATA) return;
+  document.getElementById('validation-section').style.display = 'block';
+  const el = document.getElementById('validation-list');
+  const errors = VALIDATION_DATA.filter(i => i.severity === 'error');
+  const warnings = VALIDATION_DATA.filter(i => i.severity === 'warning');
+  const hdr = document.getElementById('validation-header');
+  if (errors.length > 0) {
+    hdr.textContent = `Validation (${errors.length} error${errors.length !== 1 ? 's' : ''})`;
+    hdr.style.background = '#ff6b6b';
+  } else if (warnings.length > 0) {
+    hdr.textContent = `Validation (${warnings.length} warning${warnings.length !== 1 ? 's' : ''})`;
+    hdr.style.background = '#ffd93d';
+    hdr.style.color = '#1a1a2e';
+  } else {
+    hdr.textContent = 'Validation OK';
+    hdr.style.background = '#4ade80';
+    hdr.style.color = '#1a1a2e';
+  }
+  for (const issue of VALIDATION_DATA) {
+    const div = document.createElement('div');
+    div.className = 'val-item ' + (issue.severity === 'error' ? 'val-error' : 'val-warning');
+    let posHtml = '';
+    if (issue.x != null && issue.y != null) {
+      posHtml = `<div class="val-pos" data-x="${issue.x}" ` +
+        `data-y="${issue.y}">&rarr; (${issue.x}, ${issue.y})</div>`;
+    }
+    div.innerHTML = `<div class="val-category">${issue.category}</div>` +
+      `<div class="val-msg">${issue.message}</div>${posHtml}`;
+    el.appendChild(div);
+  }
+  // Click position to pan to it
+  el.addEventListener('click', (ev) => {
+    const posEl = ev.target.closest('.val-pos');
+    if (!posEl) return;
+    const tx = parseFloat(posEl.dataset.x);
+    const ty = parseFloat(posEl.dataset.y);
+    offsetX = canvas.width / 2 - (tx - MIN_X + 0.5) * scale;
+    offsetY = canvas.height / 2 - (ty - MIN_Y + 0.5) * scale;
+    draw();
+  });
+}
+buildValidation();
+
+// --- Controls ---
+document.getElementById('btn-fit').addEventListener('click', fitToView);
+document.getElementById('btn-zin').addEventListener('click', () => {
+  scale = Math.min(scale * 1.5, 48);
+  draw();
+});
+document.getElementById('btn-zout').addEventListener('click', () => {
+  scale = Math.max(scale / 1.5, 0.5);
+  draw();
+});
+document.getElementById('cb-throughput').addEventListener('change', draw);
+
+// --- Production Graph ---
+let graphRendered = false;
+function renderGraph() {
+  if (graphRendered || !GRAPH_DATA) return;
+  graphRendered = true;
+
+  const panel = document.getElementById('graph-panel');
+  const gc = document.getElementById('graph-canvas');
+  const gctx = gc.getContext('2d');
+
+  gc.width = panel.clientWidth || 800;
+  gc.height = panel.clientHeight || 600;
+
+  const nodes = GRAPH_DATA.nodes;
+  const edges = GRAPH_DATA.edges;
+
+  // Group nodes by recipe for layered layout
+  const recipeGroups = {};
+  nodes.forEach(n => {
+    if (!recipeGroups[n.recipe]) recipeGroups[n.recipe] = [];
+    recipeGroups[n.recipe].push(n);
+  });
+  const recipes = Object.keys(recipeGroups);
+
+  // Collect unique items from external inputs
+  const extInputItems = [...new Set(edges.filter(e => e.from === null).map(e => e.item))];
+
+  // Assign layer (x) based on dependency depth via BFS from external inputs
+  const recipeLayers = {};
+  const recipeInputs = {};
+  recipes.forEach(r => { recipeInputs[r] = []; });
+  edges.forEach(e => {
+    if (e.from !== null && e.to !== null) {
+      const fromRecipe = nodes.find(n => n.id === e.from)?.recipe;
+      const toRecipe = nodes.find(n => n.id === e.to)?.recipe;
+      if (fromRecipe && toRecipe && fromRecipe !== toRecipe) {
+        if (!recipeInputs[toRecipe].includes(fromRecipe))
+          recipeInputs[toRecipe].push(fromRecipe);
+      }
+    }
+  });
+
+  // Topological layering
+  const assigned = new Set();
+  let layer = 0;
+  // Start with recipes that have no recipe inputs (only external)
+  let current = recipes.filter(r => recipeInputs[r].length === 0);
+  while (current.length > 0) {
+    current.forEach(r => { recipeLayers[r] = layer; assigned.add(r); });
+    layer++;
+    current = recipes.filter(r => !assigned.has(r) && recipeInputs[r].every(dep => assigned.has(dep)));
+    if (current.length === 0 && assigned.size < recipes.length) {
+      // Cycle or orphan — assign remaining
+      recipes.filter(r => !assigned.has(r)).forEach(r => { recipeLayers[r] = layer; assigned.add(r); });
+    }
+  }
+  const maxLayer = Math.max(...Object.values(recipeLayers), 0);
+  const totalLayers = maxLayer + 1;
+
+  // Position nodes
+  const nodeRadius = 20;
+  const layerWidth = gc.width / (totalLayers + 2);  // +2 for external input/output columns
+  const nodePositions = {};
+
+  // External input positions (leftmost column)
+  const extPositions = {};
+  extInputItems.forEach((item, i) => {
+    const y = (gc.height / (extInputItems.length + 1)) * (i + 1);
+    extPositions[item] = { x: layerWidth * 0.5, y };
+  });
+
+  // Machine node positions (grouped by recipe, spread vertically)
+  recipes.forEach(recipe => {
+    const group = recipeGroups[recipe];
+    const lx = layerWidth * (recipeLayers[recipe] + 1.5);
+    group.forEach((n, i) => {
+      const y = (gc.height / (group.length + 1)) * (i + 1);
+      nodePositions[n.id] = { x: lx, y, color: n.color, recipe: n.recipe, entity: n.entity, instance: n.instance };
+    });
+  });
+
+  // Draw edges
+  gctx.lineWidth = 1.5;
+  edges.forEach(e => {
+    let from, to;
+    if (e.from === null) {
+      from = extPositions[e.item];
+      if (!from) return;
+    } else {
+      from = nodePositions[e.from];
+    }
+    if (e.to === null) return;  // skip external outputs for now
+    to = nodePositions[e.to];
+    if (!from || !to) return;
+
+    gctx.strokeStyle = e.is_fluid ? '#4a7ab5' : '#888';
+    gctx.beginPath();
+    // Curved edge
+    const cx = (from.x + to.x) / 2;
+    gctx.moveTo(from.x, from.y);
+    gctx.quadraticCurveTo(cx, from.y, to.x, to.y);
+    gctx.stroke();
+
+    // Edge label
+    const mx = (from.x + to.x) / 2;
+    const my = (from.y + to.y) / 2 - 6;
+    gctx.fillStyle = '#888';
+    gctx.font = '10px sans-serif';
+    gctx.textAlign = 'center';
+    const rateStr = e.rate < 1 ? e.rate.toFixed(2) : e.rate.toFixed(1);
+    gctx.fillText(`${e.item} ${rateStr}/s`, mx, my);
+  });
+
+  // Draw external input nodes
+  extInputItems.forEach(item => {
+    const pos = extPositions[item];
+    gctx.fillStyle = '#2a6e2a';
+    gctx.beginPath();
+    gctx.arc(pos.x, pos.y, 14, 0, Math.PI * 2);
+    gctx.fill();
+    gctx.strokeStyle = '#4a9e4a';
+    gctx.lineWidth = 2;
+    gctx.stroke();
+    gctx.fillStyle = '#e0e0e0';
+    gctx.font = '10px sans-serif';
+    gctx.textAlign = 'center';
+    gctx.textBaseline = 'middle';
+    // Truncate long names
+    const label = item.length > 12 ? item.substring(0, 10) + '..' : item;
+    gctx.fillText(label, pos.x, pos.y);
+  });
+
+  // Draw machine nodes
+  Object.values(nodePositions).forEach(pos => {
+    gctx.fillStyle = pos.color;
+    gctx.beginPath();
+    gctx.arc(pos.x, pos.y, nodeRadius, 0, Math.PI * 2);
+    gctx.fill();
+    gctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    gctx.lineWidth = 2;
+    gctx.stroke();
+
+    // Label
+    gctx.fillStyle = '#fff';
+    gctx.font = 'bold 10px sans-serif';
+    gctx.textAlign = 'center';
+    gctx.textBaseline = 'middle';
+    const label = pos.recipe.length > 12 ? pos.recipe.substring(0, 10) + '..' : pos.recipe;
+    gctx.fillText(label, pos.x, pos.y - 4);
+    gctx.font = '9px sans-serif';
+    gctx.fillStyle = '#ccc';
+    gctx.fillText(`#${pos.instance}`, pos.x, pos.y + 8);
+  });
+}
+
+// --- Init ---
+buildLegend();
+buildSolverTable();
+resize();
+fitToView();
+</script>
+</body>
+</html>

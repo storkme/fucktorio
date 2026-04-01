@@ -46,13 +46,15 @@ def viz(request: pytest.FixtureRequest):
 
         # Run validation to collect issues for display
         validation_issues = None
+        lane_rates = None
         if layout_result is not None and solver_result is not None:
-            from src.validate import ValidationError, validate
+            from src.validate import ValidationError, compute_lane_rates, validate
 
             try:
                 validation_issues = validate(layout_result, solver_result, layout_style="spaghetti")
             except ValidationError as exc:
                 validation_issues = exc.issues
+            lane_rates = compute_lane_rates(layout_result, solver_result)
 
         from src.visualize import visualize
 
@@ -64,6 +66,7 @@ def viz(request: pytest.FixtureRequest):
             production_graph=production_graph,
             validation_issues=validation_issues,
             layout_result=layout_result,
+            lane_rates=lane_rates,
         )
 
     return _save

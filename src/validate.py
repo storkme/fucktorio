@@ -2067,32 +2067,27 @@ def _classify_belt_feeders(
     return feeders
 
 
-def check_lane_throughput(
+def compute_lane_rates(
     layout_result: LayoutResult,
     solver_result: SolverResult | None = None,
-) -> list[ValidationIssue]:
-    """Check per-lane belt throughput using full lane simulation.
+) -> dict[tuple[int, int], dict[str, float]]:
+    """Compute per-lane throughput for every surface belt tile.
 
-    Each belt has two lanes (left/right), each with half the belt's total
-    throughput. Items enter specific lanes: inserters → far lane, sideloads
-    → near lane. Turns swap lanes. Flags tiles where either lane exceeds
-    its per-lane capacity.
+    Returns ``{(x, y): {"left": rate, "right": rate}}`` via topological
+    propagation of inserter output rates through the belt network.
     """
-    issues: list[ValidationIssue] = []
     if solver_result is None:
-        return issues
+        return {}
 
     # Build belt maps — surface belts only (underground belts don't
     # sideload into adjacent belts or propagate lane throughput)
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
-    belt_name_map: dict[tuple[int, int], str] = {}
     for e in layout_result.entities:
         if e.name in _SURFACE_BELT_ENTITIES:
             belt_dir_map[(e.x, e.y)] = e.direction
-            belt_name_map[(e.x, e.y)] = e.name
 
     if not belt_dir_map:
-        return issues
+        return {}
 
     # Build machine tile maps
     machine_tiles = _build_machine_tile_set(layout_result)
@@ -2239,7 +2234,31 @@ def check_lane_throughput(
         if in_degree[downstream] <= 0 and downstream not in processed:
             queue.append(downstream)
 
-    # Check capacity
+    return lane_rates
+
+
+def check_lane_throughput(
+    layout_result: LayoutResult,
+    solver_result: SolverResult | None = None,
+) -> list[ValidationIssue]:
+    """Check per-lane belt throughput using full lane simulation.
+
+    Each belt has two lanes (left/right), each with half the belt's total
+    throughput. Items enter specific lanes: inserters → far lane, sideloads
+    → near lane. Turns swap lanes. Flags tiles where either lane exceeds
+    its per-lane capacity.
+    """
+    issues: list[ValidationIssue] = []
+    lane_rates = compute_lane_rates(layout_result, solver_result)
+    if not lane_rates:
+        return issues
+
+    # Build belt name map for capacity lookup
+    belt_name_map: dict[tuple[int, int], str] = {}
+    for e in layout_result.entities:
+        if e.name in _SURFACE_BELT_ENTITIES:
+            belt_name_map[(e.x, e.y)] = e.name
+
     for pos, rates in lane_rates.items():
         belt_name = belt_name_map.get(pos, "transport-belt")
         cap = _LANE_CAPACITY.get(belt_name, 7.5)
@@ -2258,9 +2277,6 @@ def check_lane_throughput(
                         y=pos[1],
                     )
                 )
-
-    # NOTE: lane-reachability check removed — inserters pick from both
-    # lanes of a belt, so checking single-lane reachability is a false positive.
 
     return issues
 
