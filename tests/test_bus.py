@@ -140,9 +140,7 @@ class TestBusLayout:
                 for dy in range(sz):
                     pos = (ent.x + dx, ent.y + dy)
                     if pos in occupied:
-                        pytest.fail(
-                            f"Overlap at {pos}: {ent.name} conflicts with {occupied[pos]}"
-                        )
+                        pytest.fail(f"Overlap at {pos}: {ent.name} conflicts with {occupied[pos]}")
                     occupied[pos] = ent.name
 
 
@@ -170,4 +168,5 @@ class TestBusVisualization:
 
 def _make_blueprint(layout, label):
     from src.blueprint import build_blueprint
+
     return build_blueprint(layout, label=label)
