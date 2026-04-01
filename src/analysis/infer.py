@@ -114,10 +114,9 @@ def infer_items(
 
         # Propagate network labels to links
         for link in inserter_links:
-            if link.network_id is not None and link.inferred_item is None:
-                if link.network_id in net_items:
-                    link.inferred_item = net_items[link.network_id]
-                    changed = True
+            if link.network_id is not None and link.inferred_item is None and link.network_id in net_items:
+                link.inferred_item = net_items[link.network_id]
+                changed = True
 
         for fl in fluid_links:
             if fl.inferred_item is None and fl.network_id in net_items:
@@ -173,7 +172,4 @@ def _is_fluid_item(item: str, machine: AnalyzedMachine) -> bool:
     for ing in recipe.ingredients:
         if ing.name == item and ing.type == "fluid":
             return True
-    for prod in recipe.products:
-        if prod.name == item and prod.type == "fluid":
-            return True
-    return False
+    return any(prod.name == item and prod.type == "fluid" for prod in recipe.products)

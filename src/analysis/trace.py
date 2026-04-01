@@ -168,10 +168,7 @@ def _find_ug_belt_pairs(
             continue
         d = seg.direction
         x, y = seg.position
-        if d in (EntityDirection.EAST, EntityDirection.WEST):
-            key = (d, y)
-        else:
-            key = (d, x)
+        key = (d, y) if d in (EntityDirection.EAST, EntityDirection.WEST) else (d, x)
         groups.setdefault(key, []).append(seg)
 
     for (d, _axis), group in groups.items():
@@ -246,10 +243,7 @@ def _find_ptg_pairs_modern(
     for seg in ptg:
         d = seg.direction
         x, y = seg.position
-        if d in (EntityDirection.EAST, EntityDirection.WEST):
-            key = (d, y)
-        else:
-            key = (d, x)
+        key = (d, y) if d in (EntityDirection.EAST, EntityDirection.WEST) else (d, x)
         groups.setdefault(key, []).append(seg)
 
     for (d, _axis), group in groups.items():
