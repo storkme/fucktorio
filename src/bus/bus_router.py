@@ -194,7 +194,8 @@ def _route_belt_lane(
         all_ys.append(row_spans[pri].output_belt_y)
     end_y = max(all_ys) if all_ys else start_y
 
-    # All inserters drop on one lane, so use 2x rate for per-lane capacity
+    # Output returns sideload into the bus lane from one direction,
+    # so items end up on a single lane. Use 2x rate for per-lane capacity.
     belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
 
     # Vertical surface belts (SOUTH), skipping tap-off positions

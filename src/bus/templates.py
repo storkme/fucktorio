@@ -4,6 +4,8 @@ Every belt and inserter entity is tagged with ``carries`` so the validator
 can trace item flow through the layout.
 
 Machines are packed with zero gap (3-tile pitch for 3x3 machines).
+When lane splitting is active, machines are split into two groups with a
+sideload bridge in between so both output belt lanes are utilised.
 """
 
 from __future__ import annotations
@@ -12,6 +14,93 @@ from ..models import EntityDirection, PlacedEntity
 
 # Horizontal pitch: machine width with no gap
 MACHINE_PITCH = 3
+
+# Gap between machine groups when lane-splitting output belts.
+# 3 tiles: 1 for sideload target filler, 1 for through-belt filler,
+# 1 for the NORTH lift from group 2.
+LANE_SPLIT_GAP = 3
+
+
+def _machine_xs(
+    x_offset: int,
+    machine_count: int,
+    lane_split: bool,
+    pitch: int = MACHINE_PITCH,
+) -> list[int]:
+    """Return x-coordinates for each machine, accounting for lane-split gap."""
+    if not lane_split or machine_count < 2:
+        return [x_offset + i * pitch for i in range(machine_count)]
+
+    g1 = machine_count // 2
+    positions: list[int] = []
+    for i in range(g1):
+        positions.append(x_offset + i * pitch)
+    for j in range(machine_count - g1):
+        positions.append(x_offset + g1 * pitch + LANE_SPLIT_GAP + j * pitch)
+    return positions
+
+
+def _sideload_bridge(
+    gap_start_x: int,
+    y_offset: int,
+    output_row_dy: int,
+    belt: str,
+    item: str,
+) -> list[PlacedEntity]:
+    """Generate the 6-entity sideload bridge between two machine groups.
+
+    ``output_row_dy`` is the output belt's offset from ``y_offset``
+    (6 for single_input_row, 7 for dual_input_row).
+    """
+    bridge_y = y_offset + output_row_dy - 1  # one row above output belt
+    output_y = y_offset + output_row_dy
+
+    return [
+        # Bridge row (y+5 or y+6 depending on template)
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x,
+            y=bridge_y,
+            direction=EntityDirection.SOUTH,
+            carries=item,
+        ),
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x + 1,
+            y=bridge_y,
+            direction=EntityDirection.WEST,
+            carries=item,
+        ),
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x + 2,
+            y=bridge_y,
+            direction=EntityDirection.WEST,
+            carries=item,
+        ),
+        # Output belt row — gap tiles
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x,
+            y=output_y,
+            direction=EntityDirection.WEST,
+            carries=item,
+        ),  # sideload target (through-belt)
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x + 1,
+            y=output_y,
+            direction=EntityDirection.WEST,
+            carries=item,
+        ),  # through-belt filler
+        PlacedEntity(
+            name=belt,
+            x=gap_start_x + 2,
+            y=output_y,
+            direction=EntityDirection.NORTH,
+            carries=item,
+        ),  # lifts group2 items up to bridge
+    ]
 
 
 def single_input_row(
@@ -24,6 +113,7 @@ def single_input_row(
     output_item: str = "",
     input_belt: str = "transport-belt",
     output_belt: str = "transport-belt",
+    lane_split: bool = False,
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 1 solid input.
 
@@ -33,13 +123,18 @@ def single_input_row(
         y+2..y+4 : machine (3x3)
         y+5 : output inserter (SOUTH)
         y+6 : output belt (WEST -- toward bus)
+
+    When lane_split=True, machines are split into two groups with a
+    sideload bridge between them so the output belt uses both lanes.
     """
     entities: list[PlacedEntity] = []
     ROW_HEIGHT = 7
 
-    for i in range(machine_count):
-        mx = x_offset + i * MACHINE_PITCH
+    lane_split = lane_split and machine_count >= 2
+    mxs = _machine_xs(x_offset, machine_count, lane_split)
+    g1 = machine_count // 2 if lane_split else machine_count
 
+    for mx in mxs:
         # Input belt (3 tiles wide, continuous with adjacent machines)
         for dx in range(3):
             entities.append(
@@ -97,6 +192,22 @@ def single_input_row(
                 )
             )
 
+    if lane_split:
+        gap_start_x = x_offset + g1 * MACHINE_PITCH
+        # Input belt tiles through the gap (keep items flowing to group2)
+        for dx in range(LANE_SPLIT_GAP):
+            entities.append(
+                PlacedEntity(
+                    name=input_belt,
+                    x=gap_start_x + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=input_item,
+                )
+            )
+        # Sideload bridge
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item))
+
     return entities, ROW_HEIGHT
 
 
@@ -110,6 +221,7 @@ def dual_input_row(
     output_item: str = "",
     input_belts: tuple[str, str] = ("transport-belt", "transport-belt"),
     output_belt: str = "transport-belt",
+    lane_split: bool = False,
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 2 solid inputs.
 
@@ -120,15 +232,20 @@ def dual_input_row(
         y+3..y+5 : machine (3x3)
         y+6 : output inserter (SOUTH)
         y+7 : output belt (WEST -- toward bus)
+
+    When lane_split=True, machines are split into two groups with a
+    sideload bridge between them so the output belt uses both lanes.
     """
     entities: list[PlacedEntity] = []
     ROW_HEIGHT = 8
     input1, input2 = input_items
     belt1, belt2 = input_belts
 
-    for i in range(machine_count):
-        mx = x_offset + i * MACHINE_PITCH
+    lane_split = lane_split and machine_count >= 2
+    mxs = _machine_xs(x_offset, machine_count, lane_split)
+    g1 = machine_count // 2 if lane_split else machine_count
 
+    for mx in mxs:
         # Input belt 1 -- far belt
         for dx in range(3):
             entities.append(
@@ -208,6 +325,31 @@ def dual_input_row(
                     carries=output_item,
                 )
             )
+
+    if lane_split:
+        gap_start_x = x_offset + g1 * MACHINE_PITCH
+        # Input belt tiles through the gap for both input belts
+        for dx in range(LANE_SPLIT_GAP):
+            entities.append(
+                PlacedEntity(
+                    name=belt1,
+                    x=gap_start_x + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=input1,
+                )
+            )
+            entities.append(
+                PlacedEntity(
+                    name=belt2,
+                    x=gap_start_x + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                    carries=input2,
+                )
+            )
+        # Sideload bridge (output belt at y+7, bridge at y+6)
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item))
 
     return entities, ROW_HEIGHT
 

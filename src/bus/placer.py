@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from ..models import MachineSpec, PlacedEntity
 from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate
-from .templates import dual_input_row, fluid_input_row, single_input_row
+from .templates import LANE_SPLIT_GAP, dual_input_row, fluid_input_row, single_input_row
 
 
 @dataclass
@@ -40,6 +40,23 @@ def _max_machines_for_belt(spec: MachineSpec, belt_name: str) -> int:
     return max(1, max_m)
 
 
+def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str) -> int:
+    """Max machines when using BOTH belt lanes (lane-split output).
+
+    Each lane has its own capacity limit. The total is 2x the per-lane max,
+    not int(full_capacity / rate), because integer truncation matters.
+    """
+    lane_cap = _LANE_CAPACITY.get(belt_name, 7.5)
+    max_m = 999
+
+    for out in spec.outputs:
+        if not out.is_fluid and out.rate > 0:
+            per_lane = int(lane_cap / out.rate)
+            max_m = min(max_m, per_lane * 2)
+
+    return max(1, max_m)
+
+
 def place_rows(
     machines: list[MachineSpec],
     dependency_order: list[str],
@@ -64,11 +81,18 @@ def place_rows(
     for spec in ordered:
         total_count = max(1, math.ceil(spec.count))
 
-        # Determine belt tier and max machines per row
+        # Determine belt tier and max machines per row.
+        # With lane splitting, both lanes are used so full belt capacity applies.
         solid_outputs = [f for f in spec.outputs if not f.is_fluid]
         output_rate = solid_outputs[0].rate * total_count if solid_outputs else 0
-        out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
-        max_per_row = _max_machines_for_belt(spec, out_belt)
+        has_fluid = any(f.is_fluid for f in spec.inputs)
+        # Fluid rows don't support lane splitting yet — use single-lane math
+        if has_fluid:
+            out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
+            max_per_row = _max_machines_for_belt(spec, out_belt)
+        else:
+            out_belt = belt_entity_for_rate(output_rate, max_tier=max_belt_tier)
+            max_per_row = _max_machines_for_belt_both_lanes(spec, out_belt)
 
         # Split into chunks
         remaining = total_count
@@ -98,14 +122,18 @@ def _build_one_row(
 
     output_item = solid_outputs[0].item if solid_outputs else ""
 
-    # Belt tiers based on THIS chunk's throughput (not total)
+    # Lane splitting: use both belt lanes when count >= 2 (not for fluid rows)
+    has_fluid = bool(fluid_inputs and solid_inputs)
+    lane_split = count >= 2 and not has_fluid
+
+    # Belt tiers based on THIS chunk's throughput
     output_rate = solid_outputs[0].rate * count if solid_outputs else 0
-    out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
+    out_belt = belt_entity_for_rate(output_rate * (1 if lane_split else 2), max_tier=max_belt_tier)
 
     fluid_port_ys: list[int] = []
     fluid_port_pipes: list[tuple[int, int]] = []
 
-    if fluid_inputs and solid_inputs:
+    if has_fluid:
         input_item = solid_inputs[0].item
         fluid_item = fluid_inputs[0].item
         input_rate = solid_inputs[0].rate * count
@@ -140,6 +168,7 @@ def _build_one_row(
             output_item=output_item,
             input_belt=in_belt,
             output_belt=out_belt,
+            lane_split=lane_split,
         )
         input_belt_ys = [y_cursor]
         output_belt_y = y_cursor + 6
@@ -157,12 +186,14 @@ def _build_one_row(
             output_item=output_item,
             input_belts=(in_belt1, in_belt2),
             output_belt=out_belt,
+            lane_split=lane_split,
         )
         input_belt_ys = [y_cursor, y_cursor + 1]
         output_belt_y = y_cursor + row_h - 1
 
     machine_pitch = 5 if spec.entity == "oil-refinery" else 3
-    row_width = bus_width + count * machine_pitch
+    gap = LANE_SPLIT_GAP if lane_split else 0
+    row_width = bus_width + count * machine_pitch + gap
 
     span = RowSpan(
         y_start=y_cursor,

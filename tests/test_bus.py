@@ -165,6 +165,12 @@ class TestBusVisualization:
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit")
         viz(bp, "bus-electronic-circuit-5s", solver_result=result, layout_result=layout)
 
+    def test_viz_electronic_circuit_from_ores(self, viz):
+        result = solve("electronic-circuit", 5.0)
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 5/s electronic-circuit (from ores)")
+        viz(bp, "bus-electronic-circuit-from-ores-5s", solver_result=result, layout_result=layout)
+
 
 def _make_blueprint(layout, label):
     from src.blueprint import build_blueprint
