@@ -232,9 +232,7 @@ def _recipe_items(recipe_name: str | None) -> tuple[list[str], list[str]]:
     return inputs, outputs
 
 
-def _belt_tiles(
-    name: str, pos: tuple[int, int], direction: EntityDirection
-) -> list[tuple[int, int]]:
+def _belt_tiles(name: str, pos: tuple[int, int], direction: EntityDirection) -> list[tuple[int, int]]:
     """Return all tiles occupied by a belt-type entity.
 
     Regular belts and underground belts are 1x1.
