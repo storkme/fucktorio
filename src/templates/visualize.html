@@ -601,18 +601,19 @@ function traceLanePath(startTile, startLane) {
  * Returns "left" or "right".
  */
 function detectLane(mouseXInTile, mouseYInTile, dir) {
-  // In belt's local frame: left lane is the left side when facing the direction
-  // For dir 0 (N): left is west (-x), right is east (+x)
-  // For dir 4 (E): left is north (-y), right is south (+y)
-  // For dir 8 (S): left is east (+x), right is west (-x)
-  // For dir 12 (W): left is south (+y), right is north (-y)
+  // Must match the lane convention used by inserter_target_lane() in the
+  // Python backend: "left" perpendicular of (dx,dy) = (-dy, dx).
+  // In screen-Y-down coords this is a CW rotation, so for a northbound
+  // belt (0,-1) "left" = east (+x).  This is opposite to the visual/
+  // Factorio convention but the lane *rates* are labelled this way, so
+  // the display must agree.
   const cx = mouseXInTile - 0.5;  // center-relative (-0.5 to 0.5)
   const cy = mouseYInTile - 0.5;
   switch (dir) {
-    case 0:  return cx < 0 ? 'left' : 'right';  // N
-    case 4:  return cy < 0 ? 'left' : 'right';  // E
-    case 8:  return cx > 0 ? 'left' : 'right';  // S
-    case 12: return cy > 0 ? 'left' : 'right';  // W
+    case 0:  return cx > 0 ? 'left' : 'right';  // N: east = left
+    case 4:  return cy > 0 ? 'left' : 'right';  // E: south = left
+    case 8:  return cx < 0 ? 'left' : 'right';  // S: west = left
+    case 12: return cy < 0 ? 'left' : 'right';  // W: north = left
     default: return 'right';
   }
 }
@@ -775,8 +776,11 @@ function draw() {
           const acx = px + arcData.cx * scale;
           const acy = py + arcData.cy * scale;
           const isCW = arcData.cw;
-          // CW turn: left=outer(3/4), right=inner(1/4). CCW turn: left=inner(1/4), right=outer(3/4)
-          const isOuter = isCW === (pathLane === 'left');
+          // Backend "left" = CW perpendicular = visual right.  Flip so
+          // highlight lands on the correct visual side.
+          const visualLeft = pathLane === 'right';
+          // CW turn: visual-left=outer(3/4), visual-right=inner(1/4)
+          const isOuter = isCW === visualLeft;
           const rMid = isOuter ? scale * 3 / 4 : scale / 4;
           const rOuter = Math.min(scale, rMid + scale / 4 - 1);
           const rInner = Math.max(0, rMid - scale / 4 + 1);
@@ -803,7 +807,7 @@ function draw() {
           ctx.rotate(dirAngle(outDir));
           const hw = scale * 0.5;
           ctx.fillStyle = laneColor;
-          const laneX = pathLane === 'left' ? -hw : 0;
+          const laneX = pathLane === 'right' ? -hw : 0;  // backend "left" = visual right
           ctx.fillRect(laneX, -hw, hw, scale);
           if (isDownstream) {
             ctx.strokeStyle = dotColor;
@@ -915,7 +919,8 @@ window.addEventListener('mousemove', (e) => {
         const lane = hoveredLane ? hoveredLane.lane : 'right';
         const laneRate = rates[lane];
         const beltTotal = rates.left + rates.right;
-        throughputText = `Lane (${lane[0].toUpperCase()}): ${laneRate.toFixed(1)}/s | Belt: ${beltTotal.toFixed(1)}/s`;
+        const visualLabel = lane === 'left' ? 'R' : 'L';  // backend "left" = visual right
+        throughputText = `Lane (${visualLabel}): ${laneRate.toFixed(1)}/s | Belt: ${beltTotal.toFixed(1)}/s`;
 
         // Network total: sum both lanes of all tiles at network entry/exit
         // (use max throughput across any tile in the network as the "flow")

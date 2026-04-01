@@ -1,7 +1,7 @@
 //! Native A* pathfinding for Fucktorio.
 //!
 //! Faithful port of `_astar_path` from `src/routing/router.py` — item-aware,
-//! lane-aware grid pathfinding with underground belt support.
+//! grid pathfinding with underground belt support.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -36,7 +36,7 @@ fn dir_vec(d: u8) -> Option<(i16, i16)> {
 const UG_COST_MULTIPLIER: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
-// State
+// State — (x, y, forced direction for UG exit continuation)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,18 +45,11 @@ struct Forced {
     dy: i8,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum Lane {
-    Left,
-    Right,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct State {
     x: i16,
     y: i16,
     forced: Option<Forced>,
-    lane: Option<Lane>,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +213,6 @@ fn astar_inner(
     max_extent: i16,
     allow_underground: bool,
     ug_max_reach: i16,
-    start_lane: Option<Lane>,
-    goal_lane_check: Option<(i16, i16)>,
     belt_dir_map: &FxHashMap<(i16, i16), u8>,
     other_item_tiles: Option<&FxHashSet<(i16, i16)>>,
 ) -> Option<Vec<(i16, i16)>> {
@@ -242,20 +233,13 @@ fn astar_inner(
     } else {
         None
     };
+
     // Deviation line from start centroid to goal center
     let scx = start_set.iter().map(|s| s.0 as f32).sum::<f32>() / start_set.len() as f32;
     let scy = start_set.iter().map(|s| s.1 as f32).sum::<f32>() / start_set.len() as f32;
-    let dev = DeviationLine {
-        sx: scx,
-        sy: scy,
-        line_dx: goal_list.iter().map(|g| g.0 as f32).sum::<f32>() / goal_list.len() as f32 - scx,
-        line_dy: goal_list.iter().map(|g| g.1 as f32).sum::<f32>() / goal_list.len() as f32 - scy,
-        line_len: 1.0, // recomputed below
-    };
-    let dev = DeviationLine {
-        line_len: (dev.line_dx * dev.line_dx + dev.line_dy * dev.line_dy).sqrt().max(1.0),
-        ..dev
-    };
+    let sc = (scx as i16, scy as i16);
+    let dev = DeviationLine::new(sc.0, sc.1, &goal_list);
+
     let has_belt_dir_map = !belt_dir_map.is_empty();
 
     // Heuristic dispatch
@@ -277,12 +261,7 @@ fn astar_inner(
         if obstacles.contains(&(sx, sy)) {
             continue;
         }
-        let initial = State {
-            x: sx,
-            y: sy,
-            forced: None,
-            lane: start_lane,
-        };
+        let initial = State { x: sx, y: sy, forced: None };
         g_score.insert(initial, 0.0);
         open_set.push(QEntry {
             f: OrderedFloat(heuristic(sx, sy)),
@@ -293,54 +272,19 @@ fn astar_inner(
     }
 
     while let Some(QEntry { state, .. }) = open_set.pop() {
-        let State {
-            x: cx,
-            y: cy,
-            forced,
-            lane,
-        } = state;
+        let State { x: cx, y: cy, forced } = state;
 
         // Goal check (only when not forced)
         if goals.contains(&(cx, cy)) && forced.is_none() {
-            if let Some((ins_dx, ins_dy)) = goal_lane_check {
-                if let Some(cur_lane) = lane {
-                    if let Some(&prev_state) = parent.get(&state) {
-                        let pdx = sign(cx - prev_state.x);
-                        let pdy = sign(cy - prev_state.y);
-                        // Belt direction at goal = arrival direction
-                        let left_dx = -pdy;
-                        let left_dy = pdx;
-                        let dot = ins_dx * left_dx + ins_dy * left_dy;
-                        let needed = if dot > 0 { Lane::Left } else { Lane::Right };
-                        if cur_lane != needed {
-                            // Wrong lane — don't accept, keep searching
-                            // (fall through to neighbor expansion)
-                        } else {
-                            return Some(reconstruct(state, &parent));
-                        }
-                    } else {
-                        return Some(reconstruct(state, &parent));
-                    }
-                } else {
-                    return Some(reconstruct(state, &parent));
-                }
-            } else {
-                return Some(reconstruct(state, &parent));
-            }
+            return Some(reconstruct(state, &parent));
         }
 
         let cur_g = match g_score.get(&state) {
             Some(&g) => g,
             None => continue,
         };
-        // Skip if we've already found a better path to this state
-        // (stale entry in the priority queue)
-        // This check is important: since we don't decrease-key, we may have
-        // multiple entries for the same state; skip all but the best.
-        // We can't just compare cur_g directly because of float precision,
-        // but the g_score map always has the best known value.
 
-        // --- Forced continuation ---
+        // --- Forced continuation (UG exit tile) ---
         if let Some(Forced { dx: fdx, dy: fdy }) = forced {
             let fdx16 = fdx as i16;
             let fdy16 = fdy as i16;
@@ -348,12 +292,7 @@ fn astar_inner(
             let ny = cy + fdy16;
 
             // Prevent revisiting this position as normal tile
-            let none_state = State {
-                x: cx,
-                y: cy,
-                forced: None,
-                lane,
-            };
+            let none_state = State { x: cx, y: cy, forced: None };
             let none_g = g_score.get(&none_state).copied();
             if none_g.is_none_or(|g| g > cur_g) {
                 g_score.insert(none_state, cur_g);
@@ -364,7 +303,6 @@ fn astar_inner(
             {
                 let mut forced_ok = true;
                 if let Some(oit) = other_item_tiles {
-                    // Outgoing contamination
                     if oit.contains(&(nx + fdx16, ny + fdy16)) {
                         forced_ok = false;
                     } else if has_belt_dir_map {
@@ -372,23 +310,14 @@ fn astar_inner(
                     }
                 }
                 if forced_ok {
-                    let new_state = State {
-                        x: nx,
-                        y: ny,
-                        forced: None,
-                        lane,
-                    };
+                    let new_state = State { x: nx, y: ny, forced: None };
                     let new_g = cur_g + 1.0;
                     let existing = g_score.get(&new_state).copied();
                     if existing.is_none_or(|g| g > new_g) {
                         g_score.insert(new_state, new_g);
                         parent.insert(new_state, state);
                         let f = new_g + heuristic(nx, ny);
-                        open_set.push(QEntry {
-                            f: OrderedFloat(f),
-                            counter,
-                            state: new_state,
-                        });
+                        open_set.push(QEntry { f: OrderedFloat(f), counter, state: new_state });
                         counter += 1;
                     }
                 }
@@ -410,11 +339,9 @@ fn astar_inner(
 
             // Item contamination checks
             if let Some(oit) = other_item_tiles {
-                // Outgoing: belt at (nx,ny) pointing (dx,dy) → forward tile foreign?
                 if oit.contains(&(nx + dx, ny + dy)) {
                     continue;
                 }
-                // Incoming: foreign belt points AT (nx,ny)?
                 if has_belt_dir_map && incoming_contamination(nx, ny, oit, belt_dir_map) {
                     continue;
                 }
@@ -429,67 +356,19 @@ fn astar_inner(
                 }
             }
 
-            // Turn detection
-            let mut is_turn = false;
+            // Turn cost
             if let Some(&prev) = parent.get(&state) {
                 let pdx = sign(cx - prev.x);
                 let pdy = sign(cy - prev.y);
                 if (dx, dy) != (pdx, pdy) {
                     new_g += 0.5;
-                    is_turn = true;
                 }
             }
 
             // Deviation penalty
             new_g += dev.deviation(nx, ny) * 0.1;
 
-            // Lane transition logic (matches Python's if/elif exactly)
-            let mut new_lane = lane;
-            let sideloaded = if has_belt_dir_map {
-                if let Some(&existing_dir) = belt_dir_map.get(&(nx, ny)) {
-                    if let Some((edx, edy)) = dir_vec(existing_dir) {
-                        let dot = dx * edx + dy * edy;
-                        if dot == 0 {
-                            // Sideload: near lane of receiver
-                            let left_dx = -edy;
-                            let left_dy = edx;
-                            let rel_x = cx - nx;
-                            let rel_y = cy - ny;
-                            let side_dot = (rel_x as i32) * (left_dx as i32)
-                                + (rel_y as i32) * (left_dy as i32);
-                            new_lane = Some(if side_dot > 0 {
-                                Lane::Left
-                            } else {
-                                Lane::Right
-                            });
-                            true
-                        } else {
-                            // Same/opposite direction — not a sideload
-                            true // was in belt_dir_map, so skip turn logic
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false // (nx,ny) not in belt_dir_map
-                }
-            } else {
-                false
-            };
-            if !sideloaded && is_turn && lane.is_some() {
-                // Turn on our own path: lanes swap (left↔right)
-                new_lane = Some(match lane.unwrap() {
-                    Lane::Left => Lane::Right,
-                    Lane::Right => Lane::Left,
-                });
-            }
-
-            let new_state = State {
-                x: nx,
-                y: ny,
-                forced: None,
-                lane: new_lane,
-            };
+            let new_state = State { x: nx, y: ny, forced: None };
 
             let existing = g_score.get(&new_state).copied();
             if existing.is_some_and(|g| g <= new_g) {
@@ -499,11 +378,7 @@ fn astar_inner(
             g_score.insert(new_state, new_g);
             parent.insert(new_state, state);
             let f = new_g + heuristic(nx, ny);
-            open_set.push(QEntry {
-                f: OrderedFloat(f),
-                counter,
-                state: new_state,
-            });
+            open_set.push(QEntry { f: OrderedFloat(f), counter, state: new_state });
             counter += 1;
         }
 
@@ -517,12 +392,11 @@ fn astar_inner(
                         break;
                     }
                     if obstacles.contains(&(ex, ey)) {
-                        continue; // exit blocked, try further
+                        continue;
                     }
                     if goals.contains(&(ex, ey)) {
-                        continue; // don't land on goal
+                        continue;
                     }
-                    // Tile after exit must be free (for forced continuation)
                     if obstacles.contains(&(ex + dx, ey + dy)) {
                         continue;
                     }
@@ -551,39 +425,20 @@ fn astar_inner(
                     let mut new_g =
                         cur_g + (dist as f32) * UG_COST_MULTIPLIER + dev.deviation(ex, ey) * 0.1;
 
-                    // Perpendicular entry penalty + lane transition
-                    let mut ug_lane = lane;
+                    // Perpendicular entry penalty
                     if let Some(&prev) = parent.get(&state) {
                         let pdx = sign(cx - prev.x);
                         let pdy = sign(cy - prev.y);
                         let dot = (pdx as i32) * (dx as i32) + (pdy as i32) * (dy as i32);
                         if dot == 0 {
-                            // Perpendicular approach → sideload at UG entry
                             new_g += 10.0;
-                            if ug_lane.is_some() {
-                                let left_dx = -dy;
-                                let left_dy = dx;
-                                let rel_x = prev.x - cx;
-                                let rel_y = prev.y - cy;
-                                let side_dot = (rel_x as i32) * (left_dx as i32)
-                                    + (rel_y as i32) * (left_dy as i32);
-                                ug_lane = Some(if side_dot > 0 {
-                                    Lane::Left
-                                } else {
-                                    Lane::Right
-                                });
-                            }
                         }
                     }
 
                     let new_state = State {
                         x: ex,
                         y: ey,
-                        forced: Some(Forced {
-                            dx: dx as i8,
-                            dy: dy as i8,
-                        }),
-                        lane: ug_lane,
+                        forced: Some(Forced { dx: dx as i8, dy: dy as i8 }),
                     };
                     let existing = g_score.get(&new_state).copied();
                     if existing.is_some_and(|g| g <= new_g) {
@@ -593,11 +448,7 @@ fn astar_inner(
                     g_score.insert(new_state, new_g);
                     parent.insert(new_state, state);
                     let f = new_g + heuristic(ex, ey);
-                    open_set.push(QEntry {
-                        f: OrderedFloat(f),
-                        counter,
-                        state: new_state,
-                    });
+                    open_set.push(QEntry { f: OrderedFloat(f), counter, state: new_state });
                     counter += 1;
                 }
             }
@@ -623,15 +474,6 @@ fn reconstruct(goal: State, parent: &FxHashMap<State, State>) -> Vec<(i16, i16)>
 // PyO3 wrapper
 // ---------------------------------------------------------------------------
 
-/// Convert Python lane string to Rust enum.
-fn parse_lane(s: Option<&str>) -> Option<Lane> {
-    match s {
-        Some("left") => Some(Lane::Left),
-        Some("right") => Some(Lane::Right),
-        _ => None,
-    }
-}
-
 #[pyfunction]
 #[pyo3(signature = (
     starts,
@@ -640,8 +482,6 @@ fn parse_lane(s: Option<&str>) -> Option<Lane> {
     max_extent = 200,
     allow_underground = false,
     ug_max_reach = 4,
-    start_lane = None,
-    goal_lane_check = None,
     belt_dir_map = None,
     other_item_tiles = None,
 ))]
@@ -652,8 +492,6 @@ fn astar_path(
     max_extent: i16,
     allow_underground: bool,
     ug_max_reach: i16,
-    start_lane: Option<&str>,
-    goal_lane_check: Option<(i16, i16)>,
     belt_dir_map: Option<Vec<((i16, i16), u8)>>,
     other_item_tiles: Option<Vec<(i16, i16)>>,
 ) -> Option<Vec<(i16, i16)>> {
@@ -673,8 +511,6 @@ fn astar_path(
         max_extent,
         allow_underground,
         ug_max_reach,
-        parse_lane(start_lane),
-        goal_lane_check,
         &bdm,
         oit.as_ref(),
     )

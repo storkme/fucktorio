@@ -39,27 +39,22 @@ class TestInserterTargetLane:
         assert result == expected
 
 
-class TestLanePreservation:
-    """Test that A* lane state transitions work correctly."""
+class TestBasicPathfinding:
+    """Test basic A* pathfinding scenarios."""
 
-    def test_straight_preserves_lane(self):
-        """Lane should be unchanged through a straight path."""
-        # Route from (0,0) to (5,0) — straight east, no obstacles
+    def test_straight_path(self):
+        """A* should find a straight path with no obstacles."""
         path = _astar_path(
             (0, 0),
             {(5, 0)},
             set(),
-            start_lane=LANE_LEFT,
         )
         assert path is not None
         assert path[0] == (0, 0)
         assert path[-1] == (5, 0)
-        # All moves are east — no turns, lane stays left
-        # We verify by checking A* found the path (if lane was wrong at goal
-        # with a goal_lane_check, it would fail)
 
-    def test_turn_swaps_lane(self):
-        """A 90-degree turn should swap the lane."""
+    def test_turn_around_obstacle(self):
+        """A* should route around obstacles with turns."""
         # Force a right-angle turn: go east then south
         # Block straight east path to (3, 3) — force a turn
         obstacles = set()
@@ -77,13 +72,12 @@ class TestLanePreservation:
             (0, 0),
             {(3, 3)},
             obstacles,
-            start_lane=LANE_LEFT,
         )
         assert path is not None
         assert (3, 3) in path
 
-    def test_underground_preserves_lane(self):
-        """Lane should be preserved through an underground belt jump."""
+    def test_underground_jump(self):
+        """A* should use underground belts to bypass blocked tiles."""
         # Block a wide band of surface tiles to force underground
         obstacles = set()
         for x in range(1, 5):
@@ -95,7 +89,6 @@ class TestLanePreservation:
             obstacles,
             allow_underground=True,
             ug_max_reach=6,
-            start_lane=LANE_RIGHT,
         )
         assert path is not None
         # Path should include an underground jump (non-adjacent tiles)
@@ -120,79 +113,10 @@ class TestSideloadLane:
             (3, 0),
             {(3, 3)},
             set(),
-            start_lane=LANE_LEFT,
             belt_dir_map=belt_dir_map,
         )
         assert path is not None
         assert path[-1] == (3, 3)
-
-
-class TestGoalLaneCheck:
-    """Test that the goal lane check correctly rejects wrong-lane arrivals."""
-
-    def test_goal_accepts_correct_lane(self):
-        """Goal should be accepted when items arrive on the correct lane."""
-        # Path goes straight south from (5,0) to (5,5)
-        # At goal: arrival direction = SOUTH, left perp = (-1, 0)
-        # goal_lane_check = (1, 0) (inserter on east side of belt)
-        # dot = 1*(-1) + 0*0 = -1 < 0 → needed_lane = "right"
-        # Start on RIGHT lane, straight path → arrives RIGHT → match
-        path = _astar_path(
-            (5, 0),
-            {(5, 5)},
-            set(),
-            start_lane=LANE_RIGHT,
-            goal_lane_check=(1, 0),
-        )
-        assert path is not None
-
-    def test_goal_rejects_wrong_lane(self):
-        """Goal should be rejected when items arrive on the wrong lane."""
-        # Same setup: inserter on east side needs RIGHT lane
-        # But start on LEFT lane. Straight south = no turn = stays LEFT → mismatch
-        # Block all alternatives to force straight south (no turns possible)
-        obstacles = set()
-        for x in range(-5, 15):
-            for y in range(-5, 15):
-                obstacles.add((x, y))
-        for y in range(6):
-            obstacles.discard((5, y))
-
-        path = _astar_path(
-            (5, 0),
-            {(5, 5)},
-            obstacles,
-            start_lane=LANE_LEFT,
-            goal_lane_check=(1, 0),
-        )
-        # Should fail — can't reach goal on correct lane (no room to turn)
-        assert path is None
-
-    def test_goal_with_turn_to_fix_lane(self):
-        """A turn can swap the lane to match the goal requirement."""
-        # Goal needs RIGHT lane (inserter on east side, southbound arrival).
-        # Start on LEFT. One turn (east→south) swaps left→right. Should work.
-        # Create an L-path: (0,0) east to (3,0), then south to (3,3)
-        obstacles = set()
-        for x in range(-2, 10):
-            for y in range(-2, 10):
-                obstacles.add((x, y))
-        for x in range(4):
-            obstacles.discard((x, 0))
-        for y in range(4):
-            obstacles.discard((3, y))
-
-        # At goal (3,3): arrival = SOUTH, left perp = (-1, 0)
-        # goal_lane_check = (1, 0), dot = -1 → needed = RIGHT
-        # Start LEFT, turn east→south swaps to RIGHT → matches
-        path = _astar_path(
-            (0, 0),
-            {(3, 3)},
-            obstacles,
-            start_lane=LANE_LEFT,
-            goal_lane_check=(1, 0),
-        )
-        assert path is not None
 
 
 class TestDeadEndFix:
@@ -266,7 +190,6 @@ class TestPerpendicularUGPenalty:
             obstacles,
             allow_underground=True,
             ug_max_reach=6,
-            start_lane=LANE_LEFT,
         )
         assert path is not None
         # The path should use a straight east underground, not go south first

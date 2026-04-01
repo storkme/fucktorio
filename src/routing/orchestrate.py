@@ -238,26 +238,7 @@ def build_layout(
                 edge_exclusions[i].add(assignment.belt_tile)
                 break
 
-    # 3b. Compute lane info for A* pathfinding
-    edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] = {}
-    for assignment in assignments:
-        if assignment.is_direct:
-            continue
-        for i, edge in enumerate(graph.edges):
-            if edge is assignment.edge:
-                if assignment.edge.from_node == assignment.node_id:
-                    # Output inserter: items start on a known lane
-                    edge_lane_info[i] = (assignment.target_lane, None)
-                elif assignment.edge.to_node == assignment.node_id:
-                    # Input inserter: pass inserter side vec for goal lane check
-                    ins_side = (
-                        assignment.border_tile[0] - assignment.belt_tile[0],
-                        assignment.border_tile[1] - assignment.belt_tile[1],
-                    )
-                    edge_lane_info[i] = (None, ins_side)
-                break
-
-    # 4. Place machine entities
+    # 3b. Place machine entities
     entities: list[PlacedEntity] = []
     for node in graph.nodes:
         x, y = positions[node.id]
@@ -270,7 +251,7 @@ def build_layout(
             )
         )
 
-    # 5. Route connections (belts + pipes) to assigned belt tiles
+    # 4. Route connections (belts + pipes) to assigned belt tiles
     reserved = {a.border_tile for a in assignments} | {a.belt_tile for a in assignments}
     routing = route_connections(
         graph,
@@ -281,7 +262,6 @@ def build_layout(
         edge_exclusions=edge_exclusions,
         edge_subgroups=plan.edge_subgroups,
         edge_order=edge_order,
-        edge_lane_info=edge_lane_info,
         skip_edges=direct_edge_indices,
     )
     entities.extend(routing.entities)
@@ -536,7 +516,6 @@ def build_layout_incremental(
             edge_targets: dict[int, tuple[int, int]] = {}
             edge_starts: dict[int, tuple[int, int]] = {}
             edge_exclusions: dict[int, set[tuple[int, int]]] = {}
-            edge_lane_info: dict[int, tuple[str | None, tuple[int, int] | None]] = {}
 
             # Check for direct insertion (adjacent machines)
             for i, edge in routable_edges:
@@ -669,11 +648,8 @@ def build_layout_incremental(
                     # Build routing targets (only for first assignment of each edge)
                     if is_input and i not in edge_targets:
                         edge_targets[i] = belt
-                        ins_side = (border[0] - belt[0], border[1] - belt[1])
-                        edge_lane_info[i] = (None, ins_side)
                     elif not is_input and i not in edge_starts:
                         edge_starts[i] = belt
-                        edge_lane_info[i] = (target_lane, None)
                     if i not in edge_exclusions:
                         edge_exclusions[i] = set()
                     edge_exclusions[i].add(belt)
@@ -1094,7 +1070,6 @@ def build_layout_incremental(
                     reserved_tiles=reserved | occupied,
                     edge_exclusions=edge_exclusions,
                     edge_subgroups=edge_subgroups,
-                    edge_lane_info=edge_lane_info,
                     skip_edges=skip_all_except_internal | trial_direct | direct_edge_indices,
                     existing_belt_dir_map=trial_belt_dir_map,
                     existing_group_networks=trial_group_networks,
