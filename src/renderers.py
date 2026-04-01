@@ -947,8 +947,8 @@ const schematic = {
       ctx.lineWidth = Math.max(1.5, s * 0.12);
       ctx.lineCap = 'round';
       const aSize = w * 0.22;
-      const yOff = isInput ? -w * 0.28 : w * 0.28;
-      const yTip = isInput ? -w * 0.08 : w * 0.08;
+      const yOff = -w * 0.28;
+      const yTip = -w * 0.08;
       ctx.beginPath();
       ctx.moveTo(-aSize, yOff);
       ctx.lineTo(0, yTip);
@@ -1988,8 +1988,8 @@ const factorio = {
       ctx.lineWidth = Math.max(1.5, s * 0.12);
       ctx.lineCap = 'round';
       const aSize = w * 0.22;
-      const yOff = isInput ? -w * 0.28 : w * 0.28;
-      const yTip = isInput ? -w * 0.08 : w * 0.08;
+      const yOff = -w * 0.28;
+      const yTip = -w * 0.08;
       ctx.beginPath();
       ctx.moveTo(-aSize, yOff);
       ctx.lineTo(0, yTip);
