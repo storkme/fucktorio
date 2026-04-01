@@ -231,7 +231,9 @@ def main():
     parser.add_argument("--json", action="store_true", help="Dump raw decoded JSON")
     parser.add_argument("--render", action="store_true", help="Render to HTML in scripts/blueprints/")
     parser.add_argument("--search", metavar="QUERY", help="Search factorio.school by title")
-    parser.add_argument("--recent", action="store_true", help="With --search: sort by most recent instead of most popular")
+    parser.add_argument(
+        "--recent", action="store_true", help="With --search: sort by most recent instead of most popular"
+    )
     parser.add_argument("--fetch-all", metavar="N", nargs="?", const=0, type=int,
                         help="With --search: download all results, or top N if given")
     args = parser.parse_args()
