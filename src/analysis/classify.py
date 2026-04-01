@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 _SURFACE_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
 _UG_BELT_ENTITIES = {"underground-belt", "fast-underground-belt", "express-underground-belt"}
-_BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES
+_SPLITTER_ENTITIES = {"splitter", "fast-splitter", "express-splitter"}
+_BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES | _SPLITTER_ENTITIES
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
 
@@ -99,15 +100,16 @@ def _classify_from_draftsman(bp_string: str) -> ClassifiedEntities:
         elif name in _BELT_ENTITIES:
             is_ug = name in _UG_BELT_ENTITIES
             io_type = getattr(e, "io_type", None)
-            result.belt_segments.append(
-                TransportSegment(
-                    position=pos,
-                    name=name,
-                    direction=direction,
-                    is_underground=is_ug,
-                    io_type=io_type,
+            for tile in _belt_tiles(name, pos, direction):
+                result.belt_segments.append(
+                    TransportSegment(
+                        position=tile,
+                        name=name,
+                        direction=direction,
+                        is_underground=is_ug,
+                        io_type=io_type,
+                    )
                 )
-            )
 
         elif name in _PIPE_ENTITIES:
             is_ug = name == "pipe-to-ground"
@@ -155,8 +157,8 @@ def _classify_from_json(bp_string: str) -> ClassifiedEntities:
         # Old blueprints use center-based positions; convert to tile_position (top-left)
         cx, cy = raw_pos.get("x", 0), raw_pos.get("y", 0)
 
-        # Determine direction — try modern first, then old format
-        direction = _DIR_MAP.get(raw_dir) or _OLD_DIR_MAP.get(raw_dir, EntityDirection.NORTH)
+        # Old format uses direction values 0-7 (not 0,4,8,12)
+        direction = _OLD_DIR_MAP.get(raw_dir, EntityDirection.NORTH)
 
         if name in _MACHINE_SIZE:
             size = _MACHINE_SIZE[name]
@@ -181,15 +183,16 @@ def _classify_from_json(bp_string: str) -> ClassifiedEntities:
             pos = (int(cx), int(cy))
             is_ug = name in _UG_BELT_ENTITIES
             io_type = e.get("type")  # old format uses "type" for input/output
-            result.belt_segments.append(
-                TransportSegment(
-                    position=pos,
-                    name=name,
-                    direction=direction,
-                    is_underground=is_ug,
-                    io_type=io_type,
+            for tile in _belt_tiles(name, pos, direction):
+                result.belt_segments.append(
+                    TransportSegment(
+                        position=tile,
+                        name=name,
+                        direction=direction,
+                        is_underground=is_ug,
+                        io_type=io_type,
+                    )
                 )
-            )
 
         elif name in _PIPE_ENTITIES:
             pos = (int(cx), int(cy))
@@ -227,3 +230,22 @@ def _recipe_items(recipe_name: str | None) -> tuple[list[str], list[str]]:
     inputs = [ing.name for ing in recipe.ingredients]
     outputs = [prod.name for prod in recipe.products]
     return inputs, outputs
+
+
+def _belt_tiles(
+    name: str, pos: tuple[int, int], direction: EntityDirection
+) -> list[tuple[int, int]]:
+    """Return all tiles occupied by a belt-type entity.
+
+    Regular belts and underground belts are 1x1.
+    Splitters are 1x2 (perpendicular to their direction).
+    """
+    if name not in _SPLITTER_ENTITIES:
+        return [pos]
+
+    x, y = pos
+    # Splitters extend perpendicular to their direction
+    if direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+        return [(x, y), (x + 1, y)]  # 2 wide
+    else:
+        return [(x, y), (x, y + 1)]  # 2 tall
