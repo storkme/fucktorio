@@ -891,14 +891,22 @@ def build_layout_incremental(
                                 # Place underground pair: entrance at stub, exit at found tile
                                 trial_entities.append(
                                     PlacedEntity(
-                                        name=ug_name, x=bx, y=by, direction=escape_dir,
-                                        io_type="input", carries=edge.item,
+                                        name=ug_name,
+                                        x=bx,
+                                        y=by,
+                                        direction=escape_dir,
+                                        io_type="input",
+                                        carries=edge.item,
                                     )
                                 )
                                 trial_entities.append(
                                     PlacedEntity(
-                                        name=ug_name, x=exit_tile[0], y=exit_tile[1],
-                                        direction=escape_dir, io_type="output", carries=edge.item,
+                                        name=ug_name,
+                                        x=exit_tile[0],
+                                        y=exit_tile[1],
+                                        direction=escape_dir,
+                                        io_type="output",
+                                        carries=edge.item,
                                     )
                                 )
                                 trial_belt_dir_map[(bx, by)] = escape_dir
@@ -921,7 +929,9 @@ def build_layout_incremental(
                                             ft = (tile[0] + _dvx, tile[1] + _dvy)
                                             if ft not in existing_network:
                                                 r_forward.add(ft)
-                                    r_approach = _perpendicular_approach_tiles(existing_network, trial_belt_dir_map, trial_occupied)
+                                    r_approach = _perpendicular_approach_tiles(
+                                        existing_network, trial_belt_dir_map, trial_occupied
+                                    )
                                     r_starts = (r_forward | r_approach) - retry_obstacles
                                     if r_starts:
                                         retry_path = _astar_path(
@@ -979,10 +989,7 @@ def build_layout_incremental(
                 else:
                     # First edge for this item: place stub + route a trunk toward boundary
                     is_input = i in edge_targets
-                    if not edge.is_fluid:
-                        belt_name = belt_entity_for_rate(edge.rate)
-                    else:
-                        belt_name = "pipe"
+                    belt_name = belt_entity_for_rate(edge.rate) if not edge.is_fluid else "pipe"
 
                     # Place the stub itself
                     trial_entities.append(
@@ -1158,9 +1165,7 @@ def build_layout_incremental(
         _ext_min_bx = _ext_max_bx = _ext_min_by = _ext_max_by = 0
 
     def _network_on_boundary(net: set[tuple[int, int]]) -> bool:
-        return any(
-            t[0] in (_ext_min_bx, _ext_max_bx) or t[1] in (_ext_min_by, _ext_max_by) for t in net
-        )
+        return any(t[0] in (_ext_min_bx, _ext_max_bx) or t[1] in (_ext_min_by, _ext_max_by) for t in net)
 
     for (item, _sg_idx), network in group_networks.items():
         if not network:
