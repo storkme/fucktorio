@@ -44,32 +44,44 @@ def single_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=input_belt, x=mx + dx, y=y_offset,
-                    direction=EntityDirection.EAST, carries=input_item,
+                    name=input_belt,
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=input_item,
                 )
             )
 
         # Input inserter
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 1, y=y_offset + 1,
-                direction=EntityDirection.SOUTH, carries=input_item,
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 1,
+                direction=EntityDirection.SOUTH,
+                carries=input_item,
             )
         )
 
         # Machine (3x3)
         entities.append(
             PlacedEntity(
-                name=machine_entity, x=mx, y=y_offset + 2,
-                direction=EntityDirection.NORTH, recipe=recipe,
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
             )
         )
 
         # Output inserter
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 1, y=y_offset + 5,
-                direction=EntityDirection.SOUTH, carries=output_item,
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 5,
+                direction=EntityDirection.SOUTH,
+                carries=output_item,
             )
         )
 
@@ -77,8 +89,11 @@ def single_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=output_belt, x=mx + dx, y=y_offset + 6,
-                    direction=EntityDirection.WEST, carries=output_item,
+                    name=output_belt,
+                    x=mx + dx,
+                    y=y_offset + 6,
+                    direction=EntityDirection.WEST,
+                    carries=output_item,
                 )
             )
 
@@ -118,8 +133,11 @@ def dual_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=belt1, x=mx + dx, y=y_offset,
-                    direction=EntityDirection.EAST, carries=input1,
+                    name=belt1,
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=input1,
                 )
             )
 
@@ -127,40 +145,55 @@ def dual_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=belt2, x=mx + dx, y=y_offset + 1,
-                    direction=EntityDirection.EAST, carries=input2,
+                    name=belt2,
+                    x=mx + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                    carries=input2,
                 )
             )
 
         # Long-handed inserter (picks from far belt y+0, drops into machine y+3)
         entities.append(
             PlacedEntity(
-                name="long-handed-inserter", x=mx, y=y_offset + 2,
-                direction=EntityDirection.SOUTH, carries=input1,
+                name="long-handed-inserter",
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+                carries=input1,
             )
         )
 
         # Regular inserter (picks from close belt y+1, drops into machine y+3)
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 2, y=y_offset + 2,
-                direction=EntityDirection.SOUTH, carries=input2,
+                name="inserter",
+                x=mx + 2,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+                carries=input2,
             )
         )
 
         # Machine (3x3)
         entities.append(
             PlacedEntity(
-                name=machine_entity, x=mx, y=y_offset + 3,
-                direction=EntityDirection.NORTH, recipe=recipe,
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 3,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
             )
         )
 
         # Output inserter
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 1, y=y_offset + 6,
-                direction=EntityDirection.SOUTH, carries=output_item,
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 6,
+                direction=EntityDirection.SOUTH,
+                carries=output_item,
             )
         )
 
@@ -168,8 +201,11 @@ def dual_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=output_belt, x=mx + dx, y=y_offset + 7,
-                    direction=EntityDirection.WEST, carries=output_item,
+                    name=output_belt,
+                    x=mx + dx,
+                    y=y_offset + 7,
+                    direction=EntityDirection.WEST,
+                    carries=output_item,
                 )
             )
 
@@ -222,16 +258,22 @@ def fluid_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=input_belt, x=mx + dx, y=y_offset,
-                    direction=EntityDirection.EAST, carries=solid_item,
+                    name=input_belt,
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=solid_item,
                 )
             )
 
         # y+1: inserter for solid + fluid port connection
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 1, y=y_offset + 1,
-                direction=EntityDirection.SOUTH, carries=solid_item,
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 1,
+                direction=EntityDirection.SOUTH,
+                carries=solid_item,
             )
         )
 
@@ -241,30 +283,34 @@ def fluid_input_row(
             # ptg_entry at mx+3 (adjacent), forming a chain across all machines.
             entities.append(
                 PlacedEntity(
-                    name="pipe-to-ground", x=mx, y=y_offset + 1,
-                    direction=EntityDirection.EAST, io_type="input",
+                    name="pipe-to-ground",
+                    x=mx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                    io_type="input",
                     carries=fluid_item,
                 )
             )
             entities.append(
                 PlacedEntity(
-                    name="pipe-to-ground", x=mx + 2, y=y_offset + 1,
-                    direction=EntityDirection.EAST, io_type="output",
+                    name="pipe-to-ground",
+                    x=mx + 2,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                    io_type="output",
                     carries=fluid_item,
                 )
             )
             # Output port pipes at y+5 (south face of machine)
-            entities.append(
-                PlacedEntity(name="pipe", x=mx, y=y_offset + 5, carries=fluid_item)
-            )
-            entities.append(
-                PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 5, carries=fluid_item)
-            )
+            entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 5, carries=fluid_item))
+            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 5, carries=fluid_item))
         else:
             # Other machines: regular pipe at the port position
             entities.append(
                 PlacedEntity(
-                    name="pipe", x=mx + port_dx, y=y_offset + 1,
+                    name="pipe",
+                    x=mx + port_dx,
+                    y=y_offset + 1,
                     carries=fluid_item,
                 )
             )
@@ -275,16 +321,22 @@ def fluid_input_row(
         # Machine (3x3)
         entities.append(
             PlacedEntity(
-                name=machine_entity, x=mx, y=y_offset + 2,
-                direction=EntityDirection.NORTH, recipe=recipe,
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
             )
         )
 
         # Output inserter
         entities.append(
             PlacedEntity(
-                name="inserter", x=mx + 1, y=y_offset + 5,
-                direction=EntityDirection.SOUTH, carries=output_item,
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 5,
+                direction=EntityDirection.SOUTH,
+                carries=output_item,
             )
         )
 
@@ -292,8 +344,11 @@ def fluid_input_row(
         for dx in range(3):
             entities.append(
                 PlacedEntity(
-                    name=output_belt, x=mx + dx, y=y_offset + 6,
-                    direction=EntityDirection.WEST, carries=output_item,
+                    name=output_belt,
+                    x=mx + dx,
+                    y=y_offset + 6,
+                    direction=EntityDirection.WEST,
+                    carries=output_item,
                 )
             )
 

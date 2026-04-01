@@ -1832,7 +1832,10 @@ def check_belt_inserter_conflict(
                 ValidationIssue(
                     severity="error",
                     category="belt-item-isolation",
-                    message=f"Belt at ({bx},{by}): inserters drop conflicting items {sorted_items[0]!r} and {sorted_items[1]!r}",
+                    message=(
+                        f"Belt at ({bx},{by}): inserters drop conflicting items"
+                        f" {sorted_items[0]!r} and {sorted_items[1]!r}"
+                    ),
                     x=bx,
                     y=by,
                 )

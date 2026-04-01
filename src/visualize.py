@@ -56,6 +56,9 @@ _INFRA_COLORS = {
     "pipe-to-ground": "#3a6090",
     "medium-electric-pole": "#8b6914",
     "splitter": "#c8b560",
+    "fast-splitter": "#e05050",
+    "express-splitter": "#50a0e0",
+    "pump": "#4a7a6a",
 }
 
 _INFRA_LABELS = {
@@ -72,22 +75,54 @@ _INFRA_LABELS = {
     "pipe-to-ground": "UG Pipe",
     "medium-electric-pole": "Pole",
     "splitter": "Splitter",
+    "fast-splitter": "Splitter (red)",
+    "express-splitter": "Splitter (blue)",
+    "pump": "Pump",
 }
 
-_3x3 = {
-    "assembling-machine-1",
-    "assembling-machine-2",
-    "assembling-machine-3",
-    "chemical-plant",
-    "stone-furnace",
-    "steel-furnace",
-    "electric-furnace",
+# Multi-tile infra entities — (w, h) for entities that aren't 1x1
+_INFRA_SIZES: dict[str, tuple[int, int]] = {
+    "splitter": (2, 1),
+    "fast-splitter": (2, 1),
+    "express-splitter": (2, 1),
+    "pump": (1, 2),
 }
-_5x5 = {"oil-refinery"}
-_CRAFTING = _3x3 | _5x5
 
-# Non-crafting 3x3 entities (no recipe, fixed color)
-_SUPPORT_3x3 = {"beacon"}
+# Entity sizes — (w, h) for multi-tile entities that can hold recipes
+_CRAFTING_SIZES: dict[str, tuple[int, int]] = {
+    # Base game
+    "assembling-machine-1": (3, 3),
+    "assembling-machine-2": (3, 3),
+    "assembling-machine-3": (3, 3),
+    "chemical-plant": (3, 3),
+    "oil-refinery": (5, 5),
+    "stone-furnace": (2, 2),
+    "steel-furnace": (2, 2),
+    "electric-furnace": (3, 3),
+    "centrifuge": (3, 3),
+    "lab": (3, 3),
+    # Space Age
+    "foundry": (5, 5),
+    "biochamber": (3, 3),
+    "biolab": (5, 5),
+    "electromagnetic-plant": (4, 4),
+    "cryogenic-plant": (5, 5),
+    "recycler": (2, 4),
+    "crusher": (2, 3),
+    "captive-biter-spawner": (5, 5),
+    "rocket-silo": (9, 9),
+}
+_CRAFTING = set(_CRAFTING_SIZES)
+
+# Non-crafting multi-tile entities (no recipe, fixed color + size)
+_SUPPORT_SIZES: dict[str, tuple[int, int, str]] = {
+    # name -> (w, h, color)
+    "beacon": (3, 3, "#4a6080"),
+    "storage-tank": (3, 3, "#4a6a5a"),
+    "big-electric-pole": (2, 2, "#8b6914"),
+    "substation": (2, 2, "#6a6a8b"),
+    "electric-mining-drill": (3, 3, "#7a6a30"),
+}
 
 
 def visualize(
@@ -161,14 +196,15 @@ def visualize(
         direction = int(getattr(e, "direction", 0) or 0)
         carries = carries_lookup.get((tx, ty)) or getattr(e, "carries", None) or ""
 
-        if e.name in _SUPPORT_3x3:
+        if e.name in _SUPPORT_SIZES:
+            sw, sh, scolor = _SUPPORT_SIZES[e.name]
             tiles.append(
                 {
                     "x": tx,
                     "y": ty,
-                    "w": 3,
-                    "h": 3,
-                    "color": "#4a6080",
+                    "w": sw,
+                    "h": sh,
+                    "color": scolor,
                     "entity": e.name,
                     "recipe": "",
                     "tooltip": e.name,
@@ -176,16 +212,16 @@ def visualize(
                     "carries": carries,
                 }
             )
-        elif e.name in _CRAFTING:
-            size = 5 if e.name in _5x5 else 3
+        elif e.name in _CRAFTING_SIZES:
+            cw, ch = _CRAFTING_SIZES[e.name]
             color = recipe_colors.get(e.recipe, "#888")
             tooltip = f"{e.name}\\n{e.recipe}"
             tiles.append(
                 {
                     "x": tx,
                     "y": ty,
-                    "w": size,
-                    "h": size,
+                    "w": cw,
+                    "h": ch,
                     "color": color,
                     "entity": e.name,
                     "recipe": e.recipe or "",
@@ -205,12 +241,16 @@ def visualize(
                 io_type = getattr(e, "io_type", None) or ""
                 if io_type:
                     tooltip += f" ({io_type})"
+            iw, ih = _INFRA_SIZES.get(e.name, (1, 1))
+            # Splitters/pumps rotate: swap w/h for E/W directions
+            if iw != ih and direction in (4, 12):
+                iw, ih = ih, iw
             tiles.append(
                 {
                     "x": tx,
                     "y": ty,
-                    "w": 1,
-                    "h": 1,
+                    "w": iw,
+                    "h": ih,
                     "color": color,
                     "entity": e.name,
                     "recipe": "",
@@ -750,7 +790,13 @@ function draw() {{
       alpha = t.recipe === highlightRecipe ? 1.0 : t.recipe ? 0.15 : 0.3;
     }}
     ctx.globalAlpha = alpha;
-    theme.drawMachine(ctx, px, py, pw, ph, t);
+    if (isSplitter(t.entity)) {{
+      theme.drawSplitter(ctx, px, py, pw, ph, t);
+    }} else if (isPump(t.entity)) {{
+      theme.drawPump(ctx, px, py, pw, ph, t);
+    }} else {{
+      theme.drawMachine(ctx, px, py, pw, ph, t);
+    }}
   }}
 
   for (const t of infra) {{
@@ -772,7 +818,7 @@ function draw() {{
       theme.drawPipe(ctx, px, py, s, t);
     }} else if (isInserter(t.entity)) {{
       theme.drawInserter(ctx, px, py, s, t);
-    }} else if (t.entity === 'medium-electric-pole') {{
+    }} else if (isPowerPole(t.entity)) {{
       theme.drawPole(ctx, px, py, s, t);
     }} else {{
       // Fallback: colored rect
