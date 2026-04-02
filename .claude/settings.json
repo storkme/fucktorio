@@ -1,9 +1,8 @@
 {
 	  "permissions": {
 		      "allow": [
-			            "Bash(python:*)",
-				          "Bash(python3:*)",
-                              "Bash(.venv/bin/pytest:*)"
+                              "Bash(uv run *)",
+                              "Bash(uv sync*)"
 					      ]
 					        },
   "hooks": {

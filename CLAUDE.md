@@ -5,15 +5,21 @@ Automated Factorio factory blueprint generator. Takes a target item + production
 ## Quick start
 
 ```bash
-# Requires: factorio-draftsman, pytest
-pip install factorio-draftsman pytest
+# Requires: uv (manages Python version + deps)
+uv sync
 
 # Run tests
-pytest tests/
+uv run pytest tests/
 
 # Generate a blueprint
-python -m src.pipeline
+uv run python -m src.pipeline
 ```
+
+## Development conventions
+
+- **Python version**: Pinned in `.python-version`. Use `uv` to manage the venv and run commands.
+- **Running snippets**: Don't use inline `python -c` for multi-line exploratory code. Instead, write a script to `scripts/` (e.g. `scripts/debug_lanes.py`) and run it with `uv run python scripts/debug_lanes.py`. This makes it easier to iterate and review.
+- **Running tests**: `uv run pytest tests/`.
 
 ## Architecture
 
