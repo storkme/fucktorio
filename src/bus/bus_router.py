@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity, SolverResult
-from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate
+from ..routing.common import _LANE_CAPACITY, _UG_MAX_REACH, belt_entity_for_rate
 from .placer import RowSpan
 
 
@@ -362,6 +362,31 @@ def _blocked_xs_at(lane: BusLane, y: int, all_lanes: list[BusLane]) -> set[int]:
     return blocked
 
 
+def _ug_for_span(belt_name: str, span: int) -> str:
+    """Pick the cheapest underground belt tier that can cover *span* tiles.
+
+    Prefers the same tier as *belt_name* but upgrades if the span exceeds
+    that tier's max reach.  Tap-off crossings don't need to match the trunk
+    tier — they just need to clear the bus columns.
+    """
+    # Try tiers from cheapest to most expensive
+    tiers = [
+        ("underground-belt", _UG_MAX_REACH.get("transport-belt", 4)),
+        ("fast-underground-belt", _UG_MAX_REACH.get("fast-transport-belt", 6)),
+        ("express-underground-belt", _UG_MAX_REACH.get("express-transport-belt", 8)),
+    ]
+    preferred = _underground_for(belt_name)
+    # Start from the preferred tier, upgrade if needed
+    started = False
+    for ug_name, reach in tiers:
+        if ug_name == preferred:
+            started = True
+        if started and reach >= span:
+            return ug_name
+    # Fallback: express (longest reach)
+    return "express-underground-belt"
+
+
 def _route_horizontal(
     entities: list[PlacedEntity],
     lane: BusLane,
@@ -372,8 +397,11 @@ def _route_horizontal(
     blocked_xs: set[int],
     belt_name: str,
 ) -> None:
-    """Route a horizontal belt run, going underground past blocked columns."""
-    ug_name = _underground_for(belt_name)
+    """Route a horizontal belt run, going underground past blocked columns.
+
+    Underground belt tier is auto-upgraded when the span exceeds the base
+    tier's reach — tap-off crossings don't need to match the trunk tier.
+    """
 
     if direction == EntityDirection.EAST:
         hx = x_from
@@ -381,7 +409,9 @@ def _route_horizontal(
             if hx in blocked_xs:
                 entry_x = hx - 1
                 exit_x = hx + 1
-                while exit_x in blocked_xs:
+                # Extend past all consecutive blocked columns, including
+                # cases where the tile after the exit is also blocked.
+                while exit_x in blocked_xs or (exit_x + 1) in blocked_xs:
                     exit_x += 2
                 if entry_x >= x_from and exit_x <= x_to:
                     # Remove surface belt we may have just placed at entry_x
@@ -390,6 +420,8 @@ def _route_horizontal(
                         for e in entities
                         if not (e.x == entry_x and e.y == y and e.name == belt_name and e.direction == direction)
                     ]
+                    span = exit_x - entry_x
+                    ug_name = _ug_for_span(belt_name, span)
                     entities.append(
                         PlacedEntity(
                             name=ug_name,
@@ -430,7 +462,7 @@ def _route_horizontal(
                 # exit (output) is on the LEFT (low x)
                 ug_input_x = hx + 1  # items enter underground here
                 ug_output_x = hx - 1  # items emerge here
-                while ug_output_x in blocked_xs:
+                while ug_output_x in blocked_xs or (ug_output_x - 1) in blocked_xs:
                     ug_output_x -= 2
                 if ug_output_x >= x_from and ug_input_x <= x_to:
                     # Remove surface belt at ug_input_x (already placed)
@@ -439,6 +471,8 @@ def _route_horizontal(
                         for e in entities
                         if not (e.x == ug_input_x and e.y == y and e.name == belt_name and e.direction == direction)
                     ]
+                    span = ug_input_x - ug_output_x
+                    ug_name = _ug_for_span(belt_name, span)
                     entities.append(
                         PlacedEntity(
                             name=ug_name,

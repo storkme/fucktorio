@@ -94,12 +94,12 @@ class TestBusLayout:
         result = solve("iron-gear-wheel", 10.0)
         layout = bus_layout(result, max_belt_tier="transport-belt")
 
-        # Verify all belts are yellow
+        # Verify all surface belts are yellow (underground belts may be
+        # upgraded to higher tiers for tap-off crossings that exceed yellow
+        # underground reach)
         for e in layout.entities:
-            if "belt" in e.name:
-                assert e.name in ("transport-belt", "underground-belt"), (
-                    f"Expected yellow belt, got {e.name} at ({e.x},{e.y})"
-                )
+            if e.name.endswith("-belt") and "underground" not in e.name:
+                assert e.name == "transport-belt", f"Expected yellow surface belt, got {e.name} at ({e.x},{e.y})"
 
         try:
             validate(layout, result, layout_style="bus")
