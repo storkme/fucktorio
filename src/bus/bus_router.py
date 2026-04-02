@@ -8,9 +8,8 @@ lane's vertical segment, the tap-off goes underground (EAST) past it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import math
+from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity, SolverResult
 from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate

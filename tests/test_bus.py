@@ -175,6 +175,34 @@ class TestBusVisualization:
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit (from ores)")
         viz(bp, "bus-electronic-circuit-from-ores-5s", solver_result=result, layout_result=layout)
 
+    def test_viz_iron_gear_wheel_yellow_belt(self, viz):
+        """Yellow belt constraint forces row + trunk splitting."""
+        result = solve("iron-gear-wheel", 10.0)
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+        bp = _make_blueprint(layout, "bus: 10/s iron-gear-wheel (yellow belt)")
+        viz(bp, "bus-iron-gear-wheel-10s-yellow", solver_result=result, layout_result=layout)
+
+    def test_viz_electronic_circuit_yellow_belt(self, viz):
+        """Yellow belt constraint on multi-input recipe."""
+        result = solve("electronic-circuit", 5.0, available_inputs={"iron-plate", "copper-plate"})
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+        bp = _make_blueprint(layout, "bus: 5/s electronic-circuit (yellow belt)")
+        viz(bp, "bus-electronic-circuit-5s-yellow", solver_result=result, layout_result=layout)
+
+    def test_viz_iron_gear_wheel_20s(self, viz):
+        """High rate with auto belt — overflow handling splits trunks."""
+        result = solve("iron-gear-wheel", 20.0)
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 20/s iron-gear-wheel")
+        viz(bp, "bus-iron-gear-wheel-20s", solver_result=result, layout_result=layout)
+
+    def test_viz_electronic_circuit_20s(self, viz):
+        """High rate multi-input layout."""
+        result = solve("electronic-circuit", 20.0, available_inputs={"iron-plate", "copper-plate"})
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 20/s electronic-circuit")
+        viz(bp, "bus-electronic-circuit-20s", solver_result=result, layout_result=layout)
+
 
 def _make_blueprint(layout, label):
     from src.blueprint import build_blueprint

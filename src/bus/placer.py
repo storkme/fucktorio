@@ -27,8 +27,8 @@ class RowSpan:
 def _max_machines_for_belt(spec: MachineSpec, belt_name: str, max_belt_tier: str | None = None) -> int:
     """Max machines in one row before output or input exceeds belt lane capacity.
 
-    Checks output rate against the output belt. When belt tier is constrained,
-    also checks input rate against the constrained tier's capacity.
+    Checks output rate against the output belt, and input rate against the
+    best available belt tier (constrained or max).
     """
     cap = _LANE_CAPACITY.get(belt_name, 7.5)
     max_m = 999
@@ -37,11 +37,11 @@ def _max_machines_for_belt(spec: MachineSpec, belt_name: str, max_belt_tier: str
         if not out.is_fluid and out.rate > 0:
             max_m = min(max_m, int(cap / out.rate))
 
-    if max_belt_tier:
-        in_cap = _LANE_CAPACITY.get(max_belt_tier, 7.5)
-        for inp in spec.inputs:
-            if not inp.is_fluid and inp.rate > 0:
-                max_m = min(max_m, int(in_cap / inp.rate))
+    max_in_cap = max(_LANE_CAPACITY.values())
+    in_cap = _LANE_CAPACITY.get(max_belt_tier, max_in_cap) if max_belt_tier else max_in_cap
+    for inp in spec.inputs:
+        if not inp.is_fluid and inp.rate > 0:
+            max_m = min(max_m, int(in_cap / inp.rate))
 
     return max(1, max_m)
 
@@ -51,7 +51,7 @@ def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str, max_bel
 
     Each lane has its own capacity limit. The total is 2x the per-lane max,
     not int(full_capacity / rate), because integer truncation matters.
-    When belt tier is constrained, also limits by input throughput.
+    Input throughput is always checked against the best available belt tier.
     """
     lane_cap = _LANE_CAPACITY.get(belt_name, 7.5)
     max_m = 999
@@ -61,11 +61,11 @@ def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str, max_bel
             per_lane = int(lane_cap / out.rate)
             max_m = min(max_m, per_lane * 2)
 
-    if max_belt_tier:
-        in_cap = _LANE_CAPACITY.get(max_belt_tier, 7.5)
-        for inp in spec.inputs:
-            if not inp.is_fluid and inp.rate > 0:
-                max_m = min(max_m, int(in_cap / inp.rate))
+    max_in_cap = max(_LANE_CAPACITY.values())
+    in_cap = _LANE_CAPACITY.get(max_belt_tier, max_in_cap) if max_belt_tier else max_in_cap
+    for inp in spec.inputs:
+        if not inp.is_fluid and inp.rate > 0:
+            max_m = min(max_m, int(in_cap / inp.rate))
 
     return max(1, max_m)
 
