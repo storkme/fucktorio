@@ -734,7 +734,7 @@ def _build_ug_pairs(
     ug_inputs: list[PlacedEntity] = []
     ug_outputs: list[PlacedEntity] = []
     for e in layout_result.entities:
-        if e.name == "underground-belt":
+        if e.name in _UG_BELT_ENTITIES:
             if e.io_type == "input":
                 ug_inputs.append(e)
             elif e.io_type == "output":
