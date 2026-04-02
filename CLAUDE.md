@@ -20,9 +20,12 @@ python -m src.pipeline
 Three-stage pipeline (`src/pipeline.py` orchestrates):
 
 1. **Solver** (`src/solver/`) — Recursively resolves recipes via `draftsman.data`, calculates machine counts and flow rates. Returns `SolverResult`.
-2. **Layout** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Parallel random search with retries using incremental place-and-route. Each machine is placed one at a time, edges routed immediately, with retry on failure. Returns `LayoutResult`.
+2. **Layout** — Two engines, both return `LayoutResult`:
+   - **Bus** (`src/bus/`) — Deterministic row-based layout with main bus pattern. Currently the primary focus.
+   - **Spaghetti** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Random search with A* place-and-route. Currently parked pending routing rework ([#62](https://github.com/storkme/fucktorio/issues/62)).
 3. **Blueprint** (`src/blueprint/`) — Thin draftsman wrapper that converts `LayoutResult` to a base64 blueprint string.
 4. **Validation** (`src/validate.py`) — Functional checks run after layout: pipe isolation, fluid port connectivity, inserter chains, power coverage.
+5. **Analysis** (`src/analysis/`) — Parses real Factorio blueprints into production graphs for studying community layouts.
 
 ## Key models (`src/models.py`)
 
@@ -47,6 +50,11 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 | `src/spaghetti/layout.py` | Layout orchestrator — calls `search_with_retries()`, entry point for layout engine |
 | `src/validate.py` | 18 validation checks (pipe isolation, belt loops, throughput, etc.) |
 | `src/models.py` | Shared data models (ItemFlow, MachineSpec, SolverResult, PlacedEntity, LayoutResult) |
+| `src/bus/layout.py` | Bus layout orchestrator — builds row-based layouts with main bus trunks |
+| `src/bus/placer.py` | Row placement: groups machines by recipe, splits rows for throughput |
+| `src/bus/templates.py` | Belt/inserter templates for bus rows (single-input, dual-input, lane-splitting) |
+| `src/bus/bus_router.py` | Trunk routing, branch sideloading, underground belt pairs |
+| `src/analysis/` | Blueprint analysis: classify, trace, infer items, build production graphs |
 
 ## Factorio game rules (constraints for the layout engine)
 
@@ -64,14 +72,14 @@ These are the physical rules the layout engine must satisfy:
 
 Tracks which recipes produce zero-error blueprints. Each tier represents increasing complexity. Moving up = real progress.
 
-| Tier | Recipe | Complexity | Status |
-|------|--------|-----------|--------|
-| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | SOLVED -- zero errors consistently (belt-item-isolation fixed via item-aware A*) |
-| 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | Failing -- belt-flow-reachability (2-5 errors), contamination solved |
-| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing -- pipe isolation |
-| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing -- massive routing failures |
-| 5 | `processing-unit` | Deep chain, multiple fluids | Not attempted |
-| 6 | `rocket-control-unit` | Very deep chain | Not attempted |
+| Tier | Recipe | Complexity | Spaghetti | Bus |
+|------|--------|-----------|-----------|-----|
+| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | Inconsistent (xfail) — loops, contamination, unpaired UG | SOLVED |
+| 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | Failing — belt-flow-reachability | SOLVED (incl. from ores) |
+| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing — pipe isolation | Not attempted |
+| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing — massive routing failures | Not attempted |
+| 5 | `processing-unit` | Deep chain, multiple fluids | Not attempted | Not attempted |
+| 6 | `rocket-control-unit` | Very deep chain | Not attempted | Not attempted |
 
 ### Known failure modes
 
@@ -114,11 +122,25 @@ Single-pass evaluation of 60 random candidates in parallel (evolution was tried 
 - **Common utilities** (`common.py`): Machine sizes, belt tier selection, direction constants, lane constants (`LANE_LEFT`/`LANE_RIGHT`), `inserter_target_lane()`
 - **Routing result** (`router.py`): `RoutingResult` exposes `belt_dir_map` and `group_networks` for incremental routing
 
-### The primary remaining problem
+### The primary remaining problem (spaghetti)
 
-Belt-flow-reachability: continuation routing connects source to destination topologically, but belt directions can point the wrong way for input edges (items can't flow upstream). Tier 1 (iron-gear-wheel) is now solved, but this remains the main blocker for tier 2+ recipes. The fix needs to happen at the `route_connections()` level. When continuation routing fails entirely, a belt stub is still placed so inserters have a target.
+Independent edge routing: `route_connections()` routes each A* edge independently, so earlier edges claim tiles that force later edges into bad paths (loops, wrong directions, contamination). This is the fundamental blocker — see [#62](https://github.com/storkme/fucktorio/issues/62) for the proposed fix (negotiated congestion routing). Spaghetti work is parked while bus layout is the focus.
 
-Belt-item-isolation is SOLVED via `other_item_tiles` hard-blocking in A* (was the previous primary blocker).
+## Bus layout engine (`src/bus/`)
+
+Deterministic row-based layout using the main bus pattern. Machines grouped by recipe into rows, items transported on parallel trunk belts, with underground sideloading for branches.
+
+### How it works
+
+1. **Solver** produces `SolverResult` (same as spaghetti)
+2. **Placer** (`placer.py`) groups machines by recipe into rows, splits rows when throughput exceeds belt capacity (lane-splitting for both lanes of a belt)
+3. **Templates** (`templates.py`) stamp out belt/inserter patterns for each row type (single-input, dual-input, with optional lane splitting via sideload bridges)
+4. **Bus router** (`bus_router.py`) places trunk belts, routes branches from trunks to rows via underground belt pairs
+5. **Validation** runs the same checks as spaghetti (`validate.py`)
+
+### Current status
+
+Bus passes tiers 1-2 with zero validation errors (including electronic-circuit from raw ores with smelting). Next target: tier 3 (plastic-bar — first fluid recipe).
 
 ## Verification & validation
 

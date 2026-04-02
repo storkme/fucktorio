@@ -43,7 +43,7 @@ def bus_layout(
         max_belt_tier=max_belt_tier,
     )
 
-    lanes = plan_bus_lanes(solver_result, row_spans)
+    lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
     actual_bw = bus_width_for_lanes(lanes)
 
     # Re-place rows if bus width changed
@@ -55,7 +55,7 @@ def bus_layout(
             y_offset=BUS_HEADER,
             max_belt_tier=max_belt_tier,
         )
-        lanes = plan_bus_lanes(solver_result, row_spans)
+        lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
 
     # 3. Route bus lanes
     bus_entities = route_bus(lanes, row_spans, total_height, actual_bw, max_belt_tier=max_belt_tier)

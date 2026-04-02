@@ -32,6 +32,14 @@ All layout logic (recipe solving, spatial placement, routing, validation) is imp
 3. **Validation** — checks the layout actually works (pipe isolation, fluid connectivity, inserter chains, power coverage)
 4. **Blueprint** — serializes the layout to a Factorio-importable base64 string
 
-## Direction
+## Layout engines
 
-The layout engine uses evolutionary search over machine placement, inserter sides, and routing order — no predefined patterns, no templates. Given only Factorio's game rules, it places machines and pathfinds belt/pipe routes between them using A* — a place-and-route approach analogous to PCB autorouting. The goal is to produce working but novel "spaghetti" factories.
+Two layout approaches:
+
+- **Bus layout** (`src/bus/`) — Deterministic row-based layout with parallel trunk belts (main bus pattern). Machines in rows, items on parallel trunk lines, sideloading via underground belts. Currently the primary focus — produces zero-error blueprints for tier 1-2 recipes including electronic-circuit with smelting.
+
+- **Spaghetti layout** (`src/spaghetti/`, `src/routing/`) — Parallel random search with A* belt routing. No predefined patterns — places machines and pathfinds belt/pipe routes between them, analogous to PCB autorouting. Produces compact but novel layouts. Currently inconsistent at tier 1, blocked on routing coordination (see [#62](https://github.com/storkme/fucktorio/issues/62)).
+
+## Analysis
+
+`src/analysis/` — Blueprint analysis pipeline that parses real Factorio blueprints into production graphs. Used to study community blueprints for layout ratios, spacing, and belt patterns.

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import math
+
 from ..models import EntityDirection, PlacedEntity, SolverResult
-from ..routing.common import belt_entity_for_rate
+from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate
 from .placer import RowSpan
 
 
@@ -35,6 +37,7 @@ class BusLane:
 def plan_bus_lanes(
     solver_result: SolverResult,
     row_spans: list[RowSpan],
+    max_belt_tier: str | None = None,
 ) -> list[BusLane]:
     """Determine which items need bus lanes and assign x-columns.
 
@@ -101,6 +104,9 @@ def plan_bus_lanes(
         )
         seen_items.add(item)
 
+    # Split lanes that exceed max belt tier capacity into parallel trunks
+    lanes = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
+
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
         lane.tap_off_ys = _find_tap_off_ys(lane, row_spans)
@@ -119,6 +125,60 @@ def plan_bus_lanes(
         lane.x = i * 2
 
     return lanes
+
+
+def _split_overflowing_lanes(
+    lanes: list[BusLane],
+    row_spans: list[RowSpan],
+    max_belt_tier: str | None = None,
+) -> list[BusLane]:
+    """Split lanes whose rate exceeds the available belt's per-lane capacity.
+
+    When a lane carries e.g. 20/s but yellow belt only supports 7.5/s per lane,
+    split into ceil(20/7.5) = 3 parallel trunk lanes, distributing consumer rows
+    across them.
+    """
+    if max_belt_tier and max_belt_tier in _LANE_CAPACITY:
+        max_lane_cap = _LANE_CAPACITY[max_belt_tier]
+    else:
+        max_lane_cap = max(_LANE_CAPACITY.values())
+
+    result: list[BusLane] = []
+    for lane in lanes:
+        if lane.is_fluid or lane.rate <= max_lane_cap:
+            result.append(lane)
+            continue
+
+        n_splits = math.ceil(lane.rate / max_lane_cap)
+        # Distribute consumer rows round-robin across splits
+        consumers_per_split: list[list[int]] = [[] for _ in range(n_splits)]
+        for i, ri in enumerate(lane.consumer_rows):
+            consumers_per_split[i % n_splits].append(ri)
+
+        # Distribute extra producer rows similarly
+        producers_per_split: list[list[int]] = [[] for _ in range(n_splits)]
+        for i, pri in enumerate(lane.extra_producer_rows):
+            producers_per_split[i % n_splits].append(pri)
+
+        for si in range(n_splits):
+            consumers = consumers_per_split[si]
+            if not consumers and si > 0:
+                continue  # skip empty splits
+            split_rate = lane.rate / n_splits
+            result.append(
+                BusLane(
+                    item=lane.item,
+                    x=0,  # reassigned later
+                    source_y=lane.source_y,
+                    consumer_rows=consumers,
+                    producer_row=lane.producer_row if si == 0 else None,
+                    rate=split_rate,
+                    is_fluid=lane.is_fluid,
+                    extra_producer_rows=producers_per_split[si],
+                )
+            )
+
+    return result
 
 
 def _find_tap_off_ys(lane: BusLane, row_spans: list[RowSpan]) -> list[int]:

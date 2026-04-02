@@ -86,8 +86,12 @@ class TestBusLayout:
             pytest.fail(f"Validation failed with {len(e.issues)} errors")
 
     def test_yellow_belt_constraint(self):
-        """Belt tier constraint forces yellow belts, splitting rows as needed."""
-        result = solve("iron-gear-wheel", 2.0)
+        """Belt tier constraint forces yellow belts, splitting rows as needed.
+
+        At 10/s, iron-plate input is 20/s which exceeds yellow belt per-lane
+        capacity (7.5/s). Rows and trunk lanes must split to stay within limits.
+        """
+        result = solve("iron-gear-wheel", 10.0)
         layout = bus_layout(result, max_belt_tier="transport-belt")
 
         # Verify all belts are yellow

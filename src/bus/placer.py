@@ -24,11 +24,11 @@ class RowSpan:
     fluid_port_pipes: list[tuple[int, int]] = field(default_factory=list)
 
 
-def _max_machines_for_belt(spec: MachineSpec, belt_name: str) -> int:
-    """Max machines in one row before OUTPUT exceeds belt lane capacity.
+def _max_machines_for_belt(spec: MachineSpec, belt_name: str, max_belt_tier: str | None = None) -> int:
+    """Max machines in one row before output or input exceeds belt lane capacity.
 
-    Only checks output rates — input throughput is handled by the bus
-    lane which selects its own belt tier independently.
+    Checks output rate against the output belt. When belt tier is constrained,
+    also checks input rate against the constrained tier's capacity.
     """
     cap = _LANE_CAPACITY.get(belt_name, 7.5)
     max_m = 999
@@ -37,14 +37,21 @@ def _max_machines_for_belt(spec: MachineSpec, belt_name: str) -> int:
         if not out.is_fluid and out.rate > 0:
             max_m = min(max_m, int(cap / out.rate))
 
+    if max_belt_tier:
+        in_cap = _LANE_CAPACITY.get(max_belt_tier, 7.5)
+        for inp in spec.inputs:
+            if not inp.is_fluid and inp.rate > 0:
+                max_m = min(max_m, int(in_cap / inp.rate))
+
     return max(1, max_m)
 
 
-def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str) -> int:
+def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str, max_belt_tier: str | None = None) -> int:
     """Max machines when using BOTH belt lanes (lane-split output).
 
     Each lane has its own capacity limit. The total is 2x the per-lane max,
     not int(full_capacity / rate), because integer truncation matters.
+    When belt tier is constrained, also limits by input throughput.
     """
     lane_cap = _LANE_CAPACITY.get(belt_name, 7.5)
     max_m = 999
@@ -53,6 +60,12 @@ def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str) -> int:
         if not out.is_fluid and out.rate > 0:
             per_lane = int(lane_cap / out.rate)
             max_m = min(max_m, per_lane * 2)
+
+    if max_belt_tier:
+        in_cap = _LANE_CAPACITY.get(max_belt_tier, 7.5)
+        for inp in spec.inputs:
+            if not inp.is_fluid and inp.rate > 0:
+                max_m = min(max_m, int(in_cap / inp.rate))
 
     return max(1, max_m)
 
@@ -89,10 +102,10 @@ def place_rows(
         # Fluid rows don't support lane splitting yet — use single-lane math
         if has_fluid:
             out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
-            max_per_row = _max_machines_for_belt(spec, out_belt)
+            max_per_row = _max_machines_for_belt(spec, out_belt, max_belt_tier)
         else:
             out_belt = belt_entity_for_rate(output_rate, max_tier=max_belt_tier)
-            max_per_row = _max_machines_for_belt_both_lanes(spec, out_belt)
+            max_per_row = _max_machines_for_belt_both_lanes(spec, out_belt, max_belt_tier)
 
         # Split into chunks
         remaining = total_count

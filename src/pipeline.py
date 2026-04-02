@@ -19,6 +19,7 @@ def produce(
     visualize: bool = False,
     open_browser: bool = True,
     layout_engine: str = "spaghetti",
+    max_belt_tier: str | None = None,
 ) -> str:
     """One-call interface: item + rate → Factorio blueprint string.
 
@@ -28,6 +29,8 @@ def produce(
         inputs: Items the user supplies externally. If None, raw ores are used.
         machine: Assembler entity to use.
         label: Blueprint label. Defaults to "{rate}/s {item}".
+        layout_engine: "bus" or "spaghetti".
+        max_belt_tier: Constrain belt tier (e.g. "transport-belt" for yellow only).
 
     Returns:
         Factorio-importable blueprint string.
@@ -85,14 +88,14 @@ def produce(
     if layout_engine == "bus":
         from .bus import bus_layout
 
-        layout_result = bus_layout(solver_result)
+        layout_result = bus_layout(solver_result, max_belt_tier=max_belt_tier)
     else:
         layout_result = spaghetti_layout(solver_result)
     print(f"  Layout: {len(layout_result.entities)} entities, {layout_result.width}×{layout_result.height} tiles")
 
     # 3. Validate (log issues but continue with best-effort layout)
     try:
-        warnings = validate(layout_result, solver_result)
+        warnings = validate(layout_result, solver_result, layout_style=layout_engine)
     except ValidationError as e:
         warnings = e.issues
     if warnings:
@@ -115,14 +118,47 @@ def produce(
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    use_html = "--html" in sys.argv
+    parser = argparse.ArgumentParser(
+        description="Generate a Factorio blueprint for a target item.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  python -m src.pipeline iron-gear-wheel 10
+  python -m src.pipeline electronic-circuit 5 --inputs iron-plate copper-plate
+  python -m src.pipeline iron-gear-wheel 10 --engine bus --belt yellow --viz
+  python -m src.pipeline plastic-bar 5 --inputs coal petroleum-gas --engine bus""",
+    )
+    parser.add_argument("item", help="Target item (e.g. iron-gear-wheel)")
+    parser.add_argument("rate", type=float, help="Production rate (items/sec)")
+    parser.add_argument("--inputs", nargs="*", help="External inputs (default: raw ores)")
+    parser.add_argument(
+        "--engine",
+        choices=["bus", "spaghetti"],
+        default="bus",
+        help="Layout engine (default: bus)",
+    )
+    parser.add_argument(
+        "--belt",
+        choices=["yellow", "red", "blue"],
+        help="Max belt tier (default: auto)",
+    )
+    parser.add_argument("--viz", action="store_true", help="Open HTML visualization")
+    parser.add_argument("--no-browser", action="store_true", help="Don't open browser (with --viz)")
+
+    args = parser.parse_args()
+
+    belt_map = {"yellow": "transport-belt", "red": "fast-transport-belt", "blue": "express-transport-belt"}
+    max_belt = belt_map.get(args.belt) if args.belt else None
+
     bp = produce(
-        "electronic-circuit",
-        rate=30,
-        inputs=["iron-plate", "copper-plate"],
-        visualize=use_html,
-        open_browser=False,
+        args.item,
+        rate=args.rate,
+        inputs=args.inputs,
+        visualize=args.viz,
+        open_browser=not args.no_browser,
+        layout_engine=args.engine,
+        max_belt_tier=max_belt,
     )
     print(f"\n{bp}")
