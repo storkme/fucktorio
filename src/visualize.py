@@ -199,9 +199,8 @@ def visualize(
         recipe = getattr(e, "recipe", None)
         if e.name in _CRAFTING and recipe:
             recipe_counts[recipe] += 1
-            if recipe not in recipe_counts or recipe not in recipe_order:
-                if recipe not in recipe_order:
-                    recipe_order.append(recipe)
+            if recipe not in recipe_order:
+                recipe_order.append(recipe)
 
     # Build recipe → primary output item map.
     # Use solver_result when available; fall back to recipe name (works for most Factorio recipes).
