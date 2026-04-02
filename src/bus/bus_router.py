@@ -103,13 +103,10 @@ def plan_bus_lanes(
         )
         seen_items.add(item)
 
-    # Split lanes that exceed max belt tier capacity into parallel trunks
-    lanes = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
-
     # Output collection: create lanes for final products (produced but not
     # consumed). These collect output from multiple producer sub-rows into
-    # a single vertical trunk. Added after splitting since they don't need
-    # overflow splitting — items flow into the trunk, not out of it.
+    # vertical trunks. Added before splitting so that overflow splitting
+    # can create parallel collector trunks when rate exceeds lane capacity.
     for ext_out in solver_result.external_outputs:
         if ext_out.item in seen_items:
             continue
@@ -130,6 +127,9 @@ def plan_bus_lanes(
             )
         )
         seen_items.add(ext_out.item)
+
+    # Split lanes that exceed max belt tier capacity into parallel trunks
+    lanes = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
 
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
@@ -184,10 +184,11 @@ def _split_overflowing_lanes(
         for i, pri in enumerate(lane.extra_producer_rows):
             producers_per_split[i % n_splits].append(pri)
 
+        is_collector = not lane.consumer_rows
         for si in range(n_splits):
             consumers = consumers_per_split[si]
-            if not consumers and si > 0:
-                continue  # skip empty splits
+            if not consumers and not is_collector and si > 0:
+                continue  # skip empty splits (but keep collector trunks)
             split_rate = lane.rate / n_splits
             result.append(
                 BusLane(
@@ -236,12 +237,169 @@ def route_bus(
     total_height: int,
     bw: int,
     max_belt_tier: str | None = None,
-) -> list[PlacedEntity]:
-    """Create all bus belt entities."""
+) -> tuple[list[PlacedEntity], int]:
+    """Create all bus belt entities.
+
+    Returns (entities, max_y) where max_y accounts for any merger blocks
+    placed below the last row.
+    """
     entities: list[PlacedEntity] = []
+    max_y = total_height
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier)
-    return entities
+
+    # Group same-item lanes that were split into parallel trunks.
+    # Merge them with splitters if there are more trunks than needed.
+    item_lane_groups: dict[str, list[BusLane]] = {}
+    for lane in lanes:
+        if lane.is_fluid:
+            continue
+        item_lane_groups.setdefault(lane.item, []).append(lane)
+
+    for _item, group in item_lane_groups.items():
+        if len(group) <= 1:
+            continue
+        merger_ents, merger_end_y = _place_merger_block(
+            group, row_spans, total_height, entities, max_belt_tier,
+        )
+        entities.extend(merger_ents)
+        max_y = max(max_y, merger_end_y)
+
+    return entities, max_y
+
+
+def _place_merger_block(
+    trunk_lanes: list[BusLane],
+    row_spans: list[RowSpan],
+    merge_start_y: int,
+    existing_entities: list[PlacedEntity],
+    max_belt_tier: str | None = None,
+) -> tuple[list[PlacedEntity], int]:
+    """Merge N parallel trunk lanes into M output belts using splitters.
+
+    M = ceil(total_rate / full_belt_capacity).  The merger block is placed
+    below the last row at merge_start_y.  Extends each trunk downward from
+    its end_y to merge_start_y so items can flow into the merger.
+
+    Returns (entities, end_y).
+    """
+    entities: list[PlacedEntity] = []
+    total_rate = sum(ln.rate for ln in trunk_lanes)
+
+    # Determine belt tier and capacity
+    belt_name = belt_entity_for_rate(total_rate * 2, max_tier=max_belt_tier)
+    full_cap = _BELT_CAPACITY.get(belt_name, 15.0)
+    target_m = max(1, math.ceil(total_rate / full_cap))
+
+    trunk_xs = sorted(ln.x for ln in trunk_lanes)
+    n = len(trunk_xs)
+
+    if n <= target_m:
+        return entities, merge_start_y
+
+    splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
+    item = trunk_lanes[0].item
+
+    # Build set of already-occupied positions to avoid overlaps
+    occupied: set[tuple[int, int]] = {(e.x, e.y) for e in existing_entities}
+
+    # Extend each trunk from its current end_y to merge_start_y
+    for lane in trunk_lanes:
+        all_ys = list(lane.tap_off_ys)
+        for pri in lane.extra_producer_rows:
+            all_ys.append(row_spans[pri].output_belt_y)
+        end_y = max(all_ys) if all_ys else lane.source_y
+        for y in range(end_y + 1, merge_start_y):
+            if (lane.x, y) in occupied:
+                continue  # skip tiles occupied by tap-offs etc.
+            entities.append(
+                PlacedEntity(
+                    name=belt_name,
+                    x=lane.x,
+                    y=y,
+                    direction=EntityDirection.SOUTH,
+                    carries=item,
+                )
+            )
+
+    y_cursor = merge_start_y
+    current_xs = list(trunk_xs)
+
+    while len(current_xs) > target_m:
+        # How many pairs to merge this stage (at most half, enough to reach target)
+        pairs_needed = min(len(current_xs) - target_m, len(current_xs) // 2)
+        next_xs: list[int] = []
+        i = 0
+        pairs_done = 0
+
+        while i < len(current_xs):
+            if pairs_done < pairs_needed and i + 1 < len(current_xs):
+                left_x = current_xs[i]
+                right_x = current_xs[i + 1]
+                # Route right trunk to left_x + 1 using horizontal WEST belts
+                for rx in range(right_x, left_x, -1):
+                    entities.append(
+                        PlacedEntity(
+                            name=belt_name,
+                            x=rx,
+                            y=y_cursor,
+                            direction=EntityDirection.WEST,
+                            carries=item,
+                        )
+                    )
+                # Continue left trunk straight down
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=left_x,
+                        y=y_cursor,
+                        direction=EntityDirection.SOUTH,
+                        carries=item,
+                    )
+                )
+                # Splitter (SOUTH-facing, occupies left_x and left_x+1)
+                entities.append(
+                    PlacedEntity(
+                        name=splitter_name,
+                        x=left_x,
+                        y=y_cursor + 1,
+                        direction=EntityDirection.SOUTH,
+                        carries=item,
+                    )
+                )
+                # Output belt on the left side only (right side empty → all items go left)
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=left_x,
+                        y=y_cursor + 2,
+                        direction=EntityDirection.SOUTH,
+                        carries=item,
+                    )
+                )
+                next_xs.append(left_x)
+                pairs_done += 1
+                i += 2
+            else:
+                # Passthrough — extend this trunk down through the merge stage
+                px = current_xs[i]
+                for dy in range(3):
+                    entities.append(
+                        PlacedEntity(
+                            name=belt_name,
+                            x=px,
+                            y=y_cursor + dy,
+                            direction=EntityDirection.SOUTH,
+                            carries=item,
+                        )
+                    )
+                next_xs.append(px)
+                i += 1
+
+        y_cursor += 3  # each stage is 3 rows: route + splitter + output
+        current_xs = next_xs
+
+    return entities, y_cursor
 
 
 def _route_lane(
@@ -280,10 +438,7 @@ def _route_belt_lane(
 
     # Output returns sideload into the bus lane from one direction,
     # so items end up on a single lane. Use 2x rate for per-lane capacity.
-    # Output-only lanes (no consumers) are collectors — auto-upgrade their
-    # belt tier since they're not part of the supply bus.
-    tier = max_belt_tier if lane.consumer_rows else None
-    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=tier)
+    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
 
     # Vertical surface belts (SOUTH), skipping tap-off positions
     for y in range(start_y, end_y + 1):
@@ -371,6 +526,15 @@ _UG_MAP = {
     "express-transport-belt": "express-underground-belt",
 }
 
+_SPLITTER_MAP = {
+    "transport-belt": "splitter",
+    "fast-transport-belt": "fast-splitter",
+    "express-transport-belt": "express-splitter",
+}
+
+# Full belt capacity (both lanes)
+_BELT_CAPACITY = {k: v * 2 for k, v in _LANE_CAPACITY.items()}
+
 
 def _underground_for(belt: str) -> str:
     return _UG_MAP.get(belt, "underground-belt")
@@ -382,7 +546,11 @@ def _blocked_xs_at(
     all_lanes: list[BusLane],
     row_spans: list[RowSpan] | None = None,
 ) -> set[int]:
-    """Find x-columns of other lanes that have active vertical segments at y."""
+    """Find x-columns of other lanes that have active vertical segments at y.
+
+    Extends the blocking range by 1 tile past the trunk's end_y to prevent
+    SOUTH-facing belts from feeding into a different item's belt at end_y+1.
+    """
     blocked: set[int] = set()
     for other in all_lanes:
         if other is lane:
@@ -394,7 +562,7 @@ def _blocked_xs_at(
                 all_ys.append(row_spans[pri].output_belt_y)
         other_end = max(all_ys) if all_ys else other_start
         other_taps = set(other.tap_off_ys)
-        if other_start <= y <= other_end and y not in other_taps:
+        if other_start <= y <= other_end + 1 and y not in other_taps:
             blocked.add(other.x)
     return blocked
 

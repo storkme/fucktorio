@@ -118,6 +118,8 @@ class TestBusLayout:
 
     def test_no_entity_overlaps(self):
         """All entities must occupy unique tile positions."""
+        from src.models import EntityDirection
+
         result = solve("iron-gear-wheel", 5.0)
         layout = bus_layout(result)
 
@@ -130,15 +132,22 @@ class TestBusLayout:
             "electric-furnace": 3,
             "oil-refinery": 5,
         }
+        _SPLITTER_ENTITIES = {"splitter", "fast-splitter", "express-splitter"}
+
+        def _tiles(ent):
+            if ent.name in _SPLITTER_ENTITIES:
+                # Splitters are 2 tiles perpendicular to direction
+                if ent.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+                    return [(ent.x, ent.y), (ent.x + 1, ent.y)]
+                return [(ent.x, ent.y), (ent.x, ent.y + 1)]
+            sz = _MULTI_TILE.get(ent.name, 1)
+            return [(ent.x + dx, ent.y + dy) for dx in range(sz) for dy in range(sz)]
 
         for ent in layout.entities:
-            sz = _MULTI_TILE.get(ent.name, 1)
-            for dx in range(sz):
-                for dy in range(sz):
-                    pos = (ent.x + dx, ent.y + dy)
-                    if pos in occupied:
-                        pytest.fail(f"Overlap at {pos}: {ent.name} conflicts with {occupied[pos]}")
-                    occupied[pos] = ent.name
+            for pos in _tiles(ent):
+                if pos in occupied:
+                    pytest.fail(f"Overlap at {pos}: {ent.name} conflicts with {occupied[pos]}")
+                occupied[pos] = ent.name
 
 
 class TestBusVisualization:

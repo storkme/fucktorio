@@ -15,7 +15,8 @@ _5x5_ENTITIES = {k for k, v in _MACHINE_SIZE.items() if v == 5}
 _PIPE_ENTITIES = {"pipe", "pipe-to-ground"}
 _SURFACE_BELT_ENTITIES = {"transport-belt", "fast-transport-belt", "express-transport-belt"}
 _UG_BELT_ENTITIES = {"underground-belt", "fast-underground-belt", "express-underground-belt"}
-_BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES
+_SPLITTER_ENTITIES = {"splitter", "fast-splitter", "express-splitter"}
+_BELT_ENTITIES = _SURFACE_BELT_ENTITIES | _UG_BELT_ENTITIES | _SPLITTER_ENTITIES
 
 # Map underground belt entity name to the corresponding surface belt tier
 _UG_TO_SURFACE_TIER: dict[str, str] = {
@@ -25,6 +26,22 @@ _UG_TO_SURFACE_TIER: dict[str, str] = {
 }
 
 _INSERTER_ENTITIES = {"inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"}
+
+
+def _belt_dir_map_from(entities: list[PlacedEntity]) -> dict[tuple[int, int], EntityDirection]:
+    """Build belt direction map, expanding splitters to both occupied tiles."""
+    bdm: dict[tuple[int, int], EntityDirection] = {}
+    for e in entities:
+        if e.name not in _BELT_ENTITIES:
+            continue
+        bdm[(e.x, e.y)] = e.direction
+        if e.name in _SPLITTER_ENTITIES:
+            # Splitters occupy 2 tiles perpendicular to their direction
+            if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+                bdm[(e.x + 1, e.y)] = e.direction
+            else:
+                bdm[(e.x, e.y + 1)] = e.direction
+    return bdm
 
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
 _INSERTER_REACH = {
@@ -778,14 +795,38 @@ def _build_ug_pairs(
     return pairs
 
 
+def _build_splitter_siblings(
+    layout_result: LayoutResult,
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Map each splitter tile to its sibling tile.
+
+    A splitter occupies 2 tiles perpendicular to its direction. This map
+    lets BFS traverse between both sides of a splitter, which is needed
+    because items entering either input can exit either output.
+    """
+    siblings: dict[tuple[int, int], tuple[int, int]] = {}
+    for e in layout_result.entities:
+        if e.name not in _SPLITTER_ENTITIES:
+            continue
+        if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+            siblings[(e.x, e.y)] = (e.x + 1, e.y)
+            siblings[(e.x + 1, e.y)] = (e.x, e.y)
+        else:
+            siblings[(e.x, e.y)] = (e.x, e.y + 1)
+            siblings[(e.x, e.y + 1)] = (e.x, e.y)
+    return siblings
+
+
 def _bfs_belt_downstream(
     starts: set[tuple[int, int]],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
     ug_pairs: dict[tuple[int, int], tuple[int, int]] | None = None,
+    splitter_siblings: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
     """BFS following belt directions forward — where do items end up?
 
     Traverses underground belt tunnels via ug_pairs mapping.
+    Traverses splitter siblings so items entering either side can exit either side.
     """
     visited: set[tuple[int, int]] = set()
     queue = deque(starts & belt_dir_map.keys())
@@ -805,6 +846,13 @@ def _bfs_belt_downstream(
                 visited.add(paired)
                 queue.append(paired)
 
+        # Splitter sibling: items can cross to the other side
+        if splitter_siblings and (x, y) in splitter_siblings:
+            sib = splitter_siblings[(x, y)]
+            if sib not in visited:
+                visited.add(sib)
+                queue.append(sib)
+
         nb = (x + dx, y + dy)
         if nb in belt_dir_map and nb not in visited:
             visited.add(nb)
@@ -817,12 +865,14 @@ def _bfs_belt_upstream(
     starts: set[tuple[int, int]],
     belt_dir_map: dict[tuple[int, int], EntityDirection],
     ug_pairs: dict[tuple[int, int], tuple[int, int]] | None = None,
+    splitter_siblings: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
     """BFS tracing backward against belt flow — where can items come from?
 
     A neighbor (nx,ny) feeds into (x,y) if the neighbor's direction
     points at (x,y): (nx + ndx, ny + ndy) == (x, y).
     Traverses underground belt tunnels via ug_pairs mapping.
+    Traverses splitter siblings so items on either side are reachable.
     """
     visited: set[tuple[int, int]] = set()
     queue = deque(starts & belt_dir_map.keys())
@@ -837,6 +887,13 @@ def _bfs_belt_upstream(
             if paired not in visited:
                 visited.add(paired)
                 queue.append(paired)
+
+        # Splitter sibling: items can cross from either side
+        if splitter_siblings and (x, y) in splitter_siblings:
+            sib = splitter_siblings[(x, y)]
+            if sib not in visited:
+                visited.add(sib)
+                queue.append(sib)
 
         for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             nx, ny = x + ddx, y + ddy
@@ -1056,10 +1113,7 @@ def check_belt_direction_continuity(
     issues: list[ValidationIssue] = []
 
     # Build belt direction map
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_dir_map[(e.x, e.y)] = e.direction
+    belt_dir_map = _belt_dir_map_from(layout_result.entities)
 
     checked: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     for (bx, by), direction in belt_dir_map.items():
@@ -1713,10 +1767,7 @@ def check_belt_loops(
     """
     issues: list[ValidationIssue] = []
 
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_dir_map[(e.x, e.y)] = e.direction
+    belt_dir_map = _belt_dir_map_from(layout_result.entities)
 
     # Track which tiles we've already confirmed as loop-free or part of a reported loop
     confirmed: set[tuple[int, int]] = set()
@@ -1875,16 +1926,14 @@ def check_belt_flow_reachability(
     fluid_only_recipes = _get_fluid_only_recipes(solver_result)
 
     # Build belt direction map
-    belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_dir_map[(e.x, e.y)] = e.direction
+    belt_dir_map = _belt_dir_map_from(layout_result.entities)
 
     if not belt_dir_map:
         return issues
 
     # Build underground belt pair map for tunnel traversal
     ug_pairs = _build_ug_pairs(layout_result)
+    splitter_siblings = _build_splitter_siblings(layout_result)
 
     # Build machine tile maps
     machine_tiles = _build_machine_tile_set(layout_result)
@@ -1956,7 +2005,7 @@ def check_belt_flow_reachability(
             continue  # other checks catch missing inserters
 
         belt_set = set(belts)
-        upstream = _bfs_belt_upstream(belt_set, belt_dir_map, ug_pairs=ug_pairs)
+        upstream = _bfs_belt_upstream(belt_set, belt_dir_map, ug_pairs=ug_pairs, splitter_siblings=splitter_siblings)
         # Exclude start tiles — they may be on the boundary but that
         # doesn't mean items can reach them from outside
         upstream_beyond_start = upstream - belt_set
@@ -1994,7 +2043,9 @@ def check_belt_flow_reachability(
             continue  # other checks catch missing output belts
 
         belt_set = set(belts)
-        downstream = _bfs_belt_downstream(belt_set, belt_dir_map, ug_pairs=ug_pairs)
+        downstream = _bfs_belt_downstream(
+            belt_set, belt_dir_map, ug_pairs=ug_pairs, splitter_siblings=splitter_siblings,
+        )
         downstream_beyond_start = downstream - belt_set
         reaches_sink = any(_on_boundary(t) for t in downstream_beyond_start) or bool(
             downstream_beyond_start & input_belt_tiles
@@ -2079,12 +2130,18 @@ def compute_lane_rates(
     if solver_result is None:
         return {}
 
-    # Build belt maps — surface belts only (underground belts don't
+    # Build belt maps — surface belts + splitters (underground belts don't
     # sideload into adjacent belts or propagate lane throughput)
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
     for e in layout_result.entities:
         if e.name in _SURFACE_BELT_ENTITIES:
             belt_dir_map[(e.x, e.y)] = e.direction
+        elif e.name in _SPLITTER_ENTITIES:
+            belt_dir_map[(e.x, e.y)] = e.direction
+            if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+                belt_dir_map[(e.x + 1, e.y)] = e.direction
+            else:
+                belt_dir_map[(e.x, e.y + 1)] = e.direction
 
     if not belt_dir_map:
         return {}
