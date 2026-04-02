@@ -106,6 +106,31 @@ def plan_bus_lanes(
     # Split lanes that exceed max belt tier capacity into parallel trunks
     lanes = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
 
+    # Output collection: create lanes for final products (produced but not
+    # consumed). These collect output from multiple producer sub-rows into
+    # a single vertical trunk. Added after splitting since they don't need
+    # overflow splitting — items flow into the trunk, not out of it.
+    for ext_out in solver_result.external_outputs:
+        if ext_out.item in seen_items:
+            continue
+        producer_rows = item_to_producers.get(ext_out.item, [])
+        if len(producer_rows) <= 1:
+            continue  # single producer row doesn't need collection
+        first_producer = producer_rows[0]
+        lanes.append(
+            BusLane(
+                item=ext_out.item,
+                x=0,
+                source_y=row_spans[first_producer].output_belt_y,
+                consumer_rows=[],
+                producer_row=first_producer,
+                rate=item_to_rate.get(ext_out.item, ext_out.rate),
+                is_fluid=ext_out.is_fluid,
+                extra_producer_rows=producer_rows[1:],
+            )
+        )
+        seen_items.add(ext_out.item)
+
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
         lane.tap_off_ys = _find_tap_off_ys(lane, row_spans)
@@ -255,7 +280,10 @@ def _route_belt_lane(
 
     # Output returns sideload into the bus lane from one direction,
     # so items end up on a single lane. Use 2x rate for per-lane capacity.
-    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    # Output-only lanes (no consumers) are collectors — auto-upgrade their
+    # belt tier since they're not part of the supply bus.
+    tier = max_belt_tier if lane.consumer_rows else None
+    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=tier)
 
     # Vertical surface belts (SOUTH), skipping tap-off positions
     for y in range(start_y, end_y + 1):
@@ -274,7 +302,7 @@ def _route_belt_lane(
     # Tap-off horizontal belts (EAST) from bus column to row start.
     # When crossing another lane's vertical segment, go underground.
     for tap_y in lane.tap_off_ys:
-        _route_tap_off(entities, lane, tap_y, all_lanes, bw, belt_name)
+        _route_tap_off(entities, lane, tap_y, all_lanes, row_spans, bw, belt_name)
 
     # Output return: WEST belts from row edge back to bus column.
     # Must go underground past other lanes' vertical segments (same as tap-offs).
@@ -285,7 +313,7 @@ def _route_belt_lane(
     all_producers.extend(lane.extra_producer_rows)
     for pri in all_producers:
         out_y = row_spans[pri].output_belt_y
-        _route_output_return(entities, lane, out_y, all_lanes, bw, belt_name)
+        _route_output_return(entities, lane, out_y, all_lanes, row_spans, bw, belt_name)
 
 
 def _route_fluid_lane(
@@ -348,14 +376,23 @@ def _underground_for(belt: str) -> str:
     return _UG_MAP.get(belt, "underground-belt")
 
 
-def _blocked_xs_at(lane: BusLane, y: int, all_lanes: list[BusLane]) -> set[int]:
+def _blocked_xs_at(
+    lane: BusLane,
+    y: int,
+    all_lanes: list[BusLane],
+    row_spans: list[RowSpan] | None = None,
+) -> set[int]:
     """Find x-columns of other lanes that have active vertical segments at y."""
     blocked: set[int] = set()
     for other in all_lanes:
         if other is lane:
             continue
         other_start = other.source_y
-        other_end = max(other.tap_off_ys) if other.tap_off_ys else other_start
+        all_ys = list(other.tap_off_ys)
+        if row_spans:
+            for pri in other.extra_producer_rows:
+                all_ys.append(row_spans[pri].output_belt_y)
+        other_end = max(all_ys) if all_ys else other_start
         other_taps = set(other.tap_off_ys)
         if other_start <= y <= other_end and y not in other_taps:
             blocked.add(other.x)
@@ -512,11 +549,12 @@ def _route_tap_off(
     lane: BusLane,
     tap_y: int,
     all_lanes: list[BusLane],
+    row_spans: list[RowSpan],
     bw: int,
     belt_name: str = "transport-belt",
 ) -> None:
     """Route a horizontal tap-off (EAST) from bus lane to row input belt."""
-    blocked = _blocked_xs_at(lane, tap_y, all_lanes)
+    blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans)
     _route_horizontal(entities, lane, tap_y, lane.x, bw - 1, EntityDirection.EAST, blocked, belt_name)
 
 
@@ -525,9 +563,10 @@ def _route_output_return(
     lane: BusLane,
     out_y: int,
     all_lanes: list[BusLane],
+    row_spans: list[RowSpan],
     bw: int,
     belt_name: str = "transport-belt",
 ) -> None:
     """Route output return (WEST) from row edge back to bus column."""
-    blocked = _blocked_xs_at(lane, out_y, all_lanes)
+    blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans)
     _route_horizontal(entities, lane, out_y, lane.x + 1, bw - 1, EntityDirection.WEST, blocked, belt_name)

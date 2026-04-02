@@ -33,7 +33,14 @@ def viz(request: pytest.FixtureRequest):
     """
     enabled = request.config.getoption("--viz")
 
-    def _save(bp_string: str, name: str | None = None, solver_result=None, production_graph=None, layout_result=None):
+    def _save(
+        bp_string: str,
+        name: str | None = None,
+        solver_result=None,
+        production_graph=None,
+        layout_result=None,
+        layout_style="spaghetti",
+    ):
         if not enabled:
             return
         if name is None:
@@ -51,7 +58,7 @@ def viz(request: pytest.FixtureRequest):
             from src.validate import ValidationError, compute_lane_rates, validate
 
             try:
-                validation_issues = validate(layout_result, solver_result, layout_style="spaghetti")
+                validation_issues = validate(layout_result, solver_result, layout_style=layout_style)
             except ValidationError as exc:
                 validation_issues = exc.issues
             lane_rates = compute_lane_rates(layout_result, solver_result)
