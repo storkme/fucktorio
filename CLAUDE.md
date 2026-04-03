@@ -59,7 +59,8 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 | `src/bus/layout.py` | Bus layout orchestrator — builds row-based layouts with main bus trunks |
 | `src/bus/placer.py` | Row placement: groups machines by recipe, splits rows for throughput |
 | `src/bus/templates.py` | Belt/inserter templates for bus rows (single-input, dual-input, lane-splitting) |
-| `src/bus/bus_router.py` | Trunk routing, branch sideloading, underground belt pairs |
+| `src/bus/bus_router.py` | Trunk routing (1-tile spacing), tap-off underground crossings, output mergers, splitter lane balancing, negotiated crossing map |
+| `rust_src/lib.rs` | Rust A* pathfinder + lane-first negotiated congestion routing (PyO3) |
 | `src/analysis/` | Blueprint analysis: classify, trace, infer items, build production graphs |
 
 ## Factorio game rules (constraints for the layout engine)
@@ -82,8 +83,8 @@ Tracks which recipes produce zero-error blueprints. Each tier represents increas
 |------|--------|-----------|-----------|-----|
 | 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | Inconsistent (xfail) — loops, contamination, unpaired UG | SOLVED |
 | 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | Failing — belt-flow-reachability | SOLVED (incl. from ores) |
-| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing — pipe isolation | Not attempted |
-| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing — massive routing failures | Not attempted |
+| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing — pipe isolation | SOLVED |
+| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing — massive routing failures | Partial (from plates: lane-throughput warnings, needs [#65](https://github.com/storkme/fucktorio/issues/65)) |
 | 5 | `processing-unit` | Deep chain, multiple fluids | Not attempted | Not attempted |
 | 6 | `rocket-control-unit` | Very deep chain | Not attempted | Not attempted |
 
@@ -146,7 +147,26 @@ Deterministic row-based layout using the main bus pattern. Machines grouped by r
 
 ### Current status
 
-Bus passes tiers 1-2 with zero validation errors (including electronic-circuit from raw ores with smelting). Next target: tier 3 (plastic-bar — first fluid recipe).
+Bus passes tiers 1-3 with zero validation errors (iron-gear-wheel, electronic-circuit incl. from ores, plastic-bar). Tier 4 (advanced-circuit from plates) has lane-throughput warnings from single-lane sideload bottleneck ([#64](https://github.com/storkme/fucktorio/issues/64)). Next: negotiated A* routing for trunk/tap-off connections ([#65](https://github.com/storkme/fucktorio/issues/65)).
+
+### Bus routing details
+
+- **Lane spacing**: 1-tile (trunks on adjacent columns, no gaps)
+- **1:1 lane-to-consumer mapping**: Each bus lane has exactly one consumer row, connected via belt turn
+- **Even row splitting**: Producer rows are evenly sized for balanced throughput per lane
+- **Tap-off underground crossings**: Tap-offs go EAST on the surface; first tile is always a surface belt (turn point from trunk) to avoid sideloading onto UG inputs. Underground hops cross other trunks with short spans.
+- **Output returns**: WEST surface belts sideload onto the trunk (fills one lane)
+- **Splitter lane balancing**: When multiple producers feed one intermediate lane, the last producer's output is split — half sideloads from the opposite side of the trunk to fill the other lane
+- **Output mergers**: Final product rows route WEST to x=0/x=1 columns with underground crossings, then merge via SOUTH splitters at the bottom
+- **Negotiated crossing map**: Rust `negotiate_lanes()` pre-computes crossings between all lane segments (including mergers), augmenting `_blocked_xs_at` so tap-offs know about future entity positions
+- **Fluid lanes**: Pipe trunks + pipe-to-ground tap-offs. Fluid lanes don't block belt tap-offs (pipes and belts don't conflict)
+
+### Factorio belt lane rules
+
+- **Sideloading**: Feeding a belt from the side only fills the NEAR lane (the lane closest to the feeder)
+- **Sideloading onto underground input**: Only fills the FAR lane — must feed UG inputs straight (same direction), not from the side
+- **Belt turns**: 90-degree turns preserve both lanes (with CW/CCW rotation)
+- **Splitters**: Distribute items 50/50 between two output belts, preserving lane assignment per belt
 
 ## Verification & validation
 
