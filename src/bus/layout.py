@@ -58,7 +58,10 @@ def bus_layout(
         lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
 
     # 3. Route bus lanes (with crossing negotiation using row entities as obstacles)
-    bus_entities, bus_max_y = route_bus(lanes, row_spans, total_height, actual_bw, max_belt_tier=max_belt_tier, row_entities=row_entities)
+    bus_entities, bus_max_y = route_bus(
+        lanes, row_spans, total_height, actual_bw,
+        max_belt_tier=max_belt_tier, row_entities=row_entities,
+    )
     total_height = max(total_height, bus_max_y)
 
     # 4. Collect occupied tiles for pole placement

@@ -190,7 +190,7 @@ def _score_lane_ordering(
             end = max((row_spans[p].output_belt_y for p in all_p), default=start)
         return start, end
 
-    ranges = [_active_range(l) for l in ordered]
+    ranges = [_active_range(ln) for ln in ordered]
 
     for pos in range(n):
         lane = ordered[pos]
@@ -225,8 +225,8 @@ def _optimize_lane_order(
         return lanes
 
     # Separate fluid lanes (placed after solids)
-    solid = [l for l in lanes if not l.is_fluid]
-    fluid = [l for l in lanes if l.is_fluid]
+    solid = [ln for ln in lanes if not ln.is_fluid]
+    fluid = [ln for ln in lanes if ln.is_fluid]
 
     if len(solid) <= 10:
         best_order: list[BusLane] | None = None
@@ -820,7 +820,10 @@ def _route_belt_lane(
     # Pre-balancer trunk segment carries full rate on one lane.  Respect the
     # belt tier constraint — items buffer briefly before the balancer, which
     # is fine in Factorio.
-    pre_bal_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier) if lane.balancer_y is not None else belt_name
+    if lane.balancer_y is not None:
+        pre_bal_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    else:
+        pre_bal_belt = belt_name
 
     # Positions occupied by the lane balancer splitter (skip from vertical belt loop)
     balancer_skip = {lane.balancer_y} if lane.balancer_y is not None else set()

@@ -125,7 +125,7 @@ class TestBusLayout:
         Intermediate lanes use direct routing (no balancer).
         External input lanes have no producers (no balancer).
         """
-        from src.bus.bus_router import plan_bus_lanes, bus_width_for_lanes
+        from src.bus.bus_router import bus_width_for_lanes, plan_bus_lanes
         from src.bus.placer import place_rows
 
         result = solve("iron-gear-wheel", 10.0)
@@ -148,15 +148,15 @@ class TestBusLayout:
             lanes = plan_bus_lanes(result, spans, max_belt_tier=tier)
 
         # iron-plate is intermediate — uses direct routing, no balancer
-        iron_plate_lanes = [l for l in lanes if l.item == "iron-plate"]
-        assert all(l.balancer_y is None for l in iron_plate_lanes)
+        iron_plate_lanes = [ln for ln in lanes if ln.item == "iron-plate"]
+        assert all(ln.balancer_y is None for ln in iron_plate_lanes)
 
         # iron-ore is external — no balancer
-        iron_ore_lanes = [l for l in lanes if l.item == "iron-ore"]
-        assert all(l.balancer_y is None for l in iron_ore_lanes)
+        iron_ore_lanes = [ln for ln in lanes if ln.item == "iron-ore"]
+        assert all(ln.balancer_y is None for ln in iron_ore_lanes)
 
         # iron-gear-wheel has no collector lane (output collection skipped)
-        gear_lanes = [l for l in lanes if l.item == "iron-gear-wheel"]
+        gear_lanes = [ln for ln in lanes if ln.item == "iron-gear-wheel"]
         assert len(gear_lanes) == 0, "Final product should not have collector lanes"
 
         # Validation should pass

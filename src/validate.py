@@ -2295,10 +2295,7 @@ def compute_lane_rates(
 
         my_rates = lane_rates[tile]
 
-        if d == downstream_d:
-            lane_rates[downstream]["left"] += my_rates["left"]
-            lane_rates[downstream]["right"] += my_rates["right"]
-        elif (ddx, ddy) == (downstream_dx, downstream_dy):
+        if d == downstream_d or (ddx, ddy) == (downstream_dx, downstream_dy):
             lane_rates[downstream]["left"] += my_rates["left"]
             lane_rates[downstream]["right"] += my_rates["right"]
         else:
