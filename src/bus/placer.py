@@ -41,7 +41,8 @@ def _max_machines_for_belt(spec: MachineSpec, belt_name: str, max_belt_tier: str
     in_cap = _LANE_CAPACITY.get(max_belt_tier, max_in_cap) if max_belt_tier else max_in_cap
     for inp in spec.inputs:
         if not inp.is_fluid and inp.rate > 0:
-            max_m = min(max_m, int(in_cap / inp.rate))
+            per_lane = int(in_cap / inp.rate)
+            max_m = min(max_m, per_lane * 2)
 
     return max(1, max_m)
 
@@ -65,7 +66,8 @@ def _max_machines_for_belt_both_lanes(spec: MachineSpec, belt_name: str, max_bel
     in_cap = _LANE_CAPACITY.get(max_belt_tier, max_in_cap) if max_belt_tier else max_in_cap
     for inp in spec.inputs:
         if not inp.is_fluid and inp.rate > 0:
-            max_m = min(max_m, int(in_cap / inp.rate))
+            per_lane = int(in_cap / inp.rate)
+            max_m = min(max_m, per_lane * 2)
 
     return max(1, max_m)
 
@@ -91,7 +93,9 @@ def place_rows(
     ordered = _order_specs(machines, dependency_order)
     max_width = 0
 
-    for spec in ordered:
+    for spec_idx, spec in enumerate(ordered):
+        if spec_idx > 0:
+            y_cursor += 2  # gap between recipes for lane balancers
         total_count = max(1, math.ceil(spec.count))
 
         # Determine belt tier and max machines per row.
@@ -107,10 +111,12 @@ def place_rows(
             out_belt = belt_entity_for_rate(output_rate, max_tier=max_belt_tier)
             max_per_row = _max_machines_for_belt_both_lanes(spec, out_belt, max_belt_tier)
 
-        # Split into chunks
+        # Split into evenly-sized chunks.  With 1:1 lane-to-consumer mapping,
+        # even rows ensure each bus lane receives the same production rate.
+        n_rows = math.ceil(total_count / max_per_row)
         remaining = total_count
-        while remaining > 0:
-            chunk = min(remaining, max_per_row)
+        for ri in range(n_rows):
+            chunk = math.ceil(remaining / (n_rows - ri))
             ents, span, width = _build_one_row(spec, chunk, bus_width, y_cursor, max_belt_tier)
             entities.extend(ents)
             row_spans.append(span)
