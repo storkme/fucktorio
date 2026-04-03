@@ -2080,12 +2080,20 @@ def _inserter_target_lane(
 
 def _classify_belt_feeders(
     belt_dir_map: dict[tuple[int, int], EntityDirection],
+    ug_output_tiles: set[tuple[int, int]] | None = None,
+    ug_output_to_input: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> dict[tuple[int, int], list[tuple[tuple[int, int], str]]]:
     """For each belt tile, return feeders and their type.
 
     Returns {(x,y): [(feeder_pos, feed_type), ...]}
     where feed_type is 'straight', 'sideload_left', or 'sideload_right'.
+
+    Underground outputs in belt_dir_map feed adjacent tiles but only receive
+    from their tunnel (paired input), not from adjacent surface belts.
     """
+    _ug_outputs = ug_output_tiles or set()
+    _ug_o2i = ug_output_to_input or {}
+
     feeders: dict[tuple[int, int], list[tuple[tuple[int, int], str]]] = {}
     for (bx, by), belt_d in belt_dir_map.items():
         tile_feeders = []
@@ -2093,26 +2101,31 @@ def _classify_belt_feeders(
         # Left perpendicular
         left_dx, left_dy = -bdy, bdx
 
-        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            nx, ny = bx + ddx, by + ddy
-            nd = belt_dir_map.get((nx, ny))
-            if nd is None:
-                continue
-            ndx, ndy = _DIR_TO_VEC[nd]
-            # Does this neighbor output to (bx, by)?
-            if (nx + ndx, ny + ndy) != (bx, by):
-                continue
-            # Classify: straight or sideload
-            if nd == belt_d:
-                tile_feeders.append(((nx, ny), "straight"))
-            else:
-                # Which side does the sideload come from?
-                rel_x, rel_y = nx - bx, ny - by
-                dot = rel_x * left_dx + rel_y * left_dy
-                if dot > 0:
-                    tile_feeders.append(((nx, ny), "sideload_left"))
+        if (bx, by) in _ug_outputs:
+            # UG output: only feeder is the tunnel (paired input's upstream).
+            # We model this as in-degree 0 — rates injected during propagation.
+            pass
+        else:
+            for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = bx + ddx, by + ddy
+                nd = belt_dir_map.get((nx, ny))
+                if nd is None:
+                    continue
+                ndx, ndy = _DIR_TO_VEC[nd]
+                # Does this neighbor output to (bx, by)?
+                if (nx + ndx, ny + ndy) != (bx, by):
+                    continue
+                # Classify: straight or sideload
+                if nd == belt_d:
+                    tile_feeders.append(((nx, ny), "straight"))
                 else:
-                    tile_feeders.append(((nx, ny), "sideload_right"))
+                    # Which side does the sideload come from?
+                    rel_x, rel_y = nx - bx, ny - by
+                    dot = rel_x * left_dx + rel_y * left_dy
+                    if dot > 0:
+                        tile_feeders.append(((nx, ny), "sideload_left"))
+                    else:
+                        tile_feeders.append(((nx, ny), "sideload_right"))
         if tile_feeders:
             feeders[(bx, by)] = tile_feeders
     return feeders
@@ -2130,12 +2143,22 @@ def compute_lane_rates(
     if solver_result is None:
         return {}
 
-    # Build belt maps — surface belts + splitters (underground belts don't
-    # sideload into adjacent belts or propagate lane throughput)
+    # Build belt maps — surface belts, underground outputs, and splitters.
+    # Underground outputs feed adjacent tiles like surface belts and inherit
+    # rates from their paired input's upstream belt.
     belt_dir_map: dict[tuple[int, int], EntityDirection] = {}
+    ug_output_tiles: set[tuple[int, int]] = set()
+    ug_output_to_input: dict[tuple[int, int], tuple[int, int]] = {}
+    ug_input_dir: dict[tuple[int, int], EntityDirection] = {}
     for e in layout_result.entities:
         if e.name in _SURFACE_BELT_ENTITIES:
             belt_dir_map[(e.x, e.y)] = e.direction
+        elif e.name in _UG_BELT_ENTITIES:
+            if e.io_type == "output":
+                belt_dir_map[(e.x, e.y)] = e.direction
+                ug_output_tiles.add((e.x, e.y))
+            elif e.io_type == "input":
+                ug_input_dir[(e.x, e.y)] = e.direction
         elif e.name in _SPLITTER_ENTITIES:
             belt_dir_map[(e.x, e.y)] = e.direction
             if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
@@ -2145,6 +2168,12 @@ def compute_lane_rates(
 
     if not belt_dir_map:
         return {}
+
+    # Build underground pair map: output → input (for tunnel rate propagation)
+    ug_pairs = _build_ug_pairs(layout_result)
+    for (ix, iy), (ox, oy) in list(ug_pairs.items()):
+        if (ix, iy) in ug_input_dir:
+            ug_output_to_input[(ox, oy)] = (ix, iy)
 
     # Build machine tile maps
     machine_tiles = _build_machine_tile_set(layout_result)
@@ -2217,7 +2246,7 @@ def compute_lane_rates(
         entry[lane] += rate
 
     # Classify feeders for each belt tile
-    feeders = _classify_belt_feeders(belt_dir_map)
+    feeders = _classify_belt_feeders(belt_dir_map, ug_output_tiles, ug_output_to_input)
 
     # Topological-order propagation
     # Compute in-degree (number of belt feeders)
@@ -2235,61 +2264,125 @@ def compute_lane_rates(
         inj = lane_injections.get(pos, {"left": 0.0, "right": 0.0})
         lane_rates[pos] = {"left": inj["left"], "right": inj["right"]}
 
+    # Build splitter sibling map for 50/50 distribution
+    splitter_sibling: dict[tuple[int, int], tuple[int, int]] = {}
+    for e in layout_result.entities:
+        if e.name in _SPLITTER_ENTITIES:
+            if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+                splitter_sibling[(e.x, e.y)] = (e.x + 1, e.y)
+                splitter_sibling[(e.x + 1, e.y)] = (e.x, e.y)
+            else:
+                splitter_sibling[(e.x, e.y)] = (e.x, e.y + 1)
+                splitter_sibling[(e.x, e.y + 1)] = (e.x, e.y)
+
+    # Track which splitter tiles have all inputs accumulated (in_degree reached 0)
+    splitter_input_ready: set[tuple[int, int]] = set()
+
+    def _propagate_tile(tile: tuple[int, int]) -> None:
+        """Propagate one tile's rates to its downstream neighbour."""
+        d = belt_dir_map.get(tile)
+        if d is None:
+            return
+        ddx, ddy = _DIR_TO_VEC[d]
+        downstream = (tile[0] + ddx, tile[1] + ddy)
+
+        if downstream not in belt_dir_map:
+            return
+
+        downstream_d = belt_dir_map[downstream]
+        downstream_dx, downstream_dy = _DIR_TO_VEC[downstream_d]
+        left_dx, left_dy = -downstream_dy, downstream_dx
+
+        my_rates = lane_rates[tile]
+
+        if d == downstream_d:
+            lane_rates[downstream]["left"] += my_rates["left"]
+            lane_rates[downstream]["right"] += my_rates["right"]
+        elif (ddx, ddy) == (downstream_dx, downstream_dy):
+            lane_rates[downstream]["left"] += my_rates["left"]
+            lane_rates[downstream]["right"] += my_rates["right"]
+        else:
+            behind_downstream = (downstream[0] - downstream_dx, downstream[1] - downstream_dy)
+            if tile == behind_downstream:
+                lane_rates[downstream]["left"] += my_rates["left"]
+                lane_rates[downstream]["right"] += my_rates["right"]
+            else:
+                # Check if this is a 90-degree turn or a sideload.
+                # Turn: downstream has NO straight feeder (only this perpendicular one).
+                # Sideload: downstream also has a straight feeder from behind.
+                ds_feeders = feeders.get(downstream, [])
+                has_straight = any(ft == "straight" for _, ft in ds_feeders)
+
+                if has_straight:
+                    # Sideload: all items go onto one lane
+                    rel_x = tile[0] - downstream[0]
+                    rel_y = tile[1] - downstream[1]
+                    dot = rel_x * left_dx + rel_y * left_dy
+                    total = my_rates["left"] + my_rates["right"]
+                    if dot > 0:
+                        lane_rates[downstream]["left"] += total
+                    else:
+                        lane_rates[downstream]["right"] += total
+                else:
+                    # 90-degree turn: lanes rotate with the belt.
+                    # CW turn: left→right, right→left.
+                    # CCW turn: left→left, right→right.
+                    cross = ddx * downstream_dy - ddy * downstream_dx
+                    if cross > 0:
+                        # Clockwise turn
+                        lane_rates[downstream]["right"] += my_rates["left"]
+                        lane_rates[downstream]["left"] += my_rates["right"]
+                    else:
+                        # Counter-clockwise turn
+                        lane_rates[downstream]["left"] += my_rates["left"]
+                        lane_rates[downstream]["right"] += my_rates["right"]
+
+        in_degree[downstream] -= 1
+        if in_degree[downstream] <= 0 and downstream not in processed:
+            queue.append(downstream)
+
     while queue:
         pos = queue.popleft()
         if pos in processed:
             continue
+
+        # Underground output: inherit rates from the belt feeding the paired input.
+        # Tunnel preserves lanes.  Defer until the upstream tile is processed.
+        if pos in ug_output_tiles:
+            paired_input = ug_output_to_input.get(pos)
+            if paired_input is not None:
+                inp_d = ug_input_dir.get(paired_input)
+                if inp_d is not None:
+                    idx, idy = _DIR_TO_VEC[inp_d]
+                    behind = (paired_input[0] - idx, paired_input[1] - idy)
+                    if behind in belt_dir_map and behind not in processed:
+                        # Defer — re-queue after the upstream tile is processed
+                        queue.append(pos)
+                        continue
+                    if behind in lane_rates:
+                        lane_rates[pos]["left"] += lane_rates[behind]["left"]
+                        lane_rates[pos]["right"] += lane_rates[behind]["right"]
+
+        sib = splitter_sibling.get(pos)
+        if sib is not None and sib not in processed:
+            # Splitter tile: wait until sibling's inputs are also ready
+            splitter_input_ready.add(pos)
+            if sib not in splitter_input_ready:
+                continue  # defer — sibling will trigger processing of both
+            # Both tiles have accumulated inputs — redistribute 50/50
+            total_left = lane_rates[pos]["left"] + lane_rates[sib]["left"]
+            total_right = lane_rates[pos]["right"] + lane_rates[sib]["right"]
+            for tile in (pos, sib):
+                lane_rates[tile]["left"] = total_left / 2
+                lane_rates[tile]["right"] = total_right / 2
+            # Process both (sibling was deferred, process it first)
+            for tile in (sib, pos):
+                processed.add(tile)
+                _propagate_tile(tile)
+            continue
+
         processed.add(pos)
-
-        # Propagate this tile's output to its downstream tile
-        d = belt_dir_map.get(pos)
-        if d is None:
-            continue
-        ddx, ddy = _DIR_TO_VEC[d]
-        downstream = (pos[0] + ddx, pos[1] + ddy)
-
-        if downstream not in belt_dir_map:
-            continue
-
-        # How does this tile feed the downstream tile?
-        downstream_d = belt_dir_map[downstream]
-        downstream_dx, downstream_dy = _DIR_TO_VEC[downstream_d]
-        # Left perpendicular of downstream belt
-        left_dx, left_dy = -downstream_dy, downstream_dx
-
-        my_rates = lane_rates[pos]
-
-        if d == downstream_d:
-            # Straight feed: lanes preserved
-            lane_rates[downstream]["left"] += my_rates["left"]
-            lane_rates[downstream]["right"] += my_rates["right"]
-        elif (ddx, ddy) == (downstream_dx, downstream_dy):
-            # Same output direction (shouldn't happen for adjacent tiles with different dirs)
-            lane_rates[downstream]["left"] += my_rates["left"]
-            lane_rates[downstream]["right"] += my_rates["right"]
-        else:
-            # Check if this is a sideload or a turn
-            # If we're directly behind the downstream tile, it's a turn (direction changed)
-            behind_downstream = (downstream[0] - downstream_dx, downstream[1] - downstream_dy)
-            if pos == behind_downstream:
-                # Turn: lanes preserved (left stays left through corners)
-                lane_rates[downstream]["left"] += my_rates["left"]
-                lane_rates[downstream]["right"] += my_rates["right"]
-            else:
-                # Sideload: total goes to near lane
-                rel_x = pos[0] - downstream[0]
-                rel_y = pos[1] - downstream[1]
-                dot = rel_x * left_dx + rel_y * left_dy
-                total = my_rates["left"] + my_rates["right"]
-                if dot > 0:
-                    lane_rates[downstream]["left"] += total
-                else:
-                    lane_rates[downstream]["right"] += total
-
-        # Decrease in-degree of downstream; add to queue if ready
-        in_degree[downstream] -= 1
-        if in_degree[downstream] <= 0 and downstream not in processed:
-            queue.append(downstream)
+        _propagate_tile(pos)
 
     return lane_rates
 
@@ -2310,11 +2403,13 @@ def check_lane_throughput(
     if not lane_rates:
         return issues
 
-    # Build belt name map for capacity lookup
+    # Build belt name map for capacity lookup (surface belts + UG outputs)
     belt_name_map: dict[tuple[int, int], str] = {}
     for e in layout_result.entities:
         if e.name in _SURFACE_BELT_ENTITIES:
             belt_name_map[(e.x, e.y)] = e.name
+        elif e.name in _UG_BELT_ENTITIES and e.io_type == "output":
+            belt_name_map[(e.x, e.y)] = _UG_TO_SURFACE_TIER.get(e.name, "transport-belt")
 
     for pos, rates in lane_rates.items():
         belt_name = belt_name_map.get(pos, "transport-belt")
