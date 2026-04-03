@@ -1052,18 +1052,30 @@ def _route_intermediate_lane(
             )
         )
 
-    # Tap-off: EAST from lane.x to row input belt
-    tap_blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
-    _route_horizontal(
-        entities,
-        lane,
-        tap_y,
-        x,
-        bw - 1,
-        EntityDirection.EAST,
-        tap_blocked,
-        belt_name,
+    # Tap-off: surface EAST belt at the turn point, then underground crossings.
+    # The first tile must be surface to avoid sideloading onto a UG input
+    # (which only loads the far lane).
+    entities.append(
+        PlacedEntity(
+            name=belt_name,
+            x=x,
+            y=tap_y,
+            direction=EntityDirection.EAST,
+            carries=lane.item,
+        )
     )
+    if x + 1 <= bw - 1:
+        tap_blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
+        _route_horizontal(
+            entities,
+            lane,
+            tap_y,
+            x + 1,
+            bw - 1,
+            EntityDirection.EAST,
+            tap_blocked,
+            belt_name,
+        )
 
 
 def _route_belt_lane(
@@ -1254,8 +1266,8 @@ def _blocked_xs_at(
     """
     blocked: set[int] = set()
     for other in all_lanes:
-        if other is lane:
-            continue
+        if other is lane or other.is_fluid:
+            continue  # Pipes don't block belts
         other_start = other.source_y
         all_ys = list(other.tap_off_ys)
         if row_spans:
@@ -1330,16 +1342,23 @@ def _route_horizontal(
         hx = x_from
         while hx <= x_to:
             if hx in blocked_xs:
-                entry_x = hx - 1
+                # UG entry one tile before the blocked column.  If the blocked
+                # column IS x_from (first tile), place UG entry at x_from
+                # itself — the preceding surface belt (placed by the caller
+                # as a turn point) feeds straight in, preserving both lanes.
+                entry_x = max(hx - 1, x_from)
                 exit_x = hx + 1
                 # Extend past all consecutive blocked columns, including
                 # cases where the tile after the exit is also blocked.
                 while exit_x in blocked_xs or (exit_x + 1) in blocked_xs:
                     exit_x += 2
+                # Ensure minimum span of 2 for underground belts
+                if exit_x - entry_x < 2:
+                    exit_x = entry_x + 2
                 # Clamp exit to x_to if it overshoots (blocked zone at edge)
                 if exit_x > x_to:
                     exit_x = x_to
-                if entry_x >= x_from and exit_x > entry_x:
+                if entry_x >= x_from and exit_x - entry_x >= 2:
                     # Remove surface belt we may have just placed at entry_x
                     entities[:] = [
                         e
@@ -1443,9 +1462,26 @@ def _route_tap_off(
     belt_name: str = "transport-belt",
     crossing_map: dict[tuple[int, int], set[str]] | None = None,
 ) -> None:
-    """Route a horizontal tap-off (EAST) from bus lane to row input belt."""
-    blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
-    _route_horizontal(entities, lane, tap_y, lane.x, bw - 1, EntityDirection.EAST, blocked, belt_name)
+    """Route a horizontal tap-off (EAST) from bus lane to row input belt.
+
+    The first tile at lane.x is always a surface EAST belt (the turn point
+    from the SOUTH trunk).  Underground crossings start from lane.x+1 to
+    avoid sideloading onto a UG input which only fills the far lane.
+    """
+    # Surface belt at the turn point
+    entities.append(
+        PlacedEntity(
+            name=belt_name,
+            x=lane.x,
+            y=tap_y,
+            direction=EntityDirection.EAST,
+            carries=lane.item,
+        )
+    )
+    # Route the rest with underground crossings starting from x+1
+    if lane.x + 1 <= bw - 1:
+        blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
+        _route_horizontal(entities, lane, tap_y, lane.x + 1, bw - 1, EntityDirection.EAST, blocked, belt_name)
 
 
 def _route_output_return(
