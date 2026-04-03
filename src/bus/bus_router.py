@@ -127,13 +127,21 @@ def plan_bus_lanes(
     # Only for collector lanes (producers but no consumers).  Intermediate lanes
     # use direct routing (no trunk), and external lanes have no producers.
     for lane in lanes:
-        if lane.is_fluid or lane.consumer_rows:
-            continue  # skip intermediate and external lanes
+        if lane.is_fluid:
+            continue
+        # Only collector lanes (no consumers) need balancers.  Intermediate
+        # lanes with multiple producers have the same sideload-onto-one-lane
+        # issue, but the current balancer design (splitter + sideload loop)
+        # doesn't actually rebalance lanes — it just splits total rate between
+        # two paths that both feed the same downstream tile.  TODO: proper
+        # lane balancing for intermediate lanes.
+        if lane.consumer_rows:
+            continue
         all_producers = []
         if lane.producer_row is not None:
             all_producers.append(lane.producer_row)
         all_producers.extend(lane.extra_producer_rows)
-        if not all_producers:
+        if len(all_producers) <= 1:
             continue
         last_sideload_y = max(row_spans[pri].output_belt_y for pri in all_producers)
         bal_y = last_sideload_y + 1
@@ -314,9 +322,7 @@ def _split_overflowing_lanes(
             extra_prods = prods[1:] if len(prods) > 1 else []
             # source_y from this split's own producers, not the original
             # lane's (which may belong to a different split after redistribution).
-            split_source_y = (
-                min(row_spans[p].output_belt_y for p in prods) if prods else lane.source_y
-            )
+            split_source_y = min(row_spans[p].output_belt_y for p in prods) if prods else lane.source_y
             result.append(
                 BusLane(
                     item=lane.item,
@@ -787,7 +793,17 @@ def _route_intermediate_lane(
     One continuous belt path, no separate infrastructure.
     """
     x = lane.x
-    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    bal_y = lane.balancer_y
+
+    # Belt tier: with a balancer both lanes are used, so select from full rate.
+    if bal_y is not None:
+        belt_name = belt_entity_for_rate(lane.rate, max_tier=max_belt_tier)
+    else:
+        belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    horiz_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    pre_bal_belt = (
+        belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier) if bal_y is not None else belt_name
+    )
 
     # All producer output ys
     all_producers = []
@@ -799,7 +815,7 @@ def _route_intermediate_lane(
     for pri in all_producers:
         out_y = row_spans[pri].output_belt_y
         ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
-        _route_horizontal(entities, lane, out_y, x + 1, bw - 1, EntityDirection.WEST, ret_blocked, belt_name)
+        _route_horizontal(entities, lane, out_y, x + 1, bw - 1, EntityDirection.WEST, ret_blocked, horiz_belt)
 
     # Vertical segment: SOUTH from first producer output to consumer tap-off
     assert lane.consumer_rows, "Intermediate lane must have a consumer"
@@ -808,14 +824,43 @@ def _route_intermediate_lane(
     # Start y: the earliest producer output y (items enter via sideload)
     producer_out_ys = [row_spans[p].output_belt_y for p in all_producers]
     start_y = min(producer_out_ys)
+    end_y = tap_y
+    if bal_y is not None:
+        end_y = max(end_y, bal_y + 1)
 
-    for y in range(start_y, tap_y):
+    balancer_skip = {bal_y} if bal_y is not None else set()
+    for y in range(start_y, end_y):
+        if y in balancer_skip:
+            continue
+        tier = pre_bal_belt if (bal_y is not None and y < bal_y) else belt_name
         entities.append(
             PlacedEntity(
-                name=belt_name,
+                name=tier,
                 x=x,
                 y=y,
                 direction=EntityDirection.SOUTH,
+                carries=lane.item,
+            )
+        )
+
+    # Place lane balancer if present
+    if bal_y is not None:
+        splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
+        entities.append(
+            PlacedEntity(
+                name=splitter_name,
+                x=x - 1,
+                y=bal_y,
+                direction=EntityDirection.SOUTH,
+                carries=lane.item,
+            )
+        )
+        entities.append(
+            PlacedEntity(
+                name=belt_name,
+                x=x - 1,
+                y=bal_y + 1,
+                direction=EntityDirection.EAST,
                 carries=lane.item,
             )
         )
