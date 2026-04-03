@@ -241,9 +241,7 @@ def _optimize_lane_order(
             solid = best_order
     else:
         # Heuristic: lanes with later consumers on the left (outside)
-        solid.sort(
-            key=lambda ln: -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999)
-        )
+        solid.sort(key=lambda ln: -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999))
 
     return solid + fluid
 
@@ -397,7 +395,11 @@ def route_bus(
         if all(ln.consumer_rows for ln in group):
             continue
         merger_ents, merger_end_y = _place_merger_block(
-            group, row_spans, total_height, entities, max_belt_tier,
+            group,
+            row_spans,
+            total_height,
+            entities,
+            max_belt_tier,
         )
         entities.extend(merger_ents)
         max_y = max(max_y, merger_end_y)
@@ -450,29 +452,41 @@ def _negotiate_crossings(
             # Return paths: horizontal WEST
             for pri in all_producers:
                 out_y = row_spans[pri].output_belt_y
-                specs.append(PyLaneSpec(
-                    id=lane_id, item_id=item_id,
-                    waypoints=[(bw - 1, out_y), (x + 1, out_y)],
-                    strategy=0, priority=3,
-                ))
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
+                        strategy=0,
+                        priority=3,
+                    )
+                )
                 lane_id += 1
 
             # Trunk + tap-off: vertical then horizontal
-            specs.append(PyLaneSpec(
-                id=lane_id, item_id=item_id,
-                waypoints=[(x, start_y), (x, tap_y), (bw - 1, tap_y)],
-                strategy=0, priority=5,
-            ))
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, start_y), (x, tap_y), (bw - 1, tap_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
             lane_id += 1
 
         elif lane.consumer_rows:
             # External input: trunk from source to tap-off
             tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else lane.source_y
-            specs.append(PyLaneSpec(
-                id=lane_id, item_id=item_id,
-                waypoints=[(x, lane.source_y), (x, tap_y), (bw - 1, tap_y)],
-                strategy=0, priority=5,
-            ))
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, lane.source_y), (x, tap_y), (bw - 1, tap_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
             lane_id += 1
 
         else:
@@ -485,21 +499,29 @@ def _negotiate_crossings(
                 end_y = max(end_y, lane.balancer_y + 1)
 
             # Trunk
-            specs.append(PyLaneSpec(
-                id=lane_id, item_id=item_id,
-                waypoints=[(x, lane.source_y), (x, end_y)],
-                strategy=0, priority=5,
-            ))
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, lane.source_y), (x, end_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
             lane_id += 1
 
             # Returns
             for pri in all_producers:
                 out_y = row_spans[pri].output_belt_y
-                specs.append(PyLaneSpec(
-                    id=lane_id, item_id=item_id,
-                    waypoints=[(bw - 1, out_y), (x + 1, out_y)],
-                    strategy=0, priority=3,
-                ))
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
+                        strategy=0,
+                        priority=3,
+                    )
+                )
                 lane_id += 1
 
     # Add merger segments — these are the routes that were previously invisible
@@ -519,22 +541,30 @@ def _negotiate_crossings(
         merge_y = total_height
         # Trunk extensions to merge_y
         for ln in group:
-            specs.append(PyLaneSpec(
-                id=lane_id, item_id=item_id,
-                waypoints=[(ln.x, ln.source_y), (ln.x, merge_y + 3)],
-                strategy=0, priority=8,  # high priority — merger is fixed
-            ))
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(ln.x, ln.source_y), (ln.x, merge_y + 3)],
+                    strategy=0,
+                    priority=8,  # high priority — merger is fixed
+                )
+            )
             lane_id += 1
         # Horizontal merger routes between pairs
         i = 0
         while i + 1 < len(trunk_xs):
             left_x = trunk_xs[i]
             right_x = trunk_xs[i + 1]
-            specs.append(PyLaneSpec(
-                id=lane_id, item_id=item_id,
-                waypoints=[(right_x, merge_y), (left_x + 1, merge_y)],
-                strategy=0, priority=8,
-            ))
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(right_x, merge_y), (left_x + 1, merge_y)],
+                    strategy=0,
+                    priority=8,
+                )
+            )
             lane_id += 1
             i += 2
 
@@ -542,12 +572,17 @@ def _negotiate_crossings(
     obstacles: list[tuple[int, int]] = []
     if row_entities:
         _MACHINE_ENTITIES = {
-            "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
-            "chemical-plant", "electric-furnace", "oil-refinery",
+            "assembling-machine-1",
+            "assembling-machine-2",
+            "assembling-machine-3",
+            "chemical-plant",
+            "electric-furnace",
+            "oil-refinery",
         }
         for e in row_entities:
             if e.name in _MACHINE_ENTITIES:
                 from ..routing.common import machine_size
+
                 sz = machine_size(e.name)
                 for dx in range(sz):
                     for dy in range(sz):

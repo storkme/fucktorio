@@ -43,6 +43,7 @@ def _belt_dir_map_from(entities: list[PlacedEntity]) -> dict[tuple[int, int], En
                 bdm[(e.x, e.y + 1)] = e.direction
     return bdm
 
+
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
 _INSERTER_REACH = {
     "inserter": 1,
@@ -2044,7 +2045,10 @@ def check_belt_flow_reachability(
 
         belt_set = set(belts)
         downstream = _bfs_belt_downstream(
-            belt_set, belt_dir_map, ug_pairs=ug_pairs, splitter_siblings=splitter_siblings,
+            belt_set,
+            belt_dir_map,
+            ug_pairs=ug_pairs,
+            splitter_siblings=splitter_siblings,
         )
         downstream_beyond_start = downstream - belt_set
         reaches_sink = any(_on_boundary(t) for t in downstream_beyond_start) or bool(
