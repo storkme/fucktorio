@@ -152,10 +152,10 @@ def plan_bus_lanes(
     # Optimize lane left-to-right ordering to minimize underground crossings.
     lanes = _optimize_lane_order(lanes, row_spans)
 
-    # Assign x-columns after ordering.  Start at x=1 so every lane has a
-    # gap column at x-1 available for the lane balancer's left splitter tile.
+    # Assign x-columns with 1-tile spacing.  Tap-offs go underground to
+    # cross other trunks; with tight spacing the underground spans are short.
     for i, lane in enumerate(lanes):
-        lane.x = i * 2 + 1
+        lane.x = i + 1
 
     return lanes
 
@@ -361,7 +361,9 @@ def _find_tap_off_ys(lane: BusLane, row_spans: list[RowSpan]) -> list[int]:
 def bus_width_for_lanes(lanes: list[BusLane]) -> int:
     if not lanes:
         return 2
-    return len(lanes) * 2 + 1
+    # +2: one tile before first lane (x=0), one tile after last lane
+    # for underground exit clearance.
+    return len(lanes) + 2
 
 
 def route_bus(
@@ -371,6 +373,7 @@ def route_bus(
     bw: int,
     max_belt_tier: str | None = None,
     row_entities: list[PlacedEntity] | None = None,
+    solver_result: SolverResult | None = None,
 ) -> tuple[list[PlacedEntity], int]:
     """Create all bus belt entities.
 
@@ -415,7 +418,123 @@ def route_bus(
         entities.extend(merger_ents)
         max_y = max(max_y, merger_end_y)
 
+    # Merge output belts for final products using splitter tree.
+    if solver_result:
+        output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
+        for item in output_items:
+            output_rows = [
+                i for i, rs in enumerate(row_spans) if any(o.item == item for o in rs.spec.outputs if not o.is_fluid)
+            ]
+            if len(output_rows) >= 2:
+                merge_ents, merge_end_y = _merge_output_rows(
+                    output_rows,
+                    item,
+                    row_spans,
+                    total_height,
+                    bw,
+                    max_belt_tier,
+                    lanes,
+                    crossing_map,
+                )
+                entities.extend(merge_ents)
+                max_y = max(max_y, merge_end_y)
+
     return entities, max_y
+
+
+def _merge_output_rows(
+    output_rows: list[int],
+    item: str,
+    row_spans: list[RowSpan],
+    merge_start_y: int,
+    bw: int,
+    max_belt_tier: str | None = None,
+    all_lanes: list[BusLane] | None = None,
+    crossing_map: dict[tuple[int, int], set[str]] | None = None,
+) -> tuple[list[PlacedEntity], int]:
+    """Merge output belts from multiple rows into one using a splitter tree.
+
+    Each output row's belt routes WEST through the bus to x=0 (first) or
+    x=1 (subsequent), going underground past bus trunks.  At the merge area
+    below all rows, pairs merge with SOUTH-facing splitters.
+    """
+    entities: list[PlacedEntity] = []
+    n = len(output_rows)
+    if n < 2:
+        return entities, merge_start_y
+
+    total_rate = sum(
+        sum(o.rate * row_spans[ri].machine_count for o in row_spans[ri].spec.outputs if o.item == item)
+        for ri in output_rows
+    )
+    belt_name = belt_entity_for_rate(total_rate * 2, max_tier=max_belt_tier)
+    splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
+
+    output_ys = [row_spans[ri].output_belt_y for ri in output_rows]
+
+    # Create a dummy BusLane for _blocked_xs_at queries
+    dummy_lane = BusLane(item=item, x=0, source_y=0, consumer_rows=[], producer_row=None, rate=0)
+    lanes_list = all_lanes or []
+
+    for idx, out_y in enumerate(output_ys):
+        target_x = 0 if idx == 0 else 1
+
+        # Horizontal WEST from bw-1 to target_x+1, underground past bus trunks.
+        # Stop one tile before target_x so the vertical trunk can start cleanly.
+        blocked = _blocked_xs_at(dummy_lane, out_y, lanes_list, row_spans, crossing_map)
+        blocked.discard(0)
+        blocked.discard(1)
+        _route_horizontal(
+            entities,
+            dummy_lane,
+            out_y,
+            target_x + 1,
+            bw - 1,
+            EntityDirection.WEST,
+            blocked,
+            belt_name,
+        )
+
+        # Vertical SOUTH from out_y to merge_start_y at target_x.
+        # The WEST belt at (target_x+1, out_y) feeds into the SOUTH belt
+        # at (target_x, out_y) — a natural belt turn.
+        for y in range(out_y, merge_start_y):
+            entities.append(
+                PlacedEntity(
+                    name=belt_name,
+                    x=target_x,
+                    y=y,
+                    direction=EntityDirection.SOUTH,
+                    carries=item,
+                )
+            )
+
+    # Sequential splitter merge: first output at x=0, each subsequent
+    # merges from x=1 via a SOUTH-facing splitter.
+    y_cursor = merge_start_y
+    for _idx in range(1, n):
+        entities.append(
+            PlacedEntity(
+                name=splitter_name,
+                x=0,
+                y=y_cursor,
+                direction=EntityDirection.SOUTH,
+                carries=item,
+            )
+        )
+        y_cursor += 1
+        entities.append(
+            PlacedEntity(
+                name=belt_name,
+                x=0,
+                y=y_cursor,
+                direction=EntityDirection.SOUTH,
+                carries=item,
+            )
+        )
+        y_cursor += 1
+
+    return entities, y_cursor
 
 
 def _negotiate_crossings(
@@ -788,54 +907,144 @@ def _route_intermediate_lane(
 ) -> None:
     """Route an intermediate lane: direct path from producer output to consumer input.
 
-    Instead of trunk + tap-off + return, the producer output belt goes WEST to
-    lane.x, then SOUTH to the consumer input y, then EAST to the consumer.
-    One continuous belt path, no separate infrastructure.
+    When multiple producers feed the lane, the last producer's output is
+    split with a splitter: half goes WEST normally (sideloads right lane),
+    half goes underground to lane.x-1 then SOUTH+EAST to sideload the
+    left lane.  This balances items across both belt lanes.
     """
     x = lane.x
-    bal_y = lane.balancer_y
-
-    # Belt tier: with a balancer both lanes are used, so select from full rate.
-    if bal_y is not None:
-        belt_name = belt_entity_for_rate(lane.rate, max_tier=max_belt_tier)
-    else:
-        belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
     horiz_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
-    pre_bal_belt = (
-        belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier) if bal_y is not None else belt_name
-    )
 
-    # All producer output ys
     all_producers = []
     if lane.producer_row is not None:
         all_producers.append(lane.producer_row)
     all_producers.extend(lane.extra_producer_rows)
 
-    # Output returns: WEST from row edge to lane.x, sideloading onto vertical
-    for pri in all_producers:
-        out_y = row_spans[pri].output_belt_y
-        ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
-        _route_horizontal(entities, lane, out_y, x + 1, bw - 1, EntityDirection.WEST, ret_blocked, horiz_belt)
-
-    # Vertical segment: SOUTH from first producer output to consumer tap-off
     assert lane.consumer_rows, "Intermediate lane must have a consumer"
     tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else row_spans[lane.consumer_rows[0]].input_belt_y[0]
-
-    # Start y: the earliest producer output y (items enter via sideload)
     producer_out_ys = [row_spans[p].output_belt_y for p in all_producers]
     start_y = min(producer_out_ys)
-    end_y = tap_y
-    if bal_y is not None:
-        end_y = max(end_y, bal_y + 1)
 
-    balancer_skip = {bal_y} if bal_y is not None else set()
-    for y in range(start_y, end_y):
-        if y in balancer_skip:
-            continue
-        tier = pre_bal_belt if (bal_y is not None and y < bal_y) else belt_name
+    # --- Lane balancing via splitter + opposite-side sideload ---
+    # When there are 2+ producers, split the LAST producer's output so
+    # half the items sideload from the opposite side of the trunk,
+    # filling the empty lane.
+    balance_y: int | None = None
+    if len(all_producers) >= 2 and x > 1:
+        last_pri = all_producers[-1]
+        balance_y = row_spans[last_pri].output_belt_y
+
+    # Output returns
+    for pri in all_producers:
+        out_y = row_spans[pri].output_belt_y
+        if out_y == balance_y:
+            # This return gets a splitter for lane balancing.
+            # Splitter faces WEST on the output belt at (bw, out_y).
+            # It occupies (bw, out_y) and (bw, out_y-1).
+            # One output continues WEST at out_y (normal return).
+            # Other output goes WEST at out_y-1 (underground to left side).
+            splitter_x = bw  # first tile of the machine row output belt
+            splitter_name = _SPLITTER_MAP.get(horiz_belt, "splitter")
+            entities.append(
+                PlacedEntity(
+                    name=splitter_name,
+                    x=splitter_x,
+                    y=out_y - 1,
+                    direction=EntityDirection.WEST,
+                    carries=lane.item,
+                )
+            )
+            # Normal return: WEST from splitter_x-1 to trunk (right lane)
+            ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
+            _route_horizontal(
+                entities,
+                lane,
+                out_y,
+                x + 1,
+                splitter_x - 1,
+                EntityDirection.WEST,
+                ret_blocked,
+                horiz_belt,
+            )
+            # Split return: underground WEST from splitter_x-1 to x-1,
+            # then SOUTH, then EAST to sideload left lane of trunk
+            split_y = out_y - 1
+            ug_entry_x = splitter_x - 1
+            ug_exit_x = x - 1
+            if ug_entry_x > ug_exit_x + 1:
+                span = ug_entry_x - ug_exit_x
+                ug_name = _ug_for_span(horiz_belt, span)
+                entities.append(
+                    PlacedEntity(
+                        name=ug_name,
+                        x=ug_entry_x,
+                        y=split_y,
+                        direction=EntityDirection.WEST,
+                        io_type="input",
+                        carries=lane.item,
+                    )
+                )
+                entities.append(
+                    PlacedEntity(
+                        name=ug_name,
+                        x=ug_exit_x,
+                        y=split_y,
+                        direction=EntityDirection.WEST,
+                        io_type="output",
+                        carries=lane.item,
+                    )
+                )
+            elif ug_entry_x == ug_exit_x + 1:
+                # Adjacent — just a surface belt
+                entities.append(
+                    PlacedEntity(
+                        name=horiz_belt,
+                        x=ug_exit_x,
+                        y=split_y,
+                        direction=EntityDirection.WEST,
+                        carries=lane.item,
+                    )
+                )
+            # SOUTH belt from (x-1, split_y) to (x-1, split_y+1)
+            entities.append(
+                PlacedEntity(
+                    name=horiz_belt,
+                    x=x - 1,
+                    y=split_y + 1,
+                    direction=EntityDirection.SOUTH,
+                    carries=lane.item,
+                )
+            )
+            # EAST sideload onto trunk's left lane at (x-1, split_y+2)
+            entities.append(
+                PlacedEntity(
+                    name=horiz_belt,
+                    x=x - 1,
+                    y=split_y + 2,
+                    direction=EntityDirection.EAST,
+                    carries=lane.item,
+                )
+            )
+        else:
+            # Normal return: WEST from bw-1 to trunk (right lane sideload)
+            ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
+            _route_horizontal(
+                entities,
+                lane,
+                out_y,
+                x + 1,
+                bw - 1,
+                EntityDirection.WEST,
+                ret_blocked,
+                horiz_belt,
+            )
+
+    # Vertical trunk: SOUTH from first producer to tap-off
+    for y in range(start_y, tap_y):
         entities.append(
             PlacedEntity(
-                name=tier,
+                name=belt_name,
                 x=x,
                 y=y,
                 direction=EntityDirection.SOUTH,
@@ -843,31 +1052,18 @@ def _route_intermediate_lane(
             )
         )
 
-    # Place lane balancer if present
-    if bal_y is not None:
-        splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
-        entities.append(
-            PlacedEntity(
-                name=splitter_name,
-                x=x - 1,
-                y=bal_y,
-                direction=EntityDirection.SOUTH,
-                carries=lane.item,
-            )
-        )
-        entities.append(
-            PlacedEntity(
-                name=belt_name,
-                x=x - 1,
-                y=bal_y + 1,
-                direction=EntityDirection.EAST,
-                carries=lane.item,
-            )
-        )
-
     # Tap-off: EAST from lane.x to row input belt
     tap_blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
-    _route_horizontal(entities, lane, tap_y, x, bw - 1, EntityDirection.EAST, tap_blocked, belt_name)
+    _route_horizontal(
+        entities,
+        lane,
+        tap_y,
+        x,
+        bw - 1,
+        EntityDirection.EAST,
+        tap_blocked,
+        belt_name,
+    )
 
 
 def _route_belt_lane(

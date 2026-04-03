@@ -65,6 +65,7 @@ def bus_layout(
         actual_bw,
         max_belt_tier=max_belt_tier,
         row_entities=row_entities,
+        solver_result=solver_result,
     )
     total_height = max(total_height, bus_max_y)
 

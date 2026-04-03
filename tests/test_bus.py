@@ -288,6 +288,18 @@ class TestBusVisualization:
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit (yellow belt)")
         viz(bp, "bus-electronic-circuit-5s-yellow", solver_result=result, layout_result=layout, layout_style="bus")
 
+    def test_viz_electronic_circuit_asm1(self, viz):
+        """Assembler-1 constraint — lower crafting speed, more machines."""
+        result = solve(
+            "electronic-circuit",
+            5.0,
+            available_inputs={"iron-plate", "copper-plate"},
+            machine_entity="assembling-machine-1",
+        )
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+        bp = _make_blueprint(layout, "bus: 5/s electronic-circuit (asm1, yellow)")
+        viz(bp, "bus-electronic-circuit-5s-asm1-yellow", solver_result=result, layout_result=layout, layout_style="bus")
+
     def test_viz_iron_gear_wheel_20s(self, viz):
         """High rate with auto belt — overflow handling splits trunks."""
         result = solve("iron-gear-wheel", 20.0)
