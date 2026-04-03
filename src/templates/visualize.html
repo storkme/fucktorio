@@ -250,9 +250,6 @@
     <button class="tab-btn active" data-tab="layout-panel">Layout</button>
     <button class="tab-btn" data-tab="graph-panel" id="graph-tab" style="display:none">Flow Graph</button>
     <span style="flex:1"></span>
-    <span style="font-size:12px;color:#666;margin-right:6px">Theme:</span>
-    <button class="tab-btn theme-switch active" data-theme="schematic">Schematic</button>
-    <button class="tab-btn theme-switch" data-theme="factorio">Factorio</button>
   </div>
 
   <div id="layout-panel" class="tab-panel active">
@@ -320,16 +317,6 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
 });
 if (GRAPH_DATA) document.getElementById('graph-tab').style.display = '';
 
-// --- Theme switching ---
-document.querySelectorAll('.theme-switch').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.theme-switch').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentTheme = btn.dataset.theme;
-    draw();
-  });
-});
-
 // --- Canvas setup ---
 const wrap = document.getElementById('layout-panel');
 const canvas = document.getElementById('grid');
@@ -363,8 +350,6 @@ function fitToView() {
   draw();
 }
 
-let currentTheme = 'schematic';
-
 /* __THEME_JS__ */
 
 // Build adjacency lookup for pipe connectivity
@@ -383,7 +368,7 @@ for (const t of TILES) {
 // Build belt-only tile index for network tracing
 const beltTileMap = {};
 for (const t of TILES) {
-  if (isBelt(t.entity) || isUnderground(t.entity)) {
+  if (isBelt(t.entity) || isUnderground(t.entity) || isSplitter(t.entity)) {
     beltTileMap[t.x + ',' + t.y] = t;
   }
 }
@@ -507,15 +492,27 @@ function traceLanePath(startTile, startLane) {
 
       let next = null;
       let nextKey = nx + ',' + ny;
-      let candidate = beltTileMap[nextKey];
-      if (candidate && candidate.carries === item) {
-        next = candidate;
-      } else if (isUnderground(cur.entity)) {
+      // Underground inputs: jump through tunnel first (the adjacent tile
+      // in belt direction may be a different lane with the same item).
+      if (isUnderground(cur.entity) && cur.ioType === 'input') {
         const pair = findUndergroundPair(cur);
         if (pair) {
           const pk = pair.x + ',' + pair.y;
           const pt = beltTileMap[pk];
           if (pt && !path.has(pk)) { next = pt; nextKey = pk; }
+        }
+      }
+      if (!next) {
+        let candidate = beltTileMap[nextKey];
+        if (candidate && candidate.carries === item) {
+          next = candidate;
+        } else if (isUnderground(cur.entity)) {
+          const pair = findUndergroundPair(cur);
+          if (pair) {
+            const pk = pair.x + ',' + pair.y;
+            const pt = beltTileMap[pk];
+            if (pt && !path.has(pk)) { next = pt; nextKey = pk; }
+          }
         }
       }
       if (!next || path.has(nextKey)) break;
@@ -622,7 +619,7 @@ function detectLane(mouseXInTile, mouseYInTile, dir) {
 // are provided by the theme objects in __THEME_JS__ above.
 // REMOVED_DRAW_FUNCTIONS_START
 function draw() {
-  const theme = getTheme();
+  // theme object provided by __THEME_JS__
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   // Grid background
@@ -1219,7 +1216,8 @@ function renderGraph() {
 buildLegend();
 buildSolverTable();
 resize();
-fitToView();
+// Defer fitToView until after first layout/paint so clientWidth/Height are valid
+requestAnimationFrame(() => { resize(); fitToView(); });
 </script>
 </body>
 </html>

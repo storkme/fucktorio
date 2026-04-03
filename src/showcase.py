@@ -223,13 +223,6 @@ _SHOWCASE_TEMPLATE = r"""<!DOCTYPE html>
   #toolbar h1 { font-size: 16px; color: #e94560; margin-right: 16px; }
   .toolbar-group { display: flex; align-items: center; gap: 8px; }
   .toolbar-group label { font-size: 13px; color: #a0a0b0; }
-  .theme-btn {
-    background: #0f0f23; border: 1px solid #0f3460; color: #a0a0b0;
-    padding: 6px 14px; border-radius: 4px; cursor: pointer;
-    font-size: 13px; font-family: inherit; transition: all 0.15s;
-  }
-  .theme-btn:hover { background: #1a3a6e; color: #e0e0e0; }
-  .theme-btn.active { background: #e94560; color: white; border-color: #e94560; }
   .zoom-btn {
     background: #0f0f23; border: 1px solid #0f3460; color: #e0e0e0;
     width: 32px; height: 32px; border-radius: 4px; cursor: pointer;
@@ -255,11 +248,6 @@ _SHOWCASE_TEMPLATE = r"""<!DOCTYPE html>
 <div id="toolbar">
   <h1>Visual Showcase</h1>
   <div class="toolbar-group">
-    <label>Theme:</label>
-    <button class="theme-btn active" data-theme="schematic">Schematic</button>
-    <button class="theme-btn" data-theme="factorio">Factorio</button>
-  </div>
-  <div class="toolbar-group">
     <label>Zoom:</label>
     <button class="zoom-btn" id="btn-zout">&minus;</button>
     <span id="zoom-label">24px</span>
@@ -280,17 +268,6 @@ _SHOWCASE_TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const TILES = __TILES_JSON__;
-
-let currentTheme = 'schematic';
-
-document.querySelectorAll('.theme-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentTheme = btn.dataset.theme;
-    draw();
-  });
-});
 
 const wrap = document.getElementById('canvas-wrap');
 const canvas = document.getElementById('grid');
@@ -346,7 +323,7 @@ for (const t of TILES) {
 __THEME_JS__
 
 function draw() {
-  const theme = getTheme();
+  // theme object provided by __THEME_JS__
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   ctx.fillStyle = theme.background;

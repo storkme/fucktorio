@@ -76,7 +76,12 @@ function beltTurnInfo(t) {
   let perpFeeder = null;
   for (const [dx,dy] of dirs) {
     const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
-    if (!nb || !isBelt(nb.entity)) continue;
+    if (!nb) continue;
+    // Surface belts, underground belt outputs, and splitters all feed adjacent tiles
+    const feeds = isBelt(nb.entity)
+      || (isUnderground(nb.entity) && nb.ioType === 'output')
+      || isSplitter(nb.entity);
+    if (!feeds) continue;
     const nd = nb.dir || 0;
     // Does this neighbor's direction point at our tile?
     if (nb.x + dirDx(nd) !== t.x || nb.y + dirDy(nd) !== t.y) continue;
@@ -100,7 +105,12 @@ function beltMergeInfo(t) {
   const perpFeeders = [];
   for (const [dx,dy] of dirs) {
     const nb = tileMap[(t.x+dx)+','+(t.y+dy)];
-    if (!nb || !isBelt(nb.entity)) continue;
+    if (!nb) continue;
+    // Surface belts, underground belt outputs, and splitters all feed adjacent tiles
+    const feeds = isBelt(nb.entity)
+      || (isUnderground(nb.entity) && nb.ioType === 'output')
+      || isSplitter(nb.entity);
+    if (!feeds) continue;
     const nd = nb.dir || 0;
     if (nb.x + dirDx(nd) !== t.x || nb.y + dirDy(nd) !== t.y) continue;
     if (nd === d) {

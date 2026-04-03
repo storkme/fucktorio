@@ -1,4 +1,4 @@
-const schematic = {
+const theme = {
   background: '#0a0a1a',
   gridLine: 'rgba(255,255,255,0.04)',
 
@@ -259,7 +259,7 @@ const schematic = {
   },
 
   drawMachine(ctx, px, py, pw, ph, t) {
-    const gap = Math.max(1, scale * 0.08);
+    const gap = scale >= 4 ? Math.max(1, scale * 0.08) : 0;
     const w = pw - gap * 2;
     const h = ph - gap * 2;
     px += gap;
@@ -641,8 +641,8 @@ const schematic = {
   },
 
   drawUnderground(ctx, px, py, s, t) {
-    const gap = Math.max(1, scale * 0.08);
-    const w = s - gap * 2;
+    const gap = scale >= 4 ? Math.max(1, scale * 0.08) : 0;
+    const w = Math.max(1, s - gap * 2);
     const cx = px + s / 2;
     const cy = py + s / 2;
     const beltColors = {
@@ -685,8 +685,8 @@ const schematic = {
       ctx.lineWidth = Math.max(1.5, s * 0.12);
       ctx.lineCap = 'round';
       const aSize = w * 0.22;
-      const yOff = -w * 0.28;
-      const yTip = -w * 0.08;
+      const yOff = w * 0.28;
+      const yTip = w * 0.08;
       ctx.beginPath();
       ctx.moveTo(-aSize, yOff);
       ctx.lineTo(0, yTip);
@@ -716,7 +716,7 @@ const schematic = {
   },
 
   drawPump(ctx, px, py, pw, ph, t) {
-    const gap = Math.max(1, scale * 0.08);
+    const gap = scale >= 4 ? Math.max(1, scale * 0.08) : 0;
     const w = pw - gap * 2;
     const h = ph - gap * 2;
     px += gap;
@@ -751,32 +751,67 @@ const schematic = {
   },
 
   drawSplitter(ctx, px, py, pw, ph, t) {
-    const gap = Math.max(1, scale * 0.08);
+    const gap = scale >= 4 ? Math.max(1, scale * 0.08) : 0;
     pw -= gap * 2;
     ph -= gap * 2;
     px += gap;
     py += gap;
     const w = pw;
     const h = ph;
-    const splitterColors = {
+    const angle = dirAngle(t.dir || 0);
+    const wide = t.w > t.h;
+    const cell = wide ? w / 2 : h / 2;
+    const baseColors = {
       'splitter': '#a89030',
       'fast-splitter': '#b03030',
       'express-splitter': '#3070b0',
     };
-    ctx.fillStyle = splitterColors[t.entity] || '#a89030';
-    ctx.fillRect(px, py, w, h);
-    if (scale >= 6) {
-      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-      ctx.lineWidth = Math.max(1, Math.min(w, h) * 0.08);
-      ctx.beginPath();
-      if (t.w > t.h) {
-        ctx.moveTo(px + w / 2, py);
-        ctx.lineTo(px + w / 2, py + h);
-      } else {
-        ctx.moveTo(px, py + h / 2);
-        ctx.lineTo(px + w, py + h / 2);
+    const chevColors = {
+      'splitter': '#e0d070',
+      'fast-splitter': '#ff6060',
+      'express-splitter': '#70b0f0',
+    };
+    const base = baseColors[t.entity] || '#a89030';
+    const chev = chevColors[t.entity] || '#e0d070';
+
+    // Two belt halves
+    ctx.fillStyle = base;
+    if (wide) {
+      ctx.fillRect(px, py, cell - 0.5, h);
+      ctx.fillRect(px + cell + 0.5, py, cell - 0.5, h);
+    } else {
+      ctx.fillRect(px, py, w, cell - 0.5);
+      ctx.fillRect(px, py + cell + 0.5, w, cell - 0.5);
+    }
+
+    // Center divider bar (darker)
+    ctx.fillStyle = darkenColor(base, 0.5);
+    const barThick = Math.max(2, Math.min(w, h) * 0.18);
+    if (wide) {
+      ctx.fillRect(px + cell - barThick / 2, py, barThick, h);
+    } else {
+      ctx.fillRect(px, py + cell - barThick / 2, w, barThick);
+    }
+
+    // Chevrons on each half
+    if (scale >= 4) {
+      ctx.strokeStyle = chev;
+      ctx.lineWidth = Math.max(1, cell * 0.12);
+      ctx.lineCap = 'round';
+      const chevSize = cell * 0.25;
+      for (let half = 0; half < 2; half++) {
+        const hcx = wide ? px + cell * half + cell / 2 : px + w / 2;
+        const hcy = wide ? py + h / 2 : py + cell * half + cell / 2;
+        ctx.save();
+        ctx.translate(hcx, hcy);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(-chevSize, chevSize * 0.5);
+        ctx.lineTo(0, -chevSize * 0.5);
+        ctx.lineTo(chevSize, chevSize * 0.5);
+        ctx.stroke();
+        ctx.restore();
       }
-      ctx.stroke();
     }
   },
 };
