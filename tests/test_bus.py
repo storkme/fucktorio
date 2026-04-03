@@ -135,15 +135,21 @@ class TestBusLayout:
         tier = "transport-belt"
         temp_bw = 11
         _, spans, _, _ = place_rows(
-            result.machines, result.dependency_order,
-            bus_width=temp_bw, y_offset=1, max_belt_tier=tier,
+            result.machines,
+            result.dependency_order,
+            bus_width=temp_bw,
+            y_offset=1,
+            max_belt_tier=tier,
         )
         lanes = plan_bus_lanes(result, spans, max_belt_tier=tier)
         actual_bw = bus_width_for_lanes(lanes)
         if actual_bw != temp_bw:
             _, spans, _, _ = place_rows(
-                result.machines, result.dependency_order,
-                bus_width=actual_bw, y_offset=1, max_belt_tier=tier,
+                result.machines,
+                result.dependency_order,
+                bus_width=actual_bw,
+                y_offset=1,
+                max_belt_tier=tier,
             )
             lanes = plan_bus_lanes(result, spans, max_belt_tier=tier)
 
@@ -179,8 +185,10 @@ class TestBusLayout:
         ]:
             result = solve(recipe, rate)
             _, spans, _, _ = place_rows(
-                result.machines, result.dependency_order,
-                bus_width=0, y_offset=1,
+                result.machines,
+                result.dependency_order,
+                bus_width=0,
+                y_offset=1,
             )
             lanes = plan_bus_lanes(result, spans)
             for lane in lanes:
@@ -194,8 +202,11 @@ class TestBusLayout:
 
         result = solve("iron-gear-wheel", 10.0)
         _, spans, _, _ = place_rows(
-            result.machines, result.dependency_order,
-            bus_width=0, y_offset=1, max_belt_tier="transport-belt",
+            result.machines,
+            result.dependency_order,
+            bus_width=0,
+            y_offset=1,
+            max_belt_tier="transport-belt",
         )
         iron_plate_rows = [s for s in spans if s.spec.recipe == "iron-plate"]
         counts = [s.machine_count for s in iron_plate_rows]
