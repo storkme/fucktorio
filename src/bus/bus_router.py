@@ -312,11 +312,16 @@ def _split_overflowing_lanes(
             prods = producers_per_split[si]
             first_prod = prods[0] if prods else None
             extra_prods = prods[1:] if len(prods) > 1 else []
+            # source_y from this split's own producers, not the original
+            # lane's (which may belong to a different split after redistribution).
+            split_source_y = (
+                min(row_spans[p].output_belt_y for p in prods) if prods else lane.source_y
+            )
             result.append(
                 BusLane(
                     item=lane.item,
                     x=0,  # reassigned later
-                    source_y=lane.source_y,
+                    source_y=split_source_y,
                     consumer_rows=consumers,
                     producer_row=first_prod,
                     rate=split_rate,
