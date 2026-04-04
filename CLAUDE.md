@@ -59,7 +59,8 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 | `src/bus/layout.py` | Bus layout orchestrator — builds row-based layouts with main bus trunks |
 | `src/bus/placer.py` | Row placement: groups machines by recipe, splits rows for throughput |
 | `src/bus/templates.py` | Belt/inserter templates for bus rows (single-input, dual-input, lane-splitting) |
-| `src/bus/bus_router.py` | Trunk routing (1-tile spacing), tap-off underground crossings, output mergers, splitter lane balancing, negotiated crossing map |
+| `src/bus/bus_router.py` | Trunk routing (1-tile spacing), tap-off underground crossings, N-to-M balancer families, producer-to-input wiring, output mergers, negotiated crossing map |
+| `src/bus/balancer_library.py` | Pre-generated N-to-M balancer templates (SAT-solved) stamped into balancer zones. Regenerate via `scripts/generate_balancer_library.py` |
 | `rust_src/lib.rs` | Rust A* pathfinder + lane-first negotiated congestion routing (PyO3) |
 | `src/analysis/` | Blueprint analysis: classify, trace, infer items, build production graphs |
 
@@ -148,17 +149,18 @@ Deterministic row-based layout using the main bus pattern. Machines grouped by r
 
 ### Current status
 
-Bus passes tiers 1-3 with zero validation errors (iron-gear-wheel, electronic-circuit incl. from ores, plastic-bar). Tier 4 (advanced-circuit from plates) has lane-throughput warnings from single-lane sideload bottleneck ([#64](https://github.com/storkme/fucktorio/issues/64)). Next: negotiated A* routing for trunk/tap-off connections ([#65](https://github.com/storkme/fucktorio/issues/65)).
+Bus passes tiers 1-3 with zero validation errors (iron-gear-wheel, electronic-circuit incl. from ores, plastic-bar). Tier 4 (advanced-circuit from plates) has lane-throughput warnings from single-lane sideload bottleneck ([#64](https://github.com/storkme/fucktorio/issues/64)). Tier 4 via ores is blocked by [#68](https://github.com/storkme/fucktorio/issues/68) (fluid rows can't fit 2+ solid inputs in 3-tile pitch).
 
 ### Bus routing details
 
 - **Lane spacing**: 1-tile (trunks on adjacent columns, no gaps)
-- **1:1 lane-to-consumer mapping**: Each bus lane has exactly one consumer row, connected via belt turn
+- **N-to-M balancer families** (`bus_router.LaneFamily`): when an item has `N_producers != N_lanes`, the planner creates a balancer family and stamps a pre-generated template from `src/bus/balancer_library.py` (SAT-generated via Factorio-SAT, see `scripts/generate_balancer_library.py`). Covers 1→M, N→M asymmetric shapes. Producer WEST belts are wired to template input tiles via explicit path rendering (topmost producer → leftmost input tile to avoid crossings). Balancer footprint + feeder paths are registered as A\* obstacles so tap-offs route around them.
+- **Row reflow for tall templates**: families whose template height exceeds the default 2-tile recipe gap trigger `extra_gap_after_row` reservations in the two-pass `place_rows` call. Formula: `max(0, H-3)` for N=1 families (balancer overlaps producer output row), `max(0, H-2)` for N≥2 (balancer sits below producer rows).
+- **Contiguous family lanes**: `_optimize_lane_order` rejects permutations that split a family's lanes non-contiguously — templates stamp at fixed width and require adjacent output columns.
 - **Even row splitting**: Producer rows are evenly sized for balanced throughput per lane
 - **Tap-off underground crossings**: Tap-offs go EAST on the surface; first tile is always a surface belt (turn point from trunk) to avoid sideloading onto UG inputs. Underground hops cross other trunks with short spans.
-- **Output returns**: WEST surface belts sideload onto the trunk (fills one lane)
-- **Splitter lane balancing**: When multiple producers feed one intermediate lane, the last producer's output is split — half sideloads from the opposite side of the trunk to fill the other lane
-- **Output mergers**: Final product rows route WEST to x=0/x=1 columns with underground crossings, then merge via SOUTH splitters at the bottom
+- **Output returns (N→1 only, hand-rolled)**: the single remaining hand-rolled balancer path is the N→1 Z-wrap (`_route_intermediate_lane` `balance_y` code) — triggered when 2+ producers feed a single lane. Not yet migrated to template framework because N→1 templates have output-not-at-edge, requiring column reservation.
+- **Output mergers**: Final product rows use EAST-flowing output belts, merging at the bottom-right of the layout via a SOUTH splitter chain.
 - **Negotiated crossing map**: Rust `negotiate_lanes()` pre-computes crossings between all lane segments (including mergers), augmenting `_blocked_xs_at` so tap-offs know about future entity positions
 - **Fluid lanes**: Pipe trunks + pipe-to-ground tap-offs. Fluid lanes don't block belt tap-offs (pipes and belts don't conflict)
 
