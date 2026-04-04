@@ -320,9 +320,13 @@ def _optimize_lane_order(
             solid = best_order
     else:
         # Heuristic: lanes with later consumers on the left (outside),
-        # with family members grouped together.
-        fam_key = {ln: (ln.family_id, -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999)) for ln in solid}
-        solid.sort(key=lambda ln: fam_key[ln])
+        # with family members grouped together (sort by family_id first
+        # so same-family lanes stay contiguous).
+        def _heuristic_key(ln: BusLane) -> tuple[int, int]:
+            fid = ln.family_id if ln.family_id is not None else -1
+            y = -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999)
+            return (fid, y)
+        solid.sort(key=_heuristic_key)
 
     return solid + fluid
 
@@ -406,15 +410,16 @@ def _split_overflowing_lanes(
         if n_producers >= 1 and n_producers < n_lanes_with_consumers:
             shape = (n_producers, n_lanes_with_consumers)
             template = BALANCER_TEMPLATES.get(shape)
-            # Phase 2 only supports templates that fit in the 3-row
-            # producer-row + 2-tile-gap footprint (height <= 3). Taller
-            # templates need row reflow (Phase 3+) to make space.
-            if template is None or template.height > 3:
+            if template is None:
                 _raise_unimplemented_balancer(
                     item=lane.item,
                     shape=shape,
-                    template_available=template is not None,
+                    template_available=False,
                 )
+            # Phase 2 supported templates fit in the 3-row producer-row
+            # + 2-tile-gap footprint. For taller templates, layout.py's
+            # _compute_extra_gaps reserves additional rows between the
+            # producer and its downstream consumers.
             # Create the family. Origin_x is filled in after lane
             # x-assignment; y is immediately known from the producer
             # output row.

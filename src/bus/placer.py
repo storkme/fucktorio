@@ -80,11 +80,17 @@ def place_rows(
     y_offset: int = 0,
     max_belt_tier: str | None = None,
     final_output_items: set[str] | None = None,
+    extra_gap_after_row: dict[int, int] | None = None,
 ) -> tuple[list[PlacedEntity], list[RowSpan], int, int]:
     """Place assembly rows stacked vertically.
 
     When a recipe needs more machines than a single belt can handle,
     the row is split into multiple sub-rows.
+
+    ``extra_gap_after_row`` maps a row index (into the ``row_spans``
+    returned by an EARLIER call) to extra tile rows to insert south of
+    that row. Used by the two-pass bus layout to reserve space for
+    N-to-M balancer blocks that don't fit in the default 2-tile gap.
 
     Returns (entities, row_spans, total_width, total_height).
     """
@@ -96,6 +102,7 @@ def place_rows(
     max_width = 0
 
     _final = final_output_items or set()
+    _extra_gaps = extra_gap_after_row or {}
 
     for spec_idx, spec in enumerate(ordered):
         if spec_idx > 0:
@@ -129,8 +136,9 @@ def place_rows(
             )
             entities.extend(ents)
             row_spans.append(span)
+            row_idx = len(row_spans) - 1
             max_width = max(max_width, width)
-            y_cursor = span.y_end
+            y_cursor = span.y_end + _extra_gaps.get(row_idx, 0)
             remaining -= chunk
 
     return entities, row_spans, max_width, y_cursor

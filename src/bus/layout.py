@@ -5,7 +5,8 @@ from __future__ import annotations
 from ..models import EntityDirection, LayoutResult, SolverResult
 from ..routing.common import machine_size
 from ..routing.poles import place_poles
-from .bus_router import bus_width_for_lanes, plan_bus_lanes, route_bus
+from .balancer_library import BALANCER_TEMPLATES
+from .bus_router import LaneFamily, bus_width_for_lanes, plan_bus_lanes, route_bus
 from .placer import place_rows
 
 
@@ -26,6 +27,8 @@ def bus_layout(
     # 1. Pre-plan bus lanes to know bus width before placing rows
     BUS_HEADER = 1
 
+    # First pass: place rows with temp bus width and no reservations,
+    # then plan lanes to discover bus width + family balancer heights.
     temp_bw = _estimate_bus_width(solver_result)
     row_entities, row_spans, row_width, total_height = place_rows(
         solver_result.machines,
@@ -39,8 +42,15 @@ def bus_layout(
     lanes, families = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
     actual_bw = bus_width_for_lanes(lanes)
 
-    # Re-place rows if bus width changed
-    if actual_bw != temp_bw:
+    # A family's balancer occupies template.height rows starting at its
+    # producer's output-belt row. The default 2-tile recipe gap absorbs
+    # up to 3 rows (producer output row + 2 gap tiles); anything taller
+    # needs extra space reserved *after* the producer row so the
+    # balancer doesn't collide with the next consumer row.
+    extra_gaps = _compute_extra_gaps(families)
+
+    # Re-place rows if bus width changed or any balancer needs extra space.
+    if actual_bw != temp_bw or extra_gaps:
         row_entities, row_spans, row_width, total_height = place_rows(
             solver_result.machines,
             solver_result.dependency_order,
@@ -48,6 +58,7 @@ def bus_layout(
             y_offset=BUS_HEADER,
             max_belt_tier=max_belt_tier,
             final_output_items=final_output_items,
+            extra_gap_after_row=extra_gaps,
         )
         lanes, families = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
 
@@ -117,6 +128,27 @@ _MACHINE_ENTITIES = {
     "electric-furnace",
     "oil-refinery",
 }
+
+
+def _compute_extra_gaps(families: list[LaneFamily]) -> dict[int, int]:
+    """How many extra tile rows each producer-row needs for its balancer.
+
+    The producer row's own output belt sits at its final row, and the
+    default 2-tile recipe gap follows. That absorbs balancer heights up
+    to 3 (output-belt row + 2 gap tiles = 3 rows). For a balancer of
+    height H > 3, we need H - 3 extra rows after the producer. We key
+    by the LAST producer row of each family so sub-rows stay tight and
+    only the final one eats the reservation.
+    """
+    extra: dict[int, int] = {}
+    for fam in families:
+        template = BALANCER_TEMPLATES[fam.shape]
+        needed = max(0, template.height - 3)
+        if needed == 0 or not fam.producer_rows:
+            continue
+        last_producer = max(fam.producer_rows)
+        extra[last_producer] = max(extra.get(last_producer, 0), needed)
+    return extra
 
 
 def _estimate_bus_width(solver_result: SolverResult) -> int:
