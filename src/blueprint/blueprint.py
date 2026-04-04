@@ -42,4 +42,7 @@ def build_blueprint(
         if ent.recipe is not None:
             added.recipe = ent.recipe
 
+        if ent.mirror and hasattr(added, "mirror"):
+            added.mirror = True
+
     return bp.to_string()

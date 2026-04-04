@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 
 from ..models import MachineSpec, PlacedEntity
 from ..routing.common import _LANE_CAPACITY, belt_entity_for_rate
-from .templates import LANE_SPLIT_GAP, dual_input_row, fluid_input_row, single_input_row
+from .templates import (
+    LANE_SPLIT_GAP,
+    dual_input_row,
+    fluid_dual_input_row,
+    fluid_input_row,
+    oil_refinery_row,
+    single_input_row,
+)
 
 
 @dataclass
@@ -23,6 +30,7 @@ class RowSpan:
     row_width: int = 0  # total width of this row (bus_width + machines + gap)
     fluid_port_ys: list[int] = field(default_factory=list)
     fluid_port_pipes: list[tuple[int, int]] = field(default_factory=list)
+    fluid_output_port_pipes: list[tuple[int, int]] = field(default_factory=list)
 
 
 def _max_machines_for_belt(spec: MachineSpec, belt_name: str, max_belt_tier: str | None = None) -> int:
@@ -156,12 +164,15 @@ def _build_one_row(
     solid_inputs = [f for f in spec.inputs if not f.is_fluid]
     solid_outputs = [f for f in spec.outputs if not f.is_fluid]
     fluid_inputs = [f for f in spec.inputs if f.is_fluid]
+    fluid_outputs = [f for f in spec.outputs if f.is_fluid]
 
-    output_item = solid_outputs[0].item if solid_outputs else ""
+    output_is_fluid = not solid_outputs and bool(fluid_outputs)
+    output_item = fluid_outputs[0].item if output_is_fluid else (solid_outputs[0].item if solid_outputs else "")
 
     # Lane splitting: use both belt lanes when count >= 2 (not for fluid rows)
-    has_fluid = bool(fluid_inputs and solid_inputs)
-    lane_split = count >= 2 and not has_fluid
+    has_fluid_dual_solid = len(solid_inputs) == 2 and len(fluid_inputs) == 1
+    has_fluid = bool(fluid_inputs and solid_inputs) and not has_fluid_dual_solid
+    lane_split = count >= 2 and not has_fluid and not has_fluid_dual_solid
 
     # Belt tiers based on THIS chunk's throughput
     output_rate = solid_outputs[0].rate * count if solid_outputs else 0
@@ -169,8 +180,50 @@ def _build_one_row(
 
     fluid_port_ys: list[int] = []
     fluid_port_pipes: list[tuple[int, int]] = []
+    fluid_output_port_pipes: list[tuple[int, int]] = []
 
-    if has_fluid:
+    if spec.entity == "oil-refinery":
+        # Fluid-only row (basic-oil-processing: 1 fluid in, 1 fluid out)
+        fluid_input = fluid_inputs[0].item if fluid_inputs else ""
+        fluid_output = fluid_outputs[0].item if fluid_outputs else ""
+        row_ents, row_h, in_port_pipes, out_port_pipes = oil_refinery_row(
+            recipe=spec.recipe,
+            machine_count=count,
+            y_offset=y_cursor,
+            x_offset=bus_width,
+            fluid_input_item=fluid_input,
+            fluid_output_item=fluid_output,
+        )
+        input_belt_ys = []  # no solid belts
+        output_belt_y = y_cursor + row_h - 1
+        fluid_port_ys = [in_port_pipes[0][1]] if in_port_pipes else []
+        fluid_port_pipes = in_port_pipes
+        fluid_output_port_pipes = out_port_pipes
+        lane_split = False  # override: fluid-only rows never lane-split
+    elif has_fluid_dual_solid:
+        input_items_ = (solid_inputs[0].item, solid_inputs[1].item)
+        fluid_item = fluid_inputs[0].item
+        in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2, max_tier=max_belt_tier)
+        in_belt2 = belt_entity_for_rate(solid_inputs[1].rate * count * 2, max_tier=max_belt_tier)
+        row_ents, row_h, in_port_pipes, out_port_pipes = fluid_dual_input_row(
+            recipe=spec.recipe,
+            machine_entity=spec.entity,
+            machine_count=count,
+            y_offset=y_cursor,
+            x_offset=bus_width,
+            solid_items=input_items_,
+            fluid_item=fluid_item,
+            output_item=output_item,
+            output_is_fluid=output_is_fluid,
+            input_belts=(in_belt1, in_belt2),
+            output_belt=out_belt,
+        )
+        input_belt_ys = [y_cursor + 2, y_cursor + 3]
+        output_belt_y = y_cursor + 8  # fluid output row / solid output inserter row
+        fluid_port_ys = [in_port_pipes[0][1]] if in_port_pipes else []
+        fluid_port_pipes = in_port_pipes
+        fluid_output_port_pipes = out_port_pipes
+    elif has_fluid:
         input_item = solid_inputs[0].item
         fluid_item = fluid_inputs[0].item
         input_rate = solid_inputs[0].rate * count
@@ -245,6 +298,7 @@ def _build_one_row(
         row_width=row_width,
         fluid_port_ys=fluid_port_ys,
         fluid_port_pipes=fluid_port_pipes,
+        fluid_output_port_pipes=fluid_output_port_pipes,
     )
 
     return row_ents, span, row_width

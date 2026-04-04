@@ -67,6 +67,7 @@ class PlacedEntity:
     io_type: str | None = None  # "input" or "output" for underground belts
     entity_number: int | None = None  # assigned during blueprint export
     carries: str | None = None  # item/fluid name this entity transports
+    mirror: bool = False  # Space Age: flip fluid port positions along primary axis
 
 
 @dataclass

@@ -35,6 +35,8 @@ class BusLane:
     family_id: int | None = None  # index into LaneFamily list if this lane is fed by an N-to-M balancer block
     # For fluid lanes: (row_index, x, y) of pipe-to-ground exit positions
     fluid_port_positions: list[tuple[int, int, int]] = field(default_factory=list)
+    # For fluid lanes with producers: (row_index, x, y) of producer-side output port pipes
+    fluid_output_port_positions: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -149,6 +151,16 @@ def plan_bus_lanes(
                 rs = row_spans[ri]
                 for px, py in rs.fluid_port_pipes:
                     lane.fluid_port_positions.append((ri, px, py))
+            # Collect producer-side output port pipes so the trunk can
+            # tunnel westward from the producer machine to the bus column
+            producer_rows = []
+            if lane.producer_row is not None:
+                producer_rows.append(lane.producer_row)
+            producer_rows.extend(lane.extra_producer_rows)
+            for ri in producer_rows:
+                rs = row_spans[ri]
+                for px, py in rs.fluid_output_port_pipes:
+                    lane.fluid_output_port_positions.append((ri, px, py))
 
     # Compute lane balancer positions for intermediate solid lanes.
     # Balancers go after the last producer output return, before first tap-off.
@@ -1037,6 +1049,37 @@ def _negotiate_and_route(
     # Priority-based hard claims in Rust promote those claimed tiles to obstacles
     # before routing lower-priority specs, so tap-offs/returns naturally see
     # trunk tiles as blocked and use underground crossings.
+    #
+    # Fluid lanes however are not negotiated — they emit fixed pipe entities
+    # in _route_fluid_lane. Add their trunk columns and horizontal pipe
+    # runs (consumer tap-offs + producer-side returns) as static obstacles
+    # so belt tap-offs tunnel past them instead of overlapping.
+    for lane in lanes:
+        if not lane.is_fluid:
+            continue
+        trunk_ys = [lane.source_y]
+        trunk_ys.extend(lane.tap_off_ys)
+        trunk_ys.extend(py for _ri, _px, py in lane.fluid_output_port_positions)
+        start_y = min(trunk_ys)
+        end_y = max(trunk_ys)
+        for y in range(start_y, end_y + 1):
+            obstacles.append((lane.x, y))
+        # Consumer-side horizontal pipe fills
+        input_ys: dict[int, set[int]] = {}
+        for _ri, port_x, port_y in lane.fluid_port_positions:
+            input_ys.setdefault(port_y, set()).add(port_x)
+        for port_y, xs in input_ys.items():
+            last_x = max(xs)
+            for fx in range(lane.x + 1, last_x + 1):
+                obstacles.append((fx, port_y))
+        # Producer-side horizontal pipe fills
+        output_ys: dict[int, set[int]] = {}
+        for _ri, port_x, port_y in lane.fluid_output_port_positions:
+            output_ys.setdefault(port_y, set()).add(port_x)
+        for port_y, xs in output_ys.items():
+            last_x = max(xs)
+            for fx in range(lane.x + 1, last_x + 1):
+                obstacles.append((fx, port_y))
 
     # --- Build demand specs ---
 
@@ -1794,45 +1837,41 @@ def _route_fluid_lane(
     """Route a fluid bus lane with pipes + pipe-to-ground tap-offs."""
     x = lane.x
 
-    start_y = lane.source_y
-    end_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
+    # Extend trunk span to cover producer output rows as well as consumer taps
+    ys: list[int] = [lane.source_y]
+    ys.extend(lane.tap_off_ys)
+    ys.extend(py for _ri, _px, py in lane.fluid_output_port_positions)
+    start_y = min(ys)
+    end_y = max(ys)
 
     # Vertical pipe run on the bus
     for y in range(start_y, end_y + 1):
         entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=lane.item))
 
-    # Pipe-to-ground tap-offs: tunnel EAST from bus+1 to the machine port
+    # Consumer-side tap-offs: for each port_y group, connect the trunk to
+    # every port pipe at that y with a continuous horizontal run of pipes.
+    # Multiple taps at the same y (e.g. a row of 6 oil-refineries) share
+    # one run so we don't stack PTGs on the same tile.
+    input_ys: dict[int, set[int]] = {}
     for _ri, port_x, port_y in lane.fluid_port_positions:
-        # Entry: one tile right of the bus pipe (x+1), at the port's y
-        entry_x = x + 1
-        # Exit: one tile left of the port pipe position
-        exit_x = port_x - 1
+        input_ys.setdefault(port_y, set()).add(port_x)
+    for port_y, xs in input_ys.items():
+        last_x = max(xs)
+        for fill_x in range(x + 1, last_x):
+            if fill_x in xs:
+                continue
+            entities.append(PlacedEntity(name="pipe", x=fill_x, y=port_y, carries=lane.item))
 
-        if exit_x > entry_x:
-            entities.append(
-                PlacedEntity(
-                    name="pipe-to-ground",
-                    x=entry_x,
-                    y=port_y,
-                    direction=EntityDirection.EAST,
-                    io_type="input",
-                    carries=lane.item,
-                )
-            )
-            entities.append(
-                PlacedEntity(
-                    name="pipe-to-ground",
-                    x=exit_x,
-                    y=port_y,
-                    direction=EntityDirection.EAST,
-                    io_type="output",
-                    carries=lane.item,
-                )
-            )
-        elif exit_x == entry_x:
-            # Adjacent — just a surface pipe
-            entities.append(PlacedEntity(name="pipe", x=entry_x, y=port_y, carries=lane.item))
-        # The port pipe itself is placed by the template
+    # Producer-side: same pattern — each row's output pipes share a y.
+    output_ys: dict[int, set[int]] = {}
+    for _ri, port_x, port_y in lane.fluid_output_port_positions:
+        output_ys.setdefault(port_y, set()).add(port_x)
+    for port_y, xs in output_ys.items():
+        last_x = max(xs)
+        for fill_x in range(x + 1, last_x):
+            if fill_x in xs:
+                continue
+            entities.append(PlacedEntity(name="pipe", x=fill_x, y=port_y, carries=lane.item))
 
 
 _UG_MAP = {

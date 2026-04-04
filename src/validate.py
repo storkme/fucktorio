@@ -202,11 +202,15 @@ def _machine_size(name: str) -> int:
     return 3
 
 
-def _get_fluid_ports(entity_name: str) -> list[tuple[int, int, str]]:
+def _get_fluid_ports(entity_name: str, mirror: bool = False) -> list[tuple[int, int, str]]:
     """Get fluid port positions relative to tile_position (top-left).
 
     Returns list of (rel_x, rel_y, production_type) where production_type
     is 'input' or 'output'.
+
+    If *mirror* is True, flips the port positions along the entity's
+    mirror axis (Space Age ``mirror`` attribute). For oil-refinery the
+    mirror axis is horizontal, so y-positions flip.
     """
     from draftsman.data import entities
 
@@ -226,20 +230,37 @@ def _get_fluid_ports(entity_name: str) -> list[tuple[int, int, str]]:
         prod_type = fb.get("production_type", "input")
         direction = conn.get("direction", 0)
 
+        rel_x = int(pos[0])
+        rel_y = int(pos[1])
+        port_dir = direction
+        if mirror and entity_name in _MIRROR_FLIPS_Y:
+            rel_y = -rel_y
+            # Port direction also flips (north <-> south)
+            if port_dir == 0:
+                port_dir = 8
+            elif port_dir == 8:
+                port_dir = 0
+
         # Convert center-relative to top-left-relative
-        port_x = int(pos[0]) + center
-        port_y = int(pos[1]) + center
+        port_x = rel_x + center
+        port_y = rel_y + center
 
         # Pipe connects one tile outward from the port
-        if direction == 0:  # north
+        if port_dir == 0:  # north
             pipe_y = port_y - 1
-        elif direction == 8:  # south
+        elif port_dir == 8:  # south
             pipe_y = port_y + 1
         else:
             continue
         ports.append((port_x, pipe_y, prod_type))
 
     return ports
+
+
+# Entities whose mirror axis flips fluid-port y-positions (Space Age).
+# Oil-refinery mirror-flips ports north<->south, enabling the bus pattern
+# of trunks above producer rows.
+_MIRROR_FLIPS_Y: set[str] = {"oil-refinery"}
 
 
 def check_fluid_port_connectivity(
@@ -267,11 +288,19 @@ def check_fluid_port_connectivity(
     # Build pipe-to-ground pair map for tunnel traversal
     ptg_pairs = _find_ptg_pairs(layout_result)
 
-    # Find bus pipe positions (leftmost column of pipes = bus)
+    # Find bus pipe positions: any pipe west of the leftmost machine is a
+    # trunk pipe (multi-fluid buses have one trunk column per fluid, so the
+    # bus region spans multiple columns).
     bus_pipes: set[tuple[int, int]] = set()
     if pipe_tiles:
-        min_x = min(x for x, _ in pipe_tiles)
-        bus_pipes = {(x, y) for x, y in pipe_tiles if x == min_x}
+        machine_xs = [e.x for e in layout_result.entities if e.name in _MACHINE_ENTITIES]
+        if machine_xs:
+            leftmost_machine_x = min(machine_xs)
+            bus_pipes = {(x, y) for x, y in pipe_tiles if x < leftmost_machine_x}
+        if not bus_pipes:
+            # Fallback: leftmost pipe column
+            min_x = min(x for x, _ in pipe_tiles)
+            bus_pipes = {(x, y) for x, y in pipe_tiles if x == min_x}
 
     for e in layout_result.entities:
         if e.name not in _MACHINE_ENTITIES:
@@ -279,7 +308,7 @@ def check_fluid_port_connectivity(
         if e.recipe is None:
             continue
 
-        ports = _get_fluid_ports(e.name)
+        ports = _get_fluid_ports(e.name, mirror=e.mirror)
         if not ports:
             continue
 

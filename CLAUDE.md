@@ -73,6 +73,7 @@ These are the physical rules the layout engine must satisfy:
 - **Belts** move items in a direction, connect when adjacent. Different tiers have different throughput limits (yellow: 15/s, red: 30/s, blue: 45/s)
 - **Pipes** carry fluids, connect to any adjacent pipe (and merge — separate fluid networks must be physically isolated)
 - **Fluid ports** on machines are at specific tile positions (queryable from `draftsman.data.entities`)
+- **Fluid-box mirroring (Space Age)** — entities with fluid boxes (oil-refinery, chemical-plant, etc.) support a `mirror: true` blueprint attribute that flips fluid port positions along the entity's primary axis. Combined with `direction`, this gives 8 orientations (4 rotations × 2 mirrors). For oil-refinery, `mirror=True` flips inputs-south/outputs-north into inputs-north/outputs-south, letting us reuse the chemical-plant header-above-machine layout pattern. Exposed via `entity.mirror` in draftsman 3.3+. Only effective in Factorio Space Age (2.0+); ignored in 1.1.
 - **Entities** cannot overlap
 - **Belt lane mechanics** — see `docs/belt-mechanics.md` for detailed lane-level physics (sideloading, underground belt lane rules, splitter behavior)
 - **Power** — machines need electricity; medium-electric-pole covers a 7x7 area

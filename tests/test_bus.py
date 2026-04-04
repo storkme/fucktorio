@@ -68,6 +68,47 @@ class TestBusLayout:
         assert len(layout.entities) > 0
         _assert_valid(layout, result, allowed_categories={"power"})
 
+    def test_basic_oil_processing(self):
+        """5x5 oil-refinery with mirror=True: crude-oil -> petroleum-gas."""
+        result = solve("petroleum-gas", 5.0, available_inputs={"crude-oil"})
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+        # Sanity: at least one mirrored oil-refinery placed
+        refineries = [e for e in layout.entities if e.name == "oil-refinery"]
+        assert len(refineries) >= 1
+        assert all(e.mirror for e in refineries)
+
+        _assert_valid(layout, result, allowed_categories={"power"})
+
+    def test_plastic_bar_from_crude_oil(self):
+        """Full fluid chain: crude-oil -> oil-refinery -> petroleum-gas -> plastic-bar.
+
+        Exercises producer-side fluid-trunk wiring: the refinery row's
+        petroleum-gas outputs feed the bus lane that the plastic-bar
+        chemical-plants consume.
+        """
+        result = solve("plastic-bar", 5.0, available_inputs={"coal", "crude-oil"})
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+        assert any(e.name == "oil-refinery" and e.mirror for e in layout.entities)
+        assert any(e.name == "chemical-plant" for e in layout.entities)
+
+        _assert_valid(layout, result, allowed_categories={"power"})
+
+    def test_sulfuric_acid(self):
+        """2 solids + 1 fluid input, 1 fluid output (chemical-plant)."""
+        result = solve(
+            "sulfuric-acid",
+            1.0,
+            available_inputs={"iron-plate", "sulfur", "water"},
+        )
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+        _assert_valid(layout, result, allowed_categories={"power"})
+
     def test_electronic_circuit_from_ores(self):
         """Full chain: ores -> smelting -> copper-cable -> electronic-circuit."""
         result = solve("electronic-circuit", 5.0)
@@ -240,6 +281,28 @@ class TestBusVisualization:
         layout = bus_layout(result)
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit")
         viz(bp, "bus-electronic-circuit-5s", solver_result=result, layout_result=layout, layout_style="bus")
+
+    def test_viz_basic_oil_processing(self, viz):
+        result = solve("petroleum-gas", 5.0, available_inputs={"crude-oil"})
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 5/s petroleum-gas")
+        viz(bp, "bus-petroleum-gas-5s", solver_result=result, layout_result=layout, layout_style="bus")
+
+    def test_viz_plastic_bar_from_crude_oil(self, viz):
+        result = solve("plastic-bar", 5.0, available_inputs={"coal", "crude-oil"})
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 5/s plastic-bar from crude-oil")
+        viz(bp, "bus-plastic-bar-from-crude-oil-5s", solver_result=result, layout_result=layout, layout_style="bus")
+
+    def test_viz_sulfuric_acid(self, viz):
+        result = solve(
+            "sulfuric-acid",
+            1.0,
+            available_inputs={"iron-plate", "sulfur", "water"},
+        )
+        layout = bus_layout(result)
+        bp = _make_blueprint(layout, "bus: 1/s sulfuric-acid")
+        viz(bp, "bus-sulfuric-acid-1s", solver_result=result, layout_result=layout, layout_style="bus")
 
     def test_viz_electronic_circuit_from_ores(self, viz):
         result = solve("electronic-circuit", 5.0)
