@@ -73,6 +73,7 @@ These are the physical rules the layout engine must satisfy:
 - **Pipes** carry fluids, connect to any adjacent pipe (and merge — separate fluid networks must be physically isolated)
 - **Fluid ports** on machines are at specific tile positions (queryable from `draftsman.data.entities`)
 - **Entities** cannot overlap
+- **Belt lane mechanics** — see `docs/belt-mechanics.md` for detailed lane-level physics (sideloading, underground belt lane rules, splitter behavior)
 - **Power** — machines need electricity; medium-electric-pole covers a 7x7 area
 
 ## Recipe complexity ladder

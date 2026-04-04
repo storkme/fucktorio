@@ -218,6 +218,7 @@ fn astar_inner(
     congestion: Option<&CongestionGrid>,
     hard_block_perp_ug: bool,
     y_constraint: Option<i16>,
+    x_constraint: Option<i16>,
 ) -> Option<Vec<(i16, i16)>> {
     if start_set.is_empty() || goals.is_empty() {
         return None;
@@ -344,7 +345,13 @@ fn astar_inner(
                     continue;
                 }
             }
-            if obstacles.contains(&(nx, ny)) {
+            // x_constraint: only explore tiles on the constrained column
+            if let Some(xc) = x_constraint {
+                if nx != xc {
+                    continue;
+                }
+            }
+            if obstacles.contains(&(nx, ny)) && !goals.contains(&(nx, ny)) {
                 continue;
             }
 
@@ -413,10 +420,16 @@ fn astar_inner(
                             continue;
                         }
                     }
-                    if obstacles.contains(&(ex, ey)) {
-                        continue;
+                    // x_constraint: UG exit must land on the constrained column
+                    if let Some(xc) = x_constraint {
+                        if ex != xc {
+                            continue;
+                        }
                     }
                     let landing_on_goal = goals.contains(&(ex, ey));
+                    if obstacles.contains(&(ex, ey)) && !landing_on_goal {
+                        continue;
+                    }
                     if landing_on_goal && !hard_block_perp_ug {
                         // Spaghetti: skip UG jumps to goal (need continuation space)
                         continue;
@@ -550,6 +563,7 @@ fn astar_path(
         None,   // no congestion grid for standalone A*
         false,  // soft perpendicular UG penalty
         None,   // no y constraint
+        None,   // no x constraint
     )
 }
 
@@ -573,6 +587,9 @@ struct LaneSpec {
     /// If set, constrain A* routing to only explore tiles at this y-coordinate.
     /// Used for bus horizontal demands (Phase 1) to prevent vertical detours.
     y_constraint: Option<i16>,
+    /// If set, constrain A* routing to only explore tiles at this x-coordinate.
+    /// Used for bus vertical trunk demands to prevent horizontal detours.
+    x_constraint: Option<i16>,
 }
 
 /// A routed lane: the resolved path through the grid.
@@ -794,6 +811,7 @@ fn route_astar(
         Some(grid),
         hard_block_perp_ug,
         spec.y_constraint,
+        spec.x_constraint,
     )?;
 
     // Compute directions from path
@@ -863,7 +881,16 @@ fn negotiate_inner(
     let mut best_lanes: Vec<RoutedLane> = Vec::new();
     let mut best_conflicts = u32::MAX;
 
+    // Track tiles promoted to obstacles at priority boundaries (cleared each iteration)
+    let mut promoted: Vec<(i16, i16)> = Vec::new();
+
     for _iteration in 0..max_iterations {
+        // Clear promotions from previous iteration
+        for &pos in &promoted {
+            grid.base_cost.remove(&pos);
+        }
+        promoted.clear();
+
         grid.release_all();
         let mut lanes: Vec<RoutedLane> = Vec::with_capacity(specs.len());
 
@@ -872,8 +899,32 @@ fn negotiate_inner(
         let mut order: Vec<usize> = (0..specs.len()).collect();
         order.sort_by(|&a, &b| specs[b].priority.cmp(&specs[a].priority));
 
+        let mut current_priority: Option<u8> = None;
+
         for &idx in &order {
             let spec = &specs[idx];
+
+            // Priority-based hard claims: when we cross a priority boundary,
+            // promote all previously-claimed tiles to obstacles.  This ensures
+            // lower-priority specs (e.g. trunks) MUST go underground past
+            // higher-priority specs (e.g. tap-offs) rather than relying on
+            // cost escalation convergence.
+            if let Some(prev) = current_priority {
+                if spec.priority < prev {
+                    let to_promote: Vec<(i16, i16)> = grid.present_demand
+                        .iter()
+                        .filter(|(_, &d)| d > 0)
+                        .map(|(&pos, _)| pos)
+                        .filter(|pos| !obstacles.contains(pos))
+                        .collect();
+                    for pos in to_promote {
+                        grid.set_obstacle(pos.0, pos.1);
+                        promoted.push(pos);
+                    }
+                }
+            }
+            current_priority = Some(spec.priority);
+
             let result = match spec.strategy {
                 0 => route_axis_aligned(spec, &grid, obstacles),
                 1 => route_astar(spec, &grid, obstacles, max_extent, allow_underground, ug_max_reach, false),
@@ -959,14 +1010,16 @@ struct PyLaneSpec {
     priority: u8,
     #[pyo3(get, set)]
     y_constraint: Option<i16>,
+    #[pyo3(get, set)]
+    x_constraint: Option<i16>,
 }
 
 #[pymethods]
 impl PyLaneSpec {
     #[new]
-    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None))]
-    fn new(id: u32, item_id: u16, waypoints: Vec<(i16, i16)>, strategy: u8, priority: u8, y_constraint: Option<i16>) -> Self {
-        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint }
+    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None, x_constraint = None))]
+    fn new(id: u32, item_id: u16, waypoints: Vec<(i16, i16)>, strategy: u8, priority: u8, y_constraint: Option<i16>, x_constraint: Option<i16>) -> Self {
+        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint, x_constraint }
     }
 }
 
@@ -1014,6 +1067,7 @@ fn negotiate_lanes(
         strategy: ps.strategy,
         priority: ps.priority,
         y_constraint: ps.y_constraint,
+        x_constraint: ps.x_constraint,
     }).collect();
 
     let obs: FxHashSet<(i16, i16)> = obstacles.into_iter().collect();

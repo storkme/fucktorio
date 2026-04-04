@@ -531,6 +531,22 @@ def _merge_output_rows(
     return entities, y_cursor
 
 
+def _trunk_segments(start_y: int, end_y: int, skip_ys: set[int]) -> list[tuple[int, int]]:
+    """Split [start_y, end_y] into contiguous segments excluding skip_ys."""
+    segments: list[tuple[int, int]] = []
+    seg_start: int | None = None
+    for y in range(start_y, end_y + 1):
+        if y in skip_ys:
+            if seg_start is not None:
+                segments.append((seg_start, y - 1))
+                seg_start = None
+        elif seg_start is None:
+            seg_start = y
+    if seg_start is not None:
+        segments.append((seg_start, end_y))
+    return segments
+
+
 def _negotiate_and_route(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
@@ -539,13 +555,18 @@ def _negotiate_and_route(
     row_entities: list[PlacedEntity] | None = None,
     solver_result: SolverResult | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
-    """Route bus horizontals via negotiated A* with underground support.
+    """Route all bus segments via negotiated A* with underground support.
 
-    Trunks and mergers use axis-aligned routing (strategy=0).
-    Tap-offs and output returns use A* with hard perpendicular UG block
-    (strategy=2), constrained to stay on their row.
+    All segments (trunks, tap-offs, returns, mergers) use A* (strategy=2)
+    with priority-based hard claims: higher-priority specs claim surface
+    tiles that become obstacles for lower-priority specs, forcing them
+    underground at crossings.
 
-    Returns a map of string key → routed path tiles.  Keys are:
+    Priority order: mergers (8) > tap-offs (6) > returns (5) >
+    output mergers/balance (4) > trunks (3).
+
+    Returns a map of string key → routed path tiles.  Keys include:
+    - "trunk:{item}:{x}:{start_y}:{end_y}" for trunk segments
     - "tap:{item}:{x}:{y}" for tap-off demands
     - "ret:{item}:{x}:{y}" for output return demands
 
@@ -557,8 +578,11 @@ def _negotiate_and_route(
     except ImportError:
         return {}
 
-    # Build item → numeric ID mapping
-    items = sorted({lane.item for lane in lanes if not lane.is_fluid})
+    # Build item → numeric ID mapping (include output items for merger routing)
+    items_set = {lane.item for lane in lanes if not lane.is_fluid}
+    if solver_result:
+        items_set |= {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
+    items = sorted(items_set)
     item_to_id: dict[str, int] = {item: i for i, item in enumerate(items)}
 
     # Map demand_id → string key for result lookup
@@ -589,29 +613,11 @@ def _negotiate_and_route(
             else:
                 obstacles.append((e.x, e.y))
 
-    # Add trunk column positions as obstacles — forces A* underground at crossings.
-    # For each solid lane, the vertical segment occupies (lane.x, y) for y in
-    # [source_y, end_y].  These are obstacles for OTHER lanes' horizontal demands
-    # but strategy=0 (axis-aligned) ignores obstacles, so trunks aren't affected.
-    for lane in lanes:
-        if lane.is_fluid:
-            continue
-        all_producers = []
-        if lane.producer_row is not None:
-            all_producers.append(lane.producer_row)
-        all_producers.extend(lane.extra_producer_rows)
-
-        start_y = lane.source_y
-        all_ys = list(lane.tap_off_ys)
-        if row_spans:
-            for pri in all_producers:
-                all_ys.append(row_spans[pri].output_belt_y)
-        end_y = max(all_ys) if all_ys else start_y
-        if lane.balancer_y is not None:
-            end_y = max(end_y, lane.balancer_y + 1)
-
-        for y in range(start_y, end_y + 1):
-            obstacles.append((lane.x, y))
+    # Trunk columns are NOT added as static obstacles — trunks are now A*
+    # specs (strategy=2) whose routed paths are claimed in the congestion grid.
+    # Priority-based hard claims in Rust promote those claimed tiles to obstacles
+    # before routing lower-priority specs, so tap-offs/returns naturally see
+    # trunk tiles as blocked and use underground crossings.
 
     # --- Build demand specs ---
 
@@ -631,17 +637,22 @@ def _negotiate_and_route(
             start_y = min(producer_out_ys)
             tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else start_y
 
-            # Trunk: axis-aligned vertical (strategy=0)
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, start_y), (x, tap_y)],
-                    strategy=0,
-                    priority=5,
+            # Trunk: A* vertical (strategy=2, low priority — routes after tap-offs)
+            # Range is [start_y, tap_y-1] since the turn belt at tap_y is manual.
+            if tap_y - 1 >= start_y:
+                trunk_key = f"trunk:{lane.item}:{x}:{start_y}:{tap_y - 1}"
+                id_to_key[lane_id] = trunk_key
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(x, start_y), (x, tap_y - 1)],
+                        strategy=2,
+                        priority=3,
+                        x_constraint=x,
+                    )
                 )
-            )
-            lane_id += 1
+                lane_id += 1
 
             # Output returns: A* horizontal WEST (strategy=2)
             for pri in all_producers:
@@ -653,7 +664,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(bw - 1, out_y), (x + 1, out_y)],
                         strategy=2,
-                        priority=3,
+                        priority=5,
                         y_constraint=out_y,
                     )
                 )
@@ -674,13 +685,13 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(bw - 1, split_y), (x - 1, sideload_y)],
                         strategy=2,
-                        priority=3,
+                        priority=4,
                         # No y_constraint — allow vertical movement for the Z-turn
                     )
                 )
                 lane_id += 1
 
-            # Tap-off: A* horizontal EAST (strategy=2)
+            # Tap-off: A* horizontal EAST (strategy=2, high priority)
             # Turn belt at (x, tap_y) placed manually; A* starts at x+1.
             if x + 1 <= bw - 1:
                 id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
@@ -690,7 +701,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
                         strategy=2,
-                        priority=3,
+                        priority=6,
                         y_constraint=tap_y,
                     )
                 )
@@ -700,19 +711,30 @@ def _negotiate_and_route(
             # External input: trunk from source to tap-off
             tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else lane.source_y
 
-            # Trunk: axis-aligned vertical
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, lane.source_y), (x, tap_y)],
-                    strategy=0,
-                    priority=5,
+            # Trunk: A* vertical (strategy=2, low priority)
+            # Split into segments excluding tap-off and balancer positions.
+            skip_ys = set(lane.tap_off_ys)
+            if lane.balancer_y is not None:
+                skip_ys.add(lane.balancer_y)
+            end_y = tap_y
+            if lane.balancer_y is not None:
+                end_y = max(end_y, lane.balancer_y + 1)
+            for seg_start, seg_end in _trunk_segments(lane.source_y, end_y, skip_ys):
+                trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
+                id_to_key[lane_id] = trunk_key
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(x, seg_start), (x, seg_end)],
+                        strategy=2,
+                        priority=3,
+                        x_constraint=x,
+                    )
                 )
-            )
-            lane_id += 1
+                lane_id += 1
 
-            # Tap-off: A* horizontal EAST
+            # Tap-off: A* horizontal EAST (high priority)
             if x + 1 <= bw - 1:
                 id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
                 specs.append(
@@ -721,7 +743,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
                         strategy=2,
-                        priority=3,
+                        priority=6,
                         y_constraint=tap_y,
                     )
                 )
@@ -736,17 +758,24 @@ def _negotiate_and_route(
             if lane.balancer_y is not None:
                 end_y = max(end_y, lane.balancer_y + 1)
 
-            # Trunk: axis-aligned vertical
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, lane.source_y), (x, end_y)],
-                    strategy=0,
-                    priority=5,
+            # Trunk: A* vertical (strategy=2, low priority)
+            skip_ys = set(lane.tap_off_ys)
+            if lane.balancer_y is not None:
+                skip_ys.add(lane.balancer_y)
+            for seg_start, seg_end in _trunk_segments(lane.source_y, end_y, skip_ys):
+                trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
+                id_to_key[lane_id] = trunk_key
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(x, seg_start), (x, seg_end)],
+                        strategy=2,
+                        priority=3,
+                        x_constraint=x,
+                    )
                 )
-            )
-            lane_id += 1
+                lane_id += 1
 
             # Output returns: A* horizontal WEST
             for pri in all_producers:
@@ -758,7 +787,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(bw - 1, out_y), (x + 1, out_y)],
                         strategy=2,
-                        priority=3,
+                        priority=5,
                         y_constraint=out_y,
                     )
                 )
@@ -829,7 +858,7 @@ def _negotiate_and_route(
                             item_id=out_item_id,
                             waypoints=[(bw - 1, out_y), (target_x + 1, out_y)],
                             strategy=2,
-                            priority=3,
+                            priority=4,
                             y_constraint=out_y,
                         )
                     )
@@ -1197,17 +1226,24 @@ def _route_intermediate_lane(
             if ret_path:
                 entities.extend(_render_path(ret_path, lane.item, horiz_belt, EntityDirection.WEST))
 
-    # Vertical trunk: SOUTH from first producer to tap-off
-    for y in range(start_y, tap_y):
-        entities.append(
-            PlacedEntity(
-                name=belt_name,
-                x=x,
-                y=y,
-                direction=EntityDirection.SOUTH,
-                carries=lane.item,
-            )
-        )
+    # Vertical trunk: use A*-routed path (may include UG crossings)
+    if tap_y - 1 >= start_y:
+        trunk_key = f"trunk:{lane.item}:{x}:{start_y}:{tap_y - 1}"
+        trunk_path = paths.get(trunk_key)
+        if trunk_path:
+            entities.extend(_render_path(trunk_path, lane.item, belt_name, EntityDirection.SOUTH))
+        else:
+            # Fallback: manual SOUTH belts
+            for y in range(start_y, tap_y):
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=x,
+                        y=y,
+                        direction=EntityDirection.SOUTH,
+                        carries=lane.item,
+                    )
+                )
 
     # Tap-off: surface EAST belt at the turn point, then A*-routed path.
     entities.append(
@@ -1264,21 +1300,27 @@ def _route_belt_lane(
 
     balancer_skip = {lane.balancer_y} if lane.balancer_y is not None else set()
 
-    # Vertical surface belts (SOUTH)
+    # Vertical trunk: use A*-routed paths (may include UG crossings)
     bal_y = lane.balancer_y
-    for y in range(start_y, end_y + 1):
-        if y in tap_off_set or y in balancer_skip:
-            continue
-        tier = pre_bal_belt if (bal_y is not None and y < bal_y) else belt_name
-        entities.append(
-            PlacedEntity(
-                name=tier,
-                x=x,
-                y=y,
-                direction=EntityDirection.SOUTH,
-                carries=lane.item,
-            )
-        )
+    skip_ys = tap_off_set | balancer_skip
+    for seg_start, seg_end in _trunk_segments(start_y, end_y, skip_ys):
+        tier = pre_bal_belt if (bal_y is not None and seg_start < bal_y) else belt_name
+        trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
+        trunk_path = paths.get(trunk_key)
+        if trunk_path:
+            entities.extend(_render_path(trunk_path, lane.item, tier, EntityDirection.SOUTH))
+        else:
+            # Fallback: manual SOUTH belts
+            for y in range(seg_start, seg_end + 1):
+                entities.append(
+                    PlacedEntity(
+                        name=tier,
+                        x=x,
+                        y=y,
+                        direction=EntityDirection.SOUTH,
+                        carries=lane.item,
+                    )
+                )
 
     # Lane balancer (manual placement)
     if lane.balancer_y is not None:
