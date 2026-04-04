@@ -65,18 +65,11 @@ Feeding a UG input from behind (same direction as the UG belt) loads **both lane
   ^   (UG output, facing SOUTH)
 ```
 
-### Sideloading onto a UG input
+### Sideloading onto a UG input/output
 
-**CRITICAL QUIRK: sideloading onto a UG input fills only the FAR lane, not the near lane.**
+**CRITICAL QUIRK: sideloading onto a UG input or output only allows items to flow from the lane which is closer to the belt side of the underground entrance or exit.**
 
-This is the opposite of regular belt sideloading. On a regular belt, sideloading fills the near lane. On a UG input, sideloading fills the far lane.
-
-```
-    v   (feeder belt, facing SOUTH)
-  >>V   (UG input, facing EAST -- feeder hits north side)
-```
-
-The feeder approaches from the north side. For an EAST-facing belt the north side is the left (near) lane. But because this is a UG input, items go to the FAR lane (right/south) instead.
+// todo expand this
 
 ### Consequence
 
@@ -92,19 +85,15 @@ Items emerge on both lanes in the UG's facing direction, same as any belt. A UG 
 
 When a UG exit belt is adjacent to another belt and forms a T-junction, it acts as a sideload feeder. The receiving belt's **near lane** (closest to the UG exit) gets the items -- standard sideload rules apply.
 
-### Sideloading ONTO a UG exit
-
-Feeding into the side of a UG exit tile from a perpendicular belt: this is blocked on the lane where items are emerging from underground. The emerging items have priority. In practice, avoid sideloading onto UG exits -- the behavior is unreliable and layout-dependent.
-
 ## Splitters
 
-Splitters occupy 2 tiles (1x2 perpendicular to facing direction). They take one input belt and produce two output belts.
+Splitters occupy 2 tiles (1x2 perpendicular to facing direction). They take one or two input belts and produce one or two output belts. 
 
 ### Default behavior
 
 - Items are distributed **50/50** between the two output belts.
 - **Lane assignment is preserved**: left-lane items stay on the left lane of whichever output belt they go to; same for right lane.
-- If one output is blocked/full, all items go to the other output.
+- If one output LANE is blocked/full, all items go to the other output LANE.
 
 ### Priority and filtering
 
@@ -114,36 +103,3 @@ Splitters occupy 2 tiles (1x2 perpendicular to facing direction). They take one 
 
 These settings are available in Factorio but the layout engine currently uses only default (unfiltered, no priority) splitters for lane balancing.
 
-## Implications for bus routing
-
-These rules constrain how the bus layout engine (`src/bus/bus_router.py`) builds trunk-to-row connections.
-
-### Trunk-to-tapoff turns
-
-When a vertical trunk (SOUTH) turns EAST into a row's input belt, the turn tile **must be a surface belt**, not a UG input. A surface belt turn preserves both lanes. If the turn were a UG input receiving a sideload, only the far lane would get items.
-
-### Underground trunk crossings
-
-When a tap-off needs to cross another trunk lane, the tap-off goes underground (EAST). The UG entry must be fed **straight** (from a SOUTH-to-EAST turn belt behind it), not sideloaded from the trunk above. This ensures both lanes enter the underground segment.
-
-### Output returns via sideload
-
-When a row's output belt returns items to a trunk, it sideloads from one side. This fills only the **near lane** of the trunk. To fill both trunk lanes, the bus router uses splitter-based lane balancing: a second producer's output sideloads from the **opposite side** of the trunk.
-
-### Merger underground crossings
-
-When output mergers route WEST toward the final output columns, underground crossings are used to hop over other trunk lanes. The same straight-feed rule applies -- UG entries must be approached straight, never sideloaded.
-
-## Quick reference
-
-| Scenario | Lanes filled | Safe? |
-|----------|-------------|-------|
-| Straight feed into belt | Both | Yes |
-| Sideload onto belt | Near only | Yes (one lane) |
-| Straight feed into UG input | Both | Yes |
-| Sideload onto UG input | **Far only** | AVOID -- use straight feed |
-| Items from UG exit | Both | Yes |
-| Sideload from UG exit onto belt | Near lane of receiver | Yes |
-| Sideload onto UG exit | Blocked/unreliable | AVOID |
-| Splitter output | Both, 50/50 split | Yes |
-| Belt turn (90 deg) | Both (inner/outer preserved) | Yes |
