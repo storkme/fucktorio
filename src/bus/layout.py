@@ -153,10 +153,7 @@ def _compute_extra_gaps(families: list[LaneFamily]) -> dict[int, int]:
         if not fam.producer_rows:
             continue
         n_producers = fam.shape[0]
-        if n_producers == 1:
-            needed = max(0, template.height - 3)
-        else:
-            needed = max(0, template.height - 2)
+        needed = max(0, template.height - 3) if n_producers == 1 else max(0, template.height - 2)
         if needed == 0:
             continue
         last_producer = max(fam.producer_rows)

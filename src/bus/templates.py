@@ -261,9 +261,7 @@ def single_input_row(
                 )
             )
         # Sideload bridge
-        entities.extend(
-            _sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item, output_east)
-        )
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item, output_east))
 
     return entities, ROW_HEIGHT
 
@@ -408,9 +406,7 @@ def dual_input_row(
                 )
             )
         # Sideload bridge (output belt at y+7, bridge at y+6)
-        entities.extend(
-            _sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item, output_east)
-        )
+        entities.extend(_sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item, output_east))
 
     return entities, ROW_HEIGHT
 
@@ -616,9 +612,7 @@ def fluid_dual_input_row(
     last_mx = x_offset + (machine_count - 1) * MACHINE_PITCH
     header_end_x = last_mx + 2
     for x in range(x_offset, header_end_x + 1):
-        entities.append(
-            PlacedEntity(name="pipe", x=x, y=header_y, carries=fluid_item)
-        )
+        entities.append(PlacedEntity(name="pipe", x=x, y=header_y, carries=fluid_item))
 
     fluid_output_port_pipes: list[tuple[int, int]] = []
 
@@ -706,16 +700,8 @@ def fluid_dual_input_row(
         if output_is_fluid:
             # Chemical-plant fluid output ports at (0,2) and (2,2) south ->
             # pipes one tile south of the machine (y=output_y) at mx+0, mx+2.
-            entities.append(
-                PlacedEntity(
-                    name="pipe", x=mx, y=output_y, carries=output_item
-                )
-            )
-            entities.append(
-                PlacedEntity(
-                    name="pipe", x=mx + 2, y=output_y, carries=output_item
-                )
-            )
+            entities.append(PlacedEntity(name="pipe", x=mx, y=output_y, carries=output_item))
+            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=output_y, carries=output_item))
             fluid_output_port_pipes.append((mx, output_y))
             fluid_output_port_pipes.append((mx + 2, output_y))
         else:

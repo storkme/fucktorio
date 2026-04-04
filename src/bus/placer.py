@@ -140,7 +140,12 @@ def place_rows(
         for ri in range(n_rows):
             chunk = math.ceil(remaining / (n_rows - ri))
             ents, span, width = _build_one_row(
-                spec, chunk, bus_width, y_cursor, max_belt_tier, output_east=is_final,
+                spec,
+                chunk,
+                bus_width,
+                y_cursor,
+                max_belt_tier,
+                output_east=is_final,
             )
             entities.extend(ents)
             row_spans.append(span)

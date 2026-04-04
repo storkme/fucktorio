@@ -199,9 +199,7 @@ def plan_bus_lanes(
 
     # Fill in lane_xs on each family now that x's are assigned.
     for fid, fam in enumerate(families):
-        fam.lane_xs = sorted(
-            lane.x for lane in lanes if lane.family_id == fid
-        )
+        fam.lane_xs = sorted(lane.x for lane in lanes if lane.family_id == fid)
         # Templates assume contiguous output columns. If lane ordering
         # interleaved a family with other items' lanes, the stamp won't
         # land at the right x's for all sibling trunks. Fail loud rather
@@ -312,10 +310,7 @@ def _optimize_lane_order(
         for ln in ordered:
             if ln.family_id is not None:
                 counts[ln.family_id] = counts.get(ln.family_id, 0) + 1
-        for fid, (lo, hi) in seen_ranges.items():
-            if hi - lo + 1 != counts[fid]:
-                return False
-        return True
+        return all(hi - lo + 1 == counts[fid] for fid, (lo, hi) in seen_ranges.items())
 
     if len(solid) <= 10:
         best_order: list[BusLane] | None = None
@@ -338,6 +333,7 @@ def _optimize_lane_order(
             fid = ln.family_id if ln.family_id is not None else -1
             y = -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999)
             return (fid, y)
+
         solid.sort(key=_heuristic_key)
 
     return solid + fluid
@@ -413,9 +409,7 @@ def _split_overflowing_lanes(
         # across all trunks. This is the "orphan lane" case — the previous
         # code silently left the extra trunks unfed (visible as floating
         # belts in the viz).
-        n_lanes_with_consumers = sum(
-            1 for c in consumers_per_split if c
-        ) if not is_collector else n_splits
+        n_lanes_with_consumers = sum(1 for c in consumers_per_split if c) if not is_collector else n_splits
         n_producers = len(all_producer_rows)
         family_id: int | None = None
         family_source_y: int | None = None
@@ -439,9 +433,7 @@ def _split_overflowing_lanes(
             if n_producers == 1:
                 balancer_y_start = row_spans[all_producer_rows[0]].output_belt_y
             else:
-                balancer_y_start = max(
-                    row_spans[pri].y_end for pri in all_producer_rows
-                )
+                balancer_y_start = max(row_spans[pri].y_end for pri in all_producer_rows)
             families.append(
                 LaneFamily(
                     item=lane.item,
@@ -505,9 +497,7 @@ def _split_overflowing_lanes(
     return result, families
 
 
-def _raise_unimplemented_balancer(
-    item: str, shape: tuple[int, int], template_available: bool
-) -> None:
+def _raise_unimplemented_balancer(item: str, shape: tuple[int, int], template_available: bool) -> None:
     """Fail fast when we encounter a lane-family shape we can't yet route.
 
     The bus planner has decided item `item` needs an (N, M) balancer
@@ -596,13 +586,11 @@ def _render_family_input_paths(
     origin_y = fam.balancer_y_start
 
     # Sort producers top-to-bottom, input tiles left-to-right.
-    producers = sorted(
-        fam.producer_rows, key=lambda p: row_spans[p].output_belt_y
-    )
+    producers = sorted(fam.producer_rows, key=lambda p: row_spans[p].output_belt_y)
     inputs = sorted(template.input_tiles, key=lambda t: t[0])
 
     entities: list[PlacedEntity] = []
-    for producer_row_idx, (input_dx, _) in zip(producers, inputs):
+    for producer_row_idx, (input_dx, _) in zip(producers, inputs, strict=False):
         out_y = row_spans[producer_row_idx].output_belt_y
         input_x = origin_x + input_dx
 
@@ -653,9 +641,7 @@ def _render_family_input_paths(
     return entities
 
 
-def _stamp_family_balancer(
-    fam: LaneFamily, max_belt_tier: str | None
-) -> list[PlacedEntity]:
+def _stamp_family_balancer(fam: LaneFamily, max_belt_tier: str | None) -> list[PlacedEntity]:
     """Render a balancer template at the family's origin position.
 
     Template entity tiles (top-left) are offset by the family's stamp
@@ -750,12 +736,8 @@ def route_bus(
             # Wire each producer's WEST output belt into its template
             # input tile. The belt tier matches the one used inside the
             # balancer (keyed by the family's total rate).
-            input_belt_tier = belt_entity_for_rate(
-                fam.total_rate, max_tier=max_belt_tier
-            )
-            entities.extend(
-                _render_family_input_paths(fam, row_spans, bw, input_belt_tier)
-            )
+            input_belt_tier = belt_entity_for_rate(fam.total_rate, max_tier=max_belt_tier)
+            entities.extend(_render_family_input_paths(fam, row_spans, bw, input_belt_tier))
 
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
@@ -1033,7 +1015,7 @@ def _negotiate_and_route(
                 key=lambda p: row_spans[p].output_belt_y,
             )
             inputs_sorted = sorted(template.input_tiles, key=lambda t: t[0])
-            for producer_row_idx, (input_dx, _) in zip(producers_sorted, inputs_sorted):
+            for producer_row_idx, (input_dx, _) in zip(producers_sorted, inputs_sorted, strict=False):
                 out_y = row_spans[producer_row_idx].output_belt_y
                 input_x = ox + input_dx
                 # WEST feeder row
