@@ -16,3 +16,8 @@ misc/
 scripts/blueprints/
 /graphics/
 target/
+
+# Factorio-SAT checkout (offline balancer-template regeneration only).
+# Keep the README so setup instructions are tracked.
+external/*
+!external/README.md
