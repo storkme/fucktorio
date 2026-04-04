@@ -135,6 +135,7 @@ def validate(
     issues.extend(check_belt_junctions(layout_result))
     issues.extend(check_underground_belt_pairs(layout_result))
     issues.extend(check_underground_belt_sideloading(layout_result))
+    issues.extend(check_underground_belt_entry_sideload(layout_result))
     issues.extend(check_belt_loops(layout_result))
     issues.extend(check_belt_item_isolation(layout_result))
     issues.extend(check_belt_inserter_conflict(layout_result))
@@ -1754,6 +1755,65 @@ def check_underground_belt_sideloading(
                     y=e.y,
                 )
             )
+
+    return issues
+
+
+def check_underground_belt_entry_sideload(
+    layout_result: LayoutResult,
+) -> list[ValidationIssue]:
+    """Check that underground belt inputs are fed straight, not from the side.
+
+    Sideloading onto a UG input only fills the far lane — items on the
+    near lane are lost.  In bus routing this is almost always a bug: the
+    feeder should approach in the same direction as the UG input to load
+    both lanes.
+    """
+    issues: list[ValidationIssue] = []
+
+    # Build maps: position → direction for all belt-like entities
+    belt_dir: dict[tuple[int, int], EntityDirection] = {}
+    ug_inputs: list[PlacedEntity] = []
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            belt_dir[(e.x, e.y)] = e.direction
+        if e.name in _UG_BELT_ENTITIES and e.io_type == "input":
+            ug_inputs.append(e)
+
+    for ug in ug_inputs:
+        d = _DIR_TO_VEC.get(ug.direction)
+        if d is None:
+            continue
+        ug_dx, ug_dy = d
+
+        # Check all 4 neighbors for belts that feed INTO this UG input
+        for ndx, ndy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+            nx, ny = ug.x + ndx, ug.y + ndy
+            if (nx, ny) not in belt_dir:
+                continue
+            n_dir = belt_dir[(nx, ny)]
+            n_dx, n_dy = _DIR_TO_VEC[n_dir]
+
+            # Does this neighbor point into the UG input tile?
+            if (nx + n_dx, ny + n_dy) != (ug.x, ug.y):
+                continue
+
+            # Dot product: 0 = perpendicular (sideload), >0 = straight feed
+            dot = n_dx * ug_dx + n_dy * ug_dy
+            if dot == 0:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        category="underground-belt",
+                        message=(
+                            f"Belt at ({nx},{ny}) facing {n_dir.name} sideloads into "
+                            f"underground input at ({ug.x},{ug.y}) facing {ug.direction.name} "
+                            f"— only one lane loaded, must feed UG inputs straight"
+                        ),
+                        x=ug.x,
+                        y=ug.y,
+                    )
+                )
 
     return issues
 

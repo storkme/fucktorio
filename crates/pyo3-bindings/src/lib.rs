@@ -260,9 +260,13 @@ fn astar_inner(
     let mut g_score: FxHashMap<State, f32> = FxHashMap::default();
     let mut parent: FxHashMap<State, State> = FxHashMap::default();
 
-    // Seed open set with all start tiles
+    // Seed open set with all start tiles.
+    // When x_constraint is set (vertical trunk routing), allow starting on
+    // obstacles — the trunk will immediately go underground.  Surface moves
+    // FROM an obstacle tile are still blocked (line 354), so the only option
+    // is a UG jump, which is the correct behavior.
     for &(sx, sy) in start_set {
-        if obstacles.contains(&(sx, sy)) {
+        if obstacles.contains(&(sx, sy)) && x_constraint.is_none() {
             continue;
         }
         let initial = State { x: sx, y: sy, forced: None };

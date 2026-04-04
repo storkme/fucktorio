@@ -547,6 +547,33 @@ def _trunk_segments(start_y: int, end_y: int, skip_ys: set[int]) -> list[tuple[i
     return segments
 
 
+def _compute_trunk_cross_ys(
+    lanes: list[BusLane],
+    row_spans: list[RowSpan],
+) -> dict[int, set[int]]:
+    """For each trunk column x, compute y-coordinates crossed by other lanes' tap-offs."""
+    cross_ys: dict[int, set[int]] = {}
+    for lane in lanes:
+        if lane.is_fluid:
+            continue
+        for tap_y in lane.tap_off_ys:
+            for other in lanes:
+                if other is lane or other.is_fluid:
+                    continue
+                other_start = other.source_y
+                other_all_ys = list(other.tap_off_ys)
+                if other.producer_row is not None:
+                    other_all_ys.append(row_spans[other.producer_row].output_belt_y)
+                for pri in other.extra_producer_rows:
+                    other_all_ys.append(row_spans[pri].output_belt_y)
+                other_end = max(other_all_ys) if other_all_ys else other_start
+                if other.balancer_y is not None:
+                    other_end = max(other_end, other.balancer_y + 1)
+                if other_start <= tap_y <= other_end and tap_y not in set(other.tap_off_ys):
+                    cross_ys.setdefault(other.x, set()).add(tap_y)
+    return cross_ys
+
+
 def _negotiate_and_route(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
@@ -638,15 +665,18 @@ def _negotiate_and_route(
             tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else start_y
 
             # Trunk: A* vertical (strategy=2, low priority — routes after tap-offs)
-            # Range is [start_y, tap_y-1] since the turn belt at tap_y is manual.
-            if tap_y - 1 >= start_y:
-                trunk_key = f"trunk:{lane.item}:{x}:{start_y}:{tap_y - 1}"
+            # Skip producer output ys (return junctions — need surface belts).
+            # Cross-lane tap-off positions are NOT skipped here — the A* handles
+            # them via underground (promoted obstacles + x_constraint force UG).
+            skip_ys = set(producer_out_ys)
+            for seg_start, seg_end in _trunk_segments(start_y, tap_y - 1, skip_ys):
+                trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
                 id_to_key[lane_id] = trunk_key
                 specs.append(
                     PyLaneSpec(
                         id=lane_id,
                         item_id=item_id,
-                        waypoints=[(x, start_y), (x, tap_y - 1)],
+                        waypoints=[(x, seg_start), (x, seg_end)],
                         strategy=2,
                         priority=3,
                         x_constraint=x,
@@ -1218,7 +1248,11 @@ def _route_intermediate_lane(
             bal_key = f"bal:{lane.item}:{x}:{split_y}"
             bal_path = paths.get(bal_key)
             if bal_path:
-                entities.extend(_render_path(bal_path, lane.item, horiz_belt, EntityDirection.WEST))
+                bal_entities = _render_path(bal_path, lane.item, horiz_belt, EntityDirection.WEST)
+                # Last tile should face EAST to sideload onto the trunk
+                if bal_entities:
+                    bal_entities[-1].direction = EntityDirection.EAST
+                entities.extend(bal_entities)
         else:
             # Normal return: use A*-routed path
             ret_key = f"ret:{lane.item}:{x}:{out_y}"
@@ -1226,15 +1260,27 @@ def _route_intermediate_lane(
             if ret_path:
                 entities.extend(_render_path(ret_path, lane.item, horiz_belt, EntityDirection.WEST))
 
-    # Vertical trunk: use A*-routed path (may include UG crossings)
-    if tap_y - 1 >= start_y:
-        trunk_key = f"trunk:{lane.item}:{x}:{start_y}:{tap_y - 1}"
+    # Vertical trunk: use A*-routed segment paths (may include UG crossings).
+    # Manual surface belts at producer output ys (return junction points).
+    skip_ys = set(producer_out_ys)
+    for out_y in producer_out_ys:
+        if out_y < tap_y:
+            entities.append(
+                PlacedEntity(
+                    name=belt_name,
+                    x=x,
+                    y=out_y,
+                    direction=EntityDirection.SOUTH,
+                    carries=lane.item,
+                )
+            )
+    for seg_start, seg_end in _trunk_segments(start_y, tap_y - 1, skip_ys):
+        trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
         trunk_path = paths.get(trunk_key)
         if trunk_path:
             entities.extend(_render_path(trunk_path, lane.item, belt_name, EntityDirection.SOUTH))
         else:
-            # Fallback: manual SOUTH belts
-            for y in range(start_y, tap_y):
+            for y in range(seg_start, seg_end + 1):
                 entities.append(
                     PlacedEntity(
                         name=belt_name,
