@@ -1,14 +1,3 @@
-[package]
-name = "fucktorio_native"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-name = "fucktorio_native"
-crate-type = ["cdylib"]
-path = "rust_src/lib.rs"
-
-[dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
-rustc-hash = "2"
-ordered-float = "4"
+[workspace]
+members = ["crates/*"]
+resolver = "2"

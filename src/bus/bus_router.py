@@ -384,14 +384,15 @@ def route_bus(
     crossing conflicts between ALL lane segments (including mergers),
     then renders belt entities with underground crossings at conflict points.
     """
-    # Pre-compute the full crossing map using Rust negotiation.
-    # This lets tap-offs/returns know about merger positions BEFORE routing.
-    crossing_map = _negotiate_crossings(lanes, row_spans, total_height, bw, row_entities)
+    # Route all horizontals via negotiated A* with underground support.
+    routed_paths = _negotiate_and_route(
+        lanes, row_spans, total_height, bw, row_entities, solver_result,
+    )
 
     entities: list[PlacedEntity] = []
     max_y = total_height
     for lane in lanes:
-        _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, crossing_map)
+        _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
 
     # Group same-item lanes that were split into parallel trunks.
     # Merge them with splitters if there are more trunks than needed.
@@ -434,7 +435,7 @@ def route_bus(
                     bw,
                     max_belt_tier,
                     lanes,
-                    crossing_map,
+                    routed_paths,
                 )
                 entities.extend(merge_ents)
                 max_y = max(max_y, merge_end_y)
@@ -450,7 +451,7 @@ def _merge_output_rows(
     bw: int,
     max_belt_tier: str | None = None,
     all_lanes: list[BusLane] | None = None,
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
+    routed_paths: dict[int, list[tuple[int, int]]] | None = None,
 ) -> tuple[list[PlacedEntity], int]:
     """Merge output belts from multiple rows into one using a splitter tree.
 
@@ -472,28 +473,16 @@ def _merge_output_rows(
 
     output_ys = [row_spans[ri].output_belt_y for ri in output_rows]
 
-    # Create a dummy BusLane for _blocked_xs_at queries
-    dummy_lane = BusLane(item=item, x=0, source_y=0, consumer_rows=[], producer_row=None, rate=0)
-    lanes_list = all_lanes or []
+    paths = routed_paths or {}
 
     for idx, out_y in enumerate(output_ys):
         target_x = 0 if idx == 0 else 1
 
         # Horizontal WEST from bw-1 to target_x+1, underground past bus trunks.
-        # Stop one tile before target_x so the vertical trunk can start cleanly.
-        blocked = _blocked_xs_at(dummy_lane, out_y, lanes_list, row_spans, crossing_map)
-        blocked.discard(0)
-        blocked.discard(1)
-        _route_horizontal(
-            entities,
-            dummy_lane,
-            out_y,
-            target_x + 1,
-            bw - 1,
-            EntityDirection.WEST,
-            blocked,
-            belt_name,
-        )
+        merge_key = f"merge:{item}:{target_x}:{out_y}"
+        merge_path = paths.get(merge_key)
+        if merge_path:
+            entities.extend(_render_path(merge_path, item, belt_name, EntityDirection.WEST))
 
         # Vertical SOUTH from out_y to merge_start_y at target_x.
         # The WEST belt at (target_x+1, out_y) feeds into the SOUTH belt
@@ -537,168 +526,43 @@ def _merge_output_rows(
     return entities, y_cursor
 
 
-def _negotiate_crossings(
+def _negotiate_and_route(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
     total_height: int,
     bw: int,
     row_entities: list[PlacedEntity] | None = None,
-) -> dict[tuple[int, int], set[str]]:
-    """Use Rust negotiation to find all crossing points between lane segments.
+    solver_result: SolverResult | None = None,
+) -> dict[str, list[tuple[int, int]]]:
+    """Route bus horizontals via negotiated A* with underground support.
 
-    Returns a map of (x, y) → set of item names that occupy that tile.
-    Tiles with multiple different items are crossing points where
-    underground belts should be used.
+    Trunks and mergers use axis-aligned routing (strategy=0).
+    Tap-offs and output returns use A* with hard perpendicular UG block
+    (strategy=2), constrained to stay on their row.
+
+    Returns a map of string key → routed path tiles.  Keys are:
+    - "tap:{item}:{x}:{y}" for tap-off demands
+    - "ret:{item}:{x}:{y}" for output return demands
+
+    Gaps in the path (manhattan distance > 1 between consecutive tiles)
+    indicate underground belt jumps.
     """
     try:
         from fucktorio_native import PyLaneSpec, negotiate_lanes
     except ImportError:
-        return {}  # graceful fallback: no crossing info, use legacy routing
+        return {}
 
     # Build item → numeric ID mapping
     items = sorted({lane.item for lane in lanes if not lane.is_fluid})
     item_to_id: dict[str, int] = {item: i for i, item in enumerate(items)}
 
+    # Map demand_id → string key for result lookup
+    id_to_key: dict[int, str] = {}
+
     specs: list[PyLaneSpec] = []
     lane_id = 0
 
-    for lane in lanes:
-        if lane.is_fluid:
-            continue
-        item_id = item_to_id.get(lane.item, 0)
-        x = lane.x
-
-        all_producers = []
-        if lane.producer_row is not None:
-            all_producers.append(lane.producer_row)
-        all_producers.extend(lane.extra_producer_rows)
-
-        if _is_intermediate(lane):
-            # Intermediate: return paths (WEST) + trunk (SOUTH) + tap-off (EAST)
-            producer_out_ys = [row_spans[p].output_belt_y for p in all_producers]
-            start_y = min(producer_out_ys)
-            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else start_y
-
-            # Return paths: horizontal WEST
-            for pri in all_producers:
-                out_y = row_spans[pri].output_belt_y
-                specs.append(
-                    PyLaneSpec(
-                        id=lane_id,
-                        item_id=item_id,
-                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
-                        strategy=0,
-                        priority=3,
-                    )
-                )
-                lane_id += 1
-
-            # Trunk + tap-off: vertical then horizontal
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, start_y), (x, tap_y), (bw - 1, tap_y)],
-                    strategy=0,
-                    priority=5,
-                )
-            )
-            lane_id += 1
-
-        elif lane.consumer_rows:
-            # External input: trunk from source to tap-off
-            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else lane.source_y
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, lane.source_y), (x, tap_y), (bw - 1, tap_y)],
-                    strategy=0,
-                    priority=5,
-                )
-            )
-            lane_id += 1
-
-        else:
-            # Collector: trunk + returns
-            all_ys = list(lane.tap_off_ys)
-            for pri in all_producers:
-                all_ys.append(row_spans[pri].output_belt_y)
-            end_y = max(all_ys) if all_ys else lane.source_y
-            if lane.balancer_y is not None:
-                end_y = max(end_y, lane.balancer_y + 1)
-
-            # Trunk
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(x, lane.source_y), (x, end_y)],
-                    strategy=0,
-                    priority=5,
-                )
-            )
-            lane_id += 1
-
-            # Returns
-            for pri in all_producers:
-                out_y = row_spans[pri].output_belt_y
-                specs.append(
-                    PyLaneSpec(
-                        id=lane_id,
-                        item_id=item_id,
-                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
-                        strategy=0,
-                        priority=3,
-                    )
-                )
-                lane_id += 1
-
-    # Add merger segments — these are the routes that were previously invisible
-    # to tap-off routing.
-    item_lane_groups: dict[str, list[BusLane]] = {}
-    for lane in lanes:
-        if lane.is_fluid:
-            continue
-        item_lane_groups.setdefault(lane.item, []).append(lane)
-
-    for _item, group in item_lane_groups.items():
-        if len(group) <= 1 or all(ln.consumer_rows for ln in group):
-            continue
-        item_id = item_to_id.get(_item, 0)
-        trunk_xs = sorted(ln.x for ln in group)
-        # Merger block starts at total_height, merges pairs with WEST routes
-        merge_y = total_height
-        # Trunk extensions to merge_y
-        for ln in group:
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(ln.x, ln.source_y), (ln.x, merge_y + 3)],
-                    strategy=0,
-                    priority=8,  # high priority — merger is fixed
-                )
-            )
-            lane_id += 1
-        # Horizontal merger routes between pairs
-        i = 0
-        while i + 1 < len(trunk_xs):
-            left_x = trunk_xs[i]
-            right_x = trunk_xs[i + 1]
-            specs.append(
-                PyLaneSpec(
-                    id=lane_id,
-                    item_id=item_id,
-                    waypoints=[(right_x, merge_y), (left_x + 1, merge_y)],
-                    strategy=0,
-                    priority=8,
-                )
-            )
-            lane_id += 1
-            i += 2
-
-    # Collect fixed obstacles from row entities
+    # --- Collect fixed obstacles ---
     obstacles: list[tuple[int, int]] = []
     if row_entities:
         _MACHINE_ENTITIES = {
@@ -720,21 +584,359 @@ def _negotiate_crossings(
             else:
                 obstacles.append((e.x, e.y))
 
+    # Add trunk column positions as obstacles — forces A* underground at crossings.
+    # For each solid lane, the vertical segment occupies (lane.x, y) for y in
+    # [source_y, end_y].  These are obstacles for OTHER lanes' horizontal demands
+    # but strategy=0 (axis-aligned) ignores obstacles, so trunks aren't affected.
+    for lane in lanes:
+        if lane.is_fluid:
+            continue
+        all_producers = []
+        if lane.producer_row is not None:
+            all_producers.append(lane.producer_row)
+        all_producers.extend(lane.extra_producer_rows)
+
+        start_y = lane.source_y
+        all_ys = list(lane.tap_off_ys)
+        if row_spans:
+            for pri in all_producers:
+                all_ys.append(row_spans[pri].output_belt_y)
+        end_y = max(all_ys) if all_ys else start_y
+        if lane.balancer_y is not None:
+            end_y = max(end_y, lane.balancer_y + 1)
+
+        for y in range(start_y, end_y + 1):
+            obstacles.append((lane.x, y))
+
+    # --- Build demand specs ---
+
+    for lane in lanes:
+        if lane.is_fluid:
+            continue
+        item_id = item_to_id.get(lane.item, 0)
+        x = lane.x
+
+        all_producers = []
+        if lane.producer_row is not None:
+            all_producers.append(lane.producer_row)
+        all_producers.extend(lane.extra_producer_rows)
+
+        if _is_intermediate(lane):
+            producer_out_ys = [row_spans[p].output_belt_y for p in all_producers]
+            start_y = min(producer_out_ys)
+            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else start_y
+
+            # Trunk: axis-aligned vertical (strategy=0)
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, start_y), (x, tap_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
+            lane_id += 1
+
+            # Output returns: A* horizontal WEST (strategy=2)
+            for pri in all_producers:
+                out_y = row_spans[pri].output_belt_y
+                id_to_key[lane_id] = f"ret:{lane.item}:{x}:{out_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
+                        strategy=2,
+                        priority=3,
+                        y_constraint=out_y,
+                    )
+                )
+                lane_id += 1
+
+            # Tap-off: A* horizontal EAST (strategy=2)
+            # Turn belt at (x, tap_y) placed manually; A* starts at x+1.
+            if x + 1 <= bw - 1:
+                id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
+                        strategy=2,
+                        priority=3,
+                        y_constraint=tap_y,
+                    )
+                )
+                lane_id += 1
+
+        elif lane.consumer_rows:
+            # External input: trunk from source to tap-off
+            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else lane.source_y
+
+            # Trunk: axis-aligned vertical
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, lane.source_y), (x, tap_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
+            lane_id += 1
+
+            # Tap-off: A* horizontal EAST
+            if x + 1 <= bw - 1:
+                id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
+                        strategy=2,
+                        priority=3,
+                        y_constraint=tap_y,
+                    )
+                )
+                lane_id += 1
+
+        else:
+            # Collector: trunk + returns
+            all_ys = list(lane.tap_off_ys)
+            for pri in all_producers:
+                all_ys.append(row_spans[pri].output_belt_y)
+            end_y = max(all_ys) if all_ys else lane.source_y
+            if lane.balancer_y is not None:
+                end_y = max(end_y, lane.balancer_y + 1)
+
+            # Trunk: axis-aligned vertical
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(x, lane.source_y), (x, end_y)],
+                    strategy=0,
+                    priority=5,
+                )
+            )
+            lane_id += 1
+
+            # Output returns: A* horizontal WEST
+            for pri in all_producers:
+                out_y = row_spans[pri].output_belt_y
+                id_to_key[lane_id] = f"ret:{lane.item}:{x}:{out_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, out_y), (x + 1, out_y)],
+                        strategy=2,
+                        priority=3,
+                        y_constraint=out_y,
+                    )
+                )
+                lane_id += 1
+
+    # --- Merger segments (axis-aligned, high priority) ---
+    item_lane_groups: dict[str, list[BusLane]] = {}
+    for lane in lanes:
+        if lane.is_fluid:
+            continue
+        item_lane_groups.setdefault(lane.item, []).append(lane)
+
+    for _item, group in item_lane_groups.items():
+        if len(group) <= 1 or all(ln.consumer_rows for ln in group):
+            continue
+        item_id = item_to_id.get(_item, 0)
+        trunk_xs = sorted(ln.x for ln in group)
+        merge_y = total_height
+        for ln in group:
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(ln.x, ln.source_y), (ln.x, merge_y + 3)],
+                    strategy=0,
+                    priority=8,
+                )
+            )
+            lane_id += 1
+        i = 0
+        while i + 1 < len(trunk_xs):
+            left_x = trunk_xs[i]
+            right_x = trunk_xs[i + 1]
+            specs.append(
+                PyLaneSpec(
+                    id=lane_id,
+                    item_id=item_id,
+                    waypoints=[(right_x, merge_y), (left_x + 1, merge_y)],
+                    strategy=0,
+                    priority=8,
+                )
+            )
+            lane_id += 1
+            i += 2
+
+    # --- Output merger horizontal demands (A*, strategy=2) ---
+    if solver_result:
+        output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
+        for out_item in output_items:
+            out_item_id = item_to_id.get(out_item)
+            if out_item_id is None:
+                continue
+            output_row_idxs = [
+                i for i, rs in enumerate(row_spans)
+                if any(o.item == out_item for o in rs.spec.outputs if not o.is_fluid)
+            ]
+            if len(output_row_idxs) < 2:
+                continue
+            for idx, ri in enumerate(output_row_idxs):
+                out_y = row_spans[ri].output_belt_y
+                target_x = 0 if idx == 0 else 1
+                if bw - 1 > target_x + 1:
+                    id_to_key[lane_id] = f"merge:{out_item}:{target_x}:{out_y}"
+                    specs.append(
+                        PyLaneSpec(
+                            id=lane_id,
+                            item_id=out_item_id,
+                            waypoints=[(bw - 1, out_y), (target_x + 1, out_y)],
+                            strategy=2,
+                            priority=3,
+                            y_constraint=out_y,
+                        )
+                    )
+                    lane_id += 1
+
     if not specs:
         return {}
 
-    # Run negotiation
-    routed = negotiate_lanes(specs, obstacles, max_extent=max(bw, total_height) + 50)
+    routed = negotiate_lanes(
+        specs,
+        obstacles,
+        max_extent=max(bw, total_height) + 50,
+        allow_underground=True,
+        ug_max_reach=8,  # express belt reach — renderer picks cheapest tier per span
+    )
 
-    # Build crossing map: (x, y) → set of items on that tile
-    tile_items: dict[tuple[int, int], set[str]] = {}
-    id_to_item = {v: k for k, v in item_to_id.items()}
+    # Build result map: string key → path (only for A* horizontal demands)
+    result: dict[str, list[tuple[int, int]]] = {}
     for r in routed:
-        item_name = id_to_item.get(r.item_id, "")
-        for pos in r.path:
-            tile_items.setdefault(pos, set()).add(item_name)
+        key = id_to_key.get(r.id)
+        if key and r.path:
+            result[key] = list(r.path)
+    return result
 
-    return tile_items
+
+def _render_path(
+    path: list[tuple[int, int]],
+    item: str,
+    belt_name: str,
+    direction_hint: EntityDirection = EntityDirection.EAST,
+) -> list[PlacedEntity]:
+    """Convert an A*-routed path into PlacedEntity belt/underground entities.
+
+    Gaps in the path (manhattan distance > 1 between consecutive tiles)
+    indicate underground belt jumps — UG entry at the first tile, UG exit
+    at the second.  Surface tiles get regular belt entities.
+
+    For single-tile paths, ``direction_hint`` determines the belt direction.
+    """
+    entities: list[PlacedEntity] = []
+    if not path:
+        return entities
+
+    if len(path) == 1:
+        entities.append(
+            PlacedEntity(
+                name=belt_name,
+                x=path[0][0],
+                y=path[0][1],
+                direction=direction_hint,
+                carries=item,
+            )
+        )
+        return entities
+
+    i = 0
+    while i < len(path):
+        x, y = path[i]
+        if i + 1 < len(path):
+            nx, ny = path[i + 1]
+            dx = nx - x
+            dy = ny - y
+            dist = abs(dx) + abs(dy)
+
+            if dist > 1:
+                # Underground jump: entry at (x,y), exit at (nx,ny)
+                sdx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                sdy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                direction = _vec_to_entity_dir(sdx, sdy)
+                ug_name = _ug_for_span(belt_name, dist)
+                entities.append(
+                    PlacedEntity(
+                        name=ug_name,
+                        x=x,
+                        y=y,
+                        direction=direction,
+                        io_type="input",
+                        carries=item,
+                    )
+                )
+                entities.append(
+                    PlacedEntity(
+                        name=ug_name,
+                        x=nx,
+                        y=ny,
+                        direction=direction,
+                        io_type="output",
+                        carries=item,
+                    )
+                )
+                i += 2  # skip both entry and exit
+                continue
+            else:
+                # Surface belt
+                direction = _vec_to_entity_dir(dx, dy)
+                entities.append(
+                    PlacedEntity(
+                        name=belt_name,
+                        x=x,
+                        y=y,
+                        direction=direction,
+                        carries=item,
+                    )
+                )
+                i += 1
+        else:
+            # Last tile — use direction from previous tile
+            if len(entities) > 0:
+                direction = entities[-1].direction
+            else:
+                direction = EntityDirection.EAST
+            entities.append(
+                PlacedEntity(
+                    name=belt_name,
+                    x=x,
+                    y=y,
+                    direction=direction,
+                    carries=item,
+                )
+            )
+            i += 1
+
+    return entities
+
+
+def _vec_to_entity_dir(dx: int, dy: int) -> EntityDirection:
+    """Convert a direction vector to EntityDirection."""
+    if dx > 0:
+        return EntityDirection.EAST
+    if dx < 0:
+        return EntityDirection.WEST
+    if dy > 0:
+        return EntityDirection.SOUTH
+    return EntityDirection.NORTH
 
 
 def _place_merger_block(
@@ -878,15 +1080,15 @@ def _route_lane(
     row_spans: list[RowSpan],
     bw: int,
     max_belt_tier: str | None = None,
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
+    routed_paths: dict[str, list[tuple[int, int]]] | None = None,
 ) -> None:
     """Route a single bus lane: vertical segment + tap-offs + output return."""
     if lane.is_fluid:
         _route_fluid_lane(entities, lane, bw)
     elif _is_intermediate(lane):
-        _route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, crossing_map)
+        _route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths)
     else:
-        _route_belt_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, crossing_map)
+        _route_belt_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths)
 
 
 def _is_intermediate(lane: BusLane) -> bool:
@@ -903,18 +1105,17 @@ def _route_intermediate_lane(
     row_spans: list[RowSpan],
     bw: int,
     max_belt_tier: str | None = None,
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
+    routed_paths: dict[str, list[tuple[int, int]]] | None = None,
 ) -> None:
-    """Route an intermediate lane: direct path from producer output to consumer input.
+    """Route an intermediate lane: producer returns, vertical trunk, tap-off.
 
-    When multiple producers feed the lane, the last producer's output is
-    split with a splitter: half goes WEST normally (sideloads right lane),
-    half goes underground to lane.x-1 then SOUTH+EAST to sideload the
-    left lane.  This balances items across both belt lanes.
+    Uses pre-routed A* paths for horizontal segments (returns and tap-off).
+    Splitter lane balancing is placed manually (fixed geometry).
     """
     x = lane.x
     belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
     horiz_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
+    paths = routed_paths or {}
 
     all_producers = []
     if lane.producer_row is not None:
@@ -927,9 +1128,6 @@ def _route_intermediate_lane(
     start_y = min(producer_out_ys)
 
     # --- Lane balancing via splitter + opposite-side sideload ---
-    # When there are 2+ producers, split the LAST producer's output so
-    # half the items sideload from the opposite side of the trunk,
-    # filling the empty lane.
     balance_y: int | None = None
     if len(all_producers) >= 2 and x > 1:
         last_pri = all_producers[-1]
@@ -939,12 +1137,8 @@ def _route_intermediate_lane(
     for pri in all_producers:
         out_y = row_spans[pri].output_belt_y
         if out_y == balance_y:
-            # This return gets a splitter for lane balancing.
-            # Splitter faces WEST on the output belt at (bw, out_y).
-            # It occupies (bw, out_y) and (bw, out_y-1).
-            # One output continues WEST at out_y (normal return).
-            # Other output goes WEST at out_y-1 (underground to left side).
-            splitter_x = bw  # first tile of the machine row output belt
+            # Splitter for lane balancing (manual placement)
+            splitter_x = bw
             splitter_name = _SPLITTER_MAP.get(horiz_belt, "splitter")
             entities.append(
                 PlacedEntity(
@@ -955,18 +1149,11 @@ def _route_intermediate_lane(
                     carries=lane.item,
                 )
             )
-            # Normal return: WEST from splitter_x-1 to trunk (right lane)
-            ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
-            _route_horizontal(
-                entities,
-                lane,
-                out_y,
-                x + 1,
-                splitter_x - 1,
-                EntityDirection.WEST,
-                ret_blocked,
-                horiz_belt,
-            )
+            # Normal return: use A*-routed path
+            ret_key = f"ret:{lane.item}:{x}:{out_y}"
+            ret_path = paths.get(ret_key)
+            if ret_path:
+                entities.extend(_render_path(ret_path, lane.item, horiz_belt, EntityDirection.WEST))
             # Split return: underground WEST from splitter_x-1 to x-1,
             # then SOUTH, then EAST to sideload left lane of trunk
             split_y = out_y - 1
@@ -996,7 +1183,6 @@ def _route_intermediate_lane(
                     )
                 )
             elif ug_entry_x == ug_exit_x + 1:
-                # Adjacent — just a surface belt
                 entities.append(
                     PlacedEntity(
                         name=horiz_belt,
@@ -1006,7 +1192,7 @@ def _route_intermediate_lane(
                         carries=lane.item,
                     )
                 )
-            # SOUTH belt from (x-1, split_y) to (x-1, split_y+1)
+            # SOUTH + EAST sideload onto trunk's left lane
             entities.append(
                 PlacedEntity(
                     name=horiz_belt,
@@ -1016,7 +1202,6 @@ def _route_intermediate_lane(
                     carries=lane.item,
                 )
             )
-            # EAST sideload onto trunk's left lane at (x-1, split_y+2)
             entities.append(
                 PlacedEntity(
                     name=horiz_belt,
@@ -1027,18 +1212,11 @@ def _route_intermediate_lane(
                 )
             )
         else:
-            # Normal return: WEST from bw-1 to trunk (right lane sideload)
-            ret_blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
-            _route_horizontal(
-                entities,
-                lane,
-                out_y,
-                x + 1,
-                bw - 1,
-                EntityDirection.WEST,
-                ret_blocked,
-                horiz_belt,
-            )
+            # Normal return: use A*-routed path
+            ret_key = f"ret:{lane.item}:{x}:{out_y}"
+            ret_path = paths.get(ret_key)
+            if ret_path:
+                entities.extend(_render_path(ret_path, lane.item, horiz_belt, EntityDirection.WEST))
 
     # Vertical trunk: SOUTH from first producer to tap-off
     for y in range(start_y, tap_y):
@@ -1052,9 +1230,7 @@ def _route_intermediate_lane(
             )
         )
 
-    # Tap-off: surface EAST belt at the turn point, then underground crossings.
-    # The first tile must be surface to avoid sideloading onto a UG input
-    # (which only loads the far lane).
+    # Tap-off: surface EAST belt at the turn point, then A*-routed path.
     entities.append(
         PlacedEntity(
             name=belt_name,
@@ -1064,18 +1240,10 @@ def _route_intermediate_lane(
             carries=lane.item,
         )
     )
-    if x + 1 <= bw - 1:
-        tap_blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
-        _route_horizontal(
-            entities,
-            lane,
-            tap_y,
-            x + 1,
-            bw - 1,
-            EntityDirection.EAST,
-            tap_blocked,
-            belt_name,
-        )
+    tap_key = f"tap:{lane.item}:{x}:{tap_y}"
+    tap_path = paths.get(tap_key)
+    if tap_path:
+        entities.extend(_render_path(tap_path, lane.item, belt_name))
 
 
 def _route_belt_lane(
@@ -1085,45 +1253,39 @@ def _route_belt_lane(
     row_spans: list[RowSpan],
     bw: int,
     max_belt_tier: str | None = None,
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
+    routed_paths: dict[str, list[tuple[int, int]]] | None = None,
 ) -> None:
-    """Route a solid-item bus lane with belts."""
+    """Route a solid-item bus lane with belts.
+
+    Uses pre-routed A* paths for horizontal segments (tap-offs and returns).
+    Trunk and balancer placement is manual.
+    """
     x = lane.x
     tap_off_set = set(lane.tap_off_ys)
+    paths = routed_paths or {}
 
     start_y = lane.source_y
-    # End y must cover all tap-offs AND all extra producer output belts
     all_ys = list(lane.tap_off_ys)
     for pri in lane.extra_producer_rows:
         all_ys.append(row_spans[pri].output_belt_y)
     end_y = max(all_ys) if all_ys else start_y
 
-    # Extend end_y to include lane balancer if present
     if lane.balancer_y is not None:
         end_y = max(end_y, lane.balancer_y + 1)
 
-    # Trunk belt: with a balancer both lanes are used, so select from full rate.
-    # Horizontal belts (tap-offs, output returns) always sideload onto one lane.
     if lane.balancer_y is not None:
         belt_name = belt_entity_for_rate(lane.rate, max_tier=max_belt_tier)
     else:
         belt_name = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
-    # Tap-off/return belts carry full rate on one lane — always use per-lane sizing
     horiz_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
-    # Pre-balancer trunk segment carries full rate on one lane.  Respect the
-    # belt tier constraint — items buffer briefly before the balancer, which
-    # is fine in Factorio.
     if lane.balancer_y is not None:
         pre_bal_belt = belt_entity_for_rate(lane.rate * 2, max_tier=max_belt_tier)
     else:
         pre_bal_belt = belt_name
 
-    # Positions occupied by the lane balancer splitter (skip from vertical belt loop)
     balancer_skip = {lane.balancer_y} if lane.balancer_y is not None else set()
 
-    # Vertical surface belts (SOUTH), skipping tap-off and balancer positions.
-    # Before the balancer, items are on one lane — use the higher-tier horiz_belt.
-    # After the balancer, items are balanced — use the cheaper belt_name.
+    # Vertical surface belts (SOUTH)
     bal_y = lane.balancer_y
     for y in range(start_y, end_y + 1):
         if y in tap_off_set or y in balancer_skip:
@@ -1139,8 +1301,7 @@ def _route_belt_lane(
             )
         )
 
-    # Place lane balancer: splitter (left tile at x-1, right tile at x)
-    # + EAST sideload belt at x-1 to feed left output onto trunk's left lane
+    # Lane balancer (manual placement)
     if lane.balancer_y is not None:
         by = lane.balancer_y
         splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
@@ -1153,7 +1314,6 @@ def _route_belt_lane(
                 carries=lane.item,
             )
         )
-        # Left output sideloads EAST from x-1 onto trunk at x (hits left lane)
         entities.append(
             PlacedEntity(
                 name=belt_name,
@@ -1164,21 +1324,33 @@ def _route_belt_lane(
             )
         )
 
-    # Tap-off horizontal belts (EAST) from bus column to row start.
-    # When crossing another lane's vertical segment, go underground.
+    # Tap-offs: surface turn belt + A*-routed path
     for tap_y in lane.tap_off_ys:
-        _route_tap_off(entities, lane, tap_y, all_lanes, row_spans, bw, horiz_belt, crossing_map)
+        entities.append(
+            PlacedEntity(
+                name=horiz_belt,
+                x=x,
+                y=tap_y,
+                direction=EntityDirection.EAST,
+                carries=lane.item,
+            )
+        )
+        tap_key = f"tap:{lane.item}:{x}:{tap_y}"
+        tap_path = paths.get(tap_key)
+        if tap_path:
+            entities.extend(_render_path(tap_path, lane.item, horiz_belt))
 
-    # Output return: WEST belts from row edge back to bus column.
-    # Must go underground past other lanes' vertical segments (same as tap-offs).
-    # Route returns for ALL producer rows (including extra sub-rows).
+    # Output returns: A*-routed paths
     all_producers = []
     if lane.producer_row is not None:
         all_producers.append(lane.producer_row)
     all_producers.extend(lane.extra_producer_rows)
     for pri in all_producers:
         out_y = row_spans[pri].output_belt_y
-        _route_output_return(entities, lane, out_y, all_lanes, row_spans, bw, horiz_belt, crossing_map)
+        ret_key = f"ret:{lane.item}:{x}:{out_y}"
+        ret_path = paths.get(ret_key)
+        if ret_path:
+            entities.extend(_render_path(ret_path, lane.item, horiz_belt))
 
 
 def _route_fluid_lane(
@@ -1250,53 +1422,6 @@ def _underground_for(belt: str) -> str:
     return _UG_MAP.get(belt, "underground-belt")
 
 
-def _blocked_xs_at(
-    lane: BusLane,
-    y: int,
-    all_lanes: list[BusLane],
-    row_spans: list[RowSpan] | None = None,
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
-) -> set[int]:
-    """Find x-columns that should be crossed underground at y.
-
-    Uses two sources:
-    1. Legacy: other lanes' active vertical segments (same as before)
-    2. Crossing map from Rust negotiation: tiles where a different item
-       occupies the same position (includes merger blocks, balancers, etc.)
-    """
-    blocked: set[int] = set()
-    for other in all_lanes:
-        if other is lane or other.is_fluid:
-            continue  # Pipes don't block belts
-        other_start = other.source_y
-        all_ys = list(other.tap_off_ys)
-        if row_spans:
-            for pri in other.extra_producer_rows:
-                all_ys.append(row_spans[pri].output_belt_y)
-        other_end = max(all_ys) if all_ys else other_start
-        other_taps = set(other.tap_off_ys)
-        if other_start <= y <= other_end + 1 and y not in other_taps:
-            blocked.add(other.x)
-        # Block gap column at lane balancer positions (splitter left tile + sideload belt)
-        if other.balancer_y is not None and y in (other.balancer_y, other.balancer_y + 1):
-            blocked.add(other.x - 1)
-
-    # Augment with crossing map from Rust negotiation — blocks columns
-    # where a different item's lane path exists (e.g. merger splitters).
-    # Also blocks adjacent tiles for splitter-width entities (2 tiles wide).
-    if crossing_map:
-        max_x = max((ln.x for ln in all_lanes), default=0) + 2
-        for x in range(0, max_x):
-            items_at = crossing_map.get((x, y))
-            if items_at and lane.item not in items_at:
-                blocked.add(x)
-                # Splitters are 2 tiles wide — also block adjacent tile
-                if x > 0:
-                    blocked.add(x - 1)
-
-    return blocked
-
-
 def _ug_for_span(belt_name: str, span: int) -> str:
     """Pick the cheapest underground belt tier that can cover *span* tiles.
 
@@ -1322,178 +1447,5 @@ def _ug_for_span(belt_name: str, span: int) -> str:
     return "express-underground-belt"
 
 
-def _route_horizontal(
-    entities: list[PlacedEntity],
-    lane: BusLane,
-    y: int,
-    x_from: int,
-    x_to: int,
-    direction: EntityDirection,
-    blocked_xs: set[int],
-    belt_name: str,
-) -> None:
-    """Route a horizontal belt run, going underground past blocked columns.
-
-    Underground belt tier is auto-upgraded when the span exceeds the base
-    tier's reach — tap-off crossings don't need to match the trunk tier.
-    """
-
-    if direction == EntityDirection.EAST:
-        hx = x_from
-        while hx <= x_to:
-            if hx in blocked_xs:
-                # UG entry one tile before the blocked column.  If the blocked
-                # column IS x_from (first tile), place UG entry at x_from
-                # itself — the preceding surface belt (placed by the caller
-                # as a turn point) feeds straight in, preserving both lanes.
-                entry_x = max(hx - 1, x_from)
-                exit_x = hx + 1
-                # Extend past all consecutive blocked columns, including
-                # cases where the tile after the exit is also blocked.
-                while exit_x in blocked_xs or (exit_x + 1) in blocked_xs:
-                    exit_x += 2
-                # Ensure minimum span of 2 for underground belts
-                if exit_x - entry_x < 2:
-                    exit_x = entry_x + 2
-                # Clamp exit to x_to if it overshoots (blocked zone at edge)
-                if exit_x > x_to:
-                    exit_x = x_to
-                if entry_x >= x_from and exit_x - entry_x >= 2:
-                    # Remove surface belt we may have just placed at entry_x
-                    entities[:] = [
-                        e
-                        for e in entities
-                        if not (e.x == entry_x and e.y == y and e.name == belt_name and e.direction == direction)
-                    ]
-                    span = exit_x - entry_x
-                    ug_name = _ug_for_span(belt_name, span)
-                    entities.append(
-                        PlacedEntity(
-                            name=ug_name,
-                            x=entry_x,
-                            y=y,
-                            direction=EntityDirection.EAST,
-                            io_type="input",
-                            carries=lane.item,
-                        )
-                    )
-                    entities.append(
-                        PlacedEntity(
-                            name=ug_name,
-                            x=exit_x,
-                            y=y,
-                            direction=EntityDirection.EAST,
-                            io_type="output",
-                            carries=lane.item,
-                        )
-                    )
-                    hx = exit_x + 1
-                    continue
-            entities.append(
-                PlacedEntity(
-                    name=belt_name,
-                    x=hx,
-                    y=y,
-                    direction=direction,
-                    carries=lane.item,
-                )
-            )
-            hx += 1
-    else:  # WEST — items flow right-to-left
-        hx = x_to
-        while hx >= x_from:
-            if hx in blocked_xs:
-                # For WEST: entry (input) is on the RIGHT (high x),
-                # exit (output) is on the LEFT (low x)
-                ug_input_x = hx + 1  # items enter underground here
-                ug_output_x = hx - 1  # items emerge here
-                while ug_output_x in blocked_xs or (ug_output_x - 1) in blocked_xs:
-                    ug_output_x -= 2
-                if ug_output_x >= x_from and ug_input_x <= x_to:
-                    # Remove surface belt at ug_input_x (already placed)
-                    entities[:] = [
-                        e
-                        for e in entities
-                        if not (e.x == ug_input_x and e.y == y and e.name == belt_name and e.direction == direction)
-                    ]
-                    span = ug_input_x - ug_output_x
-                    ug_name = _ug_for_span(belt_name, span)
-                    entities.append(
-                        PlacedEntity(
-                            name=ug_name,
-                            x=ug_input_x,
-                            y=y,
-                            direction=EntityDirection.WEST,
-                            io_type="input",
-                            carries=lane.item,
-                        )
-                    )
-                    entities.append(
-                        PlacedEntity(
-                            name=ug_name,
-                            x=ug_output_x,
-                            y=y,
-                            direction=EntityDirection.WEST,
-                            io_type="output",
-                            carries=lane.item,
-                        )
-                    )
-                    hx = ug_output_x - 1
-                    continue
-            entities.append(
-                PlacedEntity(
-                    name=belt_name,
-                    x=hx,
-                    y=y,
-                    direction=direction,
-                    carries=lane.item,
-                )
-            )
-            hx -= 1
 
 
-def _route_tap_off(
-    entities: list[PlacedEntity],
-    lane: BusLane,
-    tap_y: int,
-    all_lanes: list[BusLane],
-    row_spans: list[RowSpan],
-    bw: int,
-    belt_name: str = "transport-belt",
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
-) -> None:
-    """Route a horizontal tap-off (EAST) from bus lane to row input belt.
-
-    The first tile at lane.x is always a surface EAST belt (the turn point
-    from the SOUTH trunk).  Underground crossings start from lane.x+1 to
-    avoid sideloading onto a UG input which only fills the far lane.
-    """
-    # Surface belt at the turn point
-    entities.append(
-        PlacedEntity(
-            name=belt_name,
-            x=lane.x,
-            y=tap_y,
-            direction=EntityDirection.EAST,
-            carries=lane.item,
-        )
-    )
-    # Route the rest with underground crossings starting from x+1
-    if lane.x + 1 <= bw - 1:
-        blocked = _blocked_xs_at(lane, tap_y, all_lanes, row_spans, crossing_map)
-        _route_horizontal(entities, lane, tap_y, lane.x + 1, bw - 1, EntityDirection.EAST, blocked, belt_name)
-
-
-def _route_output_return(
-    entities: list[PlacedEntity],
-    lane: BusLane,
-    out_y: int,
-    all_lanes: list[BusLane],
-    row_spans: list[RowSpan],
-    bw: int,
-    belt_name: str = "transport-belt",
-    crossing_map: dict[tuple[int, int], set[str]] | None = None,
-) -> None:
-    """Route output return (WEST) from row edge back to bus column."""
-    blocked = _blocked_xs_at(lane, out_y, all_lanes, row_spans, crossing_map)
-    _route_horizontal(entities, lane, out_y, lane.x + 1, bw - 1, EntityDirection.WEST, blocked, belt_name)
