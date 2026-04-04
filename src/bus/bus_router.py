@@ -611,11 +611,13 @@ def _render_family_input_paths(
         out_y = row_spans[producer_row_idx].output_belt_y
         input_x = origin_x + input_dx
 
-        # Horizontal WEST feeder: A*-routed by the negotiator.
+        # Horizontal WEST feeder: A*-routed by the negotiator. When the
+        # feeder start and goal coincide (single-tile path), _render_path
+        # needs a WEST direction hint since feeders always flow westward.
         feeder_key = f"feeder:{fam.item}:{input_x}:{out_y}"
         feeder_path = paths.get(feeder_key)
         if feeder_path:
-            entities.extend(_render_path(feeder_path, fam.item, belt_tier))
+            entities.extend(_render_path(feeder_path, fam.item, belt_tier, direction_hint=EntityDirection.WEST))
 
         if out_y == origin_y:
             # N == 1 case: template's input tile at (input_x, out_y)
