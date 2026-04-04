@@ -359,9 +359,9 @@ def check_fluid_port_connectivity(
         if not ports:
             continue
 
-        # assembling-machine-3 has fluid_boxes_off_when_no_fluid_recipe — skip
-        # fluid port checks if no pipes are adjacent (non-fluid recipe)
-        if e.name == "assembling-machine-3":
+        # assembling-machine-{2,3} have fluid_boxes_off_when_no_fluid_recipe
+        # — skip fluid port checks if no pipes are adjacent (non-fluid recipe)
+        if e.name in ("assembling-machine-2", "assembling-machine-3"):
             has_any_pipe = any((e.x + rx, e.y + ry) in pipe_tiles for rx, ry, _ in ports)
             if not has_any_pipe:
                 continue

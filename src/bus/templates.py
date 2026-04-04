@@ -413,9 +413,10 @@ def dual_input_row(
 
 # Fluid port positions relative to machine tile_position.
 # chemical-plant input ports: (0,0) north, (2,0) north
-# assembling-machine-3 input port: (1,0) north
+# assembling-machine-{2,3} input port: (1,0) north
 _FLUID_INPUT_PORT_DX = {
     "chemical-plant": 0,
+    "assembling-machine-2": 1,
     "assembling-machine-3": 1,
 }
 
@@ -663,22 +664,28 @@ def fluid_dual_input_row(
                 )
             )
 
-        # Long-handed inserter (far belt -> machine) at mx+1
+        # Inserter placement depends on which column the fluid PTG occupies.
+        # port_dx == 0 (chemical-plant): PTG at mx+0, inserters at mx+1 (long)
+        #   and mx+2 (regular).
+        # port_dx == 1 (assembling-machine-2/3): PTG at mx+1, so move the
+        #   long-handed inserter to mx+2 and the regular inserter to mx+0.
+        if port_dx == 1:
+            long_x, reg_x = mx + 2, mx + 0
+        else:
+            long_x, reg_x = mx + 1, mx + 2
         entities.append(
             PlacedEntity(
                 name="long-handed-inserter",
-                x=mx + 1,
+                x=long_x,
                 y=inserter_y,
                 direction=EntityDirection.SOUTH,
                 carries=input1,
             )
         )
-
-        # Regular inserter (close belt -> machine) at mx+2
         entities.append(
             PlacedEntity(
                 name="inserter",
-                x=mx + 2,
+                x=reg_x,
                 y=inserter_y,
                 direction=EntityDirection.SOUTH,
                 carries=input2,

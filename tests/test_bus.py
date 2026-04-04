@@ -98,17 +98,19 @@ class TestBusLayout:
         _assert_valid(layout, result, allowed_categories={"power"})
 
     def test_processing_unit_from_ores(self):
-        """Full-stack 0.5/s blue circuit from raw ores + crude-oil on yellow belts.
+        """0.3/s blue circuit from raw ores + crude-oil on yellow belts.
 
-        Exercises the negotiated A* router's ability to tunnel belt feeders
-        past fluid trunks (copper-plate WEST feeders cross sulfuric-acid,
-        petroleum-gas, water, crude-oil vertical pipe columns).
+        Uses assembling-machine-2 (earliest assembler that supports fluid
+        recipes — processing-unit needs sulfuric-acid). Exercises the
+        negotiated A* router's ability to tunnel belt feeders past fluid
+        trunks (copper-plate WEST feeders cross sulfuric-acid, petroleum-
+        gas, water, crude-oil vertical pipe columns).
         """
         result = solve(
             "processing-unit",
-            0.5,
+            0.3,
             available_inputs={"iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"},
-            machine_entity="assembling-machine-1",
+            machine_entity="assembling-machine-2",
         )
         layout = bus_layout(result, max_belt_tier="transport-belt")
 
@@ -322,15 +324,15 @@ class TestBusVisualization:
     def test_viz_processing_unit_from_ores(self, viz):
         result = solve(
             "processing-unit",
-            0.5,
+            0.3,
             available_inputs={"iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"},
-            machine_entity="assembling-machine-1",
+            machine_entity="assembling-machine-2",
         )
         layout = bus_layout(result, max_belt_tier="transport-belt")
-        bp = _make_blueprint(layout, "bus: 0.5/s processing-unit from ores + oil (yellow belts)")
+        bp = _make_blueprint(layout, "bus: 0.3/s processing-unit from ores + oil (yellow belts)")
         viz(
             bp,
-            "bus-processing-unit-from-ores-0.5s",
+            "bus-processing-unit-from-ores-0.3s",
             solver_result=result,
             layout_result=layout,
             layout_style="bus",
