@@ -38,11 +38,16 @@ SHAPES: list[tuple[int, int]] = [
     (2, 2),
     (2, 3),
     (2, 4),
+    (2, 5),
     (3, 1),
     (3, 2),
+    (3, 3),
+    (3, 4),
     (4, 1),
     (4, 2),
+    (4, 3),
     (4, 4),
+    (5, 2),
 ]
 
 
@@ -57,7 +62,7 @@ class RawEntity:
     io_type: str | None = None  # "input" or "output" for underground-belt
 
 
-def run_sat(n: int, m: int, width: int, height: int) -> str | None:
+def run_sat(n: int, m: int, width: int, height: int, fast: bool = True, timeout: int = 300) -> str | None:
     """Run belt_balancer then blueprint encode.
 
     Returns the encoded blueprint string, or None if SAT fails / unsat.
@@ -66,13 +71,20 @@ def run_sat(n: int, m: int, width: int, height: int) -> str | None:
     if not network.exists():
         raise FileNotFoundError(f"No network file for {n}x{m}: {network}")
 
-    bb = subprocess.run(
-        [str(SAT_PY), "-m", "factorio_sat.belt_balancer",
-         "--fast", str(network), str(width), str(height)],
-        capture_output=True,
-        cwd=str(SAT_DIR),
-        timeout=300,
-    )
+    cmd = [str(SAT_PY), "-m", "factorio_sat.belt_balancer"]
+    if fast:
+        cmd.append("--fast")
+    cmd.extend([str(network), str(width), str(height)])
+    try:
+        bb = subprocess.run(
+            cmd,
+            capture_output=True,
+            cwd=str(SAT_DIR),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"    timeout after {timeout}s at {width}x{height} (fast={fast})", flush=True)
+        return None
     if bb.returncode != 0 or not bb.stdout:
         return None
     enc = subprocess.run(
@@ -96,16 +108,27 @@ def find_balancer(n: int, m: int) -> tuple[str, int, int] | None:
     """Search for a compact balancer by increasing width.
 
     Returns (blueprint_string, width, height) for the first solution found.
+    Tries --fast first across widths 3..20, then falls back to full solver
+    on widths where --fast failed (per-shape budget).
     """
-    height = max(n, m)
-    # Minimum sensible width is roughly max(2, n + m - something).
-    # Start narrow and bump until a solution appears.
-    for width in range(3, 14):
-        # SAT returns empty if unsat. Try with current width.
-        print(f"  probing {n}x{m} at {width}x{height}...", flush=True)
-        bp = run_sat(n, m, width, height)
+    base_h = max(n, m)
+    # Try incrementally larger heights — some shapes (e.g. 3x3) require
+    # extra perpendicular room to fit the splitter tree.
+    for height in (base_h, base_h + 1, base_h + 2):
+        # Phase 1: fast probe at each width.
+        for width in range(3, 21):
+            print(f"  probing {n}x{m} at {width}x{height} (fast)...", flush=True)
+            bp = run_sat(n, m, width, height, fast=True, timeout=120)
+            if bp is not None:
+                print(f"  -> solved at {width}x{height} (fast)")
+                return bp, width, height
+    # Phase 2: full solver as fallback at base height.
+    height = base_h
+    for width in range(3, 21):
+        print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+        bp = run_sat(n, m, width, height, fast=False, timeout=300)
         if bp is not None:
-            print(f"  -> solved at {width}x{height}")
+            print(f"  -> solved at {width}x{height} (full)")
             return bp, width, height
     return None
 
