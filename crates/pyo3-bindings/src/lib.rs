@@ -34,6 +34,12 @@ fn dir_vec(d: u8) -> Option<(i16, i16)> {
 }
 
 const UG_COST_MULTIPLIER: f32 = 5.0;
+/// Discount applied to the UG cost when the jump direction is aligned
+/// with the lane's `flow_dir`. With 0.3, an aligned UG at ~1.5/tile is
+/// cheaper than a surface belt over a turn (turn penalty = 0.5), so the
+/// router prefers straight tunnels over meandering surface routes but
+/// still picks surface by default on an unobstructed line.
+const UG_ALIGNED_DISCOUNT: f32 = 0.3;
 
 // ---------------------------------------------------------------------------
 // State — (x, y, forced direction for UG exit continuation)
@@ -219,6 +225,7 @@ fn astar_inner(
     hard_block_perp_ug: bool,
     y_constraint: Option<i16>,
     x_constraint: Option<i16>,
+    flow_dir: Option<(i8, i8)>,
 ) -> Option<Vec<(i16, i16)>> {
     if start_set.is_empty() || goals.is_empty() {
         return None;
@@ -473,8 +480,18 @@ fn astar_inner(
                         }
                     }
 
+                    let ug_mult = if let Some((fx, fy)) = flow_dir {
+                        let dot = (fx as i32) * (dx as i32) + (fy as i32) * (dy as i32);
+                        if dot > 0 {
+                            UG_COST_MULTIPLIER * UG_ALIGNED_DISCOUNT
+                        } else {
+                            UG_COST_MULTIPLIER
+                        }
+                    } else {
+                        UG_COST_MULTIPLIER
+                    };
                     let mut new_g =
-                        cur_g + (dist as f32) * UG_COST_MULTIPLIER + dev.deviation(ex, ey) * 0.1;
+                        cur_g + (dist as f32) * ug_mult + dev.deviation(ex, ey) * 0.1;
 
                     // Congestion cost at UG exit
                     if let Some(cg) = congestion {
@@ -576,6 +593,7 @@ fn astar_path(
         false,  // soft perpendicular UG penalty
         None,   // no y constraint
         None,   // no x constraint
+        None,   // no flow direction
     )
 }
 
@@ -602,6 +620,10 @@ struct LaneSpec {
     /// If set, constrain A* routing to only explore tiles at this x-coordinate.
     /// Used for bus vertical trunk demands to prevent horizontal detours.
     x_constraint: Option<i16>,
+    /// Flow direction (dx, dy) of the lane. When set, underground jumps
+    /// aligned with this direction get a cost discount so routing prefers
+    /// straight tunnels over detours. Derived from waypoints in Python.
+    flow_dir: Option<(i8, i8)>,
 }
 
 /// A routed lane: the resolved path through the grid.
@@ -824,6 +846,7 @@ fn route_astar(
         hard_block_perp_ug,
         spec.y_constraint,
         spec.x_constraint,
+        spec.flow_dir,
     )?;
 
     // Compute directions from path
@@ -1024,14 +1047,25 @@ struct PyLaneSpec {
     y_constraint: Option<i16>,
     #[pyo3(get, set)]
     x_constraint: Option<i16>,
+    #[pyo3(get, set)]
+    flow_dir: Option<(i8, i8)>,
 }
 
 #[pymethods]
 impl PyLaneSpec {
     #[new]
-    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None, x_constraint = None))]
-    fn new(id: u32, item_id: u16, waypoints: Vec<(i16, i16)>, strategy: u8, priority: u8, y_constraint: Option<i16>, x_constraint: Option<i16>) -> Self {
-        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint, x_constraint }
+    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None, x_constraint = None, flow_dir = None))]
+    fn new(
+        id: u32,
+        item_id: u16,
+        waypoints: Vec<(i16, i16)>,
+        strategy: u8,
+        priority: u8,
+        y_constraint: Option<i16>,
+        x_constraint: Option<i16>,
+        flow_dir: Option<(i8, i8)>,
+    ) -> Self {
+        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint, x_constraint, flow_dir }
     }
 }
 
@@ -1080,6 +1114,7 @@ fn negotiate_lanes(
         priority: ps.priority,
         y_constraint: ps.y_constraint,
         x_constraint: ps.x_constraint,
+        flow_dir: ps.flow_dir,
     }).collect();
 
     let obs: FxHashSet<(i16, i16)> = obstacles.into_iter().collect();

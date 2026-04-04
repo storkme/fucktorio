@@ -97,6 +97,31 @@ class TestBusLayout:
 
         _assert_valid(layout, result, allowed_categories={"power"})
 
+    def test_processing_unit_from_ores(self):
+        """Full-stack 0.5/s blue circuit from raw ores + crude-oil on yellow belts.
+
+        Exercises the negotiated A* router's ability to tunnel belt feeders
+        past fluid trunks (copper-plate WEST feeders cross sulfuric-acid,
+        petroleum-gas, water, crude-oil vertical pipe columns).
+        """
+        result = solve(
+            "processing-unit",
+            0.5,
+            available_inputs={"iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"},
+            machine_entity="assembling-machine-1",
+        )
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+
+        assert len(layout.entities) > 0
+        # No tile overlaps: belts tunnel under fluid trunks with UG pairs.
+        tiles: dict[tuple[int, int], list[str]] = {}
+        for e in layout.entities:
+            tiles.setdefault((e.x, e.y), []).append(e.name)
+        overlaps = [(k, v) for k, v in tiles.items() if len(v) > 1]
+        assert not overlaps, f"Tile overlaps: {overlaps[:3]}"
+
+        _assert_valid(layout, result, allowed_categories={"power"})
+
     def test_sulfuric_acid(self):
         """2 solids + 1 fluid input, 1 fluid output (chemical-plant)."""
         result = solve(
@@ -293,6 +318,23 @@ class TestBusVisualization:
         layout = bus_layout(result)
         bp = _make_blueprint(layout, "bus: 5/s plastic-bar from crude-oil")
         viz(bp, "bus-plastic-bar-from-crude-oil-5s", solver_result=result, layout_result=layout, layout_style="bus")
+
+    def test_viz_processing_unit_from_ores(self, viz):
+        result = solve(
+            "processing-unit",
+            0.5,
+            available_inputs={"iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"},
+            machine_entity="assembling-machine-1",
+        )
+        layout = bus_layout(result, max_belt_tier="transport-belt")
+        bp = _make_blueprint(layout, "bus: 0.5/s processing-unit from ores + oil (yellow belts)")
+        viz(
+            bp,
+            "bus-processing-unit-from-ores-0.5s",
+            solver_result=result,
+            layout_result=layout,
+            layout_style="bus",
+        )
 
     def test_viz_sulfuric_acid(self, viz):
         result = solve(

@@ -576,14 +576,19 @@ def _render_family_input_paths(
     row_spans: list[RowSpan],
     bw: int,
     belt_tier: str,
+    routed_paths: dict[str, list[tuple[int, int]]] | None = None,
 ) -> list[PlacedEntity]:
     """Wire each producer's WEST output belt to its designated template input.
 
-    The template places SOUTH-facing input tiles at its top row. Each
-    producer's WEST output belt ends at ``x=bw`` (set by the row
-    template); this function extends those belts WEST to reach the
-    correct input column, then turns SOUTH and descends to the
-    balancer's top row.
+    The template places SOUTH-facing input tiles at its top row. The
+    horizontal WEST feeder segment (from the row's leftmost output belt
+    at ``x=bw`` to ``(input_x+1, out_y)``) is A*-routed via the
+    negotiator — rendered here from ``routed_paths["feeder:…"]`` — so it
+    tunnels past fluid trunks and other obstacles.
+
+    The SOUTH descent column (from the feeder row down to the balancer's
+    top row) is placed manually since it sits inside the balancer's
+    reserved x-columns.
 
     Producer-to-input assignment: topmost producer (smallest out_y)
     maps to leftmost input tile (smallest dx). This keeps the per-
@@ -595,6 +600,7 @@ def _render_family_input_paths(
         return []
     origin_x = min(fam.lane_xs)
     origin_y = fam.balancer_y_start
+    paths = routed_paths or {}
 
     # Sort producers top-to-bottom, input tiles left-to-right.
     producers = sorted(fam.producer_rows, key=lambda p: row_spans[p].output_belt_y)
@@ -605,25 +611,15 @@ def _render_family_input_paths(
         out_y = row_spans[producer_row_idx].output_belt_y
         input_x = origin_x + input_dx
 
-        # WEST belts from (input_x + 1, out_y) up to (bw - 1, out_y).
-        # These continue westward from the row's leftmost output belt
-        # at (bw, out_y) placed by the row template.
-        for x in range(input_x + 1, bw):
-            entities.append(
-                PlacedEntity(
-                    name=belt_tier,
-                    x=x,
-                    y=out_y,
-                    direction=EntityDirection.WEST,
-                    carries=fam.item,
-                )
-            )
+        # Horizontal WEST feeder: A*-routed by the negotiator.
+        feeder_key = f"feeder:{fam.item}:{input_x}:{out_y}"
+        feeder_path = paths.get(feeder_key)
+        if feeder_path:
+            entities.extend(_render_path(feeder_path, fam.item, belt_tier))
 
         if out_y == origin_y:
             # N == 1 case: template's input tile at (input_x, out_y)
-            # is the turn point. WEST belt at (input_x + 1, out_y)
-            # naturally curves into the template's SOUTH belt at
-            # (input_x, out_y) — no additional entities needed.
+            # is the turn point — no additional entities needed.
             continue
 
         # Turn: SOUTH belt at (input_x, out_y), then descend to
@@ -748,7 +744,7 @@ def route_bus(
             # input tile. The belt tier matches the one used inside the
             # balancer (keyed by the family's total rate).
             input_belt_tier = belt_entity_for_rate(fam.total_rate, max_tier=max_belt_tier)
-            entities.extend(_render_family_input_paths(fam, row_spans, bw, input_belt_tier))
+            entities.extend(_render_family_input_paths(fam, row_spans, bw, input_belt_tier, routed_paths))
 
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
@@ -984,6 +980,20 @@ def _negotiate_and_route(
     specs: list[PyLaneSpec] = []
     lane_id = 0
 
+    def _flow_dir(waypoints: list[tuple[int, int]]) -> tuple[int, int] | None:
+        """Compute flow direction from start→end waypoint; None if both axes move."""
+        if len(waypoints) < 2:
+            return None
+        dx = waypoints[-1][0] - waypoints[0][0]
+        dy = waypoints[-1][1] - waypoints[0][1]
+        sx = (dx > 0) - (dx < 0)
+        sy = (dy > 0) - (dy < 0)
+        if sx != 0 and sy != 0:
+            return None  # diagonal/Z-shaped path
+        if sx == 0 and sy == 0:
+            return None
+        return (sx, sy)
+
     # --- Collect fixed obstacles ---
     obstacles: list[tuple[int, int]] = []
     if row_entities:
@@ -1029,10 +1039,10 @@ def _negotiate_and_route(
             for producer_row_idx, (input_dx, _) in zip(producers_sorted, inputs_sorted, strict=False):
                 out_y = row_spans[producer_row_idx].output_belt_y
                 input_x = ox + input_dx
-                # WEST feeder row
-                for x in range(input_x, bw):
-                    obstacles.append((x, out_y))
-                # SOUTH descent column
+                # WEST feeder row is now A*-routed (see "feeder:" specs below),
+                # so it is NOT registered as static obstacles.
+                # SOUTH descent column stays manual; block it so other A* paths
+                # don't route through it.
                 if out_y != fam.balancer_y_start:
                     for y in range(out_y + 1, fam.balancer_y_start):
                         obstacles.append((input_x, y))
@@ -1103,6 +1113,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=5,
                         x_constraint=x,
+                        flow_dir=(0, 1),
                     )
                 )
                 lane_id += 1
@@ -1119,6 +1130,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=4,
                         y_constraint=out_y,
+                        flow_dir=(-1, 0),
                     )
                 )
                 lane_id += 1
@@ -1157,6 +1169,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=6,
                         y_constraint=tap_y,
+                        flow_dir=(1, 0),
                     )
                 )
                 lane_id += 1
@@ -1184,6 +1197,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=5,
                         x_constraint=x,
+                        flow_dir=(0, 1),
                     )
                 )
                 lane_id += 1
@@ -1199,6 +1213,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=6,
                         y_constraint=tap_y,
+                        flow_dir=(1, 0),
                     )
                 )
                 lane_id += 1
@@ -1227,6 +1242,7 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=5,
                         x_constraint=x,
+                        flow_dir=(0, 1),
                     )
                 )
                 lane_id += 1
@@ -1243,6 +1259,43 @@ def _negotiate_and_route(
                         strategy=2,
                         priority=4,
                         y_constraint=out_y,
+                        flow_dir=(-1, 0),
+                    )
+                )
+                lane_id += 1
+
+    # --- Family feeder paths (A* horizontal WEST) ---
+    # Each producer row's output belt is wired WEST into its designated
+    # template input column. These used to be manually placed straight
+    # belts; now A* routes them so they tunnel past fluid trunks and
+    # other obstacles.
+    if families:
+        for fam in families:
+            if not fam.lane_xs:
+                continue
+            template = BALANCER_TEMPLATES[fam.shape]
+            ox = min(fam.lane_xs)
+            producers_sorted = sorted(
+                fam.producer_rows,
+                key=lambda p: row_spans[p].output_belt_y,
+            )
+            inputs_sorted = sorted(template.input_tiles, key=lambda t: t[0])
+            item_id = item_to_id.get(fam.item, 0)
+            for producer_row_idx, (input_dx, _) in zip(producers_sorted, inputs_sorted, strict=False):
+                out_y = row_spans[producer_row_idx].output_belt_y
+                input_x = ox + input_dx
+                if input_x + 1 > bw - 1:
+                    continue
+                id_to_key[lane_id] = f"feeder:{fam.item}:{input_x}:{out_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, out_y), (input_x + 1, out_y)],
+                        strategy=2,
+                        priority=4,
+                        y_constraint=out_y,
+                        flow_dir=(-1, 0),
                     )
                 )
                 lane_id += 1
