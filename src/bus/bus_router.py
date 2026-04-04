@@ -654,28 +654,26 @@ def _negotiate_and_route(
                 )
                 lane_id += 1
 
-            # Splitter balance return: when 2+ producers and x-1 is free,
-            # route the second splitter output WEST for opposite-side sideload.
-            left_col_free = x > 1 and not any(
-                other.x == x - 1 and not other.is_fluid
-                for other in lanes if other is not lane
-            )
-            if len(all_producers) >= 2 and left_col_free:
+            # Splitter balance return: route from splitter's second output
+            # to (x-1, out_y) for opposite-side sideloading onto the left lane.
+            # No y_constraint — A* finds the Z-shape naturally:
+            # WEST (UG past trunks) → SOUTH turn → EAST back to x-1.
+            if len(all_producers) >= 2 and x > 1:
                 last_out_y = row_spans[all_producers[-1]].output_belt_y
                 split_y = last_out_y - 1
-                if bw - 1 > x + 1:
-                    id_to_key[lane_id] = f"ret:{lane.item}:{x}:{split_y}"
-                    specs.append(
-                        PyLaneSpec(
-                            id=lane_id,
-                            item_id=item_id,
-                            waypoints=[(bw - 1, split_y), (x + 1, split_y)],
-                            strategy=2,
-                            priority=3,
-                            y_constraint=split_y,
-                        )
+                sideload_y = last_out_y  # sideload at the same y as the normal return
+                id_to_key[lane_id] = f"bal:{lane.item}:{x}:{split_y}"
+                specs.append(
+                    PyLaneSpec(
+                        id=lane_id,
+                        item_id=item_id,
+                        waypoints=[(bw - 1, split_y), (x - 1, sideload_y)],
+                        strategy=2,
+                        priority=3,
+                        # No y_constraint — allow vertical movement for the Z-turn
                     )
-                    lane_id += 1
+                )
+                lane_id += 1
 
             # Tap-off: A* horizontal EAST (strategy=2)
             # Turn belt at (x, tap_y) placed manually; A* starts at x+1.
@@ -1151,13 +1149,8 @@ def _route_intermediate_lane(
     start_y = min(producer_out_ys)
 
     # --- Lane balancing via splitter + opposite-side sideload ---
-    # Only possible when x-1 is free (not another lane's trunk column).
     balance_y: int | None = None
-    left_col_free = x > 1 and not any(
-        other.x == x - 1 and not other.is_fluid
-        for other in all_lanes if other is not lane
-    )
-    if len(all_producers) >= 2 and left_col_free:
+    if len(all_producers) >= 2 and x > 1:
         last_pri = all_producers[-1]
         balance_y = row_spans[last_pri].output_belt_y
 
@@ -1182,38 +1175,21 @@ def _route_intermediate_lane(
             ret_path = paths.get(ret_key)
             if ret_path:
                 entities.extend(_render_path(ret_path, lane.item, horiz_belt, EntityDirection.WEST))
-            # Split return: WEST from splitter to opposite side of trunk,
-            # then SOUTH turn + EAST sideload onto trunk's left lane.
-            # Use the A*-routed path; goal is (x+1, split_y) — right
-            # next to the trunk.  Then manually place the turn sequence.
+            # Split return: U-shaped route around the trunk for left-lane sideload.
+            # 1. WEST from splitter past all trunks (A*-routed with UG crossings)
+            # 2. SOUTH 2 tiles at the left edge
+            # 3. EAST back to x-1 (A*-routed with UG crossings)
+            # 4. Sideload onto trunk's left lane from x-1
             split_y = out_y - 1
-            split_key = f"ret:{lane.item}:{x}:{split_y}"
-            split_path = paths.get(split_key)
-            if split_path:
-                entities.extend(_render_path(split_path, lane.item, horiz_belt, EntityDirection.WEST))
-            # Turn: SOUTH at (x, split_y+1) then EAST at (x, split_y+2)
-            # to sideload onto the left lane from the left side.
-            # Use x (trunk column) — at split_y+1 and split_y+2 the trunk
-            # hasn't started yet (these are above the balance_y return row).
-            # Actually, we sideload from x-1 EAST into the trunk at x.
-            entities.append(
-                PlacedEntity(
-                    name=horiz_belt,
-                    x=x - 1,
-                    y=split_y + 1,
-                    direction=EntityDirection.SOUTH,
-                    carries=lane.item,
-                )
-            )
-            entities.append(
-                PlacedEntity(
-                    name=horiz_belt,
-                    x=x - 1,
-                    y=split_y + 2,
-                    direction=EntityDirection.EAST,
-                    carries=lane.item,
-                )
-            )
+            sideload_y = split_y + 2  # y where the EAST return sideloads
+
+            # Balance route: single A*-routed path (no y_constraint).
+            # A* finds the Z-shape: WEST (UG crossings) → SOUTH → EAST.
+            split_y = out_y - 1
+            bal_key = f"bal:{lane.item}:{x}:{split_y}"
+            bal_path = paths.get(bal_key)
+            if bal_path:
+                entities.extend(_render_path(bal_path, lane.item, horiz_belt, EntityDirection.WEST))
         else:
             # Normal return: use A*-routed path
             ret_key = f"ret:{lane.item}:{x}:{out_y}"
