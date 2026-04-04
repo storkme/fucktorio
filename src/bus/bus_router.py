@@ -931,10 +931,7 @@ def _render_path(
                 i += 1
         else:
             # Last tile — use direction from previous tile
-            if len(entities) > 0:
-                direction = entities[-1].direction
-            else:
-                direction = EntityDirection.EAST
+            direction = entities[-1].direction if entities else EntityDirection.EAST
             entities.append(
                 PlacedEntity(
                     name=belt_name,
@@ -1178,10 +1175,7 @@ def _route_intermediate_lane(
             # Split return: U-shaped route around the trunk for left-lane sideload.
             # 1. WEST from splitter past all trunks (A*-routed with UG crossings)
             # 2. SOUTH 2 tiles at the left edge
-            # 3. EAST back to x-1 (A*-routed with UG crossings)
-            # 4. Sideload onto trunk's left lane from x-1
             split_y = out_y - 1
-            sideload_y = split_y + 2  # y where the EAST return sideloads
 
             # Balance route: single A*-routed path (no y_constraint).
             # A* finds the Z-shape: WEST (UG crossings) → SOUTH → EAST.

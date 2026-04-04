@@ -8,7 +8,6 @@ from src.bus import bus_layout
 from src.solver.solver import solve
 from src.validate import ValidationError, validate
 
-
 # Validation categories that are known limitations of the bus validator,
 # not routing bugs.  belt-flow-reachability and belt-flow-path use a
 # simple BFS that doesn't trace through inserter→machine→inserter chains
