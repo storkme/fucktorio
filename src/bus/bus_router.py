@@ -374,11 +374,12 @@ def route_bus(
     max_belt_tier: str | None = None,
     row_entities: list[PlacedEntity] | None = None,
     solver_result: SolverResult | None = None,
-) -> tuple[list[PlacedEntity], int]:
+) -> tuple[list[PlacedEntity], int, int]:
     """Create all bus belt entities.
 
-    Returns (entities, max_y) where max_y accounts for any merger blocks
-    placed below the last row.
+    Returns (entities, max_y, merge_max_x) where max_y accounts for any
+    merger blocks placed below the last row, and merge_max_x is the
+    rightmost x used by output merge columns (0 if no mergers).
 
     Uses lane-first negotiated congestion routing (Rust) to detect
     crossing conflicts between ALL lane segments (including mergers),
@@ -396,6 +397,7 @@ def route_bus(
 
     entities: list[PlacedEntity] = []
     max_y = total_height
+    merge_max_x = 0
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
 
@@ -424,7 +426,9 @@ def route_bus(
         entities.extend(merger_ents)
         max_y = max(max_y, merger_end_y)
 
-    # Merge output belts for final products using splitter tree.
+    # Merge output belts for final products at the bottom-right.
+    # Final product rows have EAST-flowing output belts; merge columns
+    # are placed just past the widest output row.
     if solver_result:
         output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
         for item in output_items:
@@ -432,20 +436,18 @@ def route_bus(
                 i for i, rs in enumerate(row_spans) if any(o.item == item for o in rs.spec.outputs if not o.is_fluid)
             ]
             if len(output_rows) >= 2:
-                merge_ents, merge_end_y = _merge_output_rows(
+                merge_ents, merge_end_y, item_merge_x = _merge_output_rows(
                     output_rows,
                     item,
                     row_spans,
-                    total_height,
-                    bw,
+                    max_y,
                     max_belt_tier,
-                    lanes,
-                    routed_paths,
                 )
                 entities.extend(merge_ents)
                 max_y = max(max_y, merge_end_y)
+                merge_max_x = max(merge_max_x, item_merge_x)
 
-    return entities, max_y
+    return entities, max_y, merge_max_x
 
 
 def _merge_output_rows(
@@ -453,21 +455,20 @@ def _merge_output_rows(
     item: str,
     row_spans: list[RowSpan],
     merge_start_y: int,
-    bw: int,
     max_belt_tier: str | None = None,
-    all_lanes: list[BusLane] | None = None,
-    routed_paths: dict[int, list[tuple[int, int]]] | None = None,
-) -> tuple[list[PlacedEntity], int]:
-    """Merge output belts from multiple rows into one using a splitter tree.
+) -> tuple[list[PlacedEntity], int, int]:
+    """Merge EAST-flowing output belts from multiple rows at the bottom-right.
 
-    Each output row's belt routes WEST through the bus to x=0 (first) or
-    x=1 (subsequent), going underground past bus trunks.  At the merge area
-    below all rows, pairs merge with SOUTH-facing splitters.
+    Each output row's belt flows EAST and collects items at its rightmost
+    tile.  This function extends shorter rows to a common merge column,
+    places SOUTH columns, and merges them with a splitter tree.
+
+    Returns (entities, max_y, merge_max_x).
     """
     entities: list[PlacedEntity] = []
     n = len(output_rows)
     if n < 2:
-        return entities, merge_start_y
+        return entities, merge_start_y, 0
 
     total_rate = sum(
         sum(o.rate * row_spans[ri].machine_count for o in row_spans[ri].spec.outputs if o.item == item)
@@ -476,45 +477,53 @@ def _merge_output_rows(
     belt_name = belt_entity_for_rate(total_rate * 2, max_tier=max_belt_tier)
     splitter_name = _SPLITTER_MAP.get(belt_name, "splitter")
 
-    output_ys = [row_spans[ri].output_belt_y for ri in output_rows]
+    # Merge columns sit just past the widest output row.
+    # Earlier rows (lower idx, higher up in the layout) get farther-right
+    # columns so their SOUTH columns don't block later rows' EAST extensions.
+    merge_x = max(row_spans[ri].row_width for ri in output_rows)
 
-    paths = routed_paths or {}
+    for idx, ri in enumerate(output_rows):
+        out_y = row_spans[ri].output_belt_y
+        col_x = merge_x + (n - 1 - idx)  # first row rightmost, last row at merge_x
 
-    for idx, out_y in enumerate(output_ys):
-        target_x = 0 if idx == 0 else 1
+        # Extend EAST belts from the row's rightmost tile to the merge column.
+        # The row's output belt ends at row_width - 1. We need EAST belts from
+        # row_width to col_x - 1 (the last belt before the SOUTH turn).
+        rw = row_spans[ri].row_width
+        for x in range(rw, col_x):
+            entities.append(
+                PlacedEntity(
+                    name=belt_name,
+                    x=x,
+                    y=out_y,
+                    direction=EntityDirection.EAST,
+                    carries=item,
+                )
+            )
 
-        # Horizontal WEST from bw-1 toward target_x, underground past bus trunks.
-        merge_key = f"merge:{item}:{target_x}:{out_y}"
-        merge_path = paths.get(merge_key)
-        if merge_path:
-            merge_ents = _render_path(merge_path, item, belt_name, EntityDirection.WEST)
-            # Last entity should face SOUTH to turn into the SOUTH column
-            if merge_ents:
-                merge_ents[-1].direction = EntityDirection.SOUTH
-            entities.extend(merge_ents)
-
-        # Vertical SOUTH from out_y to merge_start_y at target_x.
-        # The WEST belt at (target_x+1, out_y) feeds into (target_x, out_y)
+        # SOUTH column from out_y to merge_start_y.
+        # The EAST belt at (col_x - 1, out_y) feeds into (col_x, out_y) SOUTH
         # via a natural belt turn.
         for y in range(out_y, merge_start_y):
             entities.append(
                 PlacedEntity(
                     name=belt_name,
-                    x=target_x,
+                    x=col_x,
                     y=y,
                     direction=EntityDirection.SOUTH,
                     carries=item,
                 )
             )
 
-    # Sequential splitter merge: first output at x=0, each subsequent
-    # merges from x=1 via a SOUTH-facing splitter.
+    # Sequential splitter merge at bottom-right.
+    # First output at merge_x, each subsequent merges from merge_x+1
+    # via a SOUTH-facing splitter.
     y_cursor = merge_start_y
     for _idx in range(1, n):
         entities.append(
             PlacedEntity(
                 name=splitter_name,
-                x=0,
+                x=merge_x,
                 y=y_cursor,
                 direction=EntityDirection.SOUTH,
                 carries=item,
@@ -524,7 +533,7 @@ def _merge_output_rows(
         entities.append(
             PlacedEntity(
                 name=belt_name,
-                x=0,
+                x=merge_x,
                 y=y_cursor,
                 direction=EntityDirection.SOUTH,
                 carries=item,
@@ -532,7 +541,7 @@ def _merge_output_rows(
         )
         y_cursor += 1
 
-    return entities, y_cursor
+    return entities, y_cursor, merge_x + n
 
 
 def _trunk_segments(start_y: int, end_y: int, skip_ys: set[int]) -> list[tuple[int, int]]:
@@ -666,14 +675,14 @@ def _negotiate_and_route(
         if _is_intermediate(lane):
             producer_out_ys = [row_spans[p].output_belt_y for p in all_producers]
             start_y = min(producer_out_ys)
-            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else start_y
+            last_tap_y = max(lane.tap_off_ys) if lane.tap_off_ys else start_y
 
             # Trunk: A* vertical (strategy=2, low priority — routes after tap-offs)
             # Skip producer output ys (return junctions — need surface belts).
             # Cross-lane tap-off positions are NOT skipped here — the A* handles
             # them via underground (promoted obstacles + x_constraint force UG).
             skip_ys = set(producer_out_ys)
-            for seg_start, seg_end in _trunk_segments(start_y, tap_y - 1, skip_ys):
+            for seg_start, seg_end in _trunk_segments(start_y, last_tap_y - 1, skip_ys):
                 trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
                 id_to_key[lane_id] = trunk_key
                 specs.append(
@@ -727,6 +736,7 @@ def _negotiate_and_route(
 
             # Tap-off: A* horizontal EAST (strategy=2, high priority)
             # Turn belt at (x, tap_y) placed manually; A* starts at x+1.
+            tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else last_tap_y
             if x + 1 <= bw - 1:
                 id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
                 specs.append(
@@ -867,45 +877,9 @@ def _negotiate_and_route(
             lane_id += 1
             i += 2
 
-    # --- Output merger horizontal demands (A*, strategy=2) ---
-    trunk_xs = {ln.x for ln in lanes if not ln.is_fluid}
-    if solver_result:
-        output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
-        for out_item in output_items:
-            out_item_id = item_to_id.get(out_item)
-            if out_item_id is None:
-                continue
-            output_row_idxs = [
-                i
-                for i, rs in enumerate(row_spans)
-                if any(o.item == out_item for o in rs.spec.outputs if not o.is_fluid)
-            ]
-            if len(output_row_idxs) < 2:
-                continue
-            for idx, ri in enumerate(output_row_idxs):
-                out_y = row_spans[ri].output_belt_y
-                target_x = 0 if idx == 0 else 1
-                goal_x = target_x + 1
-                if bw - 1 > goal_x:
-                    # When goal is blocked by a trunk, shift one tile south.
-                    # The A* detours via out_y+1, and the last tile turns
-                    # SOUTH into the merge column.
-                    blocked = goal_x in trunk_xs
-                    goal_y = out_y + 1 if blocked else out_y
-                    id_to_key[lane_id] = f"merge:{out_item}:{target_x}:{out_y}"
-                    specs.append(
-                        PyLaneSpec(
-                            id=lane_id,
-                            item_id=out_item_id,
-                            waypoints=[(bw - 1, out_y), (goal_x, goal_y)],
-                            strategy=2,
-                            priority=3,
-                            # Keep y_constraint when goal is on the same row.
-                            # Drop it when goal is shifted (needs vertical move).
-                            y_constraint=out_y if not blocked else None,
-                        )
-                    )
-                    lane_id += 1
+    # Output mergers are no longer routed through the bus trunk zone.
+    # Final product rows use EAST-flowing output belts that merge at
+    # the bottom-right of the layout (handled by _merge_output_rows).
 
     if not specs:
         return {}

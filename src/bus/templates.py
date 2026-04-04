@@ -46,14 +46,67 @@ def _sideload_bridge(
     output_row_dy: int,
     belt: str,
     item: str,
+    output_east: bool = False,
 ) -> list[PlacedEntity]:
     """Generate the 6-entity sideload bridge between two machine groups.
 
     ``output_row_dy`` is the output belt's offset from ``y_offset``
     (6 for single_input_row, 7 for dual_input_row).
+
+    When ``output_east`` is True, the bridge is mirrored: group 1 items
+    flow EAST across the bridge into group 2 (instead of group 2 → group 1).
     """
     bridge_y = y_offset + output_row_dy - 1  # one row above output belt
     output_y = y_offset + output_row_dy
+
+    if output_east:
+        # EAST flow: group 1 → bridge EAST → group 2
+        return [
+            # Bridge row
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x,
+                y=bridge_y,
+                direction=EntityDirection.EAST,
+                carries=item,
+            ),
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x + 1,
+                y=bridge_y,
+                direction=EntityDirection.EAST,
+                carries=item,
+            ),
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x + 2,
+                y=bridge_y,
+                direction=EntityDirection.SOUTH,
+                carries=item,
+            ),
+            # Output belt row — gap tiles
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x,
+                y=output_y,
+                direction=EntityDirection.NORTH,
+                carries=item,
+            ),  # lifts group1 items up to bridge
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x + 1,
+                y=output_y,
+                direction=EntityDirection.EAST,
+                carries=item,
+            ),  # through-belt filler
+            PlacedEntity(
+                name=belt,
+                x=gap_start_x + 2,
+                y=output_y,
+                direction=EntityDirection.EAST,
+                carries=item,
+            ),  # sideload target (through-belt)
+        ]
 
     return [
         # Bridge row (y+5 or y+6 depending on template)
@@ -114,6 +167,7 @@ def single_input_row(
     input_belt: str = "transport-belt",
     output_belt: str = "transport-belt",
     lane_split: bool = False,
+    output_east: bool = False,
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 1 solid input.
 
@@ -180,14 +234,15 @@ def single_input_row(
             )
         )
 
-        # Output belt (3 tiles wide, flowing WEST toward bus)
+        # Output belt (3 tiles wide)
+        out_dir = EntityDirection.EAST if output_east else EntityDirection.WEST
         for dx in range(3):
             entities.append(
                 PlacedEntity(
                     name=output_belt,
                     x=mx + dx,
                     y=y_offset + 6,
-                    direction=EntityDirection.WEST,
+                    direction=out_dir,
                     carries=output_item,
                 )
             )
@@ -206,7 +261,9 @@ def single_input_row(
                 )
             )
         # Sideload bridge
-        entities.extend(_sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item))
+        entities.extend(
+            _sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item, output_east)
+        )
 
     return entities, ROW_HEIGHT
 
@@ -222,6 +279,7 @@ def dual_input_row(
     input_belts: tuple[str, str] = ("transport-belt", "transport-belt"),
     output_belt: str = "transport-belt",
     lane_split: bool = False,
+    output_east: bool = False,
 ) -> tuple[list[PlacedEntity], int]:
     """Row for a recipe with 2 solid inputs.
 
@@ -314,14 +372,15 @@ def dual_input_row(
             )
         )
 
-        # Output belt (WEST toward bus)
+        # Output belt
+        out_dir = EntityDirection.EAST if output_east else EntityDirection.WEST
         for dx in range(3):
             entities.append(
                 PlacedEntity(
                     name=output_belt,
                     x=mx + dx,
                     y=y_offset + 7,
-                    direction=EntityDirection.WEST,
+                    direction=out_dir,
                     carries=output_item,
                 )
             )
@@ -349,7 +408,9 @@ def dual_input_row(
                 )
             )
         # Sideload bridge (output belt at y+7, bridge at y+6)
-        entities.extend(_sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item))
+        entities.extend(
+            _sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item, output_east)
+        )
 
     return entities, ROW_HEIGHT
 
@@ -374,6 +435,7 @@ def fluid_input_row(
     output_item: str = "",
     input_belt: str = "transport-belt",
     output_belt: str = "transport-belt",
+    output_east: bool = False,
 ) -> tuple[list[PlacedEntity], int, list[tuple[int, int]]]:
     """Row for a recipe with 1 solid input + 1 fluid input.
 
@@ -482,14 +544,15 @@ def fluid_input_row(
             )
         )
 
-        # Output belt (WEST toward bus)
+        # Output belt
+        out_dir = EntityDirection.EAST if output_east else EntityDirection.WEST
         for dx in range(3):
             entities.append(
                 PlacedEntity(
                     name=output_belt,
                     x=mx + dx,
                     y=y_offset + 6,
-                    direction=EntityDirection.WEST,
+                    direction=out_dir,
                     carries=output_item,
                 )
             )

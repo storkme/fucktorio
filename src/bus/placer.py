@@ -20,6 +20,7 @@ class RowSpan:
     machine_count: int
     input_belt_y: list[int]  # y-coordinates of input belt rows
     output_belt_y: int  # y-coordinate of output belt row
+    row_width: int = 0  # total width of this row (bus_width + machines + gap)
     fluid_port_ys: list[int] = field(default_factory=list)
     fluid_port_pipes: list[tuple[int, int]] = field(default_factory=list)
 
@@ -78,6 +79,7 @@ def place_rows(
     bus_width: int,
     y_offset: int = 0,
     max_belt_tier: str | None = None,
+    final_output_items: set[str] | None = None,
 ) -> tuple[list[PlacedEntity], list[RowSpan], int, int]:
     """Place assembly rows stacked vertically.
 
@@ -92,6 +94,8 @@ def place_rows(
 
     ordered = _order_specs(machines, dependency_order)
     max_width = 0
+
+    _final = final_output_items or set()
 
     for spec_idx, spec in enumerate(ordered):
         if spec_idx > 0:
@@ -111,13 +115,18 @@ def place_rows(
             out_belt = belt_entity_for_rate(output_rate, max_tier=max_belt_tier)
             max_per_row = _max_machines_for_belt_both_lanes(spec, out_belt, max_belt_tier)
 
+        # Final product rows get EAST-flowing output belts (merge at right side)
+        is_final = any(o.item in _final for o in solid_outputs)
+
         # Split into evenly-sized chunks.  With 1:1 lane-to-consumer mapping,
         # even rows ensure each bus lane receives the same production rate.
         n_rows = math.ceil(total_count / max_per_row)
         remaining = total_count
         for ri in range(n_rows):
             chunk = math.ceil(remaining / (n_rows - ri))
-            ents, span, width = _build_one_row(spec, chunk, bus_width, y_cursor, max_belt_tier)
+            ents, span, width = _build_one_row(
+                spec, chunk, bus_width, y_cursor, max_belt_tier, output_east=is_final,
+            )
             entities.extend(ents)
             row_spans.append(span)
             max_width = max(max_width, width)
@@ -133,6 +142,7 @@ def _build_one_row(
     bus_width: int,
     y_cursor: int,
     max_belt_tier: str | None = None,
+    output_east: bool = False,
 ) -> tuple[list[PlacedEntity], RowSpan, int]:
     """Build a single row of machines. Returns (entities, span, width)."""
     solid_inputs = [f for f in spec.inputs if not f.is_fluid]
@@ -168,6 +178,7 @@ def _build_one_row(
             output_item=output_item,
             input_belt=in_belt,
             output_belt=out_belt,
+            output_east=output_east,
         )
         input_belt_ys = [y_cursor]
         output_belt_y = y_cursor + 6
@@ -188,6 +199,7 @@ def _build_one_row(
             input_belt=in_belt,
             output_belt=out_belt,
             lane_split=lane_split,
+            output_east=output_east,
         )
         input_belt_ys = [y_cursor]
         output_belt_y = y_cursor + 6
@@ -206,6 +218,7 @@ def _build_one_row(
             input_belts=(in_belt1, in_belt2),
             output_belt=out_belt,
             lane_split=lane_split,
+            output_east=output_east,
         )
         input_belt_ys = [y_cursor, y_cursor + 1]
         output_belt_y = y_cursor + row_h - 1
@@ -221,6 +234,7 @@ def _build_one_row(
         machine_count=count,
         input_belt_y=input_belt_ys,
         output_belt_y=output_belt_y,
+        row_width=row_width,
         fluid_port_ys=fluid_port_ys,
         fluid_port_pipes=fluid_port_pipes,
     )

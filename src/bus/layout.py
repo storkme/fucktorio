@@ -20,18 +20,10 @@ def bus_layout(
         max_belt_tier: Constrain belt tier (e.g. "transport-belt" for
             early game). Rows auto-split to stay within capacity.
     """
-    # 1. Pre-plan bus lanes to know bus width before placing rows
-    # We need row spans first to know where rows land, but we need bus width
-    # to place rows.  Solve with two passes: first compute row spans without
-    # bus routing, then route.
-    #
-    # Actually, plan_bus_lanes only needs row_spans (not bus width), and
-    # place_rows needs bus_width.  So: do a preliminary row placement with
-    # a guess, plan lanes, compute real bus width, then re-place if needed.
+    # Final product items get EAST-flowing output belts (merge at right side)
+    final_output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
 
-    # First pass: plan lanes with a temporary placement.
-    # Add a 1-tile header row so underground entries can start above
-    # the first row when tap-offs cross other lanes.
+    # 1. Pre-plan bus lanes to know bus width before placing rows
     BUS_HEADER = 1
 
     temp_bw = _estimate_bus_width(solver_result)
@@ -41,6 +33,7 @@ def bus_layout(
         bus_width=temp_bw,
         y_offset=BUS_HEADER,
         max_belt_tier=max_belt_tier,
+        final_output_items=final_output_items,
     )
 
     lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
@@ -54,11 +47,12 @@ def bus_layout(
             bus_width=actual_bw,
             y_offset=BUS_HEADER,
             max_belt_tier=max_belt_tier,
+            final_output_items=final_output_items,
         )
         lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
 
     # 3. Route bus lanes (with crossing negotiation using row entities as obstacles)
-    bus_entities, bus_max_y = route_bus(
+    bus_entities, bus_max_y, merge_max_x = route_bus(
         lanes,
         row_spans,
         total_height,
@@ -100,7 +94,7 @@ def bus_layout(
         else:
             occupied.add((ent.x, ent.y))
 
-    width = max(row_width, actual_bw)
+    width = max(row_width, actual_bw, merge_max_x)
 
     # 5. Place power poles
     pole_entities = place_poles(width, total_height, occupied, machine_centers)
