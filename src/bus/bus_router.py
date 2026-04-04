@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from ..models import EntityDirection, PlacedEntity, SolverResult
 from ..routing.common import _LANE_CAPACITY, _UG_MAX_REACH, belt_entity_for_rate
+from .balancer_library import BALANCER_TEMPLATES
 from .placer import RowSpan
 
 
@@ -311,6 +312,26 @@ def _split_overflowing_lanes(
             split_prod_rate[target] += prod_rate
 
         is_collector = not lane.consumer_rows
+
+        # Detect N-to-M balancer requirement: when the item has producer
+        # rows and the resulting splits can't each get >=1 producer, we
+        # need an (N, M) balancer block to fan out the producer output(s)
+        # across all trunks. This is the "orphan lane" case — the previous
+        # code silently left the extra trunks unfed (visible as floating
+        # belts in the viz).
+        n_lanes_with_consumers = sum(
+            1 for c in consumers_per_split if c
+        ) if not is_collector else n_splits
+        n_producers = len(all_producer_rows)
+        if n_producers >= 1 and n_producers < n_lanes_with_consumers:
+            shape = (n_producers, n_lanes_with_consumers)
+            template_available = shape in BALANCER_TEMPLATES
+            _raise_unimplemented_balancer(
+                item=lane.item,
+                shape=shape,
+                template_available=template_available,
+            )
+
         for si in range(n_splits):
             consumers = consumers_per_split[si]
             if not consumers and not is_collector and si > 0:
@@ -337,6 +358,35 @@ def _split_overflowing_lanes(
             )
 
     return result
+
+
+def _raise_unimplemented_balancer(
+    item: str, shape: tuple[int, int], template_available: bool
+) -> None:
+    """Fail fast when we encounter a lane-family shape we can't yet route.
+
+    The bus planner has decided item `item` needs an (N, M) balancer
+    block, but Phase 2 stamping for this shape is not yet wired up
+    (and/or the template itself is missing). Raising a clear error
+    here beats silently emitting floating trunk belts with no source.
+    """
+    n, m = shape
+    if template_available:
+        msg = (
+            f"Bus planner needs a ({n},{m}) balancer for item {item!r}, "
+            f"but N-to-M stamping is not implemented yet (Phase 2). "
+            f"Template is present in BALANCER_TEMPLATES[({n},{m})]."
+        )
+    else:
+        available = sorted(BALANCER_TEMPLATES.keys())
+        msg = (
+            f"Bus planner needs a ({n},{m}) balancer for item {item!r}, "
+            f"but no template exists for that shape. "
+            f"Regenerate via scripts/generate_balancer_library.py or add "
+            f"({n},{m}) to the SHAPES list there. "
+            f"Available shapes: {available}."
+        )
+    raise NotImplementedError(msg)
 
 
 def _find_tap_off_ys(lane: BusLane, row_spans: list[RowSpan]) -> list[int]:

@@ -68,6 +68,11 @@ class TestBusLayout:
         assert len(layout.entities) > 0
         _assert_valid(layout, result, allowed_categories={"power"})
 
+    @pytest.mark.xfail(
+        raises=NotImplementedError,
+        reason="Needs (1,2) balancer stamping (Phase 2) for copper-plate",
+        strict=True,
+    )
     def test_electronic_circuit_from_ores(self):
         """Full chain: ores -> smelting -> copper-cable -> electronic-circuit."""
         result = solve("electronic-circuit", 5.0)
@@ -147,6 +152,11 @@ class TestBusLayout:
         layout = bus_layout(result)
         _assert_valid(layout, result)
 
+    @pytest.mark.xfail(
+        raises=NotImplementedError,
+        reason="electronic-circuit hits (1,2) balancer shape (Phase 2)",
+        strict=True,
+    )
     def test_one_to_one_lane_consumer_mapping(self):
         """Every bus lane has at most 1 consumer row (1:1 mapping)."""
         from src.bus.bus_router import plan_bus_lanes
@@ -241,6 +251,11 @@ class TestBusVisualization:
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit")
         viz(bp, "bus-electronic-circuit-5s", solver_result=result, layout_result=layout, layout_style="bus")
 
+    @pytest.mark.xfail(
+        raises=NotImplementedError,
+        reason="Needs (1,2) balancer stamping (Phase 2) for copper-plate",
+        strict=True,
+    )
     def test_viz_electronic_circuit_from_ores(self, viz):
         result = solve("electronic-circuit", 5.0)
         layout = bus_layout(result)
