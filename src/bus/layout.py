@@ -133,18 +133,31 @@ _MACHINE_ENTITIES = {
 def _compute_extra_gaps(families: list[LaneFamily]) -> dict[int, int]:
     """How many extra tile rows each producer-row needs for its balancer.
 
-    The producer row's own output belt sits at its final row, and the
-    default 2-tile recipe gap follows. That absorbs balancer heights up
-    to 3 (output-belt row + 2 gap tiles = 3 rows). For a balancer of
-    height H > 3, we need H - 3 extra rows after the producer. We key
-    by the LAST producer row of each family so sub-rows stay tight and
-    only the final one eats the reservation.
+    Two positioning regimes (see ``_split_overflowing_lanes``):
+
+    * N == 1: balancer sits AT the producer's output-belt row. It spans
+      H rows starting there. The default 2-tile recipe gap absorbs up to
+      3 rows (output row + 2 gap = 3), so we need ``max(0, H - 3)``
+      extra rows after the producer.
+    * N >= 2: balancer sits BELOW the last producer row's ``y_end``,
+      spanning H rows of empty space. The default 2-tile recipe gap
+      absorbs 2 rows, so we need ``max(0, H - 2)`` extra rows after the
+      last producer.
+
+    Keyed by the LAST producer row of each family so sub-rows stay
+    tight and only the final one eats the reservation.
     """
     extra: dict[int, int] = {}
     for fam in families:
         template = BALANCER_TEMPLATES[fam.shape]
-        needed = max(0, template.height - 3)
-        if needed == 0 or not fam.producer_rows:
+        if not fam.producer_rows:
+            continue
+        n_producers = fam.shape[0]
+        if n_producers == 1:
+            needed = max(0, template.height - 3)
+        else:
+            needed = max(0, template.height - 2)
+        if needed == 0:
             continue
         last_producer = max(fam.producer_rows)
         extra[last_producer] = max(extra.get(last_producer, 0), needed)

@@ -416,21 +416,28 @@ def _split_overflowing_lanes(
                     shape=shape,
                     template_available=False,
                 )
-            # Phase 2 supported templates fit in the 3-row producer-row
-            # + 2-tile-gap footprint. For taller templates, layout.py's
-            # _compute_extra_gaps reserves additional rows between the
-            # producer and its downstream consumers.
-            # Create the family. Origin_x is filled in after lane
-            # x-assignment; y is immediately known from the producer
-            # output row.
-            balancer_y_start = min(
-                row_spans[pri].output_belt_y for pri in all_producer_rows
-            )
+            # Balancer positioning:
+            #   N == 1: place at producer's output belt row. The single
+            #     producer's WEST belt is wired into the template input
+            #     by _render_family_input_paths, then natural-curves /
+            #     runs down to the input tile.
+            #   N >= 2: place BELOW all producer rows so each producer's
+            #     WEST belt can descend into its own input-tile column
+            #     without colliding with other producer rows.
+            if n_producers == 1:
+                balancer_y_start = row_spans[all_producer_rows[0]].output_belt_y
+            else:
+                balancer_y_start = max(
+                    row_spans[pri].y_end for pri in all_producer_rows
+                )
             families.append(
                 LaneFamily(
                     item=lane.item,
                     shape=shape,
-                    producer_rows=list(all_producer_rows),
+                    producer_rows=sorted(
+                        all_producer_rows,
+                        key=lambda p: row_spans[p].output_belt_y,
+                    ),
                     lane_xs=[],  # populated post-x-assignment
                     balancer_y_start=balancer_y_start,
                     balancer_y_end=balancer_y_start + template.height - 1,
@@ -551,6 +558,89 @@ _FACTORIO_DIR_TO_ENTITY = {
 }
 
 
+def _render_family_input_paths(
+    fam: LaneFamily,
+    row_spans: list[RowSpan],
+    bw: int,
+    belt_tier: str,
+) -> list[PlacedEntity]:
+    """Wire each producer's WEST output belt to its designated template input.
+
+    The template places SOUTH-facing input tiles at its top row. Each
+    producer's WEST output belt ends at ``x=bw`` (set by the row
+    template); this function extends those belts WEST to reach the
+    correct input column, then turns SOUTH and descends to the
+    balancer's top row.
+
+    Producer-to-input assignment: topmost producer (smallest out_y)
+    maps to leftmost input tile (smallest dx). This keeps the per-
+    producer SOUTH columns non-crossing (column x increases as out_y
+    increases).
+    """
+    template = BALANCER_TEMPLATES[fam.shape]
+    if not fam.lane_xs:
+        return []
+    origin_x = min(fam.lane_xs)
+    origin_y = fam.balancer_y_start
+
+    # Sort producers top-to-bottom, input tiles left-to-right.
+    producers = sorted(
+        fam.producer_rows, key=lambda p: row_spans[p].output_belt_y
+    )
+    inputs = sorted(template.input_tiles, key=lambda t: t[0])
+
+    entities: list[PlacedEntity] = []
+    for producer_row_idx, (input_dx, _) in zip(producers, inputs):
+        out_y = row_spans[producer_row_idx].output_belt_y
+        input_x = origin_x + input_dx
+
+        # WEST belts from (input_x + 1, out_y) up to (bw - 1, out_y).
+        # These continue westward from the row's leftmost output belt
+        # at (bw, out_y) placed by the row template.
+        for x in range(input_x + 1, bw):
+            entities.append(
+                PlacedEntity(
+                    name=belt_tier,
+                    x=x,
+                    y=out_y,
+                    direction=EntityDirection.WEST,
+                    carries=fam.item,
+                )
+            )
+
+        if out_y == origin_y:
+            # N == 1 case: template's input tile at (input_x, out_y)
+            # is the turn point. WEST belt at (input_x + 1, out_y)
+            # naturally curves into the template's SOUTH belt at
+            # (input_x, out_y) — no additional entities needed.
+            continue
+
+        # Turn: SOUTH belt at (input_x, out_y), then descend to
+        # (input_x, origin_y - 1). Template's input tile at
+        # (input_x, origin_y) takes over below.
+        entities.append(
+            PlacedEntity(
+                name=belt_tier,
+                x=input_x,
+                y=out_y,
+                direction=EntityDirection.SOUTH,
+                carries=fam.item,
+            )
+        )
+        for y in range(out_y + 1, origin_y):
+            entities.append(
+                PlacedEntity(
+                    name=belt_tier,
+                    x=input_x,
+                    y=y,
+                    direction=EntityDirection.SOUTH,
+                    carries=fam.item,
+                )
+            )
+
+    return entities
+
+
 def _stamp_family_balancer(
     fam: LaneFamily, max_belt_tier: str | None
 ) -> list[PlacedEntity]:
@@ -632,6 +722,7 @@ def route_bus(
         bw,
         row_entities,
         solver_result,
+        families=families,
     )
 
     entities: list[PlacedEntity] = []
@@ -640,10 +731,19 @@ def route_bus(
 
     # Stamp N-to-M balancer blocks before routing individual lanes. The
     # stamped splitter+belt entities are what feed the family's lanes
-    # from the producer's WEST output belt.
+    # from the producer's WEST output belts.
     if families:
         for fam in families:
             entities.extend(_stamp_family_balancer(fam, max_belt_tier))
+            # Wire each producer's WEST output belt into its template
+            # input tile. The belt tier matches the one used inside the
+            # balancer (keyed by the family's total rate).
+            input_belt_tier = belt_entity_for_rate(
+                fam.total_rate, max_tier=max_belt_tier
+            )
+            entities.extend(
+                _render_family_input_paths(fam, row_spans, bw, input_belt_tier)
+            )
 
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
@@ -841,6 +941,7 @@ def _negotiate_and_route(
     bw: int,
     row_entities: list[PlacedEntity] | None = None,
     solver_result: SolverResult | None = None,
+    families: list[LaneFamily] | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Route all bus segments via negotiated A* with underground support.
 
@@ -899,6 +1000,37 @@ def _negotiate_and_route(
                         obstacles.append((e.x + dx, e.y + dy))
             else:
                 obstacles.append((e.x, e.y))
+
+    # Block the full bounding box of each family's balancer footprint
+    # AND its producer-to-input feeder paths so tap-offs and returns
+    # routed through the zone don't collide with balancer internals
+    # or input descent columns.
+    if families:
+        for fam in families:
+            if not fam.lane_xs:
+                continue
+            template = BALANCER_TEMPLATES[fam.shape]
+            ox = min(fam.lane_xs)
+            # Balancer body
+            for dx in range(template.width):
+                for y in range(fam.balancer_y_start, fam.balancer_y_end + 1):
+                    obstacles.append((ox + dx, y))
+            # Producer-to-input feeder paths
+            producers_sorted = sorted(
+                fam.producer_rows,
+                key=lambda p: row_spans[p].output_belt_y,
+            )
+            inputs_sorted = sorted(template.input_tiles, key=lambda t: t[0])
+            for producer_row_idx, (input_dx, _) in zip(producers_sorted, inputs_sorted):
+                out_y = row_spans[producer_row_idx].output_belt_y
+                input_x = ox + input_dx
+                # WEST feeder row
+                for x in range(input_x, bw):
+                    obstacles.append((x, out_y))
+                # SOUTH descent column
+                if out_y != fam.balancer_y_start:
+                    for y in range(out_y + 1, fam.balancer_y_start):
+                        obstacles.append((input_x, y))
 
     # Trunk columns are NOT added as static obstacles — trunks are now A*
     # specs (strategy=2) whose routed paths are claimed in the congestion grid.
