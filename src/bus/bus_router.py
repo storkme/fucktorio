@@ -190,6 +190,18 @@ def plan_bus_lanes(
         fam.lane_xs = sorted(
             lane.x for lane in lanes if lane.family_id == fid
         )
+        # Templates assume contiguous output columns. If lane ordering
+        # interleaved a family with other items' lanes, the stamp won't
+        # land at the right x's for all sibling trunks. Fail loud rather
+        # than silently emitting another floating-trunk variant.
+        expected = list(range(fam.lane_xs[0], fam.lane_xs[0] + len(fam.lane_xs)))
+        if fam.lane_xs != expected:
+            raise NotImplementedError(
+                f"Balancer for item {fam.item!r} shape {fam.shape} needs "
+                f"contiguous lane columns, but lane x's are {fam.lane_xs}. "
+                f"Lane ordering (_optimize_lane_order) doesn't yet "
+                f"constrain family lanes to stay adjacent."
+            )
 
     return lanes, families
 
