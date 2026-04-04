@@ -1,0 +1,11 @@
+services:
+  claude-agent:
+    build: .
+    volumes:
+      - .:/workspace                          # project code
+      - ~/.claude:/root/.claude:ro            # claude.ai auth token
+      - ~/.config/gh:/root/.config/gh:ro      # GitHub CLI token
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: claude --dangerously-skip-permissions
