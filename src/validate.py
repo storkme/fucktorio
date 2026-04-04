@@ -155,30 +155,66 @@ def check_pipe_isolation(layout_result: LayoutResult) -> list[ValidationIssue]:
 
     In Factorio, adjacent pipes automatically connect and merge their
     fluid networks. Two pipes carrying different fluids must not be
-    on adjacent tiles.
+    connected on the surface. Regular pipes connect on all 4 sides;
+    pipe-to-grounds connect only on their surface side (opposite their
+    flow direction for inputs, same as flow direction for outputs).
     """
+    from .models import EntityDirection
+
     issues: list[ValidationIssue] = []
 
-    # Build pipe tile map
-    pipe_map: dict[tuple[int, int], str | None] = {}
+    # Build pipe tile map. For PTGs, compute which neighbour tile is on
+    # the surface side so we only check that one.
+    pipe_map: dict[tuple[int, int], tuple[str | None, str, EntityDirection, str | None]] = {}
     for e in layout_result.entities:
         if e.name in _PIPE_ENTITIES:
-            pipe_map[(e.x, e.y)] = e.carries
+            pipe_map[(e.x, e.y)] = (e.carries, e.name, e.direction, e.io_type)
 
-    # Check all four neighbours
+    # For a PTG, return the single neighbour tile it connects to on the surface
+    def _ptg_surface_neighbour(
+        x: int, y: int, direction: EntityDirection, io_type: str | None
+    ) -> tuple[int, int] | None:
+        # Input: surface side is opposite flow direction (fluid enters from behind)
+        # Output: surface side matches flow direction (fluid exits ahead)
+        back = io_type == "input"
+        # Map flow direction -> delta
+        deltas = {
+            EntityDirection.NORTH: (0, -1),
+            EntityDirection.EAST: (1, 0),
+            EntityDirection.SOUTH: (0, 1),
+            EntityDirection.WEST: (-1, 0),
+        }
+        dx, dy = deltas.get(direction, (0, 0))
+        if back:
+            dx, dy = -dx, -dy
+        return (x + dx, y + dy)
+
+    # For each pipe entity, check only its valid surface neighbours
     checked: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-    for (px, py), carries in pipe_map.items():
+    for (px, py), (carries, name, direction, io_type) in pipe_map.items():
         if carries is None:
             continue
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            nb = (px + dx, py + dy)
-            if nb not in pipe_map or pipe_map[nb] is None:
+        if name == "pipe-to-ground":
+            nb = _ptg_surface_neighbour(px, py, direction, io_type)
+            neighbours = [nb] if nb else []
+        else:
+            neighbours = [(px + dx, py + dy) for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]]
+        for nb in neighbours:
+            if nb not in pipe_map:
                 continue
+            nb_carries, nb_name, nb_direction, nb_io = pipe_map[nb]
+            if nb_carries is None:
+                continue
+            # If the neighbour is a PTG, its surface side must face back at us
+            if nb_name == "pipe-to-ground":
+                nb_surface = _ptg_surface_neighbour(nb[0], nb[1], nb_direction, nb_io)
+                if nb_surface != (px, py):
+                    continue
             pair = (min((px, py), nb), max((px, py), nb))
             if pair in checked:
                 continue
             checked.add(pair)
-            if pipe_map[nb] != carries:
+            if nb_carries != carries:
                 issues.append(
                     ValidationIssue(
                         severity="error",
@@ -186,7 +222,7 @@ def check_pipe_isolation(layout_result: LayoutResult) -> list[ValidationIssue]:
                         message=(
                             f"Adjacent pipes carry different fluids: "
                             f"({px},{py}) carries {carries}, "
-                            f"({nb[0]},{nb[1]}) carries {pipe_map[nb]}"
+                            f"({nb[0]},{nb[1]}) carries {nb_carries}"
                         ),
                         x=px,
                         y=py,

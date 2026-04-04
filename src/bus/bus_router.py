@@ -83,17 +83,25 @@ def plan_bus_lanes(
         for inp in rs.spec.inputs:
             item_to_consumers.setdefault(inp.item, []).append(idx)
 
-    # External inputs (solid AND fluid)
+    # External inputs (solid AND fluid). Fluid externals get staggered
+    # source_y so adjacent fluid columns don't share a surface-pipe tile
+    # at the bus entry row.
+    fluid_source_y = 0
     for ext in solver_result.external_inputs:
         if ext.item in seen_items:
             continue
         consumers = item_to_consumers.get(ext.item, [])
         if consumers:
+            if ext.is_fluid:
+                src_y = fluid_source_y
+                fluid_source_y += 1
+            else:
+                src_y = 0
             lanes.append(
                 BusLane(
                     item=ext.item,
                     x=0,
-                    source_y=0,
+                    source_y=src_y,
                     consumer_rows=consumers,
                     producer_row=None,
                     rate=ext.rate,
@@ -192,8 +200,11 @@ def plan_bus_lanes(
     # Optimize lane left-to-right ordering to minimize underground crossings.
     lanes = _optimize_lane_order(lanes, row_spans)
 
-    # Assign x-columns with 1-tile spacing.  Tap-offs go underground to
-    # cross other trunks; with tight spacing the underground spans are short.
+    # Assign x-columns with 1-tile spacing. Tap-offs go underground to
+    # cross other trunks; with tight spacing the underground spans are
+    # short. Fluid trunks are emitted with PTG segments between connection
+    # y's (see _route_fluid_lane), so adjacent fluid columns don't merge
+    # because surface pipes only exist at explicit tap-off y's.
     for i, lane in enumerate(lanes):
         lane.x = i + 1
 
@@ -1033,35 +1044,30 @@ def _negotiate_and_route(
     # trunk tiles as blocked and use underground crossings.
     #
     # Fluid lanes however are not negotiated — they emit fixed pipe entities
-    # in _route_fluid_lane. Add their trunk columns and horizontal pipe
-    # runs (consumer tap-offs + producer-side returns) as static obstacles
-    # so belt tap-offs tunnel past them instead of overlapping.
+    # in _route_fluid_lane. Add every tile they occupy (surface pipes +
+    # PTG entities) as static obstacles so belt tap-offs tunnel past them.
+    # PTGs and pipes both collide with belts on the surface, so we block
+    # the full trunk y-range and the full horizontal tap-off x-range.
     for lane in lanes:
         if not lane.is_fluid:
             continue
-        trunk_ys = [lane.source_y]
-        trunk_ys.extend(lane.tap_off_ys)
-        trunk_ys.extend(py for _ri, _px, py in lane.fluid_output_port_positions)
-        start_y = min(trunk_ys)
-        end_y = max(trunk_ys)
-        for y in range(start_y, end_y + 1):
-            obstacles.append((lane.x, y))
-        # Consumer-side horizontal pipe fills
-        input_ys: dict[int, set[int]] = {}
-        for _ri, port_x, port_y in lane.fluid_port_positions:
-            input_ys.setdefault(port_y, set()).add(port_x)
-        for port_y, xs in input_ys.items():
+        connection_ys: set[int] = {lane.source_y}
+        connection_ys.update(lane.tap_off_ys)
+        connection_ys.update(py for _ri, _px, py in lane.fluid_output_port_positions)
+        if connection_ys:
+            trunk_start = min(connection_ys)
+            trunk_end = max(connection_ys)
+            for y in range(trunk_start, trunk_end + 1):
+                obstacles.append((lane.x, y))
+        port_xs_by_y: dict[int, set[int]] = {}
+        for _ri, px, py in lane.fluid_port_positions:
+            port_xs_by_y.setdefault(py, set()).add(px)
+        for _ri, px, py in lane.fluid_output_port_positions:
+            port_xs_by_y.setdefault(py, set()).add(px)
+        for py, xs in port_xs_by_y.items():
             last_x = max(xs)
             for fx in range(lane.x + 1, last_x + 1):
-                obstacles.append((fx, port_y))
-        # Producer-side horizontal pipe fills
-        output_ys: dict[int, set[int]] = {}
-        for _ri, port_x, port_y in lane.fluid_output_port_positions:
-            output_ys.setdefault(port_y, set()).add(port_x)
-        for port_y, xs in output_ys.items():
-            last_x = max(xs)
-            for fx in range(lane.x + 1, last_x + 1):
-                obstacles.append((fx, port_y))
+                obstacles.append((fx, py))
 
     # --- Build demand specs ---
 
@@ -1811,49 +1817,127 @@ def _route_belt_lane(
             entities.extend(_render_path(ret_path, lane.item, horiz_belt))
 
 
+_PTG_MAX_SPAN = 10  # max tiles between PTG input and output positions
+
+
+def _chain_ptg_pairs_vertical(
+    entities: list[PlacedEntity],
+    x: int,
+    start_y: int,
+    end_y: int,
+    item: str,
+) -> None:
+    """Fill the gap between two surface pipes at (x, start_y) and (x, end_y)
+    with PTG pairs (or surface pipe for 1-tile gaps). start_y < end_y."""
+    cur = start_y + 1
+    while cur < end_y:
+        remaining = end_y - cur
+        if remaining == 1:
+            entities.append(PlacedEntity(name="pipe", x=x, y=cur, carries=item))
+            return
+        out_pos = min(cur + _PTG_MAX_SPAN, end_y - 1)
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=x,
+                y=cur,
+                direction=EntityDirection.SOUTH,
+                io_type="input",
+                carries=item,
+            )
+        )
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=x,
+                y=out_pos,
+                direction=EntityDirection.SOUTH,
+                io_type="output",
+                carries=item,
+            )
+        )
+        cur = out_pos + 1
+
+
+def _chain_ptg_pairs_horizontal(
+    entities: list[PlacedEntity],
+    y: int,
+    start_x: int,
+    end_x: int,
+    item: str,
+) -> None:
+    """Fill the gap between two surface pipes at (start_x, y) and (end_x, y)
+    with PTG pairs (or surface pipe for 1-tile gaps). start_x < end_x."""
+    cur = start_x + 1
+    while cur < end_x:
+        remaining = end_x - cur
+        if remaining == 1:
+            entities.append(PlacedEntity(name="pipe", x=cur, y=y, carries=item))
+            return
+        out_pos = min(cur + _PTG_MAX_SPAN, end_x - 1)
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=cur,
+                y=y,
+                direction=EntityDirection.EAST,
+                io_type="input",
+                carries=item,
+            )
+        )
+        entities.append(
+            PlacedEntity(
+                name="pipe-to-ground",
+                x=out_pos,
+                y=y,
+                direction=EntityDirection.EAST,
+                io_type="output",
+                carries=item,
+            )
+        )
+        cur = out_pos + 1
+
+
 def _route_fluid_lane(
     entities: list[PlacedEntity],
     lane: BusLane,
     bw: int,
 ) -> None:
-    """Route a fluid bus lane with pipes + pipe-to-ground tap-offs."""
+    """Route a fluid bus lane with PTG-segmented trunks and tap-offs.
+
+    Surface pipes exist only at explicit connection points (trunk source,
+    consumer tap-off y's, producer output y's, and port-pipe tiles). The
+    gaps between them are filled with pipe-to-ground pairs so adjacent
+    fluid trunks at 1-tile spacing don't merge.
+    """
     x = lane.x
 
-    # Extend trunk span to cover producer output rows as well as consumer taps
-    ys: list[int] = [lane.source_y]
-    ys.extend(lane.tap_off_ys)
-    ys.extend(py for _ri, _px, py in lane.fluid_output_port_positions)
-    start_y = min(ys)
-    end_y = max(ys)
+    # Collect every y where the trunk needs a surface connection
+    connection_ys: set[int] = {lane.source_y}
+    connection_ys.update(lane.tap_off_ys)
+    connection_ys.update(py for _ri, _px, py in lane.fluid_output_port_positions)
 
-    # Vertical pipe run on the bus
-    for y in range(start_y, end_y + 1):
+    # Vertical trunk: surface pipe at each connection y, PTG pairs between
+    sorted_ys = sorted(connection_ys)
+    for y in sorted_ys:
         entities.append(PlacedEntity(name="pipe", x=x, y=y, carries=lane.item))
+    for i in range(len(sorted_ys) - 1):
+        _chain_ptg_pairs_vertical(entities, x, sorted_ys[i], sorted_ys[i + 1], lane.item)
 
-    # Consumer-side tap-offs: for each port_y group, connect the trunk to
-    # every port pipe at that y with a continuous horizontal run of pipes.
-    # Multiple taps at the same y (e.g. a row of 6 oil-refineries) share
-    # one run so we don't stack PTGs on the same tile.
-    input_ys: dict[int, set[int]] = {}
+    # Horizontal tap-offs: group ports by y (consumer inputs + producer
+    # outputs all connect the same way — a PTG chain from trunk to port
+    # pipes along the port y-row). Port pipes are placed by templates.
+    port_xs_by_y: dict[int, set[int]] = {}
     for _ri, port_x, port_y in lane.fluid_port_positions:
-        input_ys.setdefault(port_y, set()).add(port_x)
-    for port_y, xs in input_ys.items():
-        last_x = max(xs)
-        for fill_x in range(x + 1, last_x):
-            if fill_x in xs:
-                continue
-            entities.append(PlacedEntity(name="pipe", x=fill_x, y=port_y, carries=lane.item))
-
-    # Producer-side: same pattern — each row's output pipes share a y.
-    output_ys: dict[int, set[int]] = {}
+        port_xs_by_y.setdefault(port_y, set()).add(port_x)
     for _ri, port_x, port_y in lane.fluid_output_port_positions:
-        output_ys.setdefault(port_y, set()).add(port_x)
-    for port_y, xs in output_ys.items():
-        last_x = max(xs)
-        for fill_x in range(x + 1, last_x):
-            if fill_x in xs:
-                continue
-            entities.append(PlacedEntity(name="pipe", x=fill_x, y=port_y, carries=lane.item))
+        port_xs_by_y.setdefault(port_y, set()).add(port_x)
+
+    for port_y, xs in port_xs_by_y.items():
+        # Chain: trunk(x) → first_port → second_port → ... → last_port
+        anchors = sorted([x, *xs])
+        for i in range(len(anchors) - 1):
+            _chain_ptg_pairs_horizontal(entities, port_y, anchors[i], anchors[i + 1], lane.item)
 
 
 _UG_MAP = {
