@@ -274,7 +274,12 @@ def _optimize_lane_order(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
 ) -> list[BusLane]:
-    """Find the left-to-right lane ordering that minimizes underground crossings."""
+    """Find the left-to-right lane ordering that minimizes underground crossings.
+
+    Lanes belonging to the same LaneFamily must stay contiguous — balancer
+    template stamps assume adjacent output columns. We enumerate the
+    same lane permutations as before but reject any that split a family.
+    """
     if len(lanes) <= 1:
         return lanes
 
@@ -282,11 +287,31 @@ def _optimize_lane_order(
     solid = [ln for ln in lanes if not ln.is_fluid]
     fluid = [ln for ln in lanes if ln.is_fluid]
 
+    def _family_contiguous(ordered: list[BusLane]) -> bool:
+        """True iff every family's lanes form a contiguous run in ordered."""
+        seen_ranges: dict[int, tuple[int, int]] = {}
+        for i, ln in enumerate(ordered):
+            if ln.family_id is None:
+                continue
+            lo, hi = seen_ranges.get(ln.family_id, (i, i))
+            seen_ranges[ln.family_id] = (min(lo, i), max(hi, i))
+        # Count lanes per family, verify (hi - lo + 1) matches
+        counts: dict[int, int] = {}
+        for ln in ordered:
+            if ln.family_id is not None:
+                counts[ln.family_id] = counts.get(ln.family_id, 0) + 1
+        for fid, (lo, hi) in seen_ranges.items():
+            if hi - lo + 1 != counts[fid]:
+                return False
+        return True
+
     if len(solid) <= 10:
         best_order: list[BusLane] | None = None
         best_score = float("inf")
         for perm in itertools.permutations(range(len(solid))):
             ordered = [solid[i] for i in perm]
+            if not _family_contiguous(ordered):
+                continue
             score = _score_lane_ordering(ordered, row_spans)
             if score < best_score:
                 best_score = score
@@ -294,8 +319,10 @@ def _optimize_lane_order(
         if best_order is not None:
             solid = best_order
     else:
-        # Heuristic: lanes with later consumers on the left (outside)
-        solid.sort(key=lambda ln: -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999))
+        # Heuristic: lanes with later consumers on the left (outside),
+        # with family members grouped together.
+        fam_key = {ln: (ln.family_id, -(min(ln.tap_off_ys) if ln.tap_off_ys else 9999)) for ln in solid}
+        solid.sort(key=lambda ln: fam_key[ln])
 
     return solid + fluid
 
