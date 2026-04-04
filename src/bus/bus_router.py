@@ -483,15 +483,19 @@ def _merge_output_rows(
     for idx, out_y in enumerate(output_ys):
         target_x = 0 if idx == 0 else 1
 
-        # Horizontal WEST from bw-1 to target_x+1, underground past bus trunks.
+        # Horizontal WEST from bw-1 toward target_x, underground past bus trunks.
         merge_key = f"merge:{item}:{target_x}:{out_y}"
         merge_path = paths.get(merge_key)
         if merge_path:
-            entities.extend(_render_path(merge_path, item, belt_name, EntityDirection.WEST))
+            merge_ents = _render_path(merge_path, item, belt_name, EntityDirection.WEST)
+            # Last entity should face SOUTH to turn into the SOUTH column
+            if merge_ents:
+                merge_ents[-1].direction = EntityDirection.SOUTH
+            entities.extend(merge_ents)
 
         # Vertical SOUTH from out_y to merge_start_y at target_x.
-        # The WEST belt at (target_x+1, out_y) feeds into the SOUTH belt
-        # at (target_x, out_y) — a natural belt turn.
+        # The WEST belt at (target_x+1, out_y) feeds into (target_x, out_y)
+        # via a natural belt turn.
         for y in range(out_y, merge_start_y):
             entities.append(
                 PlacedEntity(
@@ -589,8 +593,8 @@ def _negotiate_and_route(
     tiles that become obstacles for lower-priority specs, forcing them
     underground at crossings.
 
-    Priority order: mergers (8) > tap-offs (6) > returns (5) >
-    output mergers/balance (4) > trunks (3).
+    Priority order: mergers (8) > tap-offs (6) > trunks (5) >
+    returns/balance (4) > output mergers (3).
 
     Returns a map of string key → routed path tiles.  Keys include:
     - "trunk:{item}:{x}:{start_y}:{end_y}" for trunk segments
@@ -678,7 +682,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(x, seg_start), (x, seg_end)],
                         strategy=2,
-                        priority=3,
+                        priority=5,
                         x_constraint=x,
                     )
                 )
@@ -694,7 +698,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(bw - 1, out_y), (x + 1, out_y)],
                         strategy=2,
-                        priority=5,
+                        priority=4,
                         y_constraint=out_y,
                     )
                 )
@@ -758,7 +762,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(x, seg_start), (x, seg_end)],
                         strategy=2,
-                        priority=3,
+                        priority=5,
                         x_constraint=x,
                     )
                 )
@@ -801,7 +805,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(x, seg_start), (x, seg_end)],
                         strategy=2,
-                        priority=3,
+                        priority=5,
                         x_constraint=x,
                     )
                 )
@@ -817,7 +821,7 @@ def _negotiate_and_route(
                         item_id=item_id,
                         waypoints=[(bw - 1, out_y), (x + 1, out_y)],
                         strategy=2,
-                        priority=5,
+                        priority=4,
                         y_constraint=out_y,
                     )
                 )
@@ -864,6 +868,7 @@ def _negotiate_and_route(
             i += 2
 
     # --- Output merger horizontal demands (A*, strategy=2) ---
+    trunk_xs = {ln.x for ln in lanes if not ln.is_fluid}
     if solver_result:
         output_items = {ext.item for ext in solver_result.external_outputs if not ext.is_fluid}
         for out_item in output_items:
@@ -880,16 +885,24 @@ def _negotiate_and_route(
             for idx, ri in enumerate(output_row_idxs):
                 out_y = row_spans[ri].output_belt_y
                 target_x = 0 if idx == 0 else 1
-                if bw - 1 > target_x + 1:
+                goal_x = target_x + 1
+                if bw - 1 > goal_x:
+                    # When goal is blocked by a trunk, shift one tile south.
+                    # The A* detours via out_y+1, and the last tile turns
+                    # SOUTH into the merge column.
+                    blocked = goal_x in trunk_xs
+                    goal_y = out_y + 1 if blocked else out_y
                     id_to_key[lane_id] = f"merge:{out_item}:{target_x}:{out_y}"
                     specs.append(
                         PyLaneSpec(
                             id=lane_id,
                             item_id=out_item_id,
-                            waypoints=[(bw - 1, out_y), (target_x + 1, out_y)],
+                            waypoints=[(bw - 1, out_y), (goal_x, goal_y)],
                             strategy=2,
-                            priority=4,
-                            y_constraint=out_y,
+                            priority=3,
+                            # Keep y_constraint when goal is on the same row.
+                            # Drop it when goal is shifted (needs vertical move).
+                            y_constraint=out_y if not blocked else None,
                         )
                     )
                     lane_id += 1

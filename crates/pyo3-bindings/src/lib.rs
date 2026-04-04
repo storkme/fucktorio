@@ -355,7 +355,12 @@ fn astar_inner(
                     continue;
                 }
             }
-            if obstacles.contains(&(nx, ny)) && !goals.contains(&(nx, ny)) {
+            // Allow reaching goal tiles on obstacles only for x_constrained
+            // (trunk) routing — trunks need to reach goals that are promoted
+            // by higher-priority tap-offs.  Other specs (mergers) must not
+            // place surface entities on obstacle tiles.
+            let goal_on_obstacle_ok = x_constraint.is_some() && goals.contains(&(nx, ny));
+            if obstacles.contains(&(nx, ny)) && !goal_on_obstacle_ok {
                 continue;
             }
 
@@ -431,7 +436,10 @@ fn astar_inner(
                         }
                     }
                     let landing_on_goal = goals.contains(&(ex, ey));
-                    if obstacles.contains(&(ex, ey)) && !landing_on_goal {
+                    // UG exits cannot land on obstacles — even goal tiles.
+                    // A UG exit entity would overlap with the obstacle entity.
+                    // Surface moves CAN reach goal obstacles (checked separately).
+                    if obstacles.contains(&(ex, ey)) {
                         continue;
                     }
                     if landing_on_goal && !hard_block_perp_ug {
