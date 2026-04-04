@@ -386,7 +386,12 @@ def route_bus(
     """
     # Route all horizontals via negotiated A* with underground support.
     routed_paths = _negotiate_and_route(
-        lanes, row_spans, total_height, bw, row_entities, solver_result,
+        lanes,
+        row_spans,
+        total_height,
+        bw,
+        row_entities,
+        solver_result,
     )
 
     entities: list[PlacedEntity] = []
@@ -807,7 +812,8 @@ def _negotiate_and_route(
             if out_item_id is None:
                 continue
             output_row_idxs = [
-                i for i, rs in enumerate(row_spans)
+                i
+                for i, rs in enumerate(row_spans)
                 if any(o.item == out_item for o in rs.spec.outputs if not o.is_fluid)
             ]
             if len(output_row_idxs) < 2:
@@ -1418,7 +1424,3 @@ def _ug_for_span(belt_name: str, span: int) -> str:
             return ug_name
     # Fallback: express (longest reach)
     return "express-underground-belt"
-
-
-
-
