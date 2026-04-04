@@ -196,6 +196,17 @@ def check_pipe_isolation(layout_result: LayoutResult) -> list[ValidationIssue]:
     return issues
 
 
+def _recipe_has_fluid_output(recipe_name: str | None) -> bool:
+    """Return True if *recipe_name* produces at least one fluid product."""
+    if not recipe_name:
+        return False
+    from draftsman.data import recipes
+
+    raw = recipes.raw.get(recipe_name, {})
+    results = raw.get("results") or []
+    return any(isinstance(r, dict) and r.get("type") == "fluid" for r in results)
+
+
 def _machine_size(name: str) -> int:
     if name in _5x5_ENTITIES:
         return 5
@@ -354,8 +365,10 @@ def check_fluid_port_connectivity(
                         )
                     )
 
-        # Check output ports: at least one must have a pipe (no bus check needed)
-        if output_ports:
+        # Check output ports: at least one must have a pipe, but only if
+        # the recipe actually produces a fluid. Factorio doesn't require
+        # unused output ports to be connected.
+        if output_ports and _recipe_has_fluid_output(e.recipe):
             has_output_pipe = any((e.x + rx, e.y + ry) in pipe_tiles for rx, ry in output_ports)
             if not has_output_pipe:
                 issues.append(

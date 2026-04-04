@@ -501,9 +501,9 @@ def fluid_input_row(
                     carries=fluid_item,
                 )
             )
-            # Output port pipes at y+5 (south face of machine)
-            entities.append(PlacedEntity(name="pipe", x=mx, y=y_offset + 5, carries=fluid_item))
-            entities.append(PlacedEntity(name="pipe", x=mx + 2, y=y_offset + 5, carries=fluid_item))
+            # Note: chemical-plant south fluid-output ports are left bare;
+            # fluid_input_row is only used for solid-output recipes (e.g.
+            # plastic-bar) where those ports are unused.
         else:
             # Other machines: regular pipe at the port position
             entities.append(
