@@ -68,11 +68,6 @@ class TestBusLayout:
         assert len(layout.entities) > 0
         _assert_valid(layout, result, allowed_categories={"power"})
 
-    @pytest.mark.xfail(
-        raises=NotImplementedError,
-        reason="Needs (1,2) balancer stamping (Phase 2) for copper-plate",
-        strict=True,
-    )
     def test_electronic_circuit_from_ores(self):
         """Full chain: ores -> smelting -> copper-cable -> electronic-circuit."""
         result = solve("electronic-circuit", 5.0)
@@ -124,7 +119,7 @@ class TestBusLayout:
             y_offset=1,
             max_belt_tier=tier,
         )
-        lanes = plan_bus_lanes(result, spans, max_belt_tier=tier)
+        lanes, _ = plan_bus_lanes(result, spans, max_belt_tier=tier)
         actual_bw = bus_width_for_lanes(lanes)
         if actual_bw != temp_bw:
             _, spans, _, _ = place_rows(
@@ -134,7 +129,7 @@ class TestBusLayout:
                 y_offset=1,
                 max_belt_tier=tier,
             )
-            lanes = plan_bus_lanes(result, spans, max_belt_tier=tier)
+            lanes, _ = plan_bus_lanes(result, spans, max_belt_tier=tier)
 
         # iron-plate is intermediate — uses direct routing, no balancer
         iron_plate_lanes = [ln for ln in lanes if ln.item == "iron-plate"]
@@ -152,11 +147,6 @@ class TestBusLayout:
         layout = bus_layout(result)
         _assert_valid(layout, result)
 
-    @pytest.mark.xfail(
-        raises=NotImplementedError,
-        reason="electronic-circuit hits (1,2) balancer shape (Phase 2)",
-        strict=True,
-    )
     def test_one_to_one_lane_consumer_mapping(self):
         """Every bus lane has at most 1 consumer row (1:1 mapping)."""
         from src.bus.bus_router import plan_bus_lanes
@@ -173,7 +163,7 @@ class TestBusLayout:
                 bus_width=0,
                 y_offset=1,
             )
-            lanes = plan_bus_lanes(result, spans)
+            lanes, _ = plan_bus_lanes(result, spans)
             for lane in lanes:
                 assert len(lane.consumer_rows) <= 1, (
                     f"{recipe}: {lane.item} lane has {len(lane.consumer_rows)} consumers"
@@ -251,11 +241,6 @@ class TestBusVisualization:
         bp = _make_blueprint(layout, "bus: 5/s electronic-circuit")
         viz(bp, "bus-electronic-circuit-5s", solver_result=result, layout_result=layout, layout_style="bus")
 
-    @pytest.mark.xfail(
-        raises=NotImplementedError,
-        reason="Needs (1,2) balancer stamping (Phase 2) for copper-plate",
-        strict=True,
-    )
     def test_viz_electronic_circuit_from_ores(self, viz):
         result = solve("electronic-circuit", 5.0)
         layout = bus_layout(result)

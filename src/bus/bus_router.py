@@ -32,19 +32,46 @@ class BusLane:
     tap_off_ys: list[int] = field(default_factory=list)
     extra_producer_rows: list[int] = field(default_factory=list)  # additional sub-rows
     balancer_y: int | None = None  # y of lane balancer splitter (None = no balancer)
+    family_id: int | None = None  # index into LaneFamily list if this lane is fed by an N-to-M balancer block
     # For fluid lanes: (row_index, x, y) of pipe-to-ground exit positions
     fluid_port_positions: list[tuple[int, int, int]] = field(default_factory=list)
+
+
+@dataclass
+class LaneFamily:
+    """An N-to-M balancer block that feeds M sibling trunk lanes for one item.
+
+    When the planner needs to fan one producer's output out across multiple
+    trunk lanes (or merge multiple producers into fewer lanes), it creates
+    a LaneFamily. Each of the M sibling lanes has ``family_id`` pointing
+    into the list of families for the layout.
+
+    The balancer entities themselves are stamped into the grid at
+    ``(min(lane.x for lane in lanes), balancer_y_start)`` from a template
+    in ``BALANCER_TEMPLATES[shape]``.
+    """
+
+    item: str
+    shape: tuple[int, int]  # (N producers, M lanes)
+    producer_rows: list[int]
+    lane_xs: list[int]  # filled in after x-assignment
+    balancer_y_start: int
+    balancer_y_end: int  # inclusive
+    total_rate: float = 0.0  # sum across all lanes, for belt tier selection
 
 
 def plan_bus_lanes(
     solver_result: SolverResult,
     row_spans: list[RowSpan],
     max_belt_tier: str | None = None,
-) -> list[BusLane]:
+) -> tuple[list[BusLane], list[LaneFamily]]:
     """Determine which items need bus lanes and assign x-columns.
 
     Lanes are ordered so that lanes tapping off at earlier (higher) rows
     are placed on the LEFT, reducing tap-off crossings.
+
+    Returns (lanes, families) — ``families`` is the list of balancer
+    blocks (possibly empty); each lane's ``family_id`` indexes into it.
     """
     lanes: list[BusLane] = []
     seen_items: set[str] = set()
@@ -111,7 +138,7 @@ def plan_bus_lanes(
     # downstream.  TODO: merge output belts properly in future.
 
     # Split lanes that exceed max belt tier capacity into parallel trunks
-    lanes = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
+    lanes, families = _split_overflowing_lanes(lanes, row_spans, max_belt_tier)
 
     # Pre-compute tap-off ys before sorting
     for lane in lanes:
@@ -158,7 +185,13 @@ def plan_bus_lanes(
     for i, lane in enumerate(lanes):
         lane.x = i + 1
 
-    return lanes
+    # Fill in lane_xs on each family now that x's are assigned.
+    for fid, fam in enumerate(families):
+        fam.lane_xs = sorted(
+            lane.x for lane in lanes if lane.family_id == fid
+        )
+
+    return lanes, families
 
 
 def _score_lane_ordering(
@@ -259,12 +292,17 @@ def _split_overflowing_lanes(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
     max_belt_tier: str | None = None,
-) -> list[BusLane]:
+) -> tuple[list[BusLane], list[LaneFamily]]:
     """Split lanes whose rate exceeds the available belt's per-lane capacity.
 
     When a lane carries e.g. 20/s but yellow belt only supports 7.5/s per lane,
     split into ceil(20/7.5) = 3 parallel trunk lanes, distributing consumer rows
     across them.
+
+    When the number of producer rows is less than the number of resulting
+    lanes, an N-to-M balancer block is needed to fan the producer output
+    across all lanes. A LaneFamily is recorded; each lane carries
+    ``family_id`` pointing into the returned families list.
     """
     # Use full belt capacity (both lanes) as threshold — lane balancers
     # placed on trunks ensure both lanes are utilised.
@@ -274,6 +312,7 @@ def _split_overflowing_lanes(
         max_lane_cap = max(_BELT_CAPACITY.values())
 
     result: list[BusLane] = []
+    families: list[LaneFamily] = []
     for lane in lanes:
         if lane.is_fluid:
             result.append(lane)
@@ -323,20 +362,63 @@ def _split_overflowing_lanes(
             1 for c in consumers_per_split if c
         ) if not is_collector else n_splits
         n_producers = len(all_producer_rows)
+        family_id: int | None = None
+        family_source_y: int | None = None
         if n_producers >= 1 and n_producers < n_lanes_with_consumers:
             shape = (n_producers, n_lanes_with_consumers)
-            template_available = shape in BALANCER_TEMPLATES
-            _raise_unimplemented_balancer(
-                item=lane.item,
-                shape=shape,
-                template_available=template_available,
+            template = BALANCER_TEMPLATES.get(shape)
+            # Phase 2 only supports templates that fit in the 3-row
+            # producer-row + 2-tile-gap footprint (height <= 3). Taller
+            # templates need row reflow (Phase 3+) to make space.
+            if template is None or template.height > 3:
+                _raise_unimplemented_balancer(
+                    item=lane.item,
+                    shape=shape,
+                    template_available=template is not None,
+                )
+            # Create the family. Origin_x is filled in after lane
+            # x-assignment; y is immediately known from the producer
+            # output row.
+            balancer_y_start = min(
+                row_spans[pri].output_belt_y for pri in all_producer_rows
             )
+            families.append(
+                LaneFamily(
+                    item=lane.item,
+                    shape=shape,
+                    producer_rows=list(all_producer_rows),
+                    lane_xs=[],  # populated post-x-assignment
+                    balancer_y_start=balancer_y_start,
+                    balancer_y_end=balancer_y_start + template.height - 1,
+                    total_rate=lane.rate,
+                )
+            )
+            family_id = len(families) - 1
+            family_source_y = balancer_y_start + template.height
 
         for si in range(n_splits):
             consumers = consumers_per_split[si]
             if not consumers and not is_collector and si > 0:
                 continue  # skip empty splits (but keep collector trunks)
             split_rate = lane.rate / n_splits
+            # When a family is in play, all its lanes are fed by the
+            # balancer block: drop producer_row and source_y points at
+            # the first row below the balancer.
+            if family_id is not None:
+                result.append(
+                    BusLane(
+                        item=lane.item,
+                        x=0,
+                        source_y=family_source_y,  # type: ignore[arg-type]
+                        consumer_rows=consumers,
+                        producer_row=None,
+                        rate=split_rate,
+                        is_fluid=lane.is_fluid,
+                        extra_producer_rows=[],
+                        family_id=family_id,
+                    )
+                )
+                continue
             # First producer in this split becomes producer_row, rest are extras
             prods = producers_per_split[si]
             first_prod = prods[0] if prods else None
@@ -357,7 +439,7 @@ def _split_overflowing_lanes(
                 )
             )
 
-    return result
+    return result, families
 
 
 def _raise_unimplemented_balancer(
@@ -416,6 +498,68 @@ def bus_width_for_lanes(lanes: list[BusLane]) -> int:
     return len(lanes) + 2
 
 
+# Factorio 1.0 direction -> our EntityDirection
+_FACTORIO_DIR_TO_ENTITY = {
+    0: EntityDirection.NORTH,
+    2: EntityDirection.EAST,
+    4: EntityDirection.SOUTH,
+    6: EntityDirection.WEST,
+}
+
+
+def _stamp_family_balancer(
+    fam: LaneFamily, max_belt_tier: str | None
+) -> list[PlacedEntity]:
+    """Render a balancer template at the family's origin position.
+
+    Template entity tiles (top-left) are offset by the family's stamp
+    origin (x = min(lane_xs), y = balancer_y_start). The item each
+    entity carries is set to ``fam.item``. Belt and splitter tiers are
+    chosen from the family's total rate so the balancer matches its
+    sibling trunks.
+    """
+    template = BALANCER_TEMPLATES[fam.shape]
+    if not fam.lane_xs:
+        raise ValueError(f"LaneFamily for {fam.item!r} has no lane_xs assigned")
+
+    origin_x = min(fam.lane_xs)
+    origin_y = fam.balancer_y_start
+
+    # Pick belt tier matching the family's total throughput (but never
+    # exceeding max_belt_tier). The same tier is used for all template
+    # entities (belts, splitters, undergrounds).
+    belt_tier = belt_entity_for_rate(fam.total_rate, max_tier=max_belt_tier)
+    splitter_name = _SPLITTER_MAP.get(belt_tier, "splitter")
+    if belt_tier == "fast-transport-belt":
+        ug_name = "fast-underground-belt"
+    elif belt_tier == "express-transport-belt":
+        ug_name = "express-underground-belt"
+    else:
+        ug_name = "underground-belt"
+
+    entities: list[PlacedEntity] = []
+    for e in template.entities:
+        if e.name == "transport-belt":
+            name = belt_tier
+        elif e.name == "splitter":
+            name = splitter_name
+        elif e.name == "underground-belt":
+            name = ug_name
+        else:
+            name = e.name
+        entities.append(
+            PlacedEntity(
+                name=name,
+                x=origin_x + e.x,
+                y=origin_y + e.y,
+                direction=_FACTORIO_DIR_TO_ENTITY[e.direction],
+                io_type=e.io_type,
+                carries=fam.item,
+            )
+        )
+    return entities
+
+
 def route_bus(
     lanes: list[BusLane],
     row_spans: list[RowSpan],
@@ -424,6 +568,7 @@ def route_bus(
     max_belt_tier: str | None = None,
     row_entities: list[PlacedEntity] | None = None,
     solver_result: SolverResult | None = None,
+    families: list[LaneFamily] | None = None,
 ) -> tuple[list[PlacedEntity], int, int]:
     """Create all bus belt entities.
 
@@ -448,6 +593,14 @@ def route_bus(
     entities: list[PlacedEntity] = []
     max_y = total_height
     merge_max_x = 0
+
+    # Stamp N-to-M balancer blocks before routing individual lanes. The
+    # stamped splitter+belt entities are what feed the family's lanes
+    # from the producer's WEST output belt.
+    if families:
+        for fam in families:
+            entities.extend(_stamp_family_balancer(fam, max_belt_tier))
+
     for lane in lanes:
         _route_lane(entities, lane, lanes, row_spans, bw, max_belt_tier, routed_paths)
 

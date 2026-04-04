@@ -36,7 +36,7 @@ def bus_layout(
         final_output_items=final_output_items,
     )
 
-    lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
+    lanes, families = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
     actual_bw = bus_width_for_lanes(lanes)
 
     # Re-place rows if bus width changed
@@ -49,7 +49,7 @@ def bus_layout(
             max_belt_tier=max_belt_tier,
             final_output_items=final_output_items,
         )
-        lanes = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
+        lanes, families = plan_bus_lanes(solver_result, row_spans, max_belt_tier=max_belt_tier)
 
     # 3. Route bus lanes (with crossing negotiation using row entities as obstacles)
     bus_entities, bus_max_y, merge_max_x = route_bus(
@@ -60,6 +60,7 @@ def bus_layout(
         max_belt_tier=max_belt_tier,
         row_entities=row_entities,
         solver_result=solver_result,
+        families=families,
     )
     total_height = max(total_height, bus_max_y)
 
