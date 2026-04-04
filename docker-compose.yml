@@ -3,8 +3,8 @@ services:
     build: .
     volumes:
       - .:/workspace                          # project code
-      - ~/.claude:/root/.claude:ro            # claude.ai auth token
-      - ~/.config/gh:/root/.config/gh:ro      # GitHub CLI token
+      - ~/.claude:/home/node/.claude:ro         # claude.ai auth token
+      - ~/.config/gh:/home/node/.config/gh:ro  # GitHub CLI token
     working_dir: /workspace
     stdin_open: true
     tty: true
