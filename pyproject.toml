@@ -16,6 +16,12 @@ dev = [
     "ruff>=0.15",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "ruff>=0.15",
+]
+
 [tool.maturin]
 module-name = "fucktorio_native"
 manifest-path = "crates/pyo3-bindings/Cargo.toml"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..models import LayoutResult, SolverResult
+from ..models import EntityDirection, LayoutResult, SolverResult
 from ..routing.common import machine_size
 from ..routing.poles import place_poles
 from .bus_router import bus_width_for_lanes, plan_bus_lanes, route_bus
@@ -68,6 +68,21 @@ def bus_layout(
         solver_result=solver_result,
     )
     total_height = max(total_height, bus_max_y)
+
+    # 3b. Remove row entities that overlap with bus splitters.
+    # WEST splitters occupy (x, y) and (x, y+1); SOUTH splitters occupy
+    # (x, y) and (x+1, y).  Filter row entities at those positions.
+    _SPLITTER_NAMES = {"splitter", "fast-splitter", "express-splitter"}
+    bus_occupied: set[tuple[int, int]] = set()
+    for ent in bus_entities:
+        if ent.name in _SPLITTER_NAMES:
+            bus_occupied.add((ent.x, ent.y))
+            if ent.direction in (EntityDirection.WEST, EntityDirection.EAST):
+                bus_occupied.add((ent.x, ent.y + 1))
+            else:
+                bus_occupied.add((ent.x + 1, ent.y))
+    if bus_occupied:
+        row_entities = [e for e in row_entities if (e.x, e.y) not in bus_occupied]
 
     # 4. Collect occupied tiles for pole placement
     occupied: set[tuple[int, int]] = set()

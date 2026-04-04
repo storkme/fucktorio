@@ -78,6 +78,12 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "factorio-draftsman", specifier = ">=3.3.0" },
@@ -85,6 +91,12 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.0" },
+    { name = "ruff", specifier = ">=0.15" },
+]
 
 [[package]]
 name = "gitdb"

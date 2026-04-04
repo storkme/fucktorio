@@ -277,8 +277,10 @@ fn astar_inner(
     while let Some(QEntry { state, .. }) = open_set.pop() {
         let State { x: cx, y: cy, forced } = state;
 
-        // Goal check (only when not forced)
-        if goals.contains(&(cx, cy)) && forced.is_none() {
+        // Goal check: normally requires non-forced state (need continuation space).
+        // Bus routing (hard_block_perp_ug): allow reaching goal while forced —
+        // the template belt beyond the goal provides the continuation.
+        if goals.contains(&(cx, cy)) && (forced.is_none() || hard_block_perp_ug) {
             return Some(reconstruct(state, &parent));
         }
 
@@ -414,10 +416,14 @@ fn astar_inner(
                     if obstacles.contains(&(ex, ey)) {
                         continue;
                     }
-                    if goals.contains(&(ex, ey)) {
+                    let landing_on_goal = goals.contains(&(ex, ey));
+                    if landing_on_goal && !hard_block_perp_ug {
+                        // Spaghetti: skip UG jumps to goal (need continuation space)
                         continue;
                     }
-                    if obstacles.contains(&(ex + dx, ey + dy)) {
+                    // Bus routing: landing on goal is OK (template belts continue)
+                    // Only check continuation obstacle when NOT landing on goal
+                    if !landing_on_goal && obstacles.contains(&(ex + dx, ey + dy)) {
                         continue;
                     }
 
