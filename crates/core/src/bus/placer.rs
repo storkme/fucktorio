@@ -5,7 +5,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::common::{belt_entity_for_rate, lane_capacity, BELT_TIERS};
-use crate::models::{MachineSpec, SolverResult};
+use crate::models::{MachineSpec, PlacedEntity, SolverResult};
 
 /// Best available per-lane capacity across all belt tiers.
 fn max_lane_capacity() -> f64 {
@@ -45,7 +45,7 @@ pub struct RowSpan {
 ///
 /// Checks output rate against the output belt (single-lane), and input rate
 /// against the best available belt tier (constrained or max).
-pub fn max_machines_for_belt(
+pub(crate) fn max_machines_for_belt(
     spec: &MachineSpec,
     belt_name: &str,
     max_belt_tier: Option<&str>,
@@ -72,7 +72,7 @@ pub fn max_machines_for_belt(
 ///
 /// Each lane has its own capacity limit. The total is 2x the per-lane max,
 /// not `int(full_capacity / rate)`, because integer truncation matters.
-pub fn max_machines_for_belt_both_lanes(
+pub(crate) fn max_machines_for_belt_both_lanes(
     spec: &MachineSpec,
     belt_name: &str,
     max_belt_tier: Option<&str>,
@@ -100,7 +100,7 @@ pub fn max_machines_for_belt_both_lanes(
 /// Performs a topological sort on solid-input dependencies so every producer
 /// row sits above every consumer row (bus flow is SOUTH). Fluid dependencies
 /// are ignored. Ties are broken by the solver's `dependency_order` (reversed).
-pub fn order_specs<'a>(
+pub(crate) fn order_specs<'a>(
     machines: &'a [MachineSpec],
     dependency_order: &[String],
 ) -> Vec<&'a MachineSpec> {
@@ -251,37 +251,201 @@ fn can_lane_split(spec: &MachineSpec, count: usize) -> bool {
     matches!(row_kind(spec), RowKind::SingleInput | RowKind::DualInput)
 }
 
-/// Build one row of machines and return its RowSpan (without rendering entities).
+/// Build one row of machines. Returns (entities, span, row_width).
 ///
-/// This computes all the metadata that `place_rows` needs without actually
-/// calling the template functions (which are not yet ported).
-pub fn build_one_row_span(
+/// Calls into the templates module to stamp the actual machine/inserter/belt entities.
+pub(crate) fn build_one_row(
     spec: &MachineSpec,
     count: usize,
     bus_width: i32,
     y_cursor: i32,
-    _max_belt_tier: Option<&str>,
-    _output_east: bool,
-) -> (RowSpan, i32) {
+    max_belt_tier: Option<&str>,
+    output_east: bool,
+) -> (Vec<PlacedEntity>, RowSpan, i32) {
+    use crate::bus::templates;
+
     let kind = row_kind(spec);
     let lane_split = can_lane_split(spec, count);
-    let row_h = kind.row_height();
 
-    let (input_belt_ys, output_belt_y, fluid_port_ys): (Vec<i32>, i32, Vec<i32>) = match &kind {
-        RowKind::OilRefinery => (vec![], y_cursor + row_h - 1, vec![y_cursor + 1]),
-        RowKind::FluidDualInput => (
-            vec![y_cursor + 2, y_cursor + 3],
-            y_cursor + 8,
-            vec![y_cursor + 1],
-        ),
-        RowKind::FluidInput => (vec![y_cursor], y_cursor + 6, vec![y_cursor + 1]),
-        RowKind::SingleInput => (vec![y_cursor], y_cursor + 6, vec![]),
-        RowKind::TripleInput => (
-            vec![y_cursor, y_cursor + 1, y_cursor + 8],
-            y_cursor + 7,
-            vec![],
-        ),
-        RowKind::DualInput => (vec![y_cursor, y_cursor + 1], y_cursor + row_h - 1, vec![]),
+    let solid_inputs: Vec<_> = spec.inputs.iter().filter(|f| !f.is_fluid).collect();
+    let solid_outputs: Vec<_> = spec.outputs.iter().filter(|f| !f.is_fluid).collect();
+    let fluid_inputs: Vec<_> = spec.inputs.iter().filter(|f| f.is_fluid).collect();
+    let fluid_outputs: Vec<_> = spec.outputs.iter().filter(|f| f.is_fluid).collect();
+
+    let output_is_fluid = solid_outputs.is_empty() && !fluid_outputs.is_empty();
+    let output_item = if output_is_fluid {
+        fluid_outputs.first().map(|f| f.item.as_str()).unwrap_or("")
+    } else {
+        solid_outputs.first().map(|f| f.item.as_str()).unwrap_or("")
+    };
+
+    let output_rate = solid_outputs.first().map(|f| f.rate * count as f64).unwrap_or(0.0);
+    let out_belt = belt_entity_for_rate(
+        output_rate * if lane_split { 1.0 } else { 2.0 },
+        max_belt_tier,
+    );
+
+    let mut fluid_port_ys: Vec<i32> = vec![];
+    let mut fluid_port_pipes: Vec<(i32, i32)> = vec![];
+    let mut fluid_output_port_pipes: Vec<(i32, i32)> = vec![];
+
+    let (row_ents, row_h, input_belt_ys, output_belt_y) = match &kind {
+        RowKind::OilRefinery => {
+            let fluid_input = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let fluid_output = fluid_outputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let (ents, rh, in_port_pipes, out_port_pipes) = templates::oil_refinery_row(
+                &spec.recipe,
+                count,
+                y_cursor,
+                bus_width,
+                fluid_input,
+                fluid_output,
+            );
+            fluid_port_ys = in_port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_pipes = in_port_pipes;
+            fluid_output_port_pipes = out_port_pipes;
+            let input_ys = vec![];
+            let out_y = y_cursor + rh - 1;
+            (ents, rh, input_ys, out_y)
+        }
+        RowKind::FluidDualInput => {
+            let solid_item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let solid_item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
+            let fluid_item = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let in_belt1 = belt_entity_for_rate(
+                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let in_belt2 = belt_entity_for_rate(
+                solid_inputs.get(1).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let (ents, rh, in_port_pipes, out_port_pipes) = templates::fluid_dual_input_row(
+                &spec.recipe,
+                &spec.entity,
+                count,
+                y_cursor,
+                bus_width,
+                (solid_item0, solid_item1),
+                fluid_item,
+                output_item,
+                output_is_fluid,
+                (in_belt1, in_belt2),
+                out_belt,
+                output_east,
+            );
+            fluid_port_ys = in_port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_pipes = in_port_pipes;
+            fluid_output_port_pipes = out_port_pipes;
+            let input_ys = vec![y_cursor + 2, y_cursor + 3];
+            let out_y = y_cursor + 8;
+            (ents, rh, input_ys, out_y)
+        }
+        RowKind::FluidInput => {
+            let solid_item = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let fluid_item = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let in_rate = solid_inputs.first().map(|f| f.rate * count as f64).unwrap_or(0.0);
+            let in_belt = belt_entity_for_rate(in_rate * 2.0, max_belt_tier);
+            let (ents, rh, port_pipes) = templates::fluid_input_row(
+                &spec.recipe,
+                &spec.entity,
+                count,
+                y_cursor,
+                bus_width,
+                solid_item,
+                fluid_item,
+                output_item,
+                in_belt,
+                out_belt,
+                output_east,
+            );
+            fluid_port_ys = port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_pipes = port_pipes;
+            let input_ys = vec![y_cursor];
+            let out_y = y_cursor + 6;
+            (ents, rh, input_ys, out_y)
+        }
+        RowKind::SingleInput => {
+            let input_item = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
+            let in_rate = solid_inputs.first().map(|f| f.rate * count as f64).unwrap_or(0.0);
+            let in_belt = belt_entity_for_rate(in_rate * 2.0, max_belt_tier);
+            let (ents, rh) = templates::single_input_row(
+                &spec.recipe,
+                &spec.entity,
+                count,
+                y_cursor,
+                bus_width,
+                input_item,
+                output_item,
+                in_belt,
+                out_belt,
+                lane_split,
+                output_east,
+            );
+            let input_ys = vec![y_cursor];
+            let out_y = y_cursor + 6;
+            (ents, rh, input_ys, out_y)
+        }
+        RowKind::TripleInput => {
+            let item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
+            let item2 = solid_inputs.get(2).map(|f| f.item.as_str()).unwrap_or("");
+            let in_belt1 = belt_entity_for_rate(
+                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let in_belt2 = belt_entity_for_rate(
+                solid_inputs.get(1).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let in_belt3 = belt_entity_for_rate(
+                solid_inputs.get(2).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let (ents, rh) = templates::triple_input_row(
+                &spec.recipe,
+                &spec.entity,
+                count,
+                y_cursor,
+                bus_width,
+                (item0, item1, item2),
+                output_item,
+                (in_belt1, in_belt2, in_belt3),
+                out_belt,
+                output_east,
+            );
+            let input_ys = vec![y_cursor, y_cursor + 1, y_cursor + 8];
+            let out_y = y_cursor + 7;
+            (ents, rh, input_ys, out_y)
+        }
+        RowKind::DualInput => {
+            let item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
+            let in_belt1 = belt_entity_for_rate(
+                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let in_belt2 = belt_entity_for_rate(
+                solid_inputs.get(1).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                max_belt_tier,
+            );
+            let (ents, rh) = templates::dual_input_row(
+                &spec.recipe,
+                &spec.entity,
+                count,
+                y_cursor,
+                bus_width,
+                (item0, item1),
+                output_item,
+                (in_belt1, in_belt2),
+                out_belt,
+                lane_split,
+                output_east,
+            );
+            let input_ys = vec![y_cursor, y_cursor + 1];
+            let out_y = y_cursor + rh - 1;
+            (ents, rh, input_ys, out_y)
+        }
     };
 
     let machine_pitch: i32 = if spec.entity == "oil-refinery" { 5 } else { 3 };
@@ -297,11 +461,11 @@ pub fn build_one_row_span(
         output_belt_y,
         row_width,
         fluid_port_ys,
-        fluid_port_pipes: vec![],
-        fluid_output_port_pipes: vec![],
+        fluid_port_pipes,
+        fluid_output_port_pipes,
     };
 
-    (span, row_width)
+    (row_ents, span, row_width)
 }
 
 /// Place assembly rows stacked vertically.
@@ -312,7 +476,7 @@ pub fn build_one_row_span(
 /// `extra_gap_after_row` maps a row index (into the `row_spans` returned by
 /// an EARLIER call) to extra tile rows to insert south of that row.
 ///
-/// Returns `(row_spans, total_width, total_height)`.
+/// Returns `(entities, row_spans, total_width, total_height)`.
 pub fn place_rows(
     machines: &[MachineSpec],
     dependency_order: &[String],
@@ -321,7 +485,8 @@ pub fn place_rows(
     max_belt_tier: Option<&str>,
     final_output_items: Option<&FxHashSet<String>>,
     extra_gap_after_row: Option<&FxHashMap<usize, i32>>,
-) -> (Vec<RowSpan>, i32, i32) {
+) -> (Vec<PlacedEntity>, Vec<RowSpan>, i32, i32) {
+    let mut entities: Vec<PlacedEntity> = Vec::new();
     let mut row_spans: Vec<RowSpan> = Vec::new();
     let mut y_cursor = y_offset;
     let mut max_width: i32 = 0;
@@ -368,18 +533,19 @@ pub fn place_rows(
 
         for ri in 0..n_rows {
             let chunk = ((remaining as f64) / (n_rows - ri) as f64).ceil() as usize;
-            let (span, width) =
-                build_one_row_span(spec, chunk, bus_width, y_cursor, max_belt_tier, is_final);
+            let (row_ents, span, width) =
+                build_one_row(spec, chunk, bus_width, y_cursor, max_belt_tier, is_final);
             let row_idx = row_spans.len();
             max_width = max_width.max(width);
             let y_end = span.y_end;
+            entities.extend(row_ents);
             row_spans.push(span);
             y_cursor = y_end + extra_gaps.get(&row_idx).copied().unwrap_or(0);
             remaining -= chunk;
         }
     }
 
-    (row_spans, max_width, y_cursor)
+    (entities, row_spans, max_width, y_cursor)
 }
 
 /// Convenience wrapper that takes a `SolverResult` directly.
@@ -390,7 +556,7 @@ pub fn place_rows_from_result(
     max_belt_tier: Option<&str>,
     final_output_items: Option<&FxHashSet<String>>,
     extra_gap_after_row: Option<&FxHashMap<usize, i32>>,
-) -> (Vec<RowSpan>, i32, i32) {
+) -> (Vec<PlacedEntity>, Vec<RowSpan>, i32, i32) {
     place_rows(
         &result.machines,
         &result.dependency_order,
@@ -631,7 +797,7 @@ mod tests {
     fn place_rows_single_recipe_no_split() {
         let machines = vec![iron_plate_spec()];
         let dep_order = vec!["iron-plate".to_string()];
-        let (spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
+        let (_, spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].machine_count, 1);
         assert_eq!(spans[0].spec.recipe, "iron-plate");
@@ -641,7 +807,7 @@ mod tests {
     fn place_rows_two_recipes_ordered() {
         let machines = vec![iron_gear_spec(), iron_plate_spec()];
         let dep_order = vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()];
-        let (spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
+        let (_, spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].spec.recipe, "iron-plate");
         assert_eq!(spans[1].spec.recipe, "iron-gear-wheel");
@@ -652,7 +818,7 @@ mod tests {
         // Second recipe starts at y_end_of_first + 2 (gap)
         let machines = vec![iron_plate_spec(), iron_gear_spec()];
         let dep_order = vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()];
-        let (spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
+        let (_, spans, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[1].y_start, spans[0].y_end + 2);
     }
@@ -661,7 +827,7 @@ mod tests {
     fn place_rows_y_offset() {
         let machines = vec![iron_plate_spec()];
         let dep_order = vec!["iron-plate".to_string()];
-        let (spans, _, _) = place_rows(&machines, &dep_order, 0, 5, None, None, None);
+        let (_, spans, _, _) = place_rows(&machines, &dep_order, 0, 5, None, None, None);
         assert_eq!(spans[0].y_start, 5);
     }
 
@@ -672,7 +838,7 @@ mod tests {
     #[test]
     fn place_rows_electronic_circuit_row_grouping() {
         let result = electronic_circuit_solver_result();
-        let (spans, _, _) = place_rows(
+        let (_, spans, _, _) = place_rows(
             &result.machines,
             &result.dependency_order,
             0,
@@ -729,7 +895,7 @@ mod tests {
         };
         let machines = vec![spec];
         let dep_order = vec!["iron-plate".to_string()];
-        let (spans, _, _) = place_rows(
+        let (_, spans, _, _) = place_rows(
             &machines,
             &dep_order,
             0,
@@ -789,7 +955,7 @@ mod tests {
         };
         let machines = vec![spec, plate_spec];
         let dep_order = vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()];
-        let (spans, _, _) = place_rows(
+        let (_, spans, _, _) = place_rows(
             &machines,
             &dep_order,
             0,
@@ -815,7 +981,7 @@ mod tests {
     fn row_span_y_coordinates_are_consistent() {
         let machines = vec![iron_plate_spec(), iron_gear_spec()];
         let dep_order = vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()];
-        let (spans, _, total_height) =
+        let (_, spans, _, total_height) =
             place_rows(&machines, &dep_order, 5, 0, None, None, None);
 
         // Every span should have y_end > y_start
@@ -843,7 +1009,7 @@ mod tests {
         let machines = vec![iron_plate_spec()];
         let dep_order = vec!["iron-plate".to_string()];
         let bus_width = 10;
-        let (spans, max_width, _) =
+        let (_, spans, max_width, _) =
             place_rows(&machines, &dep_order, bus_width, 0, None, None, None);
 
         assert!(
@@ -861,7 +1027,7 @@ mod tests {
         let mut extra_gaps: FxHashMap<usize, i32> = FxHashMap::default();
         extra_gaps.insert(0, 5); // Add 5 extra tiles after first row
 
-        let (spans_with_gap, _, _) = place_rows(
+        let (_, spans_with_gap, _, _) = place_rows(
             &machines,
             &dep_order,
             0,
@@ -870,7 +1036,7 @@ mod tests {
             None,
             Some(&extra_gaps),
         );
-        let (spans_no_gap, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
+        let (_, spans_no_gap, _, _) = place_rows(&machines, &dep_order, 0, 0, None, None, None);
 
         // Second row should start 5 tiles later with gap
         assert_eq!(

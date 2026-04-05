@@ -1005,3 +1005,438 @@ pub fn negotiate_lanes(
 
     best_lanes
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn empty_bdm() -> FxHashMap<(i16, i16), u8> {
+        FxHashMap::default()
+    }
+
+    fn set(coords: &[(i16, i16)]) -> FxHashSet<(i16, i16)> {
+        coords.iter().copied().collect()
+    }
+
+    fn lane_spec(
+        id: u32,
+        item_id: u16,
+        from: (i16, i16),
+        to: (i16, i16),
+        strategy: u8,
+    ) -> LaneSpec {
+        LaneSpec {
+            id,
+            item_id,
+            waypoints: vec![from, to],
+            strategy,
+            priority: 0,
+            y_constraint: None,
+            x_constraint: None,
+            flow_dir: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // astar_path tests
+    // -----------------------------------------------------------------------
+
+    /// Simple straight-line path with no obstacles, east to west.
+    #[test]
+    fn test_astar_straight_line_horizontal() {
+        let starts = set(&[(0, 0)]);
+        let goals = set(&[(4, 0)]);
+        let obstacles = set(&[]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_some(), "expected a path to be found");
+        let p = path.unwrap();
+        assert_eq!(p[0], (0, 0), "path should start at (0,0)");
+        assert_eq!(*p.last().unwrap(), (4, 0), "path should end at (4,0)");
+        // All tiles should have y == 0 for a straight horizontal route
+        for &(_, y) in &p {
+            assert_eq!(y, 0, "horizontal path should stay on row 0");
+        }
+    }
+
+    /// Simple straight-line path going south (increasing y).
+    #[test]
+    fn test_astar_straight_line_vertical() {
+        let starts = set(&[(2, 0)]);
+        let goals = set(&[(2, 5)]);
+        let obstacles = set(&[]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert_eq!(p[0], (2, 0));
+        assert_eq!(*p.last().unwrap(), (2, 5));
+        for &(x, _) in &p {
+            assert_eq!(x, 2, "vertical path should stay on column 2");
+        }
+    }
+
+    /// Start == goal: should return a trivial one-tile path.
+    #[test]
+    fn test_astar_start_equals_goal() {
+        let starts = set(&[(3, 3)]);
+        let goals = set(&[(3, 3)]);
+        let obstacles = set(&[]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert_eq!(p, vec![(3, 3)]);
+    }
+
+    /// No path: goal is completely surrounded by obstacles.
+    #[test]
+    fn test_astar_blocked_goal_returns_none() {
+        // Goal at (5,5), surrounded on all four sides.
+        let starts = set(&[(0, 0)]);
+        let goals = set(&[(5, 5)]);
+        let obstacles = set(&[(4, 5), (6, 5), (5, 4), (5, 6)]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_none(), "goal is surrounded — no path should exist");
+    }
+
+    /// No path: goal is walled off on all sides, including the routes through
+    /// negative coordinates (which the grid allows down to -10).
+    #[test]
+    fn test_astar_no_path_all_blocked() {
+        // Build a full ring of obstacles around the goal (5,5):
+        // a box from (3,3) to (7,7) as the wall, with goal at (5,5).
+        let starts = set(&[(0, 0)]);
+        let goals = set(&[(5, 5)]);
+        let mut wall = Vec::new();
+        for x in 3_i16..=7 {
+            wall.push((x, 3));
+            wall.push((x, 7));
+        }
+        for y in 4_i16..=6 {
+            wall.push((3, y));
+            wall.push((7, y));
+        }
+        let obstacles: FxHashSet<(i16, i16)> = wall.into_iter().collect();
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_none(), "walled-off goal should be unreachable");
+    }
+
+    /// Path around a single obstacle: must find L-shaped detour.
+    #[test]
+    fn test_astar_path_around_obstacle() {
+        // Start (0,0) → goal (2,0), obstacle at (1,0) forces a detour via y=1
+        let starts = set(&[(0, 0)]);
+        let goals = set(&[(2, 0)]);
+        let obstacles = set(&[(1, 0)]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 10, false, 4, &bdm, None);
+        assert!(path.is_some(), "should find a path around the obstacle");
+        let p = path.unwrap();
+        assert_eq!(p[0], (0, 0));
+        assert_eq!(*p.last().unwrap(), (2, 0));
+        // The obstacle tile must not appear in the path
+        assert!(!p.contains(&(1, 0)), "path must not pass through obstacle");
+    }
+
+    /// Underground belt: can reach a goal that is behind a wall of obstacles.
+    /// The wall must span the full reachable y range (-10..=max_extent) to
+    /// prevent a surface detour going around the ends.
+    #[test]
+    fn test_astar_underground_crosses_wall() {
+        // Use a tight max_extent=5 and wall all of x=1 for y in -10..=5.
+        // Start (0,0) → goal (3,0). The wall is one tile wide — underground
+        // can jump distance 2 (min for UG) to land at x=2 and continue east.
+        let starts = set(&[(0, 0)]);
+        let goals = set(&[(3, 0)]);
+        let max_extent: i16 = 5;
+        let obstacles: FxHashSet<(i16, i16)> = ((-10)..=max_extent)
+            .map(|y| (1_i16, y))
+            .collect();
+        let bdm = empty_bdm();
+
+        // Without underground: should fail (wall covers full y range)
+        let no_ug = astar_path(&starts, &goals, &obstacles, max_extent, false, 4, &bdm, None);
+        assert!(no_ug.is_none(), "wall should block surface route");
+
+        // With underground: should succeed (jump over the wall)
+        let with_ug = astar_path(&starts, &goals, &obstacles, max_extent, true, 4, &bdm, None);
+        assert!(with_ug.is_some(), "underground should be able to cross the wall");
+        let p = with_ug.unwrap();
+        assert_eq!(p[0], (0, 0));
+        assert_eq!(*p.last().unwrap(), (3, 0));
+    }
+
+    /// Multiple starts: A* accepts a set of start tiles and picks the cheapest.
+    #[test]
+    fn test_astar_multiple_starts() {
+        // Two starts: (0,0) is far, (3,0) is adjacent to goal (4,0).
+        let starts = set(&[(0, 0), (3, 0)]);
+        let goals = set(&[(4, 0)]);
+        let obstacles = set(&[]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 20, false, 4, &bdm, None);
+        assert!(path.is_some());
+        let p = path.unwrap();
+        // Nearest start is (3,0), so path length should be short
+        assert!(p.len() <= 3, "should pick the closer start");
+        assert_eq!(*p.last().unwrap(), (4, 0));
+    }
+
+    /// Other-item contamination: tiles belonging to a foreign belt network
+    /// should be avoided.
+    #[test]
+    fn test_astar_other_item_avoidance() {
+        // Route from (0,2) to (4,2). A foreign belt network occupies row y=2 at x=1,2,3.
+        let starts = set(&[(0, 2)]);
+        let goals = set(&[(4, 2)]);
+        let obstacles = set(&[]);
+        let other_items = set(&[(1, 2), (2, 2), (3, 2)]);
+        let bdm = empty_bdm();
+
+        let path = astar_path(&starts, &goals, &obstacles, 10, false, 4, &bdm, Some(&other_items));
+        // Path must not pass through other_item tiles
+        if let Some(p) = path {
+            for tile in &p[1..p.len().saturating_sub(1)] {
+                assert!(
+                    !other_items.contains(tile),
+                    "path should not pass through foreign item tiles, but found {:?}",
+                    tile
+                );
+            }
+        }
+        // (It's OK if no path found — the point is it doesn't contaminate)
+    }
+
+    // -----------------------------------------------------------------------
+    // negotiate_lanes tests
+    // -----------------------------------------------------------------------
+
+    /// Empty spec list returns empty result.
+    #[test]
+    fn test_negotiate_empty_specs() {
+        let obstacles = set(&[]);
+        let result = negotiate_lanes(&[], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+        assert!(result.is_empty());
+    }
+
+    /// Single axis-aligned lane, no conflicts — should route without crossings.
+    #[test]
+    fn test_negotiate_single_axis_aligned_no_conflict() {
+        let spec = lane_spec(1, 10, (0, 0), (0, 5), 0 /* axis-aligned */);
+        let obstacles = set(&[]);
+        let result = negotiate_lanes(&[spec], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+
+        assert_eq!(result.len(), 1);
+        let lane = &result[0];
+        assert_eq!(lane.id, 1);
+        assert_eq!(lane.item_id, 10);
+        assert!(!lane.path.is_empty(), "lane should have a non-empty path");
+        assert!(lane.crossings.is_empty(), "single lane has no crossings");
+        assert_eq!(lane.path[0], (0, 0), "path should start at source");
+        assert_eq!(*lane.path.last().unwrap(), (0, 5), "path should end at sink");
+    }
+
+    /// Single A* lane, no obstacles — should route and return path.
+    #[test]
+    fn test_negotiate_single_astar_lane() {
+        let spec = lane_spec(2, 20, (0, 0), (4, 0), 1 /* A* */);
+        let obstacles = set(&[]);
+        let result = negotiate_lanes(&[spec], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+
+        assert_eq!(result.len(), 1);
+        let lane = &result[0];
+        assert!(!lane.path.is_empty());
+        assert_eq!(lane.path[0], (0, 0));
+        assert_eq!(*lane.path.last().unwrap(), (4, 0));
+    }
+
+    /// Two crossing lanes carrying different items — crossings should be detected.
+    #[test]
+    fn test_negotiate_two_crossing_lanes_detects_crossings() {
+        // Lane A: item 1, travels east along y=3 from x=0 to x=6 (axis-aligned)
+        // Lane B: item 2, travels south along x=3 from y=0 to y=6 (axis-aligned)
+        // They cross at (3, 3).
+        let spec_a = LaneSpec {
+            id: 1,
+            item_id: 1,
+            waypoints: vec![(0, 3), (6, 3)],
+            strategy: 0,
+            priority: 1,
+            y_constraint: None,
+            x_constraint: None,
+            flow_dir: None,
+        };
+        let spec_b = LaneSpec {
+            id: 2,
+            item_id: 2,
+            waypoints: vec![(3, 0), (3, 6)],
+            strategy: 0,
+            priority: 0,
+            x_constraint: None,
+            y_constraint: None,
+            flow_dir: None,
+        };
+        let obstacles = set(&[]);
+        let result =
+            negotiate_lanes(&[spec_a, spec_b], &obstacles, 10, 20, true, 4, 1.0, 1.0);
+
+        assert_eq!(result.len(), 2);
+        // At least one of the lanes should report a crossing at (3,3)
+        let has_crossing = result
+            .iter()
+            .any(|l| l.crossings.contains(&(3, 3)));
+        assert!(
+            has_crossing,
+            "expected crossing at (3,3) to be detected; crossings: {:?}",
+            result.iter().map(|l| &l.crossings).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two same-item lanes on the same tiles — NOT a crossing (same item).
+    #[test]
+    fn test_negotiate_same_item_overlap_is_not_crossing() {
+        let spec_a = LaneSpec {
+            id: 1,
+            item_id: 5,
+            waypoints: vec![(0, 0), (4, 0)],
+            strategy: 0,
+            priority: 0,
+            y_constraint: None,
+            x_constraint: None,
+            flow_dir: None,
+        };
+        let spec_b = LaneSpec {
+            id: 2,
+            item_id: 5, // same item
+            waypoints: vec![(0, 0), (4, 0)],
+            strategy: 0,
+            priority: 0,
+            y_constraint: None,
+            x_constraint: None,
+            flow_dir: None,
+        };
+        let obstacles = set(&[]);
+        let result =
+            negotiate_lanes(&[spec_a, spec_b], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+
+        assert_eq!(result.len(), 2);
+        // No cross-item crossings
+        for lane in &result {
+            assert!(
+                lane.crossings.is_empty(),
+                "same-item overlap should not be a crossing, but got: {:?}",
+                lane.crossings
+            );
+        }
+    }
+
+    /// Pre-blocked x columns via obstacles force the lane to detour or go underground.
+    #[test]
+    fn test_negotiate_blocked_column_forces_detour() {
+        // A* lane from (0,0) to (4,0). Obstacle wall at x=2, blocking y=0.
+        // The lane must route around it.
+        let spec = LaneSpec {
+            id: 1,
+            item_id: 7,
+            waypoints: vec![(0, 0), (4, 0)],
+            strategy: 1,
+            priority: 0,
+            y_constraint: None,
+            x_constraint: None,
+            flow_dir: None,
+        };
+        let obstacles = set(&[(2, -1), (2, 0), (2, 1)]);
+        let result =
+            negotiate_lanes(&[spec], &obstacles, 5, 20, true, 4, 1.0, 1.0);
+
+        assert_eq!(result.len(), 1);
+        let lane = &result[0];
+        assert!(
+            !lane.path.is_empty(),
+            "should find a path around the blocked column"
+        );
+        // Ensure obstacle tiles are not in the path
+        for tile in &lane.path {
+            assert!(
+                !obstacles.contains(tile),
+                "path should not include obstacle tile {:?}",
+                tile
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CongestionGrid tests
+    // -----------------------------------------------------------------------
+
+    /// CongestionGrid cost escalates when tiles are claimed multiple times.
+    #[test]
+    fn test_congestion_grid_cost_escalation() {
+        let mut grid = CongestionGrid::new(2.0, 1.0);
+
+        // Base cost for fresh tile should be 1.0
+        assert_eq!(grid.cost_at(0, 0), 1.0);
+
+        // Claim twice by different items
+        grid.claim(0, 0, 1);
+        grid.claim(0, 0, 2);
+
+        // Present demand = 2, present_factor = 1.0 → cost = 1.0 + 2*1.0 = 3.0
+        assert_eq!(grid.cost_at(0, 0), 3.0);
+
+        // After escalation, history should accumulate on contested tile
+        grid.escalate();
+        grid.release_all();
+
+        // History: (demand=2 - 1) * history_factor=2.0 = 2.0 added
+        // No present demand, so cost = 1.0 (base) + 2.0 (history) = 3.0
+        assert_eq!(grid.cost_at(0, 0), 3.0);
+    }
+
+    /// Obstacle tile has infinite base cost.
+    #[test]
+    fn test_congestion_grid_obstacle_infinite_cost() {
+        let mut grid = CongestionGrid::new(1.0, 1.0);
+        grid.set_obstacle(5, 5);
+        assert_eq!(grid.cost_at(5, 5), f32::INFINITY);
+    }
+
+    /// conflict_count returns the number of contested tiles.
+    #[test]
+    fn test_congestion_grid_conflict_count() {
+        let mut grid = CongestionGrid::new(1.0, 1.0);
+
+        // No conflicts initially
+        assert_eq!(grid.conflict_count(), 0);
+
+        // Claim one tile once — still no conflict
+        grid.claim(1, 1, 1);
+        assert_eq!(grid.conflict_count(), 0);
+
+        // Claim same tile again — now it's a conflict
+        grid.claim(1, 1, 2);
+        assert_eq!(grid.conflict_count(), 1);
+
+        // Release clears demand
+        grid.release_all();
+        assert_eq!(grid.conflict_count(), 0);
+    }
+}

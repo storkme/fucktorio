@@ -1,7 +1,7 @@
 //! Recursive recipe solver: target item/rate → machine counts & flows.
 
 use crate::models::{ItemFlow, MachineSpec, SolverResult};
-use crate::recipe_db::{find_recipe_for_item, get_crafting_speed, machine_for_recipe};
+use crate::recipe_db::{find_recipe_for_item_excluding, get_crafting_speed, machine_for_recipe};
 use rustc_hash::FxHashSet;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +44,27 @@ pub fn solve(
     available_inputs: &FxHashSet<String>,
     machine_entity: &str,
 ) -> Result<SolverResult, SolverError> {
+    solve_with_exclusions(
+        target_item,
+        target_rate,
+        available_inputs,
+        machine_entity,
+        &FxHashSet::default(),
+    )
+}
+
+/// Like [`solve`] but skips recipes listed in `excluded_recipes`.
+///
+/// Useful when several recipes produce the same item and the caller wants to
+/// steer the solver away from some of them (e.g. exclude `coal-liquefaction`
+/// to avoid pulling in the whole oil chain for `plastic-bar`).
+pub fn solve_with_exclusions(
+    target_item: &str,
+    target_rate: f64,
+    available_inputs: &FxHashSet<String>,
+    machine_entity: &str,
+    excluded_recipes: &FxHashSet<String>,
+) -> Result<SolverResult, SolverError> {
     let mut state = SolveState {
         machines: Vec::new(),
         external_inputs: Vec::new(),
@@ -57,6 +78,7 @@ pub fn solve(
         false,
         available_inputs,
         machine_entity,
+        excluded_recipes,
         &mut state,
     )?;
 
@@ -78,6 +100,7 @@ fn resolve(
     is_fluid: bool,
     available_inputs: &FxHashSet<String>,
     machine_entity: &str,
+    excluded_recipes: &FxHashSet<String>,
     state: &mut SolveState,
 ) -> Result<(), SolverError> {
     if available_inputs.contains(item) {
@@ -85,7 +108,7 @@ fn resolve(
         return Ok(());
     }
 
-    let recipe = match find_recipe_for_item(item) {
+    let recipe = match find_recipe_for_item_excluding(item, excluded_recipes) {
         Some(r) => r,
         None => {
             state.add_external(item, rate, is_fluid);
@@ -101,10 +124,10 @@ fn resolve(
     state.resolving.insert(item.to_string());
 
     let entity = machine_for_recipe(recipe, machine_entity);
-    let crafting_speed = get_crafting_speed(entity);
+    let crafting_speed = get_crafting_speed(&entity);
     if crafting_speed <= 0.0 {
         return Err(SolverError::MissingCraftingSpeed {
-            entity: entity.to_string(),
+            entity: entity.clone(),
         });
     }
 
@@ -150,7 +173,7 @@ fn resolve(
         existing.count += count;
     } else {
         state.machines.push(MachineSpec {
-            entity: entity.to_string(),
+            entity,
             recipe: recipe.name.clone(),
             count,
             inputs: input_flows,
@@ -168,6 +191,7 @@ fn resolve(
             ing_is_fluid,
             available_inputs,
             machine_entity,
+            excluded_recipes,
             state,
         )?;
     }

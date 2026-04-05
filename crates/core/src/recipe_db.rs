@@ -1,6 +1,6 @@
 //! Recipe and entity lookups backed by a bundled `recipes.json`.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
@@ -67,14 +67,16 @@ pub struct MachineData {
 
 #[derive(Debug, Deserialize)]
 struct RawRoot {
-    recipes: FxHashMap<String, Recipe>,
+    recipes: indexmap::IndexMap<String, Recipe>,
     #[serde(default)]
     machines: FxHashMap<String, MachineData>,
 }
 
 #[derive(Debug)]
 pub struct RecipeDb {
-    pub recipes: FxHashMap<String, Recipe>,
+    /// Recipes in JSON insertion order. Used for deterministic recipe selection
+    /// (matches Python behaviour and is identical across native / WASM targets).
+    pub recipes: indexmap::IndexMap<String, Recipe>,
     pub machines: FxHashMap<String, MachineData>,
 }
 
@@ -93,21 +95,38 @@ pub fn db() -> &'static RecipeDb {
 
 /// Find the canonical recipe whose products include *item*.
 ///
-/// Prefers the recipe whose `name` matches *item* (the canonical recipe).
-/// Falls back to the first non-excluded recipe that produces *item* if no
-/// name-matching recipe exists.
-/// Skips recycling/crushing recipes. Returns `None` if no recipe produces this item.
+/// Prefers the recipe whose `name` matches *item* (avoids e.g.
+/// bioplastic → plastic-bar). Falls back to iterating in JSON insertion order
+/// (`IndexMap`) so recipe selection is deterministic and identical across
+/// native / WASM targets. Skips recycling / crushing recipes. Returns `None`
+/// if no recipe produces this item.
 pub fn find_recipe_for_item(item: &str) -> Option<&'static Recipe> {
+    find_recipe_for_item_excluding(item, &FxHashSet::default())
+}
+
+/// Like [`find_recipe_for_item`] but skips recipes in `excluded`.
+///
+/// Used by the solver to honour caller-supplied recipe exclusions
+/// (e.g. "don't use `coal-liquefaction`").
+pub fn find_recipe_for_item_excluding(
+    item: &str,
+    excluded: &FxHashSet<String>,
+) -> Option<&'static Recipe> {
     // Prefer name-matched recipe (canonical, avoids bioplastic→plastic-bar etc.)
-    if let Some(recipe) = db().recipes.get(item) {
-        if !EXCLUDED_CATEGORIES.contains(&recipe.category.as_str())
-            && recipe.products.iter().any(|p| p.name == item)
-        {
-            return Some(recipe);
+    if !excluded.contains(item) {
+        if let Some(recipe) = db().recipes.get(item) {
+            if !EXCLUDED_CATEGORIES.contains(&recipe.category.as_str())
+                && recipe.products.iter().any(|p| p.name == item)
+            {
+                return Some(recipe);
+            }
         }
     }
-    // Fall back to any non-excluded recipe producing this item
-    for recipe in db().recipes.values() {
+    // Fall back to any non-excluded recipe producing this item (JSON order).
+    for (name, recipe) in &db().recipes {
+        if excluded.contains(name) {
+            continue;
+        }
         if EXCLUDED_CATEGORIES.contains(&recipe.category.as_str()) {
             continue;
         }
@@ -128,12 +147,12 @@ pub fn get_crafting_speed(entity: &str) -> f64 {
 }
 
 /// Choose the right machine entity for a recipe based on its category.
-pub fn machine_for_recipe<'a>(recipe: &Recipe, default: &'a str) -> &'a str {
+pub fn machine_for_recipe(recipe: &Recipe, default: &str) -> String {
     match recipe.category.as_str() {
-        "chemistry" | "chemistry-or-cryogenics" | "organic-or-chemistry" => "chemical-plant",
-        "oil-processing" => "oil-refinery",
-        "smelting" => "electric-furnace",
-        _ => default,
+        "chemistry" | "chemistry-or-cryogenics" | "organic-or-chemistry" => "chemical-plant".to_string(),
+        "oil-processing" => "oil-refinery".to_string(),
+        "smelting" => "electric-furnace".to_string(),
+        _ => default.to_string(),
     }
 }
 

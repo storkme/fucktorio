@@ -1,4 +1,4 @@
-//! Bus layout routing: trunk belt placement, tap-off coordination, and balancer family stamping.
+//! Bus layout routing: trunk belt placement, tap-off coordination, balancer family stamping, and output mergers.
 //!
 //! Each item that flows between rows gets a dedicated vertical bus lane.
 //! Lanes run SOUTH (top to bottom). At the consuming row, the lane turns
@@ -6,20 +6,32 @@
 //! lane's vertical segment, the tap-off goes underground (EAST) past it.
 //!
 //! Port of `src/bus/bus_router.py`:
-//! - Lines 1-700: trunk placement + tap-off infrastructure
-//! - Lines 700-1400: N-to-M balancer family stamping, producer-to-input wiring
+//! - Lines 1-700: trunk placement + tap-off infrastructure (Phase 1)
+//! - Lines 700-1400: N-to-M balancer family stamping, producer-to-input wiring (Phase 2)
+//! - Lines 1400-1880: output mergers and N→1 Z-wrap balancing (Phase 3)
 
 use std::cmp::Ordering;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::models::{SolverResult, PlacedEntity, EntityDirection};
 use crate::bus::placer::RowSpan;
+use crate::common::belt_entity_for_rate;
 
 /// Per-lane capacity for each belt tier (half of total throughput).
 const LANE_CAPACITY_TABLE: &[(&str, f64)] = &[
     ("transport-belt", 7.5),
     ("fast-transport-belt", 15.0),
     ("express-transport-belt", 22.5),
+];
+
+/// Entity names that occupy multiple tiles (sized by `machine_size()`).
+pub(crate) const MACHINE_ENTITIES: &[&str] = &[
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "electric-furnace",
+    "oil-refinery",
 ];
 
 /// A single vertical lane on the bus.
@@ -701,7 +713,7 @@ pub fn bus_width_for_lanes(lanes: &[BusLane]) -> i32 {
 /// carries is set to the family's item. Belt and splitter tiers are
 /// chosen from the family's total rate so the balancer matches its
 /// sibling trunks.
-pub fn stamp_family_balancer(
+pub(crate) fn stamp_family_balancer(
     family: &LaneFamily,
     max_belt_tier: Option<&str>,
 ) -> Result<Vec<PlacedEntity>, String> {
@@ -743,7 +755,7 @@ pub fn stamp_family_balancer(
 /// at the second. Surface tiles get regular belt entities.
 ///
 /// For single-tile paths, `direction_hint` determines the belt direction.
-pub fn render_path(
+pub(crate) fn render_path(
     path: &[(i32, i32)],
     item: &str,
     belt_name: &str,
@@ -846,10 +858,9 @@ pub fn render_path(
 /// Producer-to-input assignment: topmost producer (smallest out_y)
 /// maps to leftmost input tile (smallest dx). This keeps the per-
 /// producer SOUTH columns non-crossing.
-pub fn render_family_input_paths(
+pub(crate) fn render_family_input_paths(
     family: &LaneFamily,
     row_spans: &[RowSpan],
-    _bw: i32,
     belt_tier: &str,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
 ) -> Result<Vec<PlacedEntity>, String> {
@@ -917,6 +928,1346 @@ pub fn render_family_input_paths(
     }
 
     Ok(entities)
+}
+
+/// Vector direction (dx, dy) to entity direction.
+#[allow(dead_code)]
+fn vec_to_entity_dir(dx: i32, dy: i32) -> EntityDirection {
+    if dx > 0 {
+        EntityDirection::East
+    } else if dx < 0 {
+        EntityDirection::West
+    } else if dy > 0 {
+        EntityDirection::South
+    } else {
+        EntityDirection::North
+    }
+}
+
+/// Merge EAST-flowing output belts from multiple rows at the bottom-right.
+///
+/// Each output row's belt flows EAST and collects items at its rightmost
+/// tile. This function extends shorter rows to a common merge column,
+/// places SOUTH columns, and merges them with a splitter tree.
+///
+/// Returns (entities, max_y, merge_max_x).
+pub(crate) fn merge_output_rows(
+    output_rows: &[usize],
+    item: &str,
+    row_spans: &[RowSpan],
+    merge_start_y: i32,
+    max_belt_tier: Option<&str>,
+) -> (Vec<PlacedEntity>, i32, i32) {
+    use crate::common::belt_entity_for_rate;
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+    let n = output_rows.len();
+    if n == 0 {
+        return (entities, merge_start_y, 0);
+    }
+
+    // Calculate total rate
+    let total_rate = output_rows.iter()
+        .map(|&ri| {
+            if ri >= row_spans.len() {
+                0.0
+            } else {
+                row_spans[ri].spec.outputs.iter()
+                    .filter(|o| o.item == item)
+                    .map(|o| o.rate * row_spans[ri].machine_count as f64)
+                    .sum::<f64>()
+            }
+        })
+        .sum::<f64>();
+
+    let belt_name = belt_entity_for_rate(total_rate * 2.0, max_belt_tier);
+    let splitter_name = splitter_for_belt(belt_name);
+
+    // Merge columns sit just past the widest output row.
+    // Earlier rows (lower idx, higher up in the layout) get farther-right
+    // columns so their SOUTH columns don't block later rows' EAST extensions.
+    let merge_x = output_rows.iter()
+        .map(|&ri| if ri < row_spans.len() { row_spans[ri].row_width } else { 0 })
+        .max()
+        .unwrap_or(0);
+
+    for (idx, &ri) in output_rows.iter().enumerate() {
+        if ri >= row_spans.len() {
+            continue;
+        }
+        let out_y = row_spans[ri].output_belt_y;
+        let col_x = merge_x + (n - 1 - idx) as i32; // first row rightmost, last row at merge_x
+
+        // Extend EAST belts from the row's rightmost tile to the merge column.
+        let rw = row_spans[ri].row_width;
+        for x in rw..col_x {
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x,
+                y: out_y,
+                direction: EntityDirection::East,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+        }
+
+        // SOUTH column from out_y to merge_start_y.
+        for y in out_y..merge_start_y {
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x: col_x,
+                y,
+                direction: EntityDirection::South,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Sequential splitter merge at bottom-right.
+    // First output at merge_x, each subsequent merges from merge_x+1
+    // via a SOUTH-facing splitter.
+    let mut y_cursor = merge_start_y;
+    for _ in 1..n {
+        entities.push(PlacedEntity {
+            name: splitter_name.to_string(),
+            x: merge_x,
+            y: y_cursor,
+            direction: EntityDirection::South,
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        y_cursor += 1;
+        entities.push(PlacedEntity {
+            name: belt_name.to_string(),
+            x: merge_x,
+            y: y_cursor,
+            direction: EntityDirection::South,
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        y_cursor += 1;
+    }
+
+    (entities, y_cursor, merge_x + n as i32)
+}
+
+/// Merge N parallel trunk lanes into M output belts using splitters.
+///
+/// M = ceil(total_rate / full_belt_capacity). The merger block is placed
+/// below the last row at merge_start_y. Extends each trunk downward from
+/// its end_y to merge_start_y so items can flow into the merger.
+///
+/// Returns (entities, end_y).
+pub(crate) fn place_merger_block(
+    trunk_lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    merge_start_y: i32,
+    existing_entities: &[PlacedEntity],
+    max_belt_tier: Option<&str>,
+) -> (Vec<PlacedEntity>, i32) {
+    use crate::common::{belt_entity_for_rate, belt_throughput};
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+
+    let total_rate: f64 = trunk_lanes.iter().map(|ln| ln.rate).sum();
+
+    // Determine belt tier and capacity
+    let belt_name = belt_entity_for_rate(total_rate * 2.0, max_belt_tier);
+    let full_cap = belt_throughput(belt_name);
+    let target_m = (total_rate / full_cap).ceil().max(1.0) as usize;
+
+    let mut trunk_xs: Vec<i32> = trunk_lanes.iter().map(|ln| ln.x).collect();
+    trunk_xs.sort_unstable();
+    let n = trunk_xs.len();
+
+    if n <= target_m {
+        return (entities, merge_start_y);
+    }
+
+    let splitter_name = splitter_for_belt(belt_name);
+    let item = &trunk_lanes[0].item;
+
+    // Build set of already-occupied positions to avoid overlaps
+    let occupied: FxHashSet<(i32, i32)> = existing_entities.iter()
+        .map(|e| (e.x, e.y))
+        .collect();
+
+    // Extend each trunk from its current end_y to merge_start_y
+    for lane in trunk_lanes {
+        let mut all_ys = lane.tap_off_ys.clone();
+        for &pri in &lane.extra_producer_rows {
+            if pri < row_spans.len() {
+                all_ys.push(row_spans[pri].output_belt_y);
+            }
+        }
+        let end_y = all_ys.iter().max().copied().unwrap_or(lane.source_y);
+
+        for y in (end_y + 1)..merge_start_y {
+            if !occupied.contains(&(lane.x, y)) {
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x: lane.x,
+                    y,
+                    direction: EntityDirection::South,
+                    carries: Some(item.clone()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    let mut y_cursor = merge_start_y;
+    let mut current_xs = trunk_xs.clone();
+
+    while current_xs.len() > target_m {
+        // How many pairs to merge this stage (at most half, enough to reach target)
+        let pairs_needed = std::cmp::min(current_xs.len() - target_m, current_xs.len() / 2);
+        let mut next_xs: Vec<i32> = Vec::new();
+        let mut i = 0;
+        let mut pairs_done = 0;
+
+        while i < current_xs.len() {
+            if pairs_done < pairs_needed && i + 1 < current_xs.len() {
+                let left_x = current_xs[i];
+                let right_x = current_xs[i + 1];
+
+                // Route right trunk to left_x + 1 using horizontal WEST belts
+                for rx in (left_x + 1..=right_x).rev() {
+                    entities.push(PlacedEntity {
+                        name: belt_name.to_string(),
+                        x: rx,
+                        y: y_cursor,
+                        direction: EntityDirection::West,
+                        carries: Some(item.clone()),
+                        ..Default::default()
+                    });
+                }
+
+                // Continue left trunk straight down
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x: left_x,
+                    y: y_cursor,
+                    direction: EntityDirection::South,
+                    carries: Some(item.clone()),
+                    ..Default::default()
+                });
+
+                // Splitter (SOUTH-facing, occupies left_x and left_x+1)
+                entities.push(PlacedEntity {
+                    name: splitter_name.to_string(),
+                    x: left_x,
+                    y: y_cursor + 1,
+                    direction: EntityDirection::South,
+                    carries: Some(item.clone()),
+                    ..Default::default()
+                });
+
+                // Output belt on the left side only (right side empty → all items go left)
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x: left_x,
+                    y: y_cursor + 2,
+                    direction: EntityDirection::South,
+                    carries: Some(item.clone()),
+                    ..Default::default()
+                });
+
+                next_xs.push(left_x);
+                pairs_done += 1;
+                i += 2;
+            } else {
+                // Passthrough — extend this trunk down through the merge stage
+                let px = current_xs[i];
+                for dy in 0..3 {
+                    entities.push(PlacedEntity {
+                        name: belt_name.to_string(),
+                        x: px,
+                        y: y_cursor + dy,
+                        direction: EntityDirection::South,
+                        carries: Some(item.clone()),
+                        ..Default::default()
+                    });
+                }
+                next_xs.push(px);
+                i += 1;
+            }
+        }
+
+        y_cursor += 3; // each stage is 3 rows: route + splitter + output
+        current_xs = next_xs;
+    }
+
+    (entities, y_cursor)
+}
+
+/// Route a single bus lane: dispatches to fluid, intermediate, or belt routing.
+///
+/// Port of Python `_route_lane`.
+pub(crate) fn route_lane(
+    entities: &mut Vec<PlacedEntity>,
+    lane: &BusLane,
+    all_lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    bw: i32,
+    max_belt_tier: Option<&str>,
+    routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+) {
+    if lane.is_fluid {
+        entities.extend(route_fluid_lane(lane));
+    } else if is_intermediate(lane) {
+        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths);
+    } else {
+        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths);
+    }
+}
+
+fn is_intermediate(lane: &BusLane) -> bool {
+    let has_producers = lane.producer_row.is_some() || !lane.extra_producer_rows.is_empty();
+    let has_consumers = !lane.consumer_rows.is_empty();
+    has_producers && has_consumers
+}
+
+/// Route a solid-item bus lane with belts (external input or collector).
+///
+/// Port of Python `_route_belt_lane`.
+fn route_belt_lane(
+    entities: &mut Vec<PlacedEntity>,
+    lane: &BusLane,
+    all_lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    max_belt_tier: Option<&str>,
+    routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+) {
+    let x = lane.x;
+    let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+    let empty: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    let paths: &FxHashMap<String, Vec<(i32, i32)>> = routed_paths.unwrap_or(&empty);
+
+    let start_y = lane.source_y;
+    let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
+    for &pri in &lane.extra_producer_rows {
+        if pri < row_spans.len() {
+            all_ys.push(row_spans[pri].output_belt_y);
+        }
+    }
+    let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
+    let end_y = if let Some(bal_y) = lane.balancer_y {
+        end_y.max(bal_y + 1)
+    } else {
+        end_y
+    };
+
+    let belt_name = if lane.balancer_y.is_some() {
+        belt_entity_for_rate(lane.rate, max_belt_tier)
+    } else {
+        belt_entity_for_rate(lane.rate * 2.0, max_belt_tier)
+    };
+    let horiz_belt = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
+    let pre_bal_belt = if lane.balancer_y.is_some() {
+        belt_entity_for_rate(lane.rate * 2.0, max_belt_tier)
+    } else {
+        belt_name
+    };
+
+    let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, end_y);
+    let mut skip_ys = tap_off_set.clone();
+    skip_ys.extend(lane.balancer_y);
+    skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+
+    // UG-pair bridges over foreign skip y's
+    let ug_name = underground_for_belt(belt_name);
+    for &fy in &foreign_skips {
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x,
+            y: fy - 1,
+            direction: EntityDirection::South,
+            io_type: Some("input".to_string()),
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x,
+            y: fy + 1,
+            direction: EntityDirection::South,
+            io_type: Some("output".to_string()),
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+    }
+
+    // Vertical trunk
+    let bal_y = lane.balancer_y;
+    for (seg_start, seg_end) in trunk_segments(start_y, end_y, &skip_ys) {
+        let tier = if let Some(by) = bal_y {
+            if seg_start < by { pre_bal_belt } else { belt_name }
+        } else {
+            belt_name
+        };
+        let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
+        if let Some(trunk_path) = paths.get(&trunk_key) {
+            entities.extend(render_path(trunk_path, &lane.item, tier, EntityDirection::South));
+        } else {
+            for y in seg_start..=seg_end {
+                entities.push(PlacedEntity {
+                    name: tier.to_string(),
+                    x,
+                    y,
+                    direction: EntityDirection::South,
+                    carries: Some(lane.item.clone()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    // Lane balancer
+    if let Some(by) = lane.balancer_y {
+        let splitter_name = splitter_for_belt(belt_name);
+        entities.push(PlacedEntity {
+            name: splitter_name.to_string(),
+            x: x - 1,
+            y: by,
+            direction: EntityDirection::South,
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+        entities.push(PlacedEntity {
+            name: belt_name.to_string(),
+            x: x - 1,
+            y: by + 1,
+            direction: EntityDirection::East,
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+    }
+
+    // Tap-offs
+    for &tap_y in &lane.tap_off_ys {
+        let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+        if let Some(tap_path) = paths.get(&tap_key) {
+            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East));
+        } else {
+            entities.push(PlacedEntity {
+                name: horiz_belt.to_string(),
+                x,
+                y: tap_y,
+                direction: EntityDirection::East,
+                carries: Some(lane.item.clone()),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Route an intermediate lane (has both producers and consumers).
+///
+/// Port of Python `_route_intermediate_lane`.
+fn route_intermediate_lane(
+    entities: &mut Vec<PlacedEntity>,
+    lane: &BusLane,
+    all_lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    bw: i32,
+    max_belt_tier: Option<&str>,
+    routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+) {
+    let x = lane.x;
+    // Both belt_name and horiz_belt use the same tier for intermediate lanes
+    let belt_name = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
+    let horiz_belt = belt_name;
+    let empty: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    let paths = routed_paths.unwrap_or(&empty);
+
+    let mut all_producers: Vec<usize> = Vec::new();
+    if let Some(pr) = lane.producer_row {
+        all_producers.push(pr);
+    }
+    all_producers.extend(&lane.extra_producer_rows);
+
+    let tap_y = if !lane.tap_off_ys.is_empty() {
+        lane.tap_off_ys[0]
+    } else if let Some(&ri) = lane.consumer_rows.first() {
+        if ri < row_spans.len() {
+            row_spans[ri].input_belt_y.first().copied().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        return;
+    };
+
+    let producer_out_ys: Vec<i32> = all_producers.iter()
+        .filter(|&&p| p < row_spans.len())
+        .map(|&p| row_spans[p].output_belt_y)
+        .collect();
+    let start_y = producer_out_ys.iter().copied().min().unwrap_or(lane.source_y);
+
+    // Determine balance_y for splitter lane-balancing
+    let balance_y: Option<i32> = if all_producers.len() >= 2 && x > 1 {
+        all_producers.last()
+            .and_then(|&last_pri| {
+                if last_pri < row_spans.len() {
+                    Some(row_spans[last_pri].output_belt_y)
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    // Output returns
+    for &pri in &all_producers {
+        if pri >= row_spans.len() {
+            continue;
+        }
+        let out_y = row_spans[pri].output_belt_y;
+        if Some(out_y) == balance_y {
+            // Splitter for lane balancing
+            let splitter_name = splitter_for_belt(horiz_belt);
+            entities.push(PlacedEntity {
+                name: splitter_name.to_string(),
+                x: bw,
+                y: out_y - 1,
+                direction: EntityDirection::West,
+                carries: Some(lane.item.clone()),
+                ..Default::default()
+            });
+            // Normal return via A*-routed path
+            let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+            if let Some(ret_path) = paths.get(&ret_key) {
+                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West));
+            }
+            // Balance route
+            let split_y = out_y - 1;
+            let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
+            if let Some(bal_path) = paths.get(&bal_key) {
+                let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West);
+                if let Some(last) = bal_entities.last_mut() {
+                    last.direction = EntityDirection::East;
+                }
+                entities.extend(bal_entities);
+            }
+        } else {
+            // Normal return
+            let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+            if let Some(ret_path) = paths.get(&ret_key) {
+                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West));
+            }
+        }
+    }
+
+    // Vertical trunk
+    let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1);
+    let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
+    skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+
+    // Surface belt at each producer output y (return junction points)
+    for &out_y in &producer_out_ys {
+        if out_y < tap_y {
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x,
+                y: out_y,
+                direction: EntityDirection::South,
+                carries: Some(lane.item.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
+    // UG-pair bridges over foreign skip y's
+    let ug_name = underground_for_belt(belt_name);
+    for &fy in &foreign_skips {
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x,
+            y: fy - 1,
+            direction: EntityDirection::South,
+            io_type: Some("input".to_string()),
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x,
+            y: fy + 1,
+            direction: EntityDirection::South,
+            io_type: Some("output".to_string()),
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+    }
+
+    for (seg_start, seg_end) in trunk_segments(start_y, tap_y - 1, &skip_ys) {
+        let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
+        if let Some(trunk_path) = paths.get(&trunk_key) {
+            entities.extend(render_path(trunk_path, &lane.item, belt_name, EntityDirection::South));
+        } else {
+            for y in seg_start..=seg_end {
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x,
+                    y,
+                    direction: EntityDirection::South,
+                    carries: Some(lane.item.clone()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    // Tap-off
+    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+    if let Some(tap_path) = paths.get(&tap_key) {
+        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East));
+    } else {
+        entities.push(PlacedEntity {
+            name: belt_name.to_string(),
+            x,
+            y: tap_y,
+            direction: EntityDirection::East,
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+    }
+}
+
+/// Split [start_y, end_y] into contiguous segments excluding skip_ys.
+fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i32, i32)> {
+    let mut segments: Vec<(i32, i32)> = Vec::new();
+    let mut seg_start: Option<i32> = None;
+    for y in start_y..=end_y {
+        if skip_ys.contains(&y) {
+            if let Some(ss) = seg_start.take() {
+                segments.push((ss, y - 1));
+            }
+        } else if seg_start.is_none() {
+            seg_start = Some(y);
+        }
+    }
+    if let Some(ss) = seg_start {
+        segments.push((ss, end_y));
+    }
+    segments
+}
+
+/// Y-rows the lane's trunk must skip to free up its west-neighbor's ret-path landing tile.
+fn foreign_trunk_skip_ys(
+    lane: &BusLane,
+    all_lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    trunk_start_y: i32,
+    trunk_end_y: i32,
+) -> FxHashSet<i32> {
+    let west_col = lane.x - 1;
+    let neighbor = all_lanes.iter().find(|other| {
+        !other.is_fluid && !std::ptr::eq(*other, lane) && other.x == west_col
+    });
+    let neighbor = match neighbor {
+        Some(n) => n,
+        None => return FxHashSet::default(),
+    };
+    let mut producer_rows: Vec<usize> = Vec::new();
+    if let Some(pr) = neighbor.producer_row {
+        producer_rows.push(pr);
+    }
+    producer_rows.extend(&neighbor.extra_producer_rows);
+    if producer_rows.is_empty() {
+        return FxHashSet::default();
+    }
+    let mut foreign: FxHashSet<i32> = FxHashSet::default();
+    for p in producer_rows {
+        if p >= row_spans.len() {
+            continue;
+        }
+        let y = row_spans[p].output_belt_y;
+        if trunk_start_y + 1 <= y && y <= trunk_end_y - 1 {
+            foreign.insert(y);
+        }
+    }
+    foreign
+}
+
+/// Extra y-rows to add to trunk skip set so UG-pair tiles don't collide.
+fn foreign_skip_ug_tiles(foreign_skip_ys: &FxHashSet<i32>) -> FxHashSet<i32> {
+    let mut result: FxHashSet<i32> = FxHashSet::default();
+    for &y in foreign_skip_ys {
+        result.insert(y - 1);
+        result.insert(y);
+        result.insert(y + 1);
+    }
+    result
+}
+
+/// Maximum tiles between PTG input and output positions.
+const PTG_MAX_SPAN: i32 = 10;
+
+fn chain_ptg_pairs_vertical(
+    entities: &mut Vec<PlacedEntity>,
+    x: i32,
+    start_y: i32,
+    end_y: i32,
+    item: &str,
+) {
+    let mut cur = start_y + 1;
+    while cur < end_y {
+        let remaining = end_y - cur;
+        if remaining == 1 {
+            entities.push(PlacedEntity {
+                name: "pipe".to_string(),
+                x,
+                y: cur,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+            return;
+        }
+        let out_pos = std::cmp::min(cur + PTG_MAX_SPAN, end_y - 1);
+        entities.push(PlacedEntity {
+            name: "pipe-to-ground".to_string(),
+            x,
+            y: cur,
+            direction: EntityDirection::South,
+            io_type: Some("input".to_string()),
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        entities.push(PlacedEntity {
+            name: "pipe-to-ground".to_string(),
+            x,
+            y: out_pos,
+            direction: EntityDirection::South,
+            io_type: Some("output".to_string()),
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        cur = out_pos + 1;
+    }
+}
+
+/// Fill the gap between two surface pipes at (start_x, y) and (end_x, y)
+/// with PTG pairs (or surface pipe for 1-tile gaps). start_x < end_x.
+fn chain_ptg_pairs_horizontal(
+    entities: &mut Vec<PlacedEntity>,
+    y: i32,
+    start_x: i32,
+    end_x: i32,
+    item: &str,
+) {
+    let mut cur = start_x + 1;
+    while cur < end_x {
+        let remaining = end_x - cur;
+        if remaining == 1 {
+            entities.push(PlacedEntity {
+                name: "pipe".to_string(),
+                x: cur,
+                y,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+            return;
+        }
+        let out_pos = std::cmp::min(cur + PTG_MAX_SPAN, end_x - 1);
+        entities.push(PlacedEntity {
+            name: "pipe-to-ground".to_string(),
+            x: cur,
+            y,
+            direction: EntityDirection::East,
+            io_type: Some("input".to_string()),
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        entities.push(PlacedEntity {
+            name: "pipe-to-ground".to_string(),
+            x: out_pos,
+            y,
+            direction: EntityDirection::East,
+            io_type: Some("output".to_string()),
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        cur = out_pos + 1;
+    }
+}
+
+/// Route a fluid bus lane with PTG-segmented trunks and tap-offs.
+///
+/// Surface pipes exist only at explicit connection points (trunk source,
+/// consumer tap-off y's, producer output y's, and port-pipe tiles). The
+/// gaps between them are filled with pipe-to-ground pairs so adjacent
+/// fluid trunks at 1-tile spacing don't merge.
+pub(crate) fn route_fluid_lane(
+    lane: &BusLane,
+) -> Vec<PlacedEntity> {
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+    let x = lane.x;
+
+    // Collect every y where the trunk needs a surface connection
+    let mut connection_ys: FxHashSet<i32> = FxHashSet::default();
+    connection_ys.insert(lane.source_y);
+    for &tap_y in &lane.tap_off_ys {
+        connection_ys.insert(tap_y);
+    }
+    for &(_ri, _px, py) in &lane.fluid_output_port_positions {
+        connection_ys.insert(py);
+    }
+
+    // Vertical trunk: surface pipe at each connection y, PTG pairs between
+    let mut sorted_ys: Vec<i32> = connection_ys.iter().copied().collect();
+    sorted_ys.sort_unstable();
+
+    for &y in &sorted_ys {
+        entities.push(PlacedEntity {
+            name: "pipe".to_string(),
+            x,
+            y,
+            carries: Some(lane.item.clone()),
+            ..Default::default()
+        });
+    }
+
+    for i in 0..(sorted_ys.len().saturating_sub(1)) {
+        chain_ptg_pairs_vertical(&mut entities, x, sorted_ys[i], sorted_ys[i + 1], &lane.item);
+    }
+
+    // Horizontal tap-offs: group ports by y (consumer inputs + producer
+    // outputs all connect the same way — a PTG chain from trunk to port
+    // pipes along the port y-row). Port pipes are placed by templates.
+    let mut port_xs_by_y: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
+
+    for &(_ri, port_x, port_y) in &lane.fluid_port_positions {
+        port_xs_by_y.entry(port_y).or_insert_with(FxHashSet::default).insert(port_x);
+    }
+
+    for &(_ri, port_x, port_y) in &lane.fluid_output_port_positions {
+        port_xs_by_y.entry(port_y).or_insert_with(FxHashSet::default).insert(port_x);
+    }
+
+    for (port_y, xs) in port_xs_by_y.iter() {
+        // Chain: trunk(x) → first_port → second_port → ... → last_port
+        let mut anchors: Vec<i32> = vec![x];
+        anchors.extend(xs.iter().copied());
+        anchors.sort_unstable();
+
+        for i in 0..(anchors.len().saturating_sub(1)) {
+            chain_ptg_pairs_horizontal(&mut entities, *port_y, anchors[i], anchors[i + 1], &lane.item);
+        }
+    }
+
+    entities
+}
+
+// ---------------------------------------------------------------------------
+// Negotiated lane routing
+// ---------------------------------------------------------------------------
+
+/// Port of Python `_negotiate_and_route`.
+///
+/// Collects all fixed obstacles (machine tiles, balancer footprints, feeder
+/// descent columns, fluid-lane tiles), builds `LaneSpec` objects for every
+/// bus segment (trunks, tap-offs, returns, feeders, mergers), runs
+/// `negotiate_lanes` (congestion-aware A*), and returns a map from string
+/// key to routed path.
+///
+/// Keys:
+/// - `"trunk:{item}:{x}:{start_y}:{end_y}"`
+/// - `"tap:{item}:{x}:{y}"`
+/// - `"ret:{item}:{x}:{y}"`
+/// - `"bal:{item}:{x}:{y}"`
+/// - `"feeder:{item}:{input_x}:{out_y}"`
+pub(crate) fn negotiate_and_route(
+    lanes: &[BusLane],
+    row_spans: &[RowSpan],
+    total_height: i32,
+    bw: i32,
+    row_entities: &[PlacedEntity],
+    solver_result: &SolverResult,
+    families: &[LaneFamily],
+) -> FxHashMap<String, Vec<(i32, i32)>> {
+    use crate::astar::{LaneSpec, negotiate_lanes};
+    use crate::bus::balancer_library::balancer_templates;
+
+    // Build item → numeric ID mapping (include output items for merger routing)
+    let mut items_set: std::collections::BTreeSet<String> = lanes
+        .iter()
+        .filter(|ln| !ln.is_fluid)
+        .map(|ln| ln.item.clone())
+        .collect();
+    for ext in &solver_result.external_outputs {
+        if !ext.is_fluid {
+            items_set.insert(ext.item.clone());
+        }
+    }
+    let item_to_id: FxHashMap<String, u16> = items_set
+        .iter()
+        .enumerate()
+        .map(|(i, item)| (item.clone(), i as u16))
+        .collect();
+
+    // Map spec id → string key for result lookup
+    let mut id_to_key: FxHashMap<u32, String> = FxHashMap::default();
+    let mut specs: Vec<LaneSpec> = Vec::new();
+    let mut lane_id: u32 = 0;
+
+    // Compute flow direction from first→last waypoint; None if diagonal/Z.
+    let flow_dir = |waypoints: &[(i16, i16)]| -> Option<(i8, i8)> {
+        if waypoints.len() < 2 {
+            return None;
+        }
+        let dx = waypoints.last().unwrap().0 - waypoints[0].0;
+        let dy = waypoints.last().unwrap().1 - waypoints[0].1;
+        let sx = dx.signum() as i8;
+        let sy = dy.signum() as i8;
+        if sx != 0 && sy != 0 { return None; }
+        if sx == 0 && sy == 0 { return None; }
+        Some((sx, sy))
+    };
+
+    // --- Collect fixed obstacles ---
+    let mut obstacles: FxHashSet<(i16, i16)> = FxHashSet::default();
+
+    for e in row_entities {
+        if MACHINE_ENTITIES.contains(&e.name.as_str()) {
+            let sz = crate::common::machine_size(&e.name) as i32;
+            for dx in 0..sz {
+                for dy in 0..sz {
+                    obstacles.insert(((e.x + dx) as i16, (e.y + dy) as i16));
+                }
+            }
+        } else {
+            obstacles.insert((e.x as i16, e.y as i16));
+        }
+    }
+
+    // Block balancer footprints + feeder descent columns; emit feeder specs.
+    // Both obstacle collection and spec generation iterate the same per-family
+    // sorted producer/input pairs, so they're merged into one loop.
+    let templates = balancer_templates();
+    for fam in families {
+        if fam.lane_xs.is_empty() {
+            continue;
+        }
+        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
+        let template = match templates.get(&shape_key) {
+            Some(t) => t,
+            None => continue,
+        };
+        let ox = fam.lane_xs.iter().copied().min().unwrap();
+        let oy = fam.balancer_y_start;
+
+        // Balancer body tiles (obstacle)
+        for te in template.entities {
+            obstacles.insert(((ox + te.x) as i16, (oy + te.y) as i16));
+            if te.name == "splitter" {
+                if te.direction == 0 || te.direction == 4 {
+                    obstacles.insert(((ox + te.x + 1) as i16, (oy + te.y) as i16));
+                } else {
+                    obstacles.insert(((ox + te.x) as i16, (oy + te.y + 1) as i16));
+                }
+            }
+        }
+
+        // Sort producers top-to-bottom, input tiles left-to-right (used for
+        // both obstacle descent columns and feeder LaneSpecs below).
+        let mut producers_sorted: Vec<usize> = fam.producer_rows.clone();
+        producers_sorted.sort_by_key(|&p| {
+            if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
+        });
+        let mut inputs_sorted: Vec<(i32, i32)> = template.input_tiles.iter().copied().collect();
+        inputs_sorted.sort_by_key(|t| t.0);
+
+        let item_id = item_to_id.get(&fam.item).copied().unwrap_or(0);
+        for (&producer_row_idx, &(input_dx, _)) in producers_sorted.iter().zip(inputs_sorted.iter()) {
+            if producer_row_idx >= row_spans.len() {
+                continue;
+            }
+            let out_y = row_spans[producer_row_idx].output_belt_y;
+            let input_x = ox + input_dx;
+
+            // SOUTH descent column: block it so A* routes around it.
+            // (WEST feeder row is A*-routed via feeder: spec below — not blocked.)
+            if out_y != fam.balancer_y_start {
+                for y in (out_y + 1)..fam.balancer_y_start {
+                    obstacles.insert((input_x as i16, y as i16));
+                }
+            }
+
+            // Feeder spec: A* horizontal WEST, priority=4
+            if input_x + 1 <= bw - 1 {
+                let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
+                id_to_key.insert(lane_id, feeder_key);
+                let wps = vec![(bw as i16 - 1, out_y as i16), (input_x as i16 + 1, out_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 4,
+                    y_constraint: Some(out_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+        }
+    }
+
+    // Block fluid-lane tiles (pipes + PTG): belt tap-offs must tunnel past them.
+    for lane in lanes {
+        if !lane.is_fluid {
+            continue;
+        }
+        let mut connection_ys: FxHashSet<i32> = FxHashSet::default();
+        connection_ys.insert(lane.source_y);
+        for &tap_y in &lane.tap_off_ys {
+            connection_ys.insert(tap_y);
+        }
+        for &(_ri, _px, py) in &lane.fluid_output_port_positions {
+            connection_ys.insert(py);
+        }
+        if !connection_ys.is_empty() {
+            let trunk_start = connection_ys.iter().copied().min().unwrap();
+            let trunk_end = connection_ys.iter().copied().max().unwrap();
+            for y in trunk_start..=trunk_end {
+                obstacles.insert((lane.x as i16, y as i16));
+            }
+        }
+        // Horizontal tap-off x-range
+        let mut port_xs_by_y: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
+        for &(_ri, px, py) in &lane.fluid_port_positions {
+            port_xs_by_y.entry(py).or_default().insert(px);
+        }
+        for &(_ri, px, py) in &lane.fluid_output_port_positions {
+            port_xs_by_y.entry(py).or_default().insert(px);
+        }
+        for (py, xs) in &port_xs_by_y {
+            let last_x = xs.iter().copied().max().unwrap();
+            for fx in (lane.x + 1)..=last_x {
+                obstacles.insert((fx as i16, *py as i16));
+            }
+        }
+    }
+
+    // --- Build demand specs ---
+
+    for lane in lanes {
+        if lane.is_fluid {
+            continue;
+        }
+        let item_id = item_to_id.get(&lane.item).copied().unwrap_or(0);
+        let x = lane.x;
+
+        let mut all_producers: Vec<usize> = Vec::new();
+        if let Some(pr) = lane.producer_row {
+            all_producers.push(pr);
+        }
+        all_producers.extend(&lane.extra_producer_rows);
+
+        if is_intermediate(lane) {
+            // Intermediate lane: has both producers and consumers.
+            let producer_out_ys: Vec<i32> = all_producers.iter()
+                .filter(|&&p| p < row_spans.len())
+                .map(|&p| row_spans[p].output_belt_y)
+                .collect();
+            let start_y = producer_out_ys.iter().copied().min().unwrap_or(lane.source_y);
+            let last_tap_y = lane.tap_off_ys.iter().copied().max().unwrap_or(start_y);
+
+            // Trunk segments (vertical A*, priority=5)
+            let foreign_skips = foreign_trunk_skip_ys(lane, lanes, row_spans, start_y, last_tap_y - 1);
+            let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
+            skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+            for (seg_start, seg_end) in trunk_segments(start_y, last_tap_y - 1, &skip_ys) {
+                let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
+                id_to_key.insert(lane_id, trunk_key);
+                let wps = vec![(x as i16, seg_start as i16), (x as i16, seg_end as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 5,
+                    x_constraint: Some(x as i16),
+                    y_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+
+            // Output returns: horizontal WEST, priority=4
+            for &pri in &all_producers {
+                if pri >= row_spans.len() {
+                    continue;
+                }
+                let out_y = row_spans[pri].output_belt_y;
+                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                id_to_key.insert(lane_id, ret_key);
+                let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 4,
+                    y_constraint: Some(out_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+
+            // Splitter balance return (Z-wrap), priority=4
+            if all_producers.len() >= 2 && x > 1 {
+                if let Some(&last_pri) = all_producers.last() {
+                    if last_pri < row_spans.len() {
+                        let last_out_y = row_spans[last_pri].output_belt_y;
+                        let split_y = last_out_y - 1;
+                        let sideload_y = last_out_y;
+                        let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
+                        id_to_key.insert(lane_id, bal_key);
+                        let wps = vec![(bw as i16 - 1, split_y as i16), (x as i16 - 1, sideload_y as i16)];
+                        // No flow_dir — allow vertical movement for Z-turn
+                        specs.push(LaneSpec {
+                            id: lane_id,
+                            item_id,
+                            waypoints: wps,
+                            strategy: 2,
+                            priority: 4,
+                            y_constraint: None,
+                            x_constraint: None,
+                            flow_dir: None,
+                        });
+                        lane_id += 1;
+                    }
+                }
+            }
+
+            // Tap-off: horizontal EAST, priority=6
+            let tap_y = if !lane.tap_off_ys.is_empty() {
+                lane.tap_off_ys[0]
+            } else {
+                last_tap_y
+            };
+            if x <= bw - 1 {
+                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                id_to_key.insert(lane_id, tap_key);
+                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 6,
+                    y_constraint: Some(tap_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+        } else if !lane.consumer_rows.is_empty() {
+            // External input lane: trunk from source to tap-off, then tap-off EAST.
+            let tap_y = if !lane.tap_off_ys.is_empty() {
+                lane.tap_off_ys[0]
+            } else {
+                lane.source_y
+            };
+
+            // Trunk segments (vertical A*, priority=5)
+            let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+            if let Some(bal_y) = lane.balancer_y {
+                skip_ys.insert(bal_y);
+            }
+            let mut end_y = tap_y;
+            if let Some(bal_y) = lane.balancer_y {
+                end_y = end_y.max(bal_y + 1);
+            }
+            let foreign_skips = foreign_trunk_skip_ys(lane, lanes, row_spans, lane.source_y, end_y);
+            skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+            for (seg_start, seg_end) in trunk_segments(lane.source_y, end_y, &skip_ys) {
+                let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
+                id_to_key.insert(lane_id, trunk_key);
+                let wps = vec![(x as i16, seg_start as i16), (x as i16, seg_end as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 5,
+                    x_constraint: Some(x as i16),
+                    y_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+
+            // Tap-off: horizontal EAST, priority=6
+            if x <= bw - 1 {
+                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                id_to_key.insert(lane_id, tap_key);
+                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 6,
+                    y_constraint: Some(tap_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+        } else {
+            // Collector lane (output/collector only): trunk + output returns.
+            let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
+            for &pri in &all_producers {
+                if pri < row_spans.len() {
+                    all_ys.push(row_spans[pri].output_belt_y);
+                }
+            }
+            let mut end_y = all_ys.iter().copied().max().unwrap_or(lane.source_y);
+            if let Some(bal_y) = lane.balancer_y {
+                end_y = end_y.max(bal_y + 1);
+            }
+
+            // Trunk segments (vertical A*, priority=5)
+            let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+            if let Some(bal_y) = lane.balancer_y {
+                skip_ys.insert(bal_y);
+            }
+            let foreign_skips = foreign_trunk_skip_ys(lane, lanes, row_spans, lane.source_y, end_y);
+            skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+            for (seg_start, seg_end) in trunk_segments(lane.source_y, end_y, &skip_ys) {
+                let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
+                id_to_key.insert(lane_id, trunk_key);
+                let wps = vec![(x as i16, seg_start as i16), (x as i16, seg_end as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 5,
+                    x_constraint: Some(x as i16),
+                    y_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+
+            // Output returns: horizontal WEST, priority=4
+            for &pri in &all_producers {
+                if pri >= row_spans.len() {
+                    continue;
+                }
+                let out_y = row_spans[pri].output_belt_y;
+                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                id_to_key.insert(lane_id, ret_key);
+                let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 4,
+                    y_constraint: Some(out_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                });
+                lane_id += 1;
+            }
+        }
+    }
+
+    // --- Merger segments (axis-aligned, highest priority=8) ---
+    let mut item_lane_groups: FxHashMap<String, Vec<&BusLane>> = FxHashMap::default();
+    for lane in lanes {
+        if !lane.is_fluid {
+            item_lane_groups.entry(lane.item.clone()).or_default().push(lane);
+        }
+    }
+    for (item, group) in &item_lane_groups {
+        if group.len() <= 1 || group.iter().all(|ln| !ln.consumer_rows.is_empty()) {
+            continue;
+        }
+        let item_id = item_to_id.get(item.as_str()).copied().unwrap_or(0);
+        let mut trunk_xs: Vec<i32> = group.iter().map(|ln| ln.x).collect();
+        trunk_xs.sort_unstable();
+        let merge_y = total_height;
+
+        for ln in group {
+            let wps = vec![(ln.x as i16, ln.source_y as i16), (ln.x as i16, merge_y as i16 + 3)];
+            specs.push(LaneSpec {
+                id: lane_id,
+                item_id,
+                waypoints: wps,
+                strategy: 0,
+                priority: 8,
+                x_constraint: None,
+                y_constraint: None,
+                flow_dir: None,
+            });
+            lane_id += 1;
+        }
+
+        let mut i = 0;
+        while i + 1 < trunk_xs.len() {
+            let left_x = trunk_xs[i];
+            let right_x = trunk_xs[i + 1];
+            let wps = vec![(right_x as i16, merge_y as i16), (left_x as i16 + 1, merge_y as i16)];
+            specs.push(LaneSpec {
+                id: lane_id,
+                item_id,
+                waypoints: wps,
+                strategy: 0,
+                priority: 8,
+                x_constraint: None,
+                y_constraint: None,
+                flow_dir: None,
+            });
+            lane_id += 1;
+            i += 2;
+        }
+    }
+
+    if specs.is_empty() {
+        return FxHashMap::default();
+    }
+
+    let max_extent = (bw.max(total_height) + 50) as i16;
+    let routed = negotiate_lanes(
+        &specs,
+        &obstacles,
+        /* max_iterations */ 20,
+        max_extent,
+        /* allow_underground */ true,
+        /* ug_max_reach */ 8,
+        /* history_factor */ 0.5,
+        /* present_factor */ 1.0,
+    );
+
+    // Build result map: string key → path (cast i16 coords back to i32)
+    let mut result: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    for r in routed {
+        if let Some(key) = id_to_key.get(&r.id) {
+            if !r.path.is_empty() {
+                let path: Vec<(i32, i32)> = r.path.iter().map(|&(x, y)| (x as i32, y as i32)).collect();
+                result.insert(key.clone(), path);
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1189,7 +2540,7 @@ mod tests {
             vec![],
         );
 
-        let result = render_family_input_paths(&family, &[row_span], 10, "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 0);
     }
@@ -1220,7 +2571,7 @@ mod tests {
         let mut row_span = row_span;
         row_span.output_belt_y = 10;
 
-        let result = render_family_input_paths(&family, &[row_span], 10, "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None);
         assert!(result.is_ok());
 
         // For N=1 with out_y == origin_y, no descent column is needed
@@ -1261,7 +2612,7 @@ mod tests {
             vec![],
         );
 
-        let result = render_family_input_paths(&family, &[row_span1, row_span2], 15, "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span1, row_span2], "transport-belt", None);
         assert!(result.is_ok());
 
         let entities = result.unwrap();
@@ -1270,5 +2621,844 @@ mod tests {
             .filter(|e| e.direction == EntityDirection::South)
             .collect();
         assert!(!descent_belts.is_empty());
+    }
+
+    #[test]
+    fn test_merge_output_rows_single_row() {
+        let row_span = make_test_row_span(
+            "iron-plate",
+            0,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let output_rows = vec![0];
+        let (entities, _end_y, _merge_max_x) = merge_output_rows(&output_rows, "iron-plate", &[row_span], 20, None);
+
+        // Single row should extend EAST and SOUTH without splitters
+        assert!(!entities.is_empty());
+        assert!(entities.iter().all(|e| e.carries.as_deref() == Some("iron-plate")));
+    }
+
+    #[test]
+    fn test_merge_output_rows_multiple_rows() {
+        let row_span1 = make_test_row_span(
+            "iron-plate",
+            0,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+        let row_span2 = make_test_row_span(
+            "iron-plate",
+            0,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let output_rows = vec![0, 1];
+        let (entities, _end_y, _merge_max_x) = merge_output_rows(&output_rows, "iron-plate", &[row_span1, row_span2], 20, None);
+
+        // Multiple rows should include splitters
+        let splitters = entities.iter().filter(|e| e.name.contains("splitter")).count();
+        assert!(splitters > 0, "Expected splitters for multiple rows");
+    }
+
+    #[test]
+    fn test_place_merger_block_no_merge_needed() {
+        let lane = BusLane {
+            item: "iron-plate".to_string(),
+            x: 0,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 10.0,
+            is_fluid: false,
+            tap_off_ys: vec![5],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let row_span = make_test_row_span(
+            "iron-plate",
+            0,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        // Single lane: no merging needed (n <= target_m)
+        let (entities, end_y) = place_merger_block(&[lane], &[row_span], 15, &[], None);
+        assert_eq!(entities.len(), 0); // No entities added if no merge needed
+        assert_eq!(end_y, 15);
+    }
+
+    #[test]
+    fn test_place_merger_block_multiple_lanes() {
+        let lanes = vec![
+            BusLane {
+                item: "iron-plate".to_string(),
+                x: 0,
+                source_y: 0,
+                consumer_rows: vec![0],
+                producer_row: None,
+                rate: 10.0,
+                is_fluid: false,
+                tap_off_ys: vec![5],
+                extra_producer_rows: vec![],
+                balancer_y: None,
+                family_id: None,
+                fluid_port_positions: vec![],
+                fluid_output_port_positions: vec![],
+            },
+            BusLane {
+                item: "iron-plate".to_string(),
+                x: 1,
+                source_y: 0,
+                consumer_rows: vec![0],
+                producer_row: None,
+                rate: 10.0,
+                is_fluid: false,
+                tap_off_ys: vec![5],
+                extra_producer_rows: vec![],
+                balancer_y: None,
+                family_id: None,
+                fluid_port_positions: vec![],
+                fluid_output_port_positions: vec![],
+            },
+        ];
+
+        let row_span = make_test_row_span(
+            "iron-plate",
+            0,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 20.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        // Two lanes of 10.0 each = 20.0 total. With transport-belt (15.0 cap), target_m = 2.
+        // But we have 2 lanes already, so no merge needed.
+        let (_entities, _end_y) = place_merger_block(&lanes, &[row_span], 15, &[], None);
+        // Merge only needed if n > target_m
+        // For 20.0 rate with transport-belt (15.0 cap): target_m = ceil(20.0/15.0) = 2
+        // So no merge needed for 2 lanes
+    }
+
+
+    #[test]
+    fn test_route_fluid_lane_basic() {
+        let lane = BusLane {
+            item: "water".to_string(),
+            x: 5,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 10.0,
+            is_fluid: true,
+            tap_off_ys: vec![10],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let entities = route_fluid_lane(&lane);
+
+        // Should have surface pipes at source and tap-off y
+        let pipe_entities: Vec<_> = entities
+            .iter()
+            .filter(|e| e.name == "pipe" && e.carries.as_ref().map(|s| s.as_str()) == Some("water"))
+            .collect();
+        assert_eq!(pipe_entities.len(), 2); // source_y=0 and tap_off_y=10
+
+        // Check positions
+        let pipe_ys: Vec<i32> = pipe_entities
+            .iter()
+            .map(|e| e.y)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(pipe_ys, vec![0, 10]);
+
+        // Should have PTG pairs to fill the gap between 0 and 10
+        let ptg_entities: Vec<_> = entities
+            .iter()
+            .filter(|e| e.name == "pipe-to-ground")
+            .collect();
+        assert!(!ptg_entities.is_empty());
+    }
+
+    #[test]
+    fn test_chain_ptg_pairs_vertical_single_gap() {
+        let mut entities = Vec::new();
+        chain_ptg_pairs_vertical(&mut entities, 5, 0, 2, "water");
+
+        // Gap of 1 tile should result in a single surface pipe
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "pipe");
+        assert_eq!(entities[0].x, 5);
+        assert_eq!(entities[0].y, 1);
+    }
+
+    #[test]
+    fn test_chain_ptg_pairs_vertical_multi_gap() {
+        let mut entities = Vec::new();
+        chain_ptg_pairs_vertical(&mut entities, 5, 0, 15, "water");
+
+        // Gap of 14 tiles requires PTG pairs
+        // With PTG_MAX_SPAN=10, first pair should be at y=1 (input) and y=10 (output)
+        // Then gap from 10 to 14 remaining (4 tiles), another pair at y=11 (input) and y=14 (output)
+        let ptg_inputs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.name == "pipe-to-ground" && e.io_type.as_ref().map(|s| s.as_str()) == Some("input"))
+            .collect();
+        assert_eq!(ptg_inputs.len(), 2);
+    }
+
+    #[test]
+    fn test_chain_ptg_pairs_horizontal_single_gap() {
+        let mut entities = Vec::new();
+        chain_ptg_pairs_horizontal(&mut entities, 5, 0, 2, "water");
+
+        // Gap of 1 tile should result in a single surface pipe
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "pipe");
+        assert_eq!(entities[0].y, 5);
+        assert_eq!(entities[0].x, 1);
+    }
+
+    #[test]
+    fn test_route_fluid_lane_with_port_positions() {
+        let lane = BusLane {
+            item: "crude-oil".to_string(),
+            x: 5,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 20.0,
+            is_fluid: true,
+            tap_off_ys: vec![10],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![(0, 7, 10), (0, 8, 10)],
+            fluid_output_port_positions: vec![],
+        };
+
+        let entities = route_fluid_lane(&lane);
+
+        // Should have pipes at trunk and for connecting ports
+        let pipe_entities: Vec<_> = entities
+            .iter()
+            .filter(|e| e.name == "pipe")
+            .collect();
+        assert!(!pipe_entities.is_empty());
+
+        // All entities should carry crude-oil
+        for entity in &entities {
+            assert_eq!(entity.carries, Some("crude-oil".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_vec_to_entity_dir() {
+        assert_eq!(vec_to_entity_dir(1, 0), EntityDirection::East);
+        assert_eq!(vec_to_entity_dir(-1, 0), EntityDirection::West);
+        assert_eq!(vec_to_entity_dir(0, 1), EntityDirection::South);
+        assert_eq!(vec_to_entity_dir(0, -1), EntityDirection::North);
+    }
+
+    // -----------------------------------------------------------------------
+    // plan_bus_lanes tests
+    // -----------------------------------------------------------------------
+
+    fn make_solver_result_iron_gear_wheel() -> crate::models::SolverResult {
+        // Iron-gear-wheel: 1 recipe, 1 solid input (iron-plate).
+        // We construct it by hand to avoid recipe_db dependency in the test module.
+        crate::models::SolverResult {
+            machines: vec![MachineSpec {
+                entity: "assembling-machine-3".to_string(),
+                recipe: "iron-gear-wheel".to_string(),
+                count: 1.0,
+                inputs: vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+                outputs: vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            }],
+            external_inputs: vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            external_outputs: vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            dependency_order: vec!["iron-gear-wheel".to_string()],
+        }
+    }
+
+    fn make_solver_result_plastic_bar() -> crate::models::SolverResult {
+        // Plastic-bar: 1 recipe with coal (solid) + petroleum-gas (fluid).
+        crate::models::SolverResult {
+            machines: vec![MachineSpec {
+                entity: "assembling-machine-3".to_string(),
+                recipe: "plastic-bar".to_string(),
+                count: 1.0,
+                inputs: vec![
+                    ItemFlow { item: "coal".to_string(), rate: 1.5, is_fluid: false },
+                    ItemFlow { item: "petroleum-gas".to_string(), rate: 2.0, is_fluid: true },
+                ],
+                outputs: vec![ItemFlow { item: "plastic-bar".to_string(), rate: 2.0, is_fluid: false }],
+            }],
+            external_inputs: vec![
+                ItemFlow { item: "coal".to_string(), rate: 1.5, is_fluid: false },
+                ItemFlow { item: "petroleum-gas".to_string(), rate: 2.0, is_fluid: true },
+            ],
+            external_outputs: vec![ItemFlow { item: "plastic-bar".to_string(), rate: 2.0, is_fluid: false }],
+            dependency_order: vec!["plastic-bar".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_plan_bus_lanes_iron_gear_wheel_single_solid_input() {
+        let sr = make_solver_result_iron_gear_wheel();
+
+        // One consumer row for the iron-gear-wheel machine.
+        let row_span = make_test_row_span(
+            "iron-gear-wheel",
+            5,
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            1,
+            vec![6],  // input belt at y=6
+        );
+
+        let (lanes, families) = plan_bus_lanes(&sr, &[row_span], None)
+            .expect("plan_bus_lanes should succeed for iron-gear-wheel");
+
+        // Should have exactly 1 lane for iron-plate
+        assert_eq!(lanes.len(), 1, "Expected exactly 1 lane (iron-plate), got {:?}", lanes.iter().map(|l| &l.item).collect::<Vec<_>>());
+        assert_eq!(lanes[0].item, "iron-plate");
+        assert!(!lanes[0].is_fluid, "iron-plate lane should not be fluid");
+        assert_eq!(families.len(), 0, "No balancer family needed for 1 external input");
+
+        // Lane x should be assigned (>= 1)
+        assert!(lanes[0].x >= 1, "Lane x should be >= 1 after assignment");
+    }
+
+    #[test]
+    fn test_plan_bus_lanes_iron_gear_wheel_lane_count() {
+        let sr = make_solver_result_iron_gear_wheel();
+
+        let row_span = make_test_row_span(
+            "iron-gear-wheel",
+            5,
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            1,
+            vec![6],
+        );
+
+        let (lanes, _families) = plan_bus_lanes(&sr, &[row_span], None).unwrap();
+
+        // iron-gear-wheel is the final output, not consumed internally, so no lane for it
+        // Only iron-plate (the external input) needs a lane
+        let item_names: Vec<&str> = lanes.iter().map(|l| l.item.as_str()).collect();
+        assert!(item_names.contains(&"iron-plate"), "iron-plate lane expected");
+        assert!(!item_names.contains(&"iron-gear-wheel"), "iron-gear-wheel is final output, should not get a bus lane");
+    }
+
+    #[test]
+    fn test_plan_bus_lanes_plastic_bar_fluid_lane_created() {
+        let sr = make_solver_result_plastic_bar();
+
+        let row_span = make_test_row_span(
+            "plastic-bar",
+            5,
+            vec![
+                ItemFlow { item: "coal".to_string(), rate: 1.5, is_fluid: false },
+                ItemFlow { item: "petroleum-gas".to_string(), rate: 2.0, is_fluid: true },
+            ],
+            vec![ItemFlow { item: "plastic-bar".to_string(), rate: 2.0, is_fluid: false }],
+            1,
+            vec![6, 7],  // two input belt y positions
+        );
+
+        let (lanes, _families) = plan_bus_lanes(&sr, &[row_span], None)
+            .expect("plan_bus_lanes should succeed for plastic-bar");
+
+        // Should have lanes for coal and petroleum-gas (plastic-bar is final output)
+        let item_names: Vec<&str> = lanes.iter().map(|l| l.item.as_str()).collect();
+        assert!(item_names.contains(&"coal"), "coal lane expected");
+        assert!(item_names.contains(&"petroleum-gas"), "petroleum-gas lane expected");
+
+        // petroleum-gas lane must be fluid
+        let pg_lane = lanes.iter().find(|l| l.item == "petroleum-gas")
+            .expect("petroleum-gas lane must exist");
+        assert!(pg_lane.is_fluid, "petroleum-gas lane must have is_fluid=true");
+
+        // coal lane must not be fluid
+        let coal_lane = lanes.iter().find(|l| l.item == "coal")
+            .expect("coal lane must exist");
+        assert!(!coal_lane.is_fluid, "coal lane must have is_fluid=false");
+    }
+
+    #[test]
+    fn test_plan_bus_lanes_fluid_not_first() {
+        // Solid lanes should come before fluid lanes in the ordering
+        let sr = make_solver_result_plastic_bar();
+
+        let row_span = make_test_row_span(
+            "plastic-bar",
+            5,
+            vec![
+                ItemFlow { item: "coal".to_string(), rate: 1.5, is_fluid: false },
+                ItemFlow { item: "petroleum-gas".to_string(), rate: 2.0, is_fluid: true },
+            ],
+            vec![ItemFlow { item: "plastic-bar".to_string(), rate: 2.0, is_fluid: false }],
+            1,
+            vec![6, 7],
+        );
+
+        let (lanes, _families) = plan_bus_lanes(&sr, &[row_span], None).unwrap();
+
+        // optimize_lane_order puts solid before fluid
+        let fluid_indices: Vec<usize> = lanes.iter().enumerate()
+            .filter(|(_, l)| l.is_fluid)
+            .map(|(i, _)| i)
+            .collect();
+        let solid_indices: Vec<usize> = lanes.iter().enumerate()
+            .filter(|(_, l)| !l.is_fluid)
+            .map(|(i, _)| i)
+            .collect();
+
+        if !fluid_indices.is_empty() && !solid_indices.is_empty() {
+            let last_solid = *solid_indices.iter().max().unwrap();
+            let first_fluid = *fluid_indices.iter().min().unwrap();
+            assert!(last_solid < first_fluid, "All solid lanes should come before fluid lanes");
+        }
+    }
+
+    #[test]
+    fn test_plan_bus_lanes_consumer_row_must_have_tap_off_y() {
+        let sr = make_solver_result_iron_gear_wheel();
+
+        let row_span = make_test_row_span(
+            "iron-gear-wheel",
+            5,
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            1,
+            vec![6],
+        );
+
+        let (lanes, _families) = plan_bus_lanes(&sr, &[row_span], None).unwrap();
+
+        // The iron-plate lane has consumer row 0, so it should have a tap-off y
+        let iron_plate_lane = lanes.iter().find(|l| l.item == "iron-plate").unwrap();
+        assert!(!iron_plate_lane.consumer_rows.is_empty(), "iron-plate lane should have consumer rows");
+        assert!(!iron_plate_lane.tap_off_ys.is_empty(), "iron-plate lane should have tap-off y after plan");
+    }
+
+    // -----------------------------------------------------------------------
+    // route_lane / route_belt_lane tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_route_belt_lane_external_input_produces_south_trunk() {
+        // A simple external-input lane: source at top, one consumer below.
+        // The trunk segment between source_y and tap_off_y should be SOUTH belts.
+        let lane = BusLane {
+            item: "iron-plate".to_string(),
+            x: 1,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 2.0,
+            is_fluid: false,
+            tap_off_ys: vec![5],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let row_span = make_test_row_span(
+            "iron-gear-wheel",
+            3,
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 1.0, is_fluid: false }],
+            1,
+            vec![5],
+        );
+
+        let mut entities: Vec<PlacedEntity> = Vec::new();
+        route_lane(&mut entities, &lane, &[lane.clone()], &[row_span], 3, None, None);
+
+        // Should have produced some entities
+        assert!(!entities.is_empty(), "route_lane must produce entities");
+
+        // All belt entities must carry the item
+        for e in &entities {
+            if e.name.contains("belt") || e.name == "splitter" {
+                assert_eq!(
+                    e.carries.as_deref(),
+                    Some("iron-plate"),
+                    "All entities should carry iron-plate, got: {:?}",
+                    e
+                );
+            }
+        }
+
+        // Trunk segment (x=1, y=0..4) should be SOUTH belts
+        let trunk_belts: Vec<_> = entities.iter()
+            .filter(|e| e.x == 1 && e.y < 5 && e.name.contains("belt") && !e.name.contains("underground"))
+            .collect();
+        assert!(!trunk_belts.is_empty(), "Expected SOUTH trunk belts at x=1");
+        for b in &trunk_belts {
+            assert_eq!(b.direction, EntityDirection::South, "Trunk belts should face SOUTH");
+        }
+    }
+
+    #[test]
+    fn test_route_belt_lane_tap_off_is_east() {
+        // The tap-off belt at tap_y should face EAST.
+        let lane = BusLane {
+            item: "copper-plate".to_string(),
+            x: 2,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 2.0,
+            is_fluid: false,
+            tap_off_ys: vec![8],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let row_span = make_test_row_span(
+            "electronic-circuit",
+            6,
+            vec![ItemFlow { item: "copper-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![ItemFlow { item: "electronic-circuit".to_string(), rate: 1.0, is_fluid: false }],
+            1,
+            vec![8],
+        );
+
+        let mut entities: Vec<PlacedEntity> = Vec::new();
+        route_lane(&mut entities, &lane, &[lane.clone()], &[row_span], 4, None, None);
+
+        // The tap-off at y=8 should be an EAST belt
+        let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
+        assert!(tap_belt.is_some(), "Expected a belt at tap-off position (x=2, y=8)");
+        assert_eq!(tap_belt.unwrap().direction, EntityDirection::East, "Tap-off belt should face EAST");
+    }
+
+    #[test]
+    fn test_route_belt_lane_underground_when_crossing_another_lane() {
+        // When lane.x has a west-neighbor lane with a producer output at tap_y,
+        // route_belt_lane must emit underground-belt pairs to cross the conflicting y.
+        // Set up two lanes: left (x=1) is west neighbor with producer output at y=5;
+        // right (x=2) must cross y=5 underground.
+        let west_lane = BusLane {
+            item: "copper-plate".to_string(),
+            x: 1,
+            source_y: 3,
+            consumer_rows: vec![],
+            producer_row: Some(0),
+            rate: 2.0,
+            is_fluid: false,
+            tap_off_ys: vec![],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+        let east_lane = BusLane {
+            item: "iron-plate".to_string(),
+            x: 2,
+            source_y: 0,
+            consumer_rows: vec![1],
+            producer_row: None,
+            rate: 2.0,
+            is_fluid: false,
+            tap_off_ys: vec![8],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let producer_row = make_test_row_span(
+            "copper-plate",
+            3,
+            vec![],
+            vec![ItemFlow { item: "copper-plate".to_string(), rate: 2.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+        // Adjust output_belt_y to y=5 (within east_lane's trunk range 0..8)
+        let mut producer_row = producer_row;
+        producer_row.output_belt_y = 5;
+
+        let consumer_row = make_test_row_span(
+            "iron-gear-wheel",
+            6,
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 2.0, is_fluid: false }],
+            vec![],
+            1,
+            vec![8],
+        );
+
+        let all_lanes = vec![west_lane.clone(), east_lane.clone()];
+        let row_spans = vec![producer_row, consumer_row];
+
+        let mut entities: Vec<PlacedEntity> = Vec::new();
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None);
+
+        // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
+        let ug_entities: Vec<_> = entities.iter()
+            .filter(|e| e.name.contains("underground-belt") && e.x == 2)
+            .collect();
+        assert!(
+            !ug_entities.is_empty(),
+            "Expected underground belt pair at x=2 to cross the foreign lane's producer output y=5; got entities: {:?}",
+            entities.iter().map(|e| (&e.name, e.x, e.y, &e.direction)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_route_fluid_lane_ptg_between_source_and_consumer() {
+        // A fluid lane spanning source_y=0 to tap_y=20 should have PTG pairs,
+        // not just a solid pipe column (which would merge with adjacent networks).
+        let lane = BusLane {
+            item: "petroleum-gas".to_string(),
+            x: 3,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 20.0,
+            is_fluid: true,
+            tap_off_ys: vec![20],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let entities = route_fluid_lane(&lane);
+
+        // Surface pipes only at connection points (source and tap-off)
+        let surface_pipes: Vec<_> = entities.iter().filter(|e| e.name == "pipe").collect();
+        assert_eq!(surface_pipes.len(), 2, "Only 2 surface pipes: source and tap-off");
+        let pipe_ys: Vec<i32> = {
+            let mut ys: Vec<i32> = surface_pipes.iter().map(|e| e.y).collect();
+            ys.sort();
+            ys
+        };
+        assert_eq!(pipe_ys, vec![0, 20]);
+
+        // PTG pairs fill the gap
+        let ptg: Vec<_> = entities.iter().filter(|e| e.name == "pipe-to-ground").collect();
+        assert!(!ptg.is_empty(), "Expected pipe-to-ground pairs for fluid trunk isolation");
+
+        // Every entity should carry petroleum-gas
+        for e in &entities {
+            assert_eq!(e.carries.as_deref(), Some("petroleum-gas"), "All fluid entities should carry petroleum-gas");
+        }
+    }
+
+    #[test]
+    fn test_route_fluid_lane_ptg_input_output_pairs() {
+        // PTG pairs must appear as input/output pairs, not orphaned single entities.
+        let lane = BusLane {
+            item: "water".to_string(),
+            x: 4,
+            source_y: 0,
+            consumer_rows: vec![0],
+            producer_row: None,
+            rate: 5.0,
+            is_fluid: true,
+            tap_off_ys: vec![12],
+            extra_producer_rows: vec![],
+            balancer_y: None,
+            family_id: None,
+            fluid_port_positions: vec![],
+            fluid_output_port_positions: vec![],
+        };
+
+        let entities = route_fluid_lane(&lane);
+
+        let ptg_inputs: Vec<_> = entities.iter()
+            .filter(|e| e.name == "pipe-to-ground" && e.io_type.as_deref() == Some("input"))
+            .collect();
+        let ptg_outputs: Vec<_> = entities.iter()
+            .filter(|e| e.name == "pipe-to-ground" && e.io_type.as_deref() == Some("output"))
+            .collect();
+        assert_eq!(
+            ptg_inputs.len(), ptg_outputs.len(),
+            "PTG inputs and outputs must be balanced; inputs={}, outputs={}",
+            ptg_inputs.len(), ptg_outputs.len()
+        );
+        assert!(!ptg_inputs.is_empty(), "Expected at least one PTG pair for 12-tile gap");
+    }
+
+    #[test]
+    fn test_merge_output_rows_two_rows_have_splitters_and_correct_item() {
+        // Two rows producing iron-gear-wheel: the merger must emit splitters and
+        // all entities must carry iron-gear-wheel.
+        let row0 = {
+            let mut rs = make_test_row_span(
+                "iron-gear-wheel",
+                0,
+                vec![],
+                vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 5.0, is_fluid: false }],
+                2,
+                vec![],
+            );
+            rs.output_belt_y = 2;
+            rs.row_width = 8;
+            rs
+        };
+        let row1 = {
+            let mut rs = make_test_row_span(
+                "iron-gear-wheel",
+                5,
+                vec![],
+                vec![ItemFlow { item: "iron-gear-wheel".to_string(), rate: 5.0, is_fluid: false }],
+                2,
+                vec![],
+            );
+            rs.output_belt_y = 7;
+            rs.row_width = 8;
+            rs
+        };
+
+        let (entities, end_y, merge_max_x) = merge_output_rows(
+            &[0, 1],
+            "iron-gear-wheel",
+            &[row0, row1],
+            15,
+            None,
+        );
+
+        // Splitters must be present
+        let splitters: Vec<_> = entities.iter()
+            .filter(|e| e.name.contains("splitter"))
+            .collect();
+        assert!(!splitters.is_empty(), "Expected splitter(s) in merger for 2 rows");
+
+        // Every entity must carry the correct item
+        for e in &entities {
+            assert_eq!(
+                e.carries.as_deref(),
+                Some("iron-gear-wheel"),
+                "All merger entities should carry iron-gear-wheel, got {:?}",
+                e
+            );
+        }
+
+        // end_y and merge_max_x should be sane
+        assert!(end_y > 15, "end_y should be greater than merge_start_y");
+        assert!(merge_max_x > 0, "merge_max_x should be positive");
+    }
+
+    #[test]
+    fn test_merge_output_rows_splitters_face_south() {
+        // Splitters produced by merge_output_rows should face SOUTH (merging
+        // parallel SOUTH-flowing trunks).
+        let row0 = make_test_row_span(
+            "electronic-circuit",
+            0,
+            vec![],
+            vec![ItemFlow { item: "electronic-circuit".to_string(), rate: 5.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+        let row1 = make_test_row_span(
+            "electronic-circuit",
+            5,
+            vec![],
+            vec![ItemFlow { item: "electronic-circuit".to_string(), rate: 5.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let (entities, _end_y, _merge_max_x) = merge_output_rows(
+            &[0, 1],
+            "electronic-circuit",
+            &[row0, row1],
+            20,
+            None,
+        );
+
+        let splitters: Vec<_> = entities.iter().filter(|e| e.name.contains("splitter")).collect();
+        for s in &splitters {
+            assert_eq!(s.direction, EntityDirection::South, "Merger splitters should face SOUTH");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // plan_bus_lanes via solver - integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plan_bus_lanes_via_solver_iron_gear_wheel() {
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let available: FxHashSet<String> = ["iron-plate"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let sr = solve("iron-gear-wheel", 10.0, &available, "assembling-machine-3")
+            .expect("solver should succeed");
+
+        // Build minimal row spans from solver machines
+        let row_spans: Vec<RowSpan> = sr.machines.iter().enumerate().map(|(i, m)| {
+            let input_belt_y: Vec<i32> = m.inputs.iter().enumerate()
+                .filter(|(_, f)| !f.is_fluid)
+                .map(|(idx, _)| (i * 5 + idx) as i32)
+                .collect();
+            RowSpan {
+                y_start: (i * 5) as i32,
+                y_end: (i * 5 + 3) as i32,
+                spec: m.clone(),
+                machine_count: m.count.ceil() as usize,
+                input_belt_y,
+                output_belt_y: (i * 5 + 2) as i32,
+                row_width: 10,
+                fluid_port_ys: Vec::new(),
+                fluid_port_pipes: Vec::new(),
+                fluid_output_port_pipes: Vec::new(),
+            }
+        }).collect();
+
+        let (lanes, _families) = plan_bus_lanes(&sr, &row_spans, None)
+            .expect("plan_bus_lanes should succeed");
+
+        // Must have at least one lane
+        assert!(!lanes.is_empty(), "Expected at least one bus lane");
+
+        // Each lane must have its x assigned (>= 1)
+        for lane in &lanes {
+            assert!(lane.x >= 1, "Lane x must be assigned >= 1, got x={} for item={}", lane.x, lane.item);
+        }
+
+        // No two lanes should share the same x column
+        let xs: Vec<i32> = lanes.iter().map(|l| l.x).collect();
+        let xs_set: std::collections::HashSet<i32> = xs.iter().copied().collect();
+        assert_eq!(xs.len(), xs_set.len(), "All lane x columns must be unique");
     }
 }
