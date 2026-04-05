@@ -21,3 +21,8 @@ target/
 # Keep the README so setup instructions are tracked.
 external/*
 !external/README.md
+
+# Web app
+web/node_modules/
+web/dist/
+web/src/wasm-pkg/
