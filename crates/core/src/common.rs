@@ -6,6 +6,21 @@ use crate::models::EntityDirection;
 
 const DEFAULT_MACHINE_SIZE: u32 = 3;
 
+/// Known machine entity names (the set of all crafting machines the layout engine uses).
+pub const MACHINE_ENTITY_NAMES: &[&str] = &[
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "electric-furnace",
+    "oil-refinery",
+];
+
+/// Return `true` if `entity` is a known crafting machine.
+pub fn is_machine_entity(entity: &str) -> bool {
+    MACHINE_ENTITY_NAMES.contains(&entity)
+}
+
 /// Return the footprint size (in tiles) for the given entity name.
 pub fn machine_size(entity: &str) -> u32 {
     match entity {
