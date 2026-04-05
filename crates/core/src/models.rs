@@ -54,7 +54,7 @@ impl Default for EntityDirection {
 /// A single entity placed in the blueprint grid.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlacedEntity {
     pub name: String,
     #[serde(default)]
