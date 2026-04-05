@@ -1,11 +1,16 @@
 //! Functional blueprint validation.
 //!
 //! Port of `src/validate.py` — foundation types and top-level `validate()` dispatcher.
-//! Individual checks are not yet wired; `validate()` returns an empty list.
+
+pub mod underground;
 
 use thiserror::Error;
 
 use crate::models::{LayoutResult, SolverResult};
+use underground::{
+    check_underground_belt_entry_sideload, check_underground_belt_pairs,
+    check_underground_belt_sideloading,
+};
 
 /// Layout style: affects which validation checks run and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,14 +107,23 @@ fn format_issues(issues: &[ValidationIssue]) -> String {
 ///
 /// Returns a list of issues found.  Raises [`ValidationError`] if any
 /// errors (not just warnings) are present.
-///
-/// Individual checks are not yet implemented — this stub always returns `Ok(vec![])`.
 pub fn validate(
-    _layout_result: &LayoutResult,
+    layout_result: &LayoutResult,
     _solver_result: Option<&SolverResult>,
     _layout_style: LayoutStyle,
 ) -> Result<Vec<ValidationIssue>, ValidationError> {
-    Ok(vec![])
+    let mut issues = Vec::new();
+
+    issues.extend(check_underground_belt_pairs(layout_result));
+    issues.extend(check_underground_belt_sideloading(layout_result));
+    issues.extend(check_underground_belt_entry_sideload(layout_result));
+
+    let has_errors = issues.iter().any(|i| i.severity == Severity::Error);
+    if has_errors {
+        Err(ValidationError::new(issues))
+    } else {
+        Ok(issues)
+    }
 }
 
 #[cfg(test)]
