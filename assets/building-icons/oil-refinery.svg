@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <linearGradient id="orTower1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9a8860"/>
+      <stop offset="50%" stop-color="#c8b07a"/>
+      <stop offset="100%" stop-color="#9a8860"/>
+    </linearGradient>
+    <linearGradient id="orTower2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8a7a58"/>
+      <stop offset="50%" stop-color="#b89a68"/>
+      <stop offset="100%" stop-color="#8a7a58"/>
+    </linearGradient>
+    <linearGradient id="orTower3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a09070"/>
+      <stop offset="50%" stop-color="#cfc0a0"/>
+      <stop offset="100%" stop-color="#a09070"/>
+    </linearGradient>
+    <linearGradient id="orBase" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#787060"/>
+      <stop offset="100%" stop-color="#505040"/>
+    </linearGradient>
+    <linearGradient id="orPipe" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a09888"/>
+      <stop offset="100%" stop-color="#5a5448"/>
+    </linearGradient>
+    <linearGradient id="orDome1" cx="40%" cy="35%" r="65%" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#d8c898"/>
+      <stop offset="100%" stop-color="#8a7a58"/>
+    </linearGradient>
+    <!-- Flame on flare stack -->
+    <radialGradient id="orFlare" cx="50%" cy="80%" r="60%">
+      <stop offset="0%" stop-color="#ffdd40"/>
+      <stop offset="50%" stop-color="#ff7010"/>
+      <stop offset="100%" stop-color="#cc2000" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Base platform -->
+  <rect x="4" y="74" width="88" height="18" rx="3" fill="url(#orBase)" stroke="#3a3828" stroke-width="1.5"/>
+  <!-- Platform grill lines -->
+  <line x1="6" y1="80" x2="90" y2="80" stroke="#3a3828" stroke-width="0.8" opacity="0.6"/>
+  <line x1="16" y1="74" x2="16" y2="92" stroke="#3a3828" stroke-width="0.6" opacity="0.4"/>
+  <line x1="32" y1="74" x2="32" y2="92" stroke="#3a3828" stroke-width="0.6" opacity="0.4"/>
+  <line x1="48" y1="74" x2="48" y2="92" stroke="#3a3828" stroke-width="0.6" opacity="0.4"/>
+  <line x1="64" y1="74" x2="64" y2="92" stroke="#3a3828" stroke-width="0.6" opacity="0.4"/>
+  <line x1="80" y1="74" x2="80" y2="92" stroke="#3a3828" stroke-width="0.6" opacity="0.4"/>
+
+  <!-- === PIPE NETWORK (behind towers) === -->
+  <!-- Main horizontal header pipe -->
+  <rect x="10" y="32" width="76" height="7" rx="3.5" fill="url(#orPipe)" stroke="#3a3828" stroke-width="1"/>
+  <rect x="11" y="33" width="74" height="2" rx="1" fill="white" opacity="0.14"/>
+  <!-- Lower cross pipe -->
+  <rect x="10" y="56" width="76" height="6" rx="3" fill="url(#orPipe)" stroke="#3a3828" stroke-width="1"/>
+  <rect x="11" y="57" width="74" height="1.5" rx="1" fill="white" opacity="0.1"/>
+
+  <!-- === TOWER 1 (left, medium height) === -->
+  <!-- Tower body -->
+  <rect x="8" y="36" width="22" height="38" rx="3" fill="url(#orTower1)" stroke="#3a3828" stroke-width="1.2"/>
+  <!-- Tower highlight -->
+  <rect x="14" y="37" width="8" height="36" rx="2" fill="white" opacity="0.07"/>
+  <!-- Tower rib rings -->
+  <rect x="8" y="48" width="22" height="4" rx="0" fill="#7a6848" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="8" y="62" width="22" height="4" rx="0" fill="#7a6848" stroke="#3a3828" stroke-width="0.8"/>
+  <!-- Tower rib lines -->
+  <line x1="14" y1="38" x2="14" y2="46" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <line x1="19" y1="38" x2="19" y2="46" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <line x1="14" y1="53" x2="14" y2="60" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <line x1="19" y1="53" x2="19" y2="60" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <line x1="14" y1="67" x2="14" y2="72" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <line x1="19" y1="67" x2="19" y2="72" stroke="#5a4c38" stroke-width="0.6" opacity="0.5"/>
+  <!-- Tower 1 dome cap -->
+  <ellipse cx="19" cy="36" rx="11" ry="6" fill="#c0a870" stroke="#3a3828" stroke-width="1.2"/>
+  <ellipse cx="17" cy="33.5" rx="6" ry="2.5" fill="white" opacity="0.14"/>
+
+  <!-- === TOWER 2 (center, tallest) === -->
+  <!-- Tower body -->
+  <rect x="37" y="22" width="22" height="52" rx="3" fill="url(#orTower2)" stroke="#3a3828" stroke-width="1.5"/>
+  <!-- Tower highlight -->
+  <rect x="43" y="23" width="9" height="50" rx="2" fill="white" opacity="0.08"/>
+  <!-- Tower rib rings -->
+  <rect x="37" y="36" width="22" height="4" rx="0" fill="#6a5838" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="37" y="50" width="22" height="4" rx="0" fill="#6a5838" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="37" y="64" width="22" height="4" rx="0" fill="#6a5838" stroke="#3a3828" stroke-width="0.8"/>
+  <!-- Tower rib lines -->
+  <line x1="43" y1="24" x2="43" y2="34" stroke="#5a4830" stroke-width="0.6" opacity="0.5"/>
+  <line x1="48" y1="24" x2="48" y2="34" stroke="#5a4830" stroke-width="0.6" opacity="0.5"/>
+  <line x1="43" y1="41" x2="43" y2="48" stroke="#5a4830" stroke-width="0.6" opacity="0.5"/>
+  <line x1="48" y1="41" x2="48" y2="48" stroke="#5a4830" stroke-width="0.6" opacity="0.5"/>
+  <!-- Tower 2 dome cap (taller) -->
+  <ellipse cx="48" cy="22" rx="11" ry="6" fill="#b8a068" stroke="#3a3828" stroke-width="1.5"/>
+  <ellipse cx="46" cy="19.5" rx="6" ry="2.5" fill="white" opacity="0.15"/>
+
+  <!-- === TOWER 3 (right, shorter) === -->
+  <!-- Tower body -->
+  <rect x="66" y="38" width="22" height="36" rx="3" fill="url(#orTower3)" stroke="#3a3828" stroke-width="1.2"/>
+  <!-- Tower highlight -->
+  <rect x="72" y="39" width="9" height="34" rx="2" fill="white" opacity="0.07"/>
+  <!-- Tower rib ring -->
+  <rect x="66" y="52" width="22" height="4" rx="0" fill="#807060" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="66" y="64" width="22" height="4" rx="0" fill="#807060" stroke="#3a3828" stroke-width="0.8"/>
+  <!-- Tower rib lines -->
+  <line x1="72" y1="40" x2="72" y2="50" stroke="#5a5040" stroke-width="0.6" opacity="0.5"/>
+  <line x1="77" y1="40" x2="77" y2="50" stroke="#5a5040" stroke-width="0.6" opacity="0.5"/>
+  <line x1="72" y1="57" x2="72" y2="62" stroke="#5a5040" stroke-width="0.6" opacity="0.5"/>
+  <line x1="77" y1="57" x2="77" y2="62" stroke="#5a5040" stroke-width="0.6" opacity="0.5"/>
+  <!-- Tower 3 dome cap -->
+  <ellipse cx="77" cy="38" rx="11" ry="5.5" fill="#c8b888" stroke="#3a3828" stroke-width="1.2"/>
+  <ellipse cx="75" cy="35.5" rx="6" ry="2.5" fill="white" opacity="0.14"/>
+
+  <!-- === FLARE STACK (far right) === -->
+  <rect x="90" y="24" width="4" height="50" rx="2" fill="#686058" stroke="#3a3828" stroke-width="1"/>
+  <!-- Flare flame -->
+  <ellipse cx="92" cy="22" rx="5" ry="7" fill="url(#orFlare)"/>
+  <ellipse cx="92" cy="20" rx="2.5" ry="4" fill="#ffe060" opacity="0.7"/>
+
+  <!-- === CONNECTING PIPE VERTICALS === -->
+  <rect x="17" y="32" width="4" height="6" rx="2" fill="#8a8068" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="46" y="22" width="4" height="12" rx="2" fill="#8a8068" stroke="#3a3828" stroke-width="0.8"/>
+  <rect x="75" y="32" width="4" height="8" rx="2" fill="#8a8068" stroke="#3a3828" stroke-width="0.8"/>
+  <!-- Down-pipes to lower header -->
+  <rect x="17" y="38" width="4" height="20" rx="2" fill="#7a7060" stroke="#3a3828" stroke-width="0.7"/>
+  <rect x="75" y="40" width="4" height="18" rx="2" fill="#7a7060" stroke="#3a3828" stroke-width="0.7"/>
+</svg>

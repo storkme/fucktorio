@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <linearGradient id="stlBody" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3c3c3c"/>
+      <stop offset="100%" stop-color="#585858"/>
+    </linearGradient>
+    <linearGradient id="stlBarrel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#787878"/>
+      <stop offset="40%" stop-color="#505050"/>
+      <stop offset="100%" stop-color="#282828"/>
+    </linearGradient>
+    <linearGradient id="stlBarrelV" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#282828"/>
+      <stop offset="35%" stop-color="#606060"/>
+      <stop offset="100%" stop-color="#282828"/>
+    </linearGradient>
+    <radialGradient id="stlFire" cx="50%" cy="60%" r="55%">
+      <stop offset="0%" stop-color="#ffdd30"/>
+      <stop offset="30%" stop-color="#ff7010"/>
+      <stop offset="70%" stop-color="#aa2000"/>
+      <stop offset="100%" stop-color="#380400"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Main body shadow -->
+  <rect x="8" y="28" width="82" height="58" rx="4" fill="#1a1a1a" opacity="0.5"/>
+  <!-- Main body -->
+  <rect x="6" y="26" width="82" height="58" rx="4" fill="url(#stlBody)" stroke="#181818" stroke-width="1.5"/>
+
+  <!-- Panel lines on body -->
+  <line x1="8" y1="44" x2="86" y2="44" stroke="#282828" stroke-width="1" opacity="0.7"/>
+  <line x1="8" y1="62" x2="86" y2="62" stroke="#282828" stroke-width="1" opacity="0.7"/>
+  <!-- Vertical panel line (splits body) -->
+  <line x1="50" y1="28" x2="50" y2="82" stroke="#282828" stroke-width="1" opacity="0.5"/>
+
+  <!-- === HORIZONTAL BARREL (top-left) === -->
+  <!-- Barrel body (horizontal cylinder) -->
+  <rect x="6" y="22" width="50" height="18" rx="9" fill="url(#stlBarrel)" stroke="#181818" stroke-width="1.5"/>
+  <!-- Barrel highlight -->
+  <rect x="8" y="23" width="46" height="4" rx="3" fill="white" opacity="0.12"/>
+  <!-- Barrel axis line -->
+  <line x1="8" y1="31" x2="54" y2="31" stroke="#181818" stroke-width="0.5" stroke-dasharray="3,3" opacity="0.4"/>
+  <!-- Barrel flanges (rings) -->
+  <rect x="20" y="22" width="5" height="18" rx="2" fill="#404040" stroke="#181818" stroke-width="0.8"/>
+  <rect x="35" y="22" width="5" height="18" rx="2" fill="#404040" stroke="#181818" stroke-width="0.8"/>
+  <!-- Barrel end cap (right) -->
+  <ellipse cx="56" cy="31" rx="5" ry="9" fill="#4a4a4a" stroke="#181818" stroke-width="1.2"/>
+
+  <!-- Barrel mouth (left, open end) -->
+  <ellipse cx="8" cy="31" rx="4" ry="9" fill="#282828" stroke="#181818" stroke-width="1"/>
+  <ellipse cx="8" cy="31" rx="2.5" ry="7" fill="#0a0a0a"/>
+
+  <!-- === VIEWING WINDOW (fire) === -->
+  <rect x="12" y="52" width="40" height="28" rx="3" fill="#1a0800" stroke="#181818" stroke-width="1.2"/>
+  <!-- Fire inside window -->
+  <rect x="14" y="54" width="36" height="24" rx="2" fill="url(#stlFire)"/>
+  <!-- Flame shapes -->
+  <ellipse cx="22" cy="62" rx="5" ry="10" fill="#ff9030" opacity="0.55"/>
+  <ellipse cx="32" cy="58" rx="6" ry="12" fill="#ffe050" opacity="0.4"/>
+  <ellipse cx="42" cy="63" rx="5" ry="10" fill="#ff7010" opacity="0.55"/>
+  <!-- Window grate bars (horizontal) -->
+  <line x1="12" y1="61" x2="52" y2="61" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="12" y1="69" x2="52" y2="69" stroke="#1a1a1a" stroke-width="1.5"/>
+  <!-- Window frame bright border -->
+  <rect x="12" y="52" width="40" height="28" rx="3" fill="none" stroke="#804010" stroke-width="0.8" opacity="0.7"/>
+
+  <!-- Right panel: vents and control detail -->
+  <rect x="56" y="30" width="28" height="6" rx="2" fill="#282828" stroke="#181818" stroke-width="0.8"/>
+  <rect x="56" y="40" width="28" height="6" rx="2" fill="#282828" stroke="#181818" stroke-width="0.8"/>
+  <rect x="56" y="50" width="28" height="6" rx="2" fill="#282828" stroke="#181818" stroke-width="0.8"/>
+  <!-- Right panel indicator light -->
+  <circle cx="80" cy="64" r="3" fill="#cc3000" stroke="#181818" stroke-width="0.8"/>
+  <circle cx="80" cy="64" r="1.5" fill="#ff6020" opacity="0.8"/>
+
+  <!-- Corner rivets -->
+  <circle cx="10" cy="30" r="2" fill="#181818" stroke="#505050" stroke-width="0.6"/>
+  <circle cx="84" cy="30" r="2" fill="#181818" stroke="#505050" stroke-width="0.6"/>
+  <circle cx="10" cy="80" r="2" fill="#181818" stroke="#505050" stroke-width="0.6"/>
+  <circle cx="84" cy="80" r="2" fill="#181818" stroke="#505050" stroke-width="0.6"/>
+
+  <!-- Base band -->
+  <rect x="6" y="78" width="82" height="8" rx="3" fill="#282828" stroke="#181818" stroke-width="1.5"/>
+
+  <!-- Smoke stack (small, right side) -->
+  <rect x="70" y="14" width="10" height="16" rx="3" fill="#484848" stroke="#181818" stroke-width="1.2"/>
+  <rect x="68" y="12" width="14" height="5" rx="2" fill="#585858" stroke="#181818" stroke-width="1"/>
+</svg>

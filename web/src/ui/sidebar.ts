@@ -1,4 +1,4 @@
-import type { Engine, SolverResult, ItemFlow } from "../engine.js";
+import type { Engine, SolverResult, LayoutResult, ItemFlow } from "../engine.js";
 import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 
@@ -137,6 +137,39 @@ const STYLE = `
   .sidebar-inner .tier-rate {
     font-weight: 700;
   }
+  .sidebar-inner button.layout-btn {
+    width: 100%;
+    padding: 8px;
+    background: #0e639c;
+    border: none;
+    color: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .sidebar-inner button.layout-btn:disabled {
+    background: #333;
+    color: #777;
+    cursor: default;
+  }
+  .sidebar-inner button.copy-btn {
+    width: 100%;
+    padding: 8px;
+    background: #2d7a2d;
+    border: none;
+    color: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .sidebar-inner .copy-status {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #7ec87e;
+    text-align: center;
+  }
 `;
 
 function makeOption(value: string, defaultValue: string): HTMLOptionElement {
@@ -170,10 +203,15 @@ function appendFlows(container: HTMLElement, flows: ItemFlow[], className: strin
   });
 }
 
+export interface SidebarCallbacks {
+  renderGraph: (result: SolverResult | null) => void;
+  renderLayout: (layout: LayoutResult) => void;
+}
+
 export function renderSidebar(
   el: HTMLElement,
   engine: Engine,
-  renderGraph: (result: SolverResult | null) => void,
+  callbacks: SidebarCallbacks,
 ): void {
   el.innerHTML = "";
 
@@ -253,12 +291,28 @@ export function renderSidebar(
   const resultContainer = document.createElement("div");
   inner.appendChild(resultContainer);
 
+  const layoutBtn = document.createElement("button");
+  layoutBtn.className = "layout-btn";
+  layoutBtn.textContent = "Generate Layout";
+  layoutBtn.disabled = true;
+  inner.appendChild(layoutBtn);
+
+  const blueprintSection = document.createElement("div");
+  blueprintSection.style.display = "none";
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "copy-btn";
+  copyBtn.textContent = "Copy Blueprint";
+  blueprintSection.appendChild(copyBtn);
+  const copyStatus = document.createElement("div");
+  copyStatus.className = "copy-status";
+  blueprintSection.appendChild(copyStatus);
+  inner.appendChild(blueprintSection);
+
   el.appendChild(inner);
 
   const urlState = readUrlState();
   itemInput.value = urlState.item;
   rateInput.value = String(urlState.rate);
-  // If URL didn't specify a machine, derive from the item.
   machineSelect.value =
     urlState.machine ?? engine.defaultMachineForItem(urlState.item, "assembling-machine-3");
   const machineOpts = machineSelect.options;
@@ -268,6 +322,8 @@ export function renderSidebar(
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let previousItem = urlState.item;
+  let currentResult: SolverResult | null = null;
+  let currentLayout: LayoutResult | null = null;
 
   function scheduleAutoSolve(): void {
     if (debounceTimer !== null) clearTimeout(debounceTimer);
@@ -282,7 +338,6 @@ export function renderSidebar(
 
     if (!itemSet.has(targetItem)) {
       itemInput.classList.add("item-invalid");
-      // Don't clear existing results on unknown item — preserve last valid solve
       return;
     }
     itemInput.classList.remove("item-invalid");
@@ -308,18 +363,47 @@ export function renderSidebar(
     });
 
     resultContainer.innerHTML = "";
+    // Invalidate any previous layout — inputs have changed.
+    currentLayout = null;
+    blueprintSection.style.display = "none";
     try {
       const result = engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
+      currentResult = result;
       renderResult(resultContainer, result);
-      renderGraph(result);
+      callbacks.renderGraph(result);
+      layoutBtn.disabled = false;
     } catch (err) {
-      renderGraph(null);
+      currentResult = null;
+      callbacks.renderGraph(null);
+      layoutBtn.disabled = true;
       const errDiv = document.createElement("div");
       errDiv.className = "result-error";
       errDiv.textContent = String(err);
       resultContainer.appendChild(errDiv);
     }
   }
+
+  layoutBtn.addEventListener("click", () => {
+    if (!currentResult) return;
+    try {
+      currentLayout = engine.buildLayout(currentResult);
+      callbacks.renderLayout(currentLayout);
+      blueprintSection.style.display = "block";
+    } catch (err) {
+      const errDiv = document.createElement("div");
+      errDiv.className = "result-error";
+      errDiv.textContent = `Layout error: ${err}`;
+      resultContainer.appendChild(errDiv);
+    }
+  });
+
+  copyBtn.addEventListener("click", async () => {
+    if (!currentLayout) return;
+    const bp = engine.exportBlueprint(currentLayout, itemInput.value.trim());
+    await navigator.clipboard.writeText(bp);
+    copyStatus.textContent = "Copied!";
+    setTimeout(() => { copyStatus.textContent = ""; }, 2000);
+  });
 
   itemInput.addEventListener("input", scheduleAutoSolve);
   rateInput.addEventListener("input", scheduleAutoSolve);

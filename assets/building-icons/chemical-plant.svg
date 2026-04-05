@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <!-- Main body gradient (warm bronze/tan, lit from front-right) -->
+    <linearGradient id="bodyFace" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9a7248"/>
+      <stop offset="100%" stop-color="#c4985e"/>
+    </linearGradient>
+    <!-- Body top panel -->
+    <linearGradient id="bodyTop" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#d4aa70"/>
+      <stop offset="100%" stop-color="#a87c48"/>
+    </linearGradient>
+    <!-- Tower gradient (teal, lit from left) -->
+    <linearGradient id="towerFace" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3d7a8a"/>
+      <stop offset="50%" stop-color="#6aacbc"/>
+      <stop offset="100%" stop-color="#4a8898"/>
+    </linearGradient>
+    <!-- Tower dome -->
+    <radialGradient id="towerDome" cx="40%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#88c4d4"/>
+      <stop offset="100%" stop-color="#3a7080"/>
+    </radialGradient>
+    <!-- Pipe cylinder gradient (cool metallic) -->
+    <linearGradient id="pipeH" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#b8d0d8"/>
+      <stop offset="35%" stop-color="#7aaab8"/>
+      <stop offset="100%" stop-color="#3a6070"/>
+    </linearGradient>
+    <linearGradient id="pipeV" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3a6070"/>
+      <stop offset="35%" stop-color="#7aaab8"/>
+      <stop offset="100%" stop-color="#b8d0d8"/>
+    </linearGradient>
+    <!-- Blue panel screen -->
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a5090"/>
+      <stop offset="100%" stop-color="#0a2858"/>
+    </linearGradient>
+    <!-- Drop shadow filter -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="1" dy="2" stdDeviation="2" flood-color="#00000050"/>
+    </filter>
+  </defs>
+
+  <!-- ═══════════════════════════════ -->
+  <!-- VERTICAL PIPE STUB (top-left)  -->
+  <!-- ═══════════════════════════════ -->
+  <!-- Pipe body -->
+  <rect x="14" y="7" width="10" height="22" rx="5" fill="url(#pipeV)" stroke="#2a5060" stroke-width="1.2"/>
+  <!-- Highlight streak -->
+  <rect x="17" y="8" width="3" height="18" rx="1.5" fill="white" opacity="0.18"/>
+  <!-- Pipe cap ring -->
+  <rect x="13" y="6" width="12" height="4" rx="2" fill="#8ab8c8" stroke="#2a5060" stroke-width="1.2"/>
+  <!-- Cap top highlight -->
+  <rect x="14" y="6.5" width="10" height="1.5" rx="1" fill="white" opacity="0.3"/>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- HORIZONTAL PIPE BRIDGE  (top, two stacked pipes)      -->
+  <!-- spans from above body to elbow at tower               -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- Lower pipe -->
+  <rect x="26" y="26" width="40" height="10" rx="5" fill="url(#pipeH)" stroke="#2a5060" stroke-width="1.2"/>
+  <rect x="27" y="27" width="38" height="3" rx="2" fill="white" opacity="0.18"/>
+  <!-- Upper pipe -->
+  <rect x="26" y="15" width="40" height="10" rx="5" fill="url(#pipeH)" stroke="#2a5060" stroke-width="1.2"/>
+  <rect x="27" y="16" width="38" height="3" rx="2" fill="white" opacity="0.18"/>
+  <!-- Flange ring on pipe (midpoint detail) -->
+  <rect x="48" y="14" width="5" height="23" rx="2" fill="#7aaab8" stroke="#2a5060" stroke-width="1"/>
+
+  <!-- Pipe elbow (right end, curves down into tower top) -->
+  <rect x="62" y="15" width="10" height="32" rx="5" fill="url(#pipeV)" stroke="#2a5060" stroke-width="1.2"/>
+  <rect x="65" y="16" width="3" height="28" rx="1.5" fill="white" opacity="0.18"/>
+
+  <!-- ═══════════════════════ -->
+  <!-- MAIN BODY              -->
+  <!-- ═══════════════════════ -->
+  <!-- Body shadow/depth (right side) -->
+  <rect x="7" y="33" width="50" height="56" rx="3" fill="#7a5830" filter="url(#shadow)"/>
+  <!-- Main face -->
+  <rect x="5" y="31" width="50" height="56" rx="3" fill="url(#bodyFace)" stroke="#3a2214" stroke-width="1.5"/>
+  <!-- Top beveled lip -->
+  <rect x="5" y="28" width="50" height="7" rx="3" fill="url(#bodyTop)" stroke="#3a2214" stroke-width="1.5"/>
+
+  <!-- Rivets — top edge -->
+  <circle cx="11" cy="31.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="25" cy="31.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="39" cy="31.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="49" cy="31.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <!-- Rivets — bottom edge -->
+  <circle cx="11" cy="84.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="25" cy="84.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="39" cy="84.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="49" cy="84.5" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <!-- Rivets — left edge -->
+  <circle cx="7.5" cy="45" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="7.5" cy="62" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+  <circle cx="7.5" cy="76" r="1.8" fill="#2a1808" stroke="#5a3820" stroke-width="0.5"/>
+
+  <!-- Blue display panel (inset) -->
+  <rect x="10" y="44" width="32" height="22" rx="2" fill="#0c1e3a" stroke="#1a4888" stroke-width="1.5"/>
+  <rect x="11.5" y="45.5" width="29" height="19" rx="1.5" fill="url(#panelGrad)"/>
+  <!-- Panel scan-lines / data display -->
+  <line x1="12" y1="50" x2="40" y2="50" stroke="#3a8ade" stroke-width="0.7" opacity="0.7"/>
+  <line x1="12" y1="54" x2="40" y2="54" stroke="#3a8ade" stroke-width="0.7" opacity="0.7"/>
+  <line x1="12" y1="58" x2="40" y2="58" stroke="#3a8ade" stroke-width="0.7" opacity="0.7"/>
+  <!-- Panel indicator dots -->
+  <circle cx="14" cy="47.5" r="1.2" fill="#22ddff" opacity="0.9"/>
+  <circle cx="18" cy="47.5" r="1.2" fill="#22ddff" opacity="0.6"/>
+  <circle cx="22" cy="47.5" r="1.2" fill="#2255ff" opacity="0.9"/>
+  <!-- Panel corner reflections -->
+  <rect x="11.5" y="45.5" width="8" height="3" rx="1" fill="white" opacity="0.08"/>
+
+  <!-- Body base reinforcement band -->
+  <rect x="5" y="81" width="50" height="7" rx="2" fill="#7a5830" stroke="#3a2214" stroke-width="1.5"/>
+
+  <!-- ═══════════════════════ -->
+  <!-- TOWER                  -->
+  <!-- ═══════════════════════ -->
+  <!-- Tower body -->
+  <rect x="60" y="34" width="30" height="52" rx="3" fill="url(#towerFace)" stroke="#1e4a58" stroke-width="1.5"/>
+  <!-- Tower vertical highlight stripe (lit center) -->
+  <rect x="70" y="35" width="8" height="50" rx="2" fill="white" opacity="0.08"/>
+  <!-- Tower horizontal band (midpoint ring) -->
+  <rect x="60" y="58" width="30" height="5" rx="0" fill="#2e6878" stroke="#1e4a58" stroke-width="1"/>
+  <!-- Tower rib lines -->
+  <line x1="67" y1="36" x2="67" y2="88" stroke="#1e4a58" stroke-width="0.8" opacity="0.5"/>
+  <line x1="75" y1="36" x2="75" y2="88" stroke="#1e4a58" stroke-width="0.8" opacity="0.5"/>
+  <line x1="83" y1="36" x2="83" y2="88" stroke="#1e4a58" stroke-width="0.8" opacity="0.5"/>
+  <!-- Tower base band -->
+  <rect x="60" y="81" width="30" height="7" rx="2" fill="#2e6878" stroke="#1e4a58" stroke-width="1.5"/>
+
+  <!-- Tower dome cap -->
+  <ellipse cx="75" cy="34" rx="15" ry="8" fill="url(#towerDome)" stroke="#1e4a58" stroke-width="1.5"/>
+  <!-- Dome highlight -->
+  <ellipse cx="72" cy="31" rx="8" ry="3.5" fill="white" opacity="0.18"/>
+
+  <!-- Pipe collar where elbow meets tower top -->
+  <rect x="63" y="34" width="10" height="6" rx="2" fill="#5aa0b0" stroke="#1e4a58" stroke-width="1"/>
+</svg>

@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <!-- Subtle fill tints (just enough to show form on dark bg) -->
+    <linearGradient id="bpBodyFill" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0a2a3a" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#0e3a4e" stop-opacity="0.7"/>
+    </linearGradient>
+    <linearGradient id="bpTowerFill" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#082030" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#0c3040" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#082030" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="bpPipeFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1a4a5a" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#082030" stop-opacity="0.6"/>
+    </linearGradient>
+    <radialGradient id="bpDomeFill" cx="40%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#0e3a4e" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#061828" stop-opacity="0.9"/>
+    </radialGradient>
+    <!-- Screen glow -->
+    <radialGradient id="screenGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7ab8cc" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#2a5878" stop-opacity="0.08"/>
+    </radialGradient>
+    <!-- Blueprint line glow filter -->
+    <filter id="lineGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="0.4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="screenGlowFilter" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Blueprint line style: cyan #8ecbd8 for primary, #5a8898 for secondary/inner -->
+
+  <!-- ═══════════════════════════════ -->
+  <!-- VERTICAL PIPE STUB (top-left)  -->
+  <!-- ═══════════════════════════════ -->
+  <rect x="14" y="7" width="10" height="22" rx="5" fill="url(#bpPipeFill)" stroke="#8ecbd8" stroke-width="1"/>
+  <!-- Highlight streak -->
+  <rect x="17.5" y="9" width="2.5" height="17" rx="1.2" fill="#8ecbd8" opacity="0.12"/>
+  <!-- Center axis line -->
+  <line x1="19" y1="8" x2="19" y2="28" stroke="#5a8898" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.6"/>
+  <!-- Cap ring -->
+  <rect x="13" y="6" width="12" height="4" rx="2" fill="#082030" stroke="#8ecbd8" stroke-width="1"/>
+  <rect x="14" y="6.5" width="10" height="1.5" rx="1" fill="#8ecbd8" opacity="0.2"/>
+
+  <!-- ═══════════════════════════════════════ -->
+  <!-- HORIZONTAL PIPE BRIDGE (two pipes)     -->
+  <!-- ═══════════════════════════════════════ -->
+  <!-- Lower pipe -->
+  <rect x="26" y="26" width="40" height="10" rx="5" fill="url(#bpPipeFill)" stroke="#8ecbd8" stroke-width="1"/>
+  <rect x="27" y="27" width="38" height="2.5" rx="1.2" fill="#8ecbd8" opacity="0.12"/>
+  <line x1="27" y1="31" x2="65" y2="31" stroke="#5a8898" stroke-width="0.4" stroke-dasharray="3,3" opacity="0.5"/>
+  <!-- Upper pipe -->
+  <rect x="26" y="15" width="40" height="10" rx="5" fill="url(#bpPipeFill)" stroke="#8ecbd8" stroke-width="1"/>
+  <rect x="27" y="16" width="38" height="2.5" rx="1.2" fill="#8ecbd8" opacity="0.12"/>
+  <line x1="27" y1="20" x2="65" y2="20" stroke="#5a8898" stroke-width="0.4" stroke-dasharray="3,3" opacity="0.5"/>
+  <!-- Flange ring -->
+  <rect x="48" y="14" width="5" height="23" rx="2" fill="#082030" stroke="#8ecbd8" stroke-width="1"/>
+  <line x1="50.5" y1="14" x2="50.5" y2="37" stroke="#5a8898" stroke-width="0.4" opacity="0.5"/>
+
+  <!-- Pipe elbow (right, vertical) -->
+  <rect x="62" y="15" width="10" height="32" rx="5" fill="url(#bpPipeFill)" stroke="#8ecbd8" stroke-width="1"/>
+  <rect x="65" y="16" width="2.5" height="28" rx="1.2" fill="#8ecbd8" opacity="0.12"/>
+  <line x1="67" y1="16" x2="67" y2="44" stroke="#5a8898" stroke-width="0.4" stroke-dasharray="3,3" opacity="0.5"/>
+
+  <!-- ═══════════════════════ -->
+  <!-- MAIN BODY              -->
+  <!-- ═══════════════════════ -->
+  <!-- Top beveled lip -->
+  <rect x="5" y="28" width="50" height="7" rx="3" fill="#082030" stroke="#8ecbd8" stroke-width="1" filter="url(#lineGlow)"/>
+  <!-- Main face -->
+  <rect x="5" y="31" width="50" height="56" rx="3" fill="url(#bpBodyFill)" stroke="#8ecbd8" stroke-width="1" filter="url(#lineGlow)"/>
+
+  <!-- Rivets — top -->
+  <circle cx="11" cy="31.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="25" cy="31.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="39" cy="31.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="49" cy="31.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <!-- Rivets — bottom -->
+  <circle cx="11" cy="84.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="25" cy="84.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="39" cy="84.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="49" cy="84.5" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <!-- Rivets — left -->
+  <circle cx="7.5" cy="45" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="7.5" cy="62" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <circle cx="7.5" cy="76" r="1.8" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+
+  <!-- Horizontal detail lines on body face -->
+  <line x1="7" y1="40" x2="53" y2="40" stroke="#5a8898" stroke-width="0.5" opacity="0.4"/>
+  <line x1="7" y1="70" x2="53" y2="70" stroke="#5a8898" stroke-width="0.5" opacity="0.4"/>
+
+  <!-- Blue display panel — glowing -->
+  <rect x="10" y="44" width="32" height="22" rx="2" fill="#061020" stroke="#8ecbd8" stroke-width="1" filter="url(#screenGlowFilter)"/>
+  <rect x="11.5" y="45.5" width="29" height="19" rx="1.5" fill="url(#screenGlow)"/>
+  <!-- Panel scan lines -->
+  <line x1="12" y1="50" x2="40" y2="50" stroke="#7ab8c8" stroke-width="0.7" opacity="0.6"/>
+  <line x1="12" y1="54" x2="40" y2="54" stroke="#7ab8c8" stroke-width="0.7" opacity="0.6"/>
+  <line x1="12" y1="58" x2="40" y2="58" stroke="#7ab8c8" stroke-width="0.7" opacity="0.6"/>
+  <!-- Panel indicator dots -->
+  <circle cx="14" cy="47.5" r="1.2" fill="#88c8d8" opacity="0.95"/>
+  <circle cx="18" cy="47.5" r="1.2" fill="#88c8d8" opacity="0.6"/>
+  <circle cx="22" cy="47.5" r="1.2" fill="#8898c8" opacity="0.95"/>
+
+  <!-- Body base band -->
+  <rect x="5" y="81" width="50" height="7" rx="2" fill="#082030" stroke="#8ecbd8" stroke-width="1"/>
+
+  <!-- ═══════════════════════ -->
+  <!-- TOWER                  -->
+  <!-- ═══════════════════════ -->
+  <rect x="60" y="34" width="30" height="52" rx="3" fill="url(#bpTowerFill)" stroke="#8ecbd8" stroke-width="1" filter="url(#lineGlow)"/>
+  <!-- Tower center highlight -->
+  <rect x="70" y="35" width="8" height="50" rx="2" fill="#8ecbd8" opacity="0.05"/>
+  <!-- Tower horizontal band -->
+  <rect x="60" y="58" width="30" height="5" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+  <!-- Tower rib lines -->
+  <line x1="67" y1="36" x2="67" y2="57" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <line x1="75" y1="36" x2="75" y2="57" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <line x1="83" y1="36" x2="83" y2="57" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <line x1="67" y1="63" x2="67" y2="87" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <line x1="75" y1="63" x2="75" y2="87" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <line x1="83" y1="63" x2="83" y2="87" stroke="#5a8898" stroke-width="0.6" opacity="0.5"/>
+  <!-- Tower base band -->
+  <rect x="60" y="81" width="30" height="7" rx="2" fill="#082030" stroke="#8ecbd8" stroke-width="1"/>
+
+  <!-- Tower dome cap -->
+  <ellipse cx="75" cy="34" rx="15" ry="8" fill="url(#bpDomeFill)" stroke="#8ecbd8" stroke-width="1" filter="url(#lineGlow)"/>
+  <!-- Dome center axis -->
+  <line x1="60" y1="34" x2="90" y2="34" stroke="#5a8898" stroke-width="0.4" stroke-dasharray="2,2" opacity="0.5"/>
+  <!-- Dome highlight arc -->
+  <ellipse cx="72" cy="31" rx="7" ry="3" fill="none" stroke="#8ecbd8" stroke-width="0.5" opacity="0.3"/>
+
+  <!-- Pipe collar at tower top -->
+  <rect x="63" y="34" width="10" height="6" rx="2" fill="#082030" stroke="#8ecbd8" stroke-width="0.8"/>
+</svg>

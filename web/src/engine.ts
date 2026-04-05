@@ -5,10 +5,18 @@ import wasmInit, {
   all_producer_machines,
   default_machine_for_item as wasmDefaultMachineForItem,
   export_blueprint as wasmExportBlueprint,
+  layout as wasmLayout,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
-export type { SolverResult, MachineSpec, ItemFlow, LayoutResult } from "./wasm-pkg/fucktorio_wasm.js";
-import type { LayoutResult } from "./wasm-pkg/fucktorio_wasm.js";
+export type {
+  SolverResult,
+  MachineSpec,
+  ItemFlow,
+  LayoutResult,
+  PlacedEntity,
+  EntityDirection,
+} from "./wasm-pkg/fucktorio_wasm.js";
+import type { SolverResult, LayoutResult } from "./wasm-pkg/fucktorio_wasm.js";
 
 let itemsCache: string[] | null = null;
 let machinesCache: string[] | null = null;
@@ -22,8 +30,8 @@ function solve(
   targetItem: string,
   targetRate: number,
   availableInputs: string[],
-  machineEntity: string
-) {
+  machineEntity: string,
+): SolverResult {
   return wasmSolve(targetItem, targetRate, availableInputs, machineEntity);
 }
 
@@ -41,6 +49,10 @@ function allProducerMachines(): string[] {
   return machinesCache;
 }
 
+function buildLayout(result: SolverResult): LayoutResult {
+  return wasmLayout(result);
+}
+
 function exportBlueprint(layout: LayoutResult, label: string): string {
   return wasmExportBlueprint(layout, label);
 }
@@ -53,10 +65,18 @@ export type Engine = {
   solve: typeof solve;
   allProducibleItems: typeof allProducibleItems;
   allProducerMachines: typeof allProducerMachines;
+  buildLayout: typeof buildLayout;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
 };
 
 export function getEngine(): Engine {
-  return { solve, allProducibleItems, allProducerMachines, exportBlueprint, defaultMachineForItem };
+  return {
+    solve,
+    allProducibleItems,
+    allProducerMachines,
+    buildLayout,
+    exportBlueprint,
+    defaultMachineForItem,
+  };
 }

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <linearGradient id="a2Frame" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3a4858"/>
+      <stop offset="100%" stop-color="#222e3c"/>
+    </linearGradient>
+    <linearGradient id="a2Face" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2e3c4c"/>
+      <stop offset="100%" stop-color="#3e4e62"/>
+    </linearGradient>
+    <linearGradient id="a2Window" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080e14"/>
+      <stop offset="100%" stop-color="#0c1620"/>
+    </linearGradient>
+    <linearGradient id="a2Gear" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7a8898"/>
+      <stop offset="100%" stop-color="#4a5868"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer frame -->
+  <rect x="4" y="16" width="88" height="72" rx="4" fill="url(#a2Frame)" stroke="#141e28" stroke-width="1.5"/>
+  <!-- Face panel -->
+  <rect x="10" y="22" width="76" height="60" rx="3" fill="url(#a2Face)" stroke="#1e2c3c" stroke-width="1"/>
+  <!-- Top header bar -->
+  <rect x="4" y="16" width="88" height="11" rx="4" fill="#2a3848" stroke="#141e28" stroke-width="1.5"/>
+
+  <!-- Display window (dark screen) -->
+  <rect x="14" y="30" width="68" height="44" rx="3" fill="url(#a2Window)" stroke="#1e2c3c" stroke-width="1"/>
+  <!-- Window inner bezel highlight -->
+  <rect x="14.5" y="30.5" width="67" height="2" rx="1" fill="white" opacity="0.06"/>
+
+  <!-- Gear 1 (left), R=11, r=8.25, hub=4.2, cx=36 cy=52 -->
+  <path fill-rule="evenodd"
+        transform="translate(36,52)"
+        d="M11,0 L7.63,3.16 7.78,7.78 3.16,7.63 0,11 -3.16,7.63 -7.78,7.78 -7.63,3.16 -11,0 -7.63,-3.16 -7.78,-7.78 -3.16,-7.63 0,-11 3.16,-7.63 7.78,-7.78 7.63,-3.16 Z M4.2,0 A4.2,4.2 0 1,0 -4.2,0 A4.2,4.2 0 1,0 4.2,0 Z"
+        fill="url(#a2Gear)" stroke="#1a2838" stroke-width="0.8" stroke-linejoin="round"/>
+
+  <!-- Gear 2 (right), same size, cx=60 cy=52 — slightly rotated so teeth mesh -->
+  <path fill-rule="evenodd"
+        transform="translate(60,52) rotate(22.5)"
+        d="M11,0 L7.63,3.16 7.78,7.78 3.16,7.63 0,11 -3.16,7.63 -7.78,7.78 -7.63,3.16 -11,0 -7.63,-3.16 -7.78,-7.78 -3.16,-7.63 0,-11 3.16,-7.63 7.78,-7.78 7.63,-3.16 Z M4.2,0 A4.2,4.2 0 1,0 -4.2,0 A4.2,4.2 0 1,0 4.2,0 Z"
+        fill="url(#a2Gear)" stroke="#1a2838" stroke-width="0.8" stroke-linejoin="round"/>
+
+  <!-- Corner bolts -->
+  <circle cx="12" cy="24" r="2.2" fill="#141e28" stroke="#4a5868" stroke-width="0.7"/>
+  <circle cx="84" cy="24" r="2.2" fill="#141e28" stroke="#4a5868" stroke-width="0.7"/>
+  <circle cx="12" cy="80" r="2.2" fill="#141e28" stroke="#4a5868" stroke-width="0.7"/>
+  <circle cx="84" cy="80" r="2.2" fill="#141e28" stroke="#4a5868" stroke-width="0.7"/>
+
+  <!-- Side detail strips -->
+  <rect x="4" y="27" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+  <rect x="4" y="37" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+  <rect x="4" y="47" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+  <rect x="86" y="27" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+  <rect x="86" y="37" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+  <rect x="86" y="47" width="6" height="4" rx="1" fill="#1a2838" stroke="#1e2c3c" stroke-width="0.6"/>
+
+  <!-- Base band -->
+  <rect x="4" y="78" width="88" height="10" rx="3" fill="#222e3c" stroke="#141e28" stroke-width="1.5"/>
+</svg>
