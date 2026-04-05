@@ -3,8 +3,8 @@ import type { Viewport } from "pixi-viewport";
 
 const TILE_SIZE = 32;
 const GRID_TILES = 100;
-const MINOR_COLOR = 0x333333;
-const MAJOR_COLOR = 0x555555;
+const MINOR_COLOR = 0x222222;
+const MAJOR_COLOR = 0x2a2a2a;
 
 export function drawGrid(viewport: Viewport): Graphics {
   const g = new Graphics();

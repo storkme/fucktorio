@@ -157,7 +157,11 @@ function appendFlows(container: HTMLElement, flows: ItemFlow[], className: strin
   });
 }
 
-export function renderSidebar(el: HTMLElement, engine: Engine): void {
+export function renderSidebar(
+  el: HTMLElement,
+  engine: Engine,
+  renderGraph: (result: SolverResult | null) => void,
+): void {
   el.innerHTML = "";
 
   if (!document.getElementById("fucktorio-sidebar-style")) {
@@ -239,8 +243,11 @@ export function renderSidebar(el: HTMLElement, engine: Engine): void {
     const availableInputs = DEFAULT_INPUTS.filter((inp) => checkboxes.get(inp)?.checked);
 
     try {
-      renderResult(resultContainer, engine.solve(targetItem, targetRate, availableInputs, machineEntity));
+      const result = engine.solve(targetItem, targetRate, availableInputs, machineEntity);
+      renderResult(resultContainer, result);
+      renderGraph(result);
     } catch (err) {
+      renderGraph(null);
       const errDiv = document.createElement("div");
       errDiv.className = "result-error";
       errDiv.textContent = String(err);
