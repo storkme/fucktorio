@@ -14,6 +14,7 @@ from .templates import (
     fluid_input_row,
     oil_refinery_row,
     single_input_row,
+    triple_input_row,
 )
 
 
@@ -120,10 +121,11 @@ def place_rows(
         # Determine belt tier and max machines per row.
         # With lane splitting, both lanes are used so full belt capacity applies.
         solid_outputs = [f for f in spec.outputs if not f.is_fluid]
+        solid_inputs_count = sum(1 for f in spec.inputs if not f.is_fluid)
         output_rate = solid_outputs[0].rate * total_count if solid_outputs else 0
         has_fluid = any(f.is_fluid for f in spec.inputs)
-        # Fluid rows don't support lane splitting yet — use single-lane math
-        if has_fluid:
+        # Fluid rows and triple-solid rows don't support lane splitting — use single-lane math
+        if has_fluid or solid_inputs_count >= 3:
             out_belt = belt_entity_for_rate(output_rate * 2, max_tier=max_belt_tier)
             max_per_row = _max_machines_for_belt(spec, out_belt, max_belt_tier)
         else:
@@ -174,10 +176,11 @@ def _build_one_row(
     output_is_fluid = not solid_outputs and bool(fluid_outputs)
     output_item = fluid_outputs[0].item if output_is_fluid else (solid_outputs[0].item if solid_outputs else "")
 
-    # Lane splitting: use both belt lanes when count >= 2 (not for fluid rows)
+    # Lane splitting: use both belt lanes when count >= 2 (not for fluid rows or triple-solid rows)
     has_fluid_dual_solid = len(solid_inputs) == 2 and len(fluid_inputs) == 1
     has_fluid = bool(fluid_inputs and solid_inputs) and not has_fluid_dual_solid
-    lane_split = count >= 2 and not has_fluid and not has_fluid_dual_solid
+    has_triple_solid = len(solid_inputs) == 3 and not fluid_inputs
+    lane_split = count >= 2 and not has_fluid and not has_fluid_dual_solid and not has_triple_solid
 
     # Belt tiers based on THIS chunk's throughput
     output_rate = solid_outputs[0].rate * count if solid_outputs else 0
@@ -222,6 +225,7 @@ def _build_one_row(
             output_is_fluid=output_is_fluid,
             input_belts=(in_belt1, in_belt2),
             output_belt=out_belt,
+            output_east=output_east,
         )
         input_belt_ys = [y_cursor + 2, y_cursor + 3]
         output_belt_y = y_cursor + 8  # fluid output row / solid output inserter row
@@ -269,6 +273,26 @@ def _build_one_row(
         )
         input_belt_ys = [y_cursor]
         output_belt_y = y_cursor + 6
+    elif has_triple_solid:
+        input_items3 = (solid_inputs[0].item, solid_inputs[1].item, solid_inputs[2].item)
+        in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2, max_tier=max_belt_tier)
+        in_belt2 = belt_entity_for_rate(solid_inputs[1].rate * count * 2, max_tier=max_belt_tier)
+        in_belt3 = belt_entity_for_rate(solid_inputs[2].rate * count * 2, max_tier=max_belt_tier)
+        row_ents, row_h = triple_input_row(
+            recipe=spec.recipe,
+            machine_entity=spec.entity,
+            machine_count=count,
+            y_offset=y_cursor,
+            x_offset=bus_width,
+            input_items=input_items3,
+            output_item=output_item,
+            input_belts=(in_belt1, in_belt2, in_belt3),
+            output_belt=out_belt,
+            output_east=output_east,
+        )
+        # triple_input_row: input1 at y+0, input2 at y+1, input3 at y+8; output at y+7
+        input_belt_ys = [y_cursor, y_cursor + 1, y_cursor + 8]
+        output_belt_y = y_cursor + 7
     else:
         input_items = (solid_inputs[0].item, solid_inputs[1].item)
         in_belt1 = belt_entity_for_rate(solid_inputs[0].rate * count * 2, max_tier=max_belt_tier)
@@ -313,13 +337,54 @@ def _order_specs(
     machines: list[MachineSpec],
     dependency_order: list[str],
 ) -> list[MachineSpec]:
-    """Return machine specs with upstream (producing) recipes first."""
-    ordered: list[MachineSpec] = []
+    """Return machine specs with upstream (producing) recipes first.
+
+    Performs a topological sort on solid-input dependencies so every
+    producer row sits ABOVE every consumer row (bus flow is SOUTH).
+    Fluid dependencies are ignored — fluid trunks carry items in both
+    directions, so fluid producers/consumers can be placed in any order.
+
+    Ties are broken by the solver's ``dependency_order`` (reversed) so
+    existing layouts stay stable when no solid-dep constraint applies.
+    """
     recipe_to_spec = {m.recipe: m for m in machines}
-    for recipe in reversed(dependency_order):
-        if recipe in recipe_to_spec:
-            ordered.append(recipe_to_spec[recipe])
+    # item -> recipe that produces it
+    producer: dict[str, str] = {}
     for m in machines:
-        if m not in ordered:
-            ordered.append(m)
-    return ordered
+        for out in m.outputs:
+            if not out.is_fluid:
+                producer[out.item] = m.recipe
+
+    # consumer recipe -> set of producer recipes (solid only)
+    deps: dict[str, set[str]] = {m.recipe: set() for m in machines}
+    for m in machines:
+        for inp in m.inputs:
+            if inp.is_fluid:
+                continue
+            p = producer.get(inp.item)
+            if p is not None and p != m.recipe:
+                deps[m.recipe].add(p)
+
+    # Stable-tiebreak key: earlier in reversed(dependency_order) wins.
+    rev_order = list(reversed(dependency_order))
+    rank = {r: i for i, r in enumerate(rev_order)}
+    all_recipes = {m.recipe for m in machines}
+    for r in all_recipes:
+        rank.setdefault(r, len(rank))
+
+    # Kahn's algorithm — always pop the lowest-rank ready recipe.
+    remaining = {r: set(d) for r, d in deps.items() if r in all_recipes}
+    emitted: list[str] = []
+    while remaining:
+        ready = [r for r, d in remaining.items() if not d]
+        if not ready:
+            # Cycle (shouldn't happen for solid deps, but don't hang).
+            ready = list(remaining)
+        ready.sort(key=lambda r: rank[r])
+        r = ready[0]
+        emitted.append(r)
+        del remaining[r]
+        for other in remaining:
+            remaining[other].discard(r)
+
+    return [recipe_to_spec[r] for r in emitted if r in recipe_to_spec]

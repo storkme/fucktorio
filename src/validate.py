@@ -44,6 +44,27 @@ def _belt_dir_map_from(entities: list[PlacedEntity]) -> dict[tuple[int, int], En
     return bdm
 
 
+def _splitter_second_tile(e: PlacedEntity) -> tuple[int, int]:
+    """Return the second tile occupied by a splitter entity.
+
+    Splitters span 2 tiles perpendicular to their flow direction.
+    """
+    if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+        return (e.x + 1, e.y)
+    return (e.x, e.y + 1)
+
+
+def _build_belt_tile_set(entities: list[PlacedEntity]) -> set[tuple[int, int]]:
+    """Return all tiles occupied by belt entities, expanding splitters."""
+    tiles: set[tuple[int, int]] = set()
+    for e in entities:
+        if e.name in _BELT_ENTITIES:
+            tiles.add((e.x, e.y))
+            if e.name in _SPLITTER_ENTITIES:
+                tiles.add(_splitter_second_tile(e))
+    return tiles
+
+
 # Inserter reach: how many tiles from the inserter the pickup/drop position is
 _INSERTER_REACH = {
     "inserter": 1,
@@ -136,6 +157,7 @@ def validate(
     issues.extend(check_underground_belt_pairs(layout_result))
     issues.extend(check_underground_belt_sideloading(layout_result))
     issues.extend(check_underground_belt_entry_sideload(layout_result))
+    issues.extend(check_belt_dead_ends(layout_result))
     issues.extend(check_belt_loops(layout_result))
     issues.extend(check_belt_item_isolation(layout_result))
     issues.extend(check_belt_inserter_conflict(layout_result))
@@ -682,13 +704,13 @@ def check_belt_connectivity(
             if not has_solid:
                 fluid_only_recipes.add(spec.recipe)
 
-    # Build tile maps
-    belt_tiles: set[tuple[int, int]] = set()
+    # Build tile maps — splitters expanded to both tiles so BFS/adjacency
+    # checks can traverse through them.
+    belt_tiles = _build_belt_tile_set(layout_result.entities)
+    ug_pairs = _build_ug_pairs(layout_result)
     inserter_positions: set[tuple[int, int]] = set()
     for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_tiles.add((e.x, e.y))
-        elif e.name in _INSERTER_ENTITIES:
+        if e.name in _INSERTER_ENTITIES:
             inserter_positions.add((e.x, e.y))
 
     if not belt_tiles:
@@ -774,7 +796,7 @@ def check_belt_connectivity(
                 if nb in belt_tiles and nb not in machine_tiles:
                     start_belt_tiles.add(nb)
 
-        belt_network = _bfs_belt_reach(start_belt_tiles, belt_tiles)
+        belt_network = _bfs_belt_reach(start_belt_tiles, belt_tiles, ug_pairs=ug_pairs)
 
         if len(belt_network) <= 1:
             issues.append(
@@ -1012,14 +1034,15 @@ def check_belt_flow_path(
 
     fluid_only_recipes = _get_fluid_only_recipes(solver_result)
 
-    # Build tile maps
-    belt_tiles: set[tuple[int, int]] = set()
+    # Build UG pair map so BFS can traverse underground tunnels
+    ug_pairs = _build_ug_pairs(layout_result)
+
+    # Build tile maps — splitters expanded to both tiles so BFS can traverse.
+    belt_tiles = _build_belt_tile_set(layout_result.entities)
     inserter_entities: list[PlacedEntity] = []
     inserter_positions: set[tuple[int, int]] = set()
     for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_tiles.add((e.x, e.y))
-        elif e.name in _INSERTER_ENTITIES:
+        if e.name in _INSERTER_ENTITIES:
             inserter_entities.append(e)
             inserter_positions.add((e.x, e.y))
 
@@ -1106,7 +1129,7 @@ def check_belt_flow_path(
         # --- Input path checking ---
         input_belt_starts = _belt_tiles_near_inserters(e, my_tiles, input_inserter_positions)
         if input_belt_starts:
-            belt_network = _bfs_belt_reach(input_belt_starts, belt_tiles)
+            belt_network = _bfs_belt_reach(input_belt_starts, belt_tiles, ug_pairs=ug_pairs)
 
             # Check if network reaches another machine's output inserter
             reaches_source = False
@@ -1151,7 +1174,7 @@ def check_belt_flow_path(
         if not output_belt_starts:
             continue
 
-        belt_network = _bfs_belt_reach(output_belt_starts, belt_tiles)
+        belt_network = _bfs_belt_reach(output_belt_starts, belt_tiles, ug_pairs=ug_pairs)
 
         reaches_sink = False
         for bx, by in belt_network:
@@ -1307,10 +1330,7 @@ def check_output_belt_coverage(
                 fluid_output_recipes.add(spec.recipe)
 
     machine_tiles = _build_machine_tile_set(layout_result)
-    belt_tiles: set[tuple[int, int]] = set()
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_tiles.add((e.x, e.y))
+    belt_tiles = _build_belt_tile_set(layout_result.entities)
 
     checked: set[tuple[int, int]] = set()
     for e in layout_result.entities:
@@ -1382,13 +1402,18 @@ def check_belt_network_topology(
     if solver_result is None:
         return issues
 
-    # Build tile maps
+    # Build tile maps — splitters expanded to both tiles so item-filtered BFS
+    # can traverse through them (the second tile inherits the same carries).
     belt_tiles: set[tuple[int, int]] = set()
     belt_carries: dict[tuple[int, int], str | None] = {}
     for e in layout_result.entities:
         if e.name in _BELT_ENTITIES:
             belt_tiles.add((e.x, e.y))
             belt_carries[(e.x, e.y)] = e.carries
+            if e.name in _SPLITTER_ENTITIES:
+                second = _splitter_second_tile(e)
+                belt_tiles.add(second)
+                belt_carries[second] = e.carries
 
     if not belt_tiles:
         return issues
@@ -1596,6 +1621,10 @@ def check_belt_junctions(
         if e.name in _BELT_ENTITIES:
             belt_dir[(e.x, e.y)] = e.direction
             belt_carry[(e.x, e.y)] = e.carries
+            if e.name in _SPLITTER_ENTITIES:
+                second = _splitter_second_tile(e)
+                belt_dir[second] = e.direction
+                belt_carry[second] = e.carries
 
     for (x, y), direction in belt_dir.items():
         dx, dy = _DIR_TO_VEC[direction]
@@ -1798,6 +1827,8 @@ def check_underground_belt_sideloading(
     for e in layout_result.entities:
         if e.name in _BELT_ENTITIES:
             belt_dir[(e.x, e.y)] = e.direction
+            if e.name in _SPLITTER_ENTITIES:
+                belt_dir[_splitter_second_tile(e)] = e.direction
 
     for e in layout_result.entities:
         if e.name not in _UG_BELT_ENTITIES or e.io_type != "output":
@@ -1849,14 +1880,22 @@ def check_underground_belt_entry_sideload(
     """
     issues: list[ValidationIssue] = []
 
-    # Build maps: position → direction for all belt-like entities
+    # Build maps: position → direction for potential feeder entities.
+    # UG_inputs don't feed their front-tile (items go underground), and
+    # UG_outputs only feed their front-tile (not sideways), so we only
+    # treat surface belts + splitters + UG_outputs as feeders.
     belt_dir: dict[tuple[int, int], EntityDirection] = {}
     ug_inputs: list[PlacedEntity] = []
     for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
+        if e.name in _SURFACE_BELT_ENTITIES or e.name in _SPLITTER_ENTITIES:
             belt_dir[(e.x, e.y)] = e.direction
-        if e.name in _UG_BELT_ENTITIES and e.io_type == "input":
-            ug_inputs.append(e)
+            if e.name in _SPLITTER_ENTITIES:
+                belt_dir[_splitter_second_tile(e)] = e.direction
+        elif e.name in _UG_BELT_ENTITIES:
+            if e.io_type == "output":
+                belt_dir[(e.x, e.y)] = e.direction
+            if e.io_type == "input":
+                ug_inputs.append(e)
 
     for ug in ug_inputs:
         d = _DIR_TO_VEC.get(ug.direction)
@@ -1881,7 +1920,7 @@ def check_underground_belt_entry_sideload(
             if dot == 0:
                 issues.append(
                     ValidationIssue(
-                        severity="error",
+                        severity="warning",
                         category="underground-belt",
                         message=(
                             f"Belt at ({nx},{ny}) facing {n_dir.name} sideloads into "
@@ -1892,6 +1931,118 @@ def check_underground_belt_entry_sideload(
                         y=ug.y,
                     )
                 )
+
+    return issues
+
+
+def check_belt_dead_ends(layout_result: LayoutResult) -> list[ValidationIssue]:
+    """Catch surface belts whose output tile is empty and interior.
+
+    A surface belt carries items in its facing direction. The tile one
+    step in that direction must contain something that receives items:
+    another belt, an underground-belt input, a splitter, or a machine
+    whose inserters pick from this tile. If the output tile is empty
+    AND inside the layout bounds, items accumulate with nowhere to go —
+    an unambiguous dead-end.
+
+    Belts that flow off the layout edge are OK: those are external
+    input/output points where the player attaches supply or takeoff.
+
+    Narrower than the BFS-based ``belt-flow-path`` check: no false
+    positives from multi-tile-machine tracing limitations. If this
+    fires, the belt is definitely broken.
+    """
+    issues: list[ValidationIssue] = []
+
+    # All tiles occupied by entities that can receive belt output.
+    receiver_tiles: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name in _BELT_ENTITIES:
+            receiver_tiles.add((e.x, e.y))
+            # Splitters are 2 wide perpendicular to flow
+            if e.name in _SPLITTER_ENTITIES:
+                if e.direction in (EntityDirection.NORTH, EntityDirection.SOUTH):
+                    receiver_tiles.add((e.x + 1, e.y))
+                else:
+                    receiver_tiles.add((e.x, e.y + 1))
+        elif e.name in _INSERTER_ENTITIES:
+            # An inserter picking items from a tile "consumes" that tile
+            # as a sink. Its pickup tile is 1 (or 2 for long-handed) tiles
+            # opposite its drop direction.
+            d = _DIR_TO_VEC.get(e.direction)
+            if d is None:
+                continue
+            reach = 2 if e.name == "long-handed-inserter" else 1
+            pickup = (e.x - d[0] * reach, e.y - d[1] * reach)
+            receiver_tiles.add(pickup)
+
+    # Index belts by position so we can walk upstream through a chain.
+    belt_at: dict[tuple[int, int], PlacedEntity] = {}
+    for e in layout_result.entities:
+        if e.name in _SURFACE_BELT_ENTITIES:
+            belt_at[(e.x, e.y)] = e
+
+    # Pickup tiles: any tile where an inserter takes items FROM a belt.
+    pickup_tiles: set[tuple[int, int]] = set()
+    for e in layout_result.entities:
+        if e.name not in _INSERTER_ENTITIES:
+            continue
+        d = _DIR_TO_VEC.get(e.direction)
+        if d is None:
+            continue
+        reach = 2 if e.name == "long-handed-inserter" else 1
+        pickup_tiles.add((e.x - d[0] * reach, e.y - d[1] * reach))
+
+    def chain_has_pickup(tail_tile: tuple[int, int], direction: EntityDirection) -> bool:
+        """Walk upstream from tail along belts facing the same direction,
+        return True if any tile in the chain is an inserter pickup."""
+        d = _DIR_TO_VEC[direction]
+        cur = tail_tile
+        visited: set[tuple[int, int]] = set()
+        for _ in range(200):
+            if cur in visited:
+                break
+            visited.add(cur)
+            if cur in pickup_tiles:
+                return True
+            upstream = (cur[0] - d[0], cur[1] - d[1])
+            up_belt = belt_at.get(upstream)
+            if up_belt is None or up_belt.direction != direction:
+                break
+            cur = upstream
+        return False
+
+    w, h = layout_result.width, layout_result.height
+    for e in layout_result.entities:
+        if e.name not in _SURFACE_BELT_ENTITIES:
+            continue
+        d = _DIR_TO_VEC.get(e.direction)
+        if d is None:
+            continue
+        out_x, out_y = e.x + d[0], e.y + d[1]
+        # Belts flowing off the layout edge are external I/O points — OK.
+        if out_x < 0 or out_x >= w or out_y < 0 or out_y >= h:
+            continue
+        if (out_x, out_y) in receiver_tiles:
+            continue
+        # Ignore short slack chains past an inserter pickup (common in
+        # row templates — input belts are 3 tiles wide per machine and
+        # extend past the pickup tile, items just queue up).
+        if chain_has_pickup((e.x, e.y), e.direction):
+            continue
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                category="belt-dead-end",
+                message=(
+                    f"Belt at ({e.x},{e.y}) facing {e.direction.name} has no "
+                    f"receiver at output tile ({out_x},{out_y}) — "
+                    f"items accumulate with nowhere to go"
+                ),
+                x=e.x,
+                y=e.y,
+            )
+        )
 
     return issues
 
@@ -1972,6 +2123,10 @@ def check_belt_item_isolation(
             belt_carry[(e.x, e.y)] = e.carries
             if e.name in _UG_BELT_ENTITIES and e.io_type == "input":
                 ug_inputs.add((e.x, e.y))
+            if e.name in _SPLITTER_ENTITIES:
+                second = _splitter_second_tile(e)
+                belt_dir[second] = e.direction
+                belt_carry[second] = e.carries
 
     seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     for (ax, ay), ad in belt_dir.items():
@@ -2006,10 +2161,7 @@ def check_belt_inserter_conflict(
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
-    belt_tiles: set[tuple[int, int]] = set()
-    for e in layout_result.entities:
-        if e.name in _BELT_ENTITIES:
-            belt_tiles.add((e.x, e.y))
+    belt_tiles = _build_belt_tile_set(layout_result.entities)
 
     drop_map: dict[tuple[int, int], list[tuple[PlacedEntity, str]]] = defaultdict(list)
     for e in layout_result.entities:
@@ -2341,6 +2493,8 @@ def compute_lane_rates(
     for e in layout_result.entities:
         if e.name in _BELT_ENTITIES:
             belt_carries[(e.x, e.y)] = e.carries
+            if e.name in _SPLITTER_ENTITIES:
+                belt_carries[_splitter_second_tile(e)] = e.carries
 
     for ins in layout_result.entities:
         if ins.name not in _INSERTER_ENTITIES:

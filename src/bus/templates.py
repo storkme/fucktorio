@@ -411,6 +411,151 @@ def dual_input_row(
     return entities, ROW_HEIGHT
 
 
+def triple_input_row(
+    recipe: str,
+    machine_entity: str,
+    machine_count: int,
+    y_offset: int,
+    x_offset: int = 0,
+    input_items: tuple[str, str, str] = ("", "", ""),
+    output_item: str = "",
+    input_belts: tuple[str, str, str] = ("transport-belt", "transport-belt", "transport-belt"),
+    output_belt: str = "transport-belt",
+    output_east: bool = False,
+) -> tuple[list[PlacedEntity], int]:
+    """Row for a recipe with 3 solid inputs.
+
+    Layout per machine (3-tile horizontal pitch, no gaps):
+        y+0 : input belt 1 (EAST) -- far belt (long-handed reach)
+        y+1 : input belt 2 (EAST) -- close belt (regular reach)
+        y+2 : long-handed-inserter at mx (picks y+0) + inserter at mx+2 (picks y+1)
+        y+3..y+5 : machine (3x3)
+        y+6 : output inserter at mx+1 (SOUTH) + long-handed inserter at mx+2 (NORTH, picks y+8)
+        y+7 : output belt (WEST or EAST)
+        y+8 : input belt 3 (EAST) -- delivered from south side
+
+    The long-handed inserter at y+6 facing NORTH reaches y+8 (input belt 3) and
+    drops into y+5 (machine south face). The output inserter at y+6 facing SOUTH
+    picks from y+5 (machine south face) and drops to y+7. Both share y+5 as the
+    machine south face, serving different machine tiles (mx+1 vs mx+2).
+
+    Lane splitting is not supported for 3-input rows.
+    """
+    entities: list[PlacedEntity] = []
+    ROW_HEIGHT = 9
+    input1, input2, input3 = input_items
+    belt1, belt2, belt3 = input_belts
+
+    for i in range(machine_count):
+        mx = x_offset + i * MACHINE_PITCH
+
+        # Input belt 1 -- far belt (long-handed range)
+        for dx in range(3):
+            entities.append(
+                PlacedEntity(
+                    name=belt1,
+                    x=mx + dx,
+                    y=y_offset,
+                    direction=EntityDirection.EAST,
+                    carries=input1,
+                )
+            )
+
+        # Input belt 2 -- close belt (regular inserter range)
+        for dx in range(3):
+            entities.append(
+                PlacedEntity(
+                    name=belt2,
+                    x=mx + dx,
+                    y=y_offset + 1,
+                    direction=EntityDirection.EAST,
+                    carries=input2,
+                )
+            )
+
+        # Long-handed inserter: picks from y+0 (input1), drops into machine at y+3
+        entities.append(
+            PlacedEntity(
+                name="long-handed-inserter",
+                x=mx,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+                carries=input1,
+            )
+        )
+
+        # Regular inserter: picks from y+1 (input2), drops into machine at y+3
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 2,
+                y=y_offset + 2,
+                direction=EntityDirection.SOUTH,
+                carries=input2,
+            )
+        )
+
+        # Machine (3x3)
+        entities.append(
+            PlacedEntity(
+                name=machine_entity,
+                x=mx,
+                y=y_offset + 3,
+                direction=EntityDirection.NORTH,
+                recipe=recipe,
+            )
+        )
+
+        # Output inserter: picks from machine south face (y+5), drops to output belt (y+7)
+        entities.append(
+            PlacedEntity(
+                name="inserter",
+                x=mx + 1,
+                y=y_offset + 6,
+                direction=EntityDirection.SOUTH,
+                carries=output_item,
+            )
+        )
+
+        # Input3 long-handed inserter: picks from y+8 (input belt 3), drops to machine south (y+5)
+        entities.append(
+            PlacedEntity(
+                name="long-handed-inserter",
+                x=mx + 2,
+                y=y_offset + 6,
+                direction=EntityDirection.NORTH,
+                carries=input3,
+            )
+        )
+
+        # Output belt
+        out_dir = EntityDirection.EAST if output_east else EntityDirection.WEST
+        for dx in range(3):
+            entities.append(
+                PlacedEntity(
+                    name=output_belt,
+                    x=mx + dx,
+                    y=y_offset + 7,
+                    direction=out_dir,
+                    carries=output_item,
+                )
+            )
+
+        # Input belt 3 -- south-side belt (long-handed range from y+6)
+        for dx in range(3):
+            entities.append(
+                PlacedEntity(
+                    name=belt3,
+                    x=mx + dx,
+                    y=y_offset + 8,
+                    direction=EntityDirection.EAST,
+                    carries=input3,
+                )
+            )
+
+    return entities, ROW_HEIGHT
+
+
 # Fluid port positions relative to machine tile_position.
 # chemical-plant input ports: (0,0) north, (2,0) north
 # assembling-machine-{2,3} input port: (1,0) north
@@ -569,6 +714,7 @@ def fluid_dual_input_row(
     output_is_fluid: bool = False,
     input_belts: tuple[str, str] = ("transport-belt", "transport-belt"),
     output_belt: str = "transport-belt",
+    output_east: bool = False,
 ) -> tuple[list[PlacedEntity], int, list[tuple[int, int]], list[tuple[int, int]]]:
     """Row for a recipe with 2 solid inputs + 1 fluid input.
 
@@ -722,13 +868,14 @@ def fluid_dual_input_row(
                     carries=output_item,
                 )
             )
+            out_dir = EntityDirection.EAST if output_east else EntityDirection.WEST
             for dx in range(3):
                 entities.append(
                     PlacedEntity(
                         name=output_belt,
                         x=mx + dx,
                         y=output_y + 1,
-                        direction=EntityDirection.WEST,
+                        direction=out_dir,
                         carries=output_item,
                     )
                 )

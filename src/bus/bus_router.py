@@ -170,6 +170,21 @@ def plan_bus_lanes(
                 for px, py in rs.fluid_output_port_pipes:
                     lane.fluid_output_port_positions.append((ri, px, py))
 
+    # Tighten fluid-external source_y: move the trunk's top surface pipe
+    # down to just above its first port/tap-off. This prevents an external
+    # fluid's source pipe from being placed in the top rows of the layout,
+    # where it could collide with another fluid's horizontal-port-chain
+    # passing through that column at y=port_y. Intermediate fluids keep
+    # their producer-output source_y.
+    for lane in lanes:
+        if not lane.is_fluid or lane.producer_row is not None:
+            continue
+        port_ys: list[int] = list(lane.tap_off_ys)
+        port_ys.extend(py for _ri, _px, py in lane.fluid_port_positions)
+        port_ys.extend(py for _ri, _px, py in lane.fluid_output_port_positions)
+        if port_ys:
+            lane.source_y = max(0, min(port_ys) - 1)
+
     # Compute lane balancer positions for intermediate solid lanes.
     # Balancers go after the last producer output return, before first tap-off.
     # Only for collector lanes (producers but no consumers).  Intermediate lanes
@@ -785,7 +800,7 @@ def route_bus(
             output_rows = [
                 i for i, rs in enumerate(row_spans) if any(o.item == item for o in rs.spec.outputs if not o.is_fluid)
             ]
-            if len(output_rows) >= 2:
+            if len(output_rows) >= 1:
                 merge_ents, merge_end_y, item_merge_x = _merge_output_rows(
                     output_rows,
                     item,
@@ -817,7 +832,7 @@ def _merge_output_rows(
     """
     entities: list[PlacedEntity] = []
     n = len(output_rows)
-    if n < 2:
+    if n < 1:
         return entities, merge_start_y, 0
 
     total_rate = sum(
@@ -908,6 +923,63 @@ def _trunk_segments(start_y: int, end_y: int, skip_ys: set[int]) -> list[tuple[i
     if seg_start is not None:
         segments.append((seg_start, end_y))
     return segments
+
+
+def _foreign_trunk_skip_ys(
+    lane: BusLane,
+    lanes: list[BusLane],
+    row_spans: list[RowSpan],
+    trunk_start_y: int,
+    trunk_end_y: int,
+) -> set[int]:
+    """Y-rows the lane's trunk must skip to free up its west-neighbor's
+    ret-path landing tile.
+
+    Each intermediate lane Y at column X-1 emits a WEST return spec
+    with target ``(X, Y.out_y)``. If *this* lane (at column X) has a
+    trunk running through Y.out_y, it would claim that tile as an
+    obstacle and Y's ret would fail to route. To fix, skip Y.out_y
+    in our trunk and bridge the gap with an UG pair (rendered by the
+    caller).
+
+    Only producer out_ys strictly inside our trunk's y-range are
+    returned, with 1-tile margin so the UG pair entities at (x, y-1)
+    and (x, y+1) fit inside the trunk.
+    """
+    west_col = lane.x - 1
+    neighbor: BusLane | None = None
+    for other in lanes:
+        if other.is_fluid or other is lane:
+            continue
+        if other.x == west_col:
+            neighbor = other
+            break
+    if neighbor is None:
+        return set()
+    producer_rows: list[int] = []
+    if neighbor.producer_row is not None:
+        producer_rows.append(neighbor.producer_row)
+    producer_rows.extend(neighbor.extra_producer_rows)
+    if not producer_rows:
+        return set()
+    foreign: set[int] = set()
+    for p in producer_rows:
+        y = row_spans[p].output_belt_y
+        if trunk_start_y + 1 <= y <= trunk_end_y - 1:
+            foreign.add(y)
+    return foreign
+
+
+def _foreign_skip_ug_tiles(foreign_skip_ys: set[int]) -> set[int]:
+    """Extra y-rows to add to trunk skip set so UG-pair tiles don't
+    collide with trunk segments.
+
+    For each foreign_y, the UG bridge occupies (x, y-1) and (x, y+1),
+    plus the skipped tile at (x, y). Return {y-1, y, y+1} per foreign_y."""
+    result: set[int] = set()
+    for y in foreign_skip_ys:
+        result.update({y - 1, y, y + 1})
+    return result
 
 
 def _compute_trunk_cross_ys(
@@ -1028,10 +1100,18 @@ def _negotiate_and_route(
                 continue
             template = BALANCER_TEMPLATES[fam.shape]
             ox = min(fam.lane_xs)
-            # Balancer body
-            for dx in range(template.width):
-                for y in range(fam.balancer_y_start, fam.balancer_y_end + 1):
-                    obstacles.append((ox + dx, y))
+            oy = fam.balancer_y_start
+            # Balancer body: only register tiles actually occupied by
+            # template entities (splitters span 2 tiles perpendicular to
+            # flow). Empty tiles inside the template bounding box stay
+            # free so feeder endpoints can land there.
+            for te in template.entities:
+                obstacles.append((ox + te.x, oy + te.y))
+                if te.name == "splitter":
+                    if te.direction in (0, 4):  # NORTH/SOUTH: spans x
+                        obstacles.append((ox + te.x + 1, oy + te.y))
+                    else:  # EAST/WEST: spans y
+                        obstacles.append((ox + te.x, oy + te.y + 1))
             # Producer-to-input feeder paths
             producers_sorted = sorted(
                 fam.producer_rows,
@@ -1101,9 +1181,12 @@ def _negotiate_and_route(
 
             # Trunk: A* vertical (strategy=2, low priority — routes after tap-offs)
             # Skip producer output ys (return junctions — need surface belts).
+            # Also skip y's where the west-neighbor's ret target would land,
+            # leaving a UG-pair gap that the renderer bridges.
             # Cross-lane tap-off positions are NOT skipped here — the A* handles
             # them via underground (promoted obstacles + x_constraint force UG).
-            skip_ys = set(producer_out_ys)
+            foreign_skips = _foreign_trunk_skip_ys(lane, lanes, row_spans, start_y, last_tap_y - 1)
+            skip_ys = set(producer_out_ys) | _foreign_skip_ug_tiles(foreign_skips)
             for seg_start, seg_end in _trunk_segments(start_y, last_tap_y - 1, skip_ys):
                 trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
                 id_to_key[lane_id] = trunk_key
@@ -1159,15 +1242,17 @@ def _negotiate_and_route(
                 lane_id += 1
 
             # Tap-off: A* horizontal EAST (strategy=2, high priority)
-            # Turn belt at (x, tap_y) placed manually; A* starts at x+1.
+            # A* starts at (x, tap_y) and routes east to bw-1.  Starting
+            # from the turn tile itself lets A* use underground when the
+            # immediately-east tile is a fluid trunk obstacle.
             tap_y = lane.tap_off_ys[0] if lane.tap_off_ys else last_tap_y
-            if x + 1 <= bw - 1:
+            if x <= bw - 1:
                 id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
                 specs.append(
                     PyLaneSpec(
                         id=lane_id,
                         item_id=item_id,
-                        waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
+                        waypoints=[(x, tap_y), (bw - 1, tap_y)],
                         strategy=2,
                         priority=6,
                         y_constraint=tap_y,
@@ -1188,6 +1273,8 @@ def _negotiate_and_route(
             end_y = tap_y
             if lane.balancer_y is not None:
                 end_y = max(end_y, lane.balancer_y + 1)
+            foreign_skips = _foreign_trunk_skip_ys(lane, lanes, row_spans, lane.source_y, end_y)
+            skip_ys |= _foreign_skip_ug_tiles(foreign_skips)
             for seg_start, seg_end in _trunk_segments(lane.source_y, end_y, skip_ys):
                 trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
                 id_to_key[lane_id] = trunk_key
@@ -1205,13 +1292,14 @@ def _negotiate_and_route(
                 lane_id += 1
 
             # Tap-off: A* horizontal EAST (high priority)
-            if x + 1 <= bw - 1:
+            # Start from (x, tap_y) so A* can use UG over fluid trunk obstacles.
+            if x <= bw - 1:
                 id_to_key[lane_id] = f"tap:{lane.item}:{x}:{tap_y}"
                 specs.append(
                     PyLaneSpec(
                         id=lane_id,
                         item_id=item_id,
-                        waypoints=[(x + 1, tap_y), (bw - 1, tap_y)],
+                        waypoints=[(x, tap_y), (bw - 1, tap_y)],
                         strategy=2,
                         priority=6,
                         y_constraint=tap_y,
@@ -1233,6 +1321,8 @@ def _negotiate_and_route(
             skip_ys = set(lane.tap_off_ys)
             if lane.balancer_y is not None:
                 skip_ys.add(lane.balancer_y)
+            foreign_skips = _foreign_trunk_skip_ys(lane, lanes, row_spans, lane.source_y, end_y)
+            skip_ys |= _foreign_skip_ug_tiles(foreign_skips)
             for seg_start, seg_end in _trunk_segments(lane.source_y, end_y, skip_ys):
                 trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
                 id_to_key[lane_id] = trunk_key
@@ -1714,7 +1804,8 @@ def _route_intermediate_lane(
 
     # Vertical trunk: use A*-routed segment paths (may include UG crossings).
     # Manual surface belts at producer output ys (return junction points).
-    skip_ys = set(producer_out_ys)
+    foreign_skips = _foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1)
+    skip_ys = set(producer_out_ys) | _foreign_skip_ug_tiles(foreign_skips)
     for out_y in producer_out_ys:
         if out_y < tap_y:
             entities.append(
@@ -1726,6 +1817,24 @@ def _route_intermediate_lane(
                     carries=lane.item,
                 )
             )
+    # UG-pair bridges over foreign skip y's: the trunk's own items
+    # continue south underneath the neighbor's ret-belt landing tile.
+    ug_name = _underground_for(belt_name)
+    for fy in foreign_skips:
+        entities.append(
+            PlacedEntity(
+                name=ug_name, x=x, y=fy - 1,
+                direction=EntityDirection.SOUTH, io_type="input",
+                carries=lane.item,
+            )
+        )
+        entities.append(
+            PlacedEntity(
+                name=ug_name, x=x, y=fy + 1,
+                direction=EntityDirection.SOUTH, io_type="output",
+                carries=lane.item,
+            )
+        )
     for seg_start, seg_end in _trunk_segments(start_y, tap_y - 1, skip_ys):
         trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
         trunk_path = paths.get(trunk_key)
@@ -1743,20 +1852,22 @@ def _route_intermediate_lane(
                     )
                 )
 
-    # Tap-off: surface EAST belt at the turn point, then A*-routed path.
-    entities.append(
-        PlacedEntity(
-            name=belt_name,
-            x=x,
-            y=tap_y,
-            direction=EntityDirection.EAST,
-            carries=lane.item,
-        )
-    )
+    # Tap-off: A*-routed path starts at (x, tap_y), so no separate turn belt.
+    # Fall back to bare turn belt when A* returns nothing.
     tap_key = f"tap:{lane.item}:{x}:{tap_y}"
     tap_path = paths.get(tap_key)
     if tap_path:
         entities.extend(_render_path(tap_path, lane.item, belt_name))
+    else:
+        entities.append(
+            PlacedEntity(
+                name=belt_name,
+                x=x,
+                y=tap_y,
+                direction=EntityDirection.EAST,
+                carries=lane.item,
+            )
+        )
 
 
 def _route_belt_lane(
@@ -1800,7 +1911,25 @@ def _route_belt_lane(
 
     # Vertical trunk: use A*-routed paths (may include UG crossings)
     bal_y = lane.balancer_y
-    skip_ys = tap_off_set | balancer_skip
+    foreign_skips = _foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, end_y)
+    skip_ys = tap_off_set | balancer_skip | _foreign_skip_ug_tiles(foreign_skips)
+    # UG-pair bridges over foreign skip y's
+    ug_name = _underground_for(belt_name)
+    for fy in foreign_skips:
+        entities.append(
+            PlacedEntity(
+                name=ug_name, x=x, y=fy - 1,
+                direction=EntityDirection.SOUTH, io_type="input",
+                carries=lane.item,
+            )
+        )
+        entities.append(
+            PlacedEntity(
+                name=ug_name, x=x, y=fy + 1,
+                direction=EntityDirection.SOUTH, io_type="output",
+                carries=lane.item,
+            )
+        )
     for seg_start, seg_end in _trunk_segments(start_y, end_y, skip_ys):
         tier = pre_bal_belt if (bal_y is not None and seg_start < bal_y) else belt_name
         trunk_key = f"trunk:{lane.item}:{x}:{seg_start}:{seg_end}"
@@ -1843,21 +1972,23 @@ def _route_belt_lane(
             )
         )
 
-    # Tap-offs: surface turn belt + A*-routed path
+    # Tap-offs: A*-routed path starts at (x, tap_y) and includes the turn
+    # tile.  Fall back to a bare surface turn belt when A* returns nothing.
     for tap_y in lane.tap_off_ys:
-        entities.append(
-            PlacedEntity(
-                name=horiz_belt,
-                x=x,
-                y=tap_y,
-                direction=EntityDirection.EAST,
-                carries=lane.item,
-            )
-        )
         tap_key = f"tap:{lane.item}:{x}:{tap_y}"
         tap_path = paths.get(tap_key)
         if tap_path:
             entities.extend(_render_path(tap_path, lane.item, horiz_belt))
+        else:
+            entities.append(
+                PlacedEntity(
+                    name=horiz_belt,
+                    x=x,
+                    y=tap_y,
+                    direction=EntityDirection.EAST,
+                    carries=lane.item,
+                )
+            )
 
     # Output returns: A*-routed paths
     all_producers = []
