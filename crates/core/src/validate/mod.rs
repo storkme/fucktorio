@@ -2,11 +2,13 @@
 //!
 //! Port of `src/validate.py` — foundation types and top-level `validate()` dispatcher.
 
+pub mod power;
 pub mod underground;
 
 use thiserror::Error;
 
 use crate::models::{LayoutResult, SolverResult};
+use power::check_power_coverage;
 use underground::{
     check_underground_belt_entry_sideload, check_underground_belt_pairs,
     check_underground_belt_sideloading,
@@ -114,6 +116,7 @@ pub fn validate(
 ) -> Result<Vec<ValidationIssue>, ValidationError> {
     let mut issues = Vec::new();
 
+    issues.extend(check_power_coverage(layout_result));
     issues.extend(check_underground_belt_pairs(layout_result));
     issues.extend(check_underground_belt_sideloading(layout_result));
     issues.extend(check_underground_belt_entry_sideload(layout_result));
@@ -202,19 +205,24 @@ mod tests {
     }
 
     #[test]
-    fn validate_empty_layout_returns_ok_empty() {
+    fn validate_empty_layout_returns_ok_with_no_poles_warning() {
         let lr = empty_layout();
         let result = validate(&lr, None, LayoutStyle::Spaghetti);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        let issues = result.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].category, "power");
     }
 
     #[test]
-    fn validate_with_machine_returns_ok_empty() {
+    fn validate_with_machine_no_pole_returns_warning() {
         let lr = layout_with_machine();
         let result = validate(&lr, None, LayoutStyle::Bus);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        let issues = result.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Warning);
+        assert_eq!(issues[0].category, "power");
     }
 
     #[test]
