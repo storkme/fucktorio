@@ -309,11 +309,11 @@ pub(crate) fn build_one_row(
             (ents, rh, input_ys, out_y)
         }
         RowKind::FluidDualInput => {
-            let solid_item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let solid_item0 = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let solid_item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
             let fluid_item = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let in_belt1 = belt_entity_for_rate(
-                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                solid_inputs.first().map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
             let in_belt2 = belt_entity_for_rate(
@@ -387,11 +387,11 @@ pub(crate) fn build_one_row(
             (ents, rh, input_ys, out_y)
         }
         RowKind::TripleInput => {
-            let item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let item0 = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
             let item2 = solid_inputs.get(2).map(|f| f.item.as_str()).unwrap_or("");
             let in_belt1 = belt_entity_for_rate(
-                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                solid_inputs.first().map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
             let in_belt2 = belt_entity_for_rate(
@@ -419,10 +419,10 @@ pub(crate) fn build_one_row(
             (ents, rh, input_ys, out_y)
         }
         RowKind::DualInput => {
-            let item0 = solid_inputs.get(0).map(|f| f.item.as_str()).unwrap_or("");
+            let item0 = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let item1 = solid_inputs.get(1).map(|f| f.item.as_str()).unwrap_or("");
             let in_belt1 = belt_entity_for_rate(
-                solid_inputs.get(0).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
+                solid_inputs.first().map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
             let in_belt2 = belt_entity_for_rate(

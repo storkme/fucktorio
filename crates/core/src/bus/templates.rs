@@ -828,7 +828,7 @@ pub fn fluid_dual_input_row(
         // port_dx == 1 (assembling-machine-2/3): PTG at mx+1, so move the
         //   long-handed inserter to mx+2 and the regular inserter to mx+0.
         let (long_x, reg_x) = if port_dx == 1 {
-            (mx + 2, mx + 0)
+            (mx + 2, mx)
         } else {
             (mx + 1, mx + 2)
         };

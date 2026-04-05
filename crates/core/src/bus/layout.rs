@@ -265,7 +265,7 @@ fn route_bus(
         if !lane.is_fluid {
             item_lane_groups
                 .entry(lane.item.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(lane);
         }
     }
@@ -368,11 +368,10 @@ fn place_poles_greedy(
 
                 let mut coverage = 0;
                 for &(mx, my) in machine_centers {
-                    if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range {
-                        if !covered.contains(&(mx, my)) {
+                    if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range
+                        && !covered.contains(&(mx, my)) {
                             coverage += 1;
                         }
-                    }
                 }
 
                 if coverage > best_coverage {

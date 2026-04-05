@@ -38,18 +38,15 @@ pub struct SolverResult {
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum EntityDirection {
+    #[default]
     North = 0,
     East = 4,
     South = 8,
     West = 12,
 }
 
-impl Default for EntityDirection {
-    fn default() -> Self {
-        Self::North
-    }
-}
 
 /// A single entity placed in the blueprint grid.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
