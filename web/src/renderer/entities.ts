@@ -262,35 +262,49 @@ function addBeltChevrons(g: Graphics, s: number, chevColor: number): void {
 function drawUndergroundBelt(entity: PlacedEntity): Graphics {
   const g = new Graphics();
   const s = TILE_PX;
-  const [, chev] = BELT_COLORS[entity.name] ?? [0xa89030, 0xe0d070];
+  const [base, chev] = BELT_COLORS[entity.name] ?? [0xa89030, 0xe0d070];
   const isInput = entity.io_type === "input";
+  const half = s / 2;
 
-  // Same dark body + border as straight belts
+  // In local coords (rotation=0 = North): flow direction = -y.
+  // Input UG:  items flow in (-y), tunnel goes in flow direction. Open mouth at +y.
+  // Output UG: items emerge in flow direction (-y), tunnel comes from +y. Open mouth at -y.
+  const tunnelY = isInput ? -half : 0;   // underground half (very dark)
+  const surfaceY = isInput ? 0 : -half;  // open/surface half (belt-coloured)
+
   g.rect(0, 0, s, s).fill(BELT_BODY);
   g.setStrokeStyle({ width: 1, color: BELT_BORDER, alignment: 0 });
   g.rect(0, 0, s, s).stroke();
 
   const m = new Graphics();
-  m.x = s / 2;
-  m.y = s / 2;
+  m.x = half;
+  m.y = half;
   m.rotation = dirAngle(entity.direction);
 
-  // Darkened ramp half representing the tunnel mouth.
-  // Input  → ramp is ahead (items descending into ground)
-  // Output → ramp is behind (items emerging from ground)
-  const rampY = isInput ? -s / 2 : 0;
-  m.rect(-s / 2, rampY, s, s / 2).fill(0x1e1e1e);
-  m.setStrokeStyle({ width: 1, color: BELT_BORDER });
-  m.rect(-s / 2, rampY, s, s / 2).stroke();
+  // Underground half — near-black to read as "buried"
+  m.rect(-half, tunnelY, s, half).fill(0x181818);
 
-  // Single chevron on the open (non-ramp) half, in tier colour.
-  const chevSize = s * 0.22;
-  const yOffset = isInput ? s * 0.22 : -s * 0.22;
-  m.setStrokeStyle({ width: Math.max(1, s * 0.1), color: chev, cap: "round", join: "round" });
-  m.moveTo(-chevSize, yOffset + chevSize * 0.5)
-    .lineTo(0, yOffset - chevSize * 0.5)
-    .lineTo(chevSize, yOffset + chevSize * 0.5)
-    .stroke();
+  // Surface half — belt tier colour so it reads as a belt connection
+  m.rect(-half, surfaceY, s, half).fill(darken(base, 0.55));
+
+  // Dividing line between the two halves
+  m.setStrokeStyle({ width: 1, color: 0x505050 });
+  m.moveTo(-half, 0).lineTo(half, 0).stroke();
+
+  // Filled triangle arrow pointing in flow direction (-y), centered on tile.
+  // Large enough to be unambiguous at 32 px.
+  const arrW = s * 0.52;
+  const arrH = s * 0.36;
+  m.moveTo(0, -arrH / 2)
+    .lineTo( arrW / 2,  arrH / 2)
+    .lineTo(-arrW / 2,  arrH / 2)
+    .closePath()
+    .fill(chev);
+
+  // Bright edge stripe at the open mouth to mark where surface belt connects
+  const stripeH = Math.max(2, s * 0.08);
+  const stripeY = isInput ? half - stripeH : -half;
+  m.rect(-half, stripeY, s, stripeH).fill(base);
 
   g.addChild(m);
   return g;

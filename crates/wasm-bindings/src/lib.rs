@@ -38,8 +38,8 @@ pub fn default_machine_for_item(item: &str, fallback: &str) -> String {
 }
 
 #[wasm_bindgen]
-pub fn layout(solver_result: SolverResult) -> Result<LayoutResult, JsError> {
-    build_bus_layout(&solver_result, None).map_err(|e| JsError::new(&e))
+pub fn layout(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
+    build_bus_layout(&solver_result, max_belt_tier.as_deref()).map_err(|e| JsError::new(&e))
 }
 
 #[wasm_bindgen]

@@ -291,6 +291,24 @@ export function renderSidebar(
   const resultContainer = document.createElement("div");
   inner.appendChild(resultContainer);
 
+  const beltLabel = document.createElement("label");
+  beltLabel.textContent = "Max belt tier";
+  inner.appendChild(beltLabel);
+
+  const beltSelect = document.createElement("select");
+  [
+    ["Auto", ""],
+    ["Yellow (15/s)", "transport-belt"],
+    ["Red (30/s)", "fast-transport-belt"],
+    ["Blue (45/s)", "express-transport-belt"],
+  ].forEach(([label, value]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    beltSelect.appendChild(opt);
+  });
+  inner.appendChild(beltSelect);
+
   const layoutBtn = document.createElement("button");
   layoutBtn.className = "layout-btn";
   layoutBtn.textContent = "Generate Layout";
@@ -386,7 +404,8 @@ export function renderSidebar(
   layoutBtn.addEventListener("click", () => {
     if (!currentResult) return;
     try {
-      currentLayout = engine.buildLayout(currentResult);
+      const maxTier = beltSelect.value || undefined;
+      currentLayout = engine.buildLayout(currentResult, maxTier);
       callbacks.renderLayout(currentLayout);
       blueprintSection.style.display = "block";
     } catch (err) {

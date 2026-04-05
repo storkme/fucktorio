@@ -49,8 +49,8 @@ function allProducerMachines(): string[] {
   return machinesCache;
 }
 
-function buildLayout(result: SolverResult): LayoutResult {
-  return wasmLayout(result);
+function buildLayout(result: SolverResult, maxBeltTier?: string): LayoutResult {
+  return wasmLayout(result, maxBeltTier ?? null);
 }
 
 function exportBlueprint(layout: LayoutResult, label: string): string {

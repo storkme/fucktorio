@@ -1,3 +1,5 @@
+> **ARCHIVED (2026-04-05)**: The port is complete. All 16 units have been implemented in `crates/core`. This document is retained for historical reference only.
+
 # Port plan: Python → Rust (Track A)
 
 Sequential unit list for porting the bus layout engine and validation into `crates/core`. Each unit has a canonical name used by the `/port` skill to delegate work to a Sonnet subagent.

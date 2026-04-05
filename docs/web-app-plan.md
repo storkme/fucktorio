@@ -37,110 +37,18 @@ Web App (web/)
 - **Vite** for dev server and bundling (handles WASM natively)
 - **wasm-pack** to build the WASM module (target: web)
 
-## What's been done
+## Status
 
-### Completed
-- **Data extraction script** (`scripts/extract_factorio_data.py`) — extracts recipes + machine data from draftsman into JSON. Has been run successfully, output at `crates/core/data/recipes.json` (339 recipes, 14 machines, 189 KB).
-- **Cargo workspace structure** — root `Cargo.toml` is now a workspace with `crates/*`. Three crate directories created:
-  - `crates/pyo3-bindings/` — existing A* router code copied from `rust_src/lib.rs`, same Cargo.toml deps (pyo3, rustc-hash, ordered-float)
-  - `crates/core/` — deps: serde, serde_json, rustc-hash
-  - `crates/wasm-bindings/` — deps: fucktorio_core, wasm-bindgen, serde-wasm-bindgen
-- **Core data models** (`crates/core/src/models.rs`) — full port of `src/models.py`: ItemFlow, MachineSpec, SolverResult, EntityDirection, PlacedEntity, LayoutResult. All with serde derives.
-- **pyproject.toml** updated with `manifest-path = "crates/pyo3-bindings/Cargo.toml"` for maturin
-- **Stub files** created for recipe_db.rs, solver.rs, and wasm-bindings/lib.rs
+**MVP shipped (2026-04-05).** The full pipeline runs in the browser: solver → bus layout → blueprint export → validation. The Rust port to `crates/core` is complete (see `docs/port-status.md`). The web app at `web/` is the primary user-facing tool.
 
-### NOT yet done
-- `cargo check` hasn't been verified yet (was rejected before running)
-- Python tests haven't been verified against the new workspace structure
-- The maturin `.so` copy issue (see memory: `feedback_maturin.md`) may need attention
-- The old `rust_src/lib.rs` still exists alongside the copy in `crates/pyo3-bindings/src/lib.rs` — should decide whether to keep, symlink, or remove
+### What's live
 
-## What's left to implement
-
-### Step 1: Verify workspace builds
-- Run `cargo check` to confirm the workspace compiles
-- Run `maturin develop` from the pyo3-bindings crate
-- Run `uv run pytest tests/` to confirm Python tests still pass
-
-### Step 2: Port recipe database to Rust
-Create `crates/core/src/recipe_db.rs`:
-- Load `crates/core/data/recipes.json` via `include_str!` at compile time
-- Parse into `HashMap<String, Recipe>` on first access (`std::sync::LazyLock`)
-- Build reverse index: item_name → recipe_names for `find_recipe_for_item()`
-- Port `machine_for_recipe()` category mapping (hardcoded, from `src/solver/recipe_db.py:103-117`)
-- Port `get_crafting_speed()` (hardcoded values for ~6 machines, or read from the JSON)
-
-Reference: `src/solver/recipe_db.py` — the Python implementation
-
-### Step 3: Port solver to Rust
-Create `crates/core/src/solver.rs` — direct port of `src/solver/solver.py` (119 lines).
-
-Algorithm: recursive resolve of target item → find recipe → compute machine count → recurse on ingredients. Key details:
-- Cycle detection via `HashSet<String>` (the `resolving` set)
-- Recipe deduplication: if same recipe already resolved, merge counts
-- `crafts_per_sec = crafting_speed / recipe.energy`
-- `count = target_rate / (crafts_per_sec * products_per_craft)`
-- Per-machine flows computed from recipe ingredients/products × crafts_per_sec
-
-Add trace events for future algorithm visualization:
-```rust
-pub enum TraceEvent {
-    ResolveStart { item: String, rate: f64 },
-    RecipeFound { item: String, recipe: String },
-    MachineAdded { recipe: String, count: f64, entity: String },
-    ExternalInput { item: String, rate: f64 },
-}
-```
-
-### Step 4: WASM bindings
-Flesh out `crates/wasm-bindings/src/lib.rs`:
-
-```rust
-#[wasm_bindgen]
-pub fn solve(target_item: &str, target_rate: f64, available_inputs: JsValue) -> JsValue { ... }
-
-#[wasm_bindgen]
-pub fn get_all_items() -> JsValue { ... }  // returns list of all producible item names
-
-// Stubs for later:
-#[wasm_bindgen]
-pub fn layout(solver_result: JsValue) -> JsValue { JsValue::NULL }
-
-#[wasm_bindgen]
-pub fn export_blueprint(layout_result: JsValue) -> String { String::new() }
-```
-
-Build command: `wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg`
-
-### Step 5: Scaffold web app
-Create `web/` directory:
-
-```
-web/
-  index.html              # Shell: sidebar div + canvas container div
-  package.json            # pixi.js, pixi-viewport, vite, typescript, vite-plugin-wasm
-  tsconfig.json
-  vite.config.ts
-  src/
-    main.ts               # Init WASM, mount UI, create PixiJS app
-    engine.ts             # WASM loader + typed wrappers
-    types.ts              # TS interfaces mirroring Rust models
-    ui/
-      sidebar.ts          # Item picker, rate input, generate button, solver summary
-    renderer/
-      app.ts              # PixiJS Application + Viewport (pan/zoom)
-      grid.ts             # Background tile grid lines
-      entities.ts         # Render PlacedEntity[] as colored rectangles
-      colors.ts           # Color scheme (ported from src/visualize.py:27-70)
-    wasm-pkg/             # Generated by wasm-pack (gitignored)
-```
-
-### Step 6: Wire end-to-end
-1. Page loads → WASM initializes → `get_all_items()` populates dropdown
-2. User picks item + rate, clicks Generate
-3. JS calls `solve()` via WASM → gets `SolverResult`
-4. Sidebar shows solver summary (machines, inputs, outputs)
-5. PixiJS renders machine blocks in dependency order (placeholder until layout is ported)
+- WASM module exposes `solve`, `layout`, `export_blueprint`, `validate`, and recipe lookups
+- Searchable item picker with machine type selection
+- Live solve on parameter change, URL state persistence
+- PixiJS canvas with entity rendering, grid, and production graph DAG visualization
+- Blueprint string export (copy to clipboard)
+- Solver summary with totals in sidebar
 
 ## Key reference files
 
@@ -164,12 +72,14 @@ Draftsman is only used for:
 
 Everything else (solver, layout engines, validation logic) is pure Python with no draftsman deps.
 
-## Future work (not in skeleton)
+## Future work
 
-- Port bus layout engine (placer, templates, bus_router) to Rust
-- Port validation to Rust
-- Blueprint export in Rust (JSON + zlib + base64 — needs `flate2` and `base64` crates)
+The MVP is shipped. Items below are stretch goals — see `CLAUDE.md` for current project status and priorities.
+
+- ~~Port bus layout engine (placer, templates, bus_router) to Rust~~ done
+- ~~Port validation to Rust~~ done
+- ~~Blueprint export in Rust (JSON + zlib + base64)~~ done
+- ~~Port A* router from pyo3-bindings into core crate~~ done
 - Algorithm visualization playback (trace events → timeline scrubber in UI)
 - Interactive building (click-to-place, drag-to-route)
 - Entity sprites from Factorio sprite sheets (replacing colored rectangles)
-- Port A* router from pyo3-bindings into core crate (share between Python and WASM)

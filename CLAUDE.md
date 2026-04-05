@@ -15,6 +15,41 @@ uv run pytest tests/
 uv run python -m src.pipeline
 ```
 
+### Rust workspace
+
+Rust code lives in a Cargo workspace under `crates/`:
+
+- `crates/core/` — pure shared logic (models, solver, recipe DB, blueprint export, A*, bus layout, validation). The `wasm` feature gates `tsify-next`/`wasm-bindgen` derives so `core` can be used from both PyO3 and WASM.
+- `crates/pyo3-bindings/` — thin PyO3 adapter exposing `astar_path` + `negotiate_lanes` to Python (compiled into `fucktorio_native.so` via maturin; manifest pinned in root `pyproject.toml`).
+- `crates/wasm-bindings/` — wasm-bindgen wrapper exposing `solve`, `layout`, `export_blueprint`, and recipe lookups to the browser.
+
+Build commands:
+
+```bash
+# Rust workspace check
+cargo check
+
+# Python extension (A* for the Python pipeline)
+uv run maturin develop --manifest-path crates/pyo3-bindings/Cargo.toml
+# Editable installs don't always refresh target/.so — may need a manual copy (see agent memory: feedback_maturin.md)
+
+# WASM bundle for the web app (outputs into web/src/wasm-pkg)
+wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
+```
+
+### Web app (`web/`)
+
+Interactive browser UI that runs the full solver → bus layout → blueprint export pipeline client-side via WASM. Stack: Vite + vanilla TypeScript + PixiJS v8 + pixi-viewport.
+
+```bash
+cd web
+npm install        # or pnpm / bun
+npm run dev        # Vite dev server
+npm run build      # tsc --noEmit && vite build
+```
+
+WASM is loaded by `web/src/engine.ts`, which wraps the generated `fucktorio_wasm` module. See `docs/web-app-plan.md` for context.
+
 ## Development conventions
 
 - **Python version**: Pinned in `.python-version`. Use `uv` to manage the venv and run commands.
@@ -23,15 +58,21 @@ uv run python -m src.pipeline
 
 ## Architecture
 
-Three-stage pipeline (`src/pipeline.py` orchestrates):
+Two parallel implementations share the same pipeline shape:
 
-1. **Solver** (`src/solver/`) — Recursively resolves recipes via `draftsman.data`, calculates machine counts and flow rates. Returns `SolverResult`.
+**Python pipeline** (`src/pipeline.py` orchestrates) — the canonical/reference implementation; used for pytest, HTML visualizations, and analysis tooling.
+
+**Rust pipeline** (`crates/core/`) — complete port of all pipeline stages (solver, recipe DB, bus layout, blueprint export, validation, A*), used by the PyO3 extension and by the WASM web app.
+
+Pipeline stages:
+
+1. **Solver** (`src/solver/`, `crates/core/src/solver.rs`) — Recursively resolves recipes, calculates machine counts and flow rates. Returns `SolverResult`. Python uses `draftsman.data`; Rust loads a pre-extracted `crates/core/data/recipes.json`.
 2. **Layout** — Two engines, both return `LayoutResult`:
-   - **Bus** (`src/bus/`) — Deterministic row-based layout with main bus pattern. Currently the primary focus.
-   - **Spaghetti** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Random search with A* place-and-route. Currently parked pending routing rework ([#62](https://github.com/storkme/fucktorio/issues/62)).
-3. **Blueprint** (`src/blueprint/`) — Thin draftsman wrapper that converts `LayoutResult` to a base64 blueprint string.
-4. **Validation** (`src/validate.py`) — Functional checks run after layout: pipe isolation, fluid port connectivity, inserter chains, power coverage.
-5. **Analysis** (`src/analysis/`) — Parses real Factorio blueprints into production graphs for studying community layouts.
+   - **Bus** (`src/bus/`, `crates/core/src/bus/`) — Deterministic row-based layout with main bus pattern. The primary focus, and the engine exposed to the web app.
+   - **Spaghetti** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Python-only. Random search with A* place-and-route. Parked pending routing rework ([#62](https://github.com/storkme/fucktorio/issues/62)).
+3. **Blueprint** (`src/blueprint/`, `crates/core/src/blueprint.rs`) — Converts `LayoutResult` to a base64 blueprint string. Python version wraps draftsman; Rust version emits the JSON + zlib + base64 envelope directly.
+4. **Validation** (`src/validate.py`, `crates/core/src/validate/`) — 21 functional checks: pipe isolation, fluid port connectivity, inserter chains, power coverage, belt flow/structural, underground belt pairs, lane throughput.
+5. **Analysis** (`src/analysis/`) — Python-only. Parses real Factorio blueprints into production graphs for studying community layouts.
 
 ## Key models (`src/models.py`)
 
@@ -54,15 +95,26 @@ Three-stage pipeline (`src/pipeline.py` orchestrates):
 | `src/search/layout_search.py` | Single-pass parallel random search (`random_search_layout`) + `search_with_retries()` wrapper (up to 5 independent attempts), `SearchStats` dataclass |
 | `src/spaghetti/placer.py` | Incremental machine placement in dependency order |
 | `src/spaghetti/layout.py` | Layout orchestrator — calls `search_with_retries()`, entry point for layout engine |
-| `src/validate.py` | 18 validation checks (pipe isolation, belt loops, throughput, etc.) |
+| `src/validate.py` | 21 validation checks (pipe isolation, belt loops, throughput, etc.) |
 | `src/models.py` | Shared data models (ItemFlow, MachineSpec, SolverResult, PlacedEntity, LayoutResult) |
 | `src/bus/layout.py` | Bus layout orchestrator — builds row-based layouts with main bus trunks |
 | `src/bus/placer.py` | Row placement: groups machines by recipe, splits rows for throughput |
 | `src/bus/templates.py` | Belt/inserter templates for bus rows (single-input, dual-input, lane-splitting) |
 | `src/bus/bus_router.py` | Trunk routing (1-tile spacing), tap-off underground crossings, N-to-M balancer families, producer-to-input wiring, output mergers, negotiated crossing map |
 | `src/bus/balancer_library.py` | Pre-generated N-to-M balancer templates (SAT-solved) stamped into balancer zones. Regenerate via `scripts/generate_balancer_library.py` |
-| `rust_src/lib.rs` | Rust A* pathfinder + lane-first negotiated congestion routing (PyO3) |
 | `src/analysis/` | Blueprint analysis: classify, trace, infer items, build production graphs |
+| `crates/core/src/astar.rs` | Rust A* pathfinder + lane-first negotiated congestion routing (shared between PyO3 + WASM) |
+| `crates/core/src/solver.rs` | Rust port of the solver (recursive recipe resolution) |
+| `crates/core/src/recipe_db.rs` | Rust recipe DB — loads `crates/core/data/recipes.json` via `include_str!` |
+| `crates/core/src/blueprint.rs` | Rust blueprint exporter (JSON + zlib + base64 envelope) |
+| `crates/core/src/bus/` | Rust port of the bus layout engine (placer, templates, balancer library, bus router, layout) |
+| `crates/core/src/validate/` | Rust port of validation checks (belt_flow, belt_structural, fluids, inserters, power, underground) |
+| `crates/pyo3-bindings/src/lib.rs` | PyO3 adapter exposing `astar_path` + `negotiate_lanes` to Python |
+| `crates/wasm-bindings/src/lib.rs` | wasm-bindgen wrapper: `solve`, `layout`, `export_blueprint`, recipe lookups |
+| `web/src/main.ts` | Web app entry: wires Pixi canvas + sidebar + engine |
+| `web/src/engine.ts` | WASM loader + typed wrappers around `fucktorio_wasm` |
+| `web/src/renderer/` | PixiJS renderers: `app.ts` (viewport), `grid.ts`, `graph.ts` (DAG), `entities.ts` (bus layout), `colors.ts` |
+| `web/src/ui/sidebar.ts` | Searchable item picker, rate input, machine picker, live solve, URL state, totals |
 
 ## Factorio game rules (constraints for the layout engine)
 
@@ -175,7 +227,8 @@ Bus passes tiers 1-3 with zero validation errors (iron-gear-wheel, electronic-ci
 ## Verification & validation
 
 - `src/verify.py` — structural blueprint validation (overlap detection, unpaired undergrounds, ASCII map)
-- `src/validate.py` — functional validation (pipe isolation, fluid connectivity, inserter chains, power coverage)
+- `src/validate.py` — functional validation (21 checks: pipe isolation, fluid connectivity, inserter chains, power coverage, belt flow/structural, underground pairs, lane throughput)
+- `crates/core/src/validate/` — Rust mirror of the same check suite, used by the WASM web app
 - `tests/` — pytest suite with `--viz` flag for HTML visualizations, deployed to GitHub Pages via CI
 
 ## Verification protocol for layout engine changes
