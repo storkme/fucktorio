@@ -117,7 +117,7 @@ pub fn get_crafting_speed(entity: &str) -> f64 {
 }
 
 /// Choose the right machine entity for a recipe based on its category.
-pub fn machine_for_recipe(recipe: &Recipe, default: &'static str) -> &'static str {
+pub fn machine_for_recipe<'a>(recipe: &Recipe, default: &'a str) -> &'a str {
     match recipe.category.as_str() {
         "chemistry" | "chemistry-or-cryogenics" | "organic-or-chemistry" => "chemical-plant",
         "oil-processing" => "oil-refinery",

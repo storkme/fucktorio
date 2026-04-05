@@ -1,6 +1,8 @@
 // Build: wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
 
 use fucktorio_core::models::{LayoutResult, SolverResult};
+use fucktorio_core::{blueprint, recipe_db, solver};
+use rustc_hash::FxHashSet;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -10,31 +12,29 @@ pub fn init() {
 
 #[wasm_bindgen]
 pub fn solve(
-    _target_item: &str,
-    _target_rate: f64,
-    _available_inputs: Vec<String>,
-    _machine_entity: &str,
+    target_item: &str,
+    target_rate: f64,
+    available_inputs: Vec<String>,
+    machine_entity: &str,
 ) -> Result<SolverResult, JsError> {
-    Ok(SolverResult {
-        machines: vec![],
-        external_inputs: vec![],
-        external_outputs: vec![],
-        dependency_order: vec![],
-    })
+    let available: FxHashSet<String> = available_inputs.into_iter().collect();
+    solver::solve(target_item, target_rate, &available, machine_entity)
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 
 #[wasm_bindgen]
 pub fn all_producible_items() -> Vec<String> {
-    vec![]
+    recipe_db::all_producible_items()
 }
 
 #[wasm_bindgen]
 pub fn all_producer_machines() -> Vec<String> {
-    vec![]
+    recipe_db::all_producer_machines()
 }
 
 #[wasm_bindgen]
 pub fn layout(_solver: SolverResult) -> Result<LayoutResult, JsError> {
+    // Layout engine not yet ported — see docs/port-plan.md (bus-* units).
     Ok(LayoutResult {
         entities: vec![],
         width: 0,
@@ -43,6 +43,6 @@ pub fn layout(_solver: SolverResult) -> Result<LayoutResult, JsError> {
 }
 
 #[wasm_bindgen]
-pub fn export_blueprint(_layout: LayoutResult, _label: String) -> String {
-    String::new()
+pub fn export_blueprint(layout: LayoutResult, label: String) -> String {
+    blueprint::export(&layout, &label)
 }

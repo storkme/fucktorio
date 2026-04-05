@@ -42,7 +42,7 @@ pub fn solve(
     target_item: &str,
     target_rate: f64,
     available_inputs: &FxHashSet<String>,
-    machine_entity: &'static str,
+    machine_entity: &str,
 ) -> Result<SolverResult, SolverError> {
     let mut state = SolveState {
         machines: Vec::new(),
@@ -77,7 +77,7 @@ fn resolve(
     rate: f64,
     is_fluid: bool,
     available_inputs: &FxHashSet<String>,
-    machine_entity: &'static str,
+    machine_entity: &str,
     state: &mut SolveState,
 ) -> Result<(), SolverError> {
     if available_inputs.contains(item) {
