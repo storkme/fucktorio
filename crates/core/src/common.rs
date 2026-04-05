@@ -240,4 +240,51 @@ mod tests {
         // Inserter directly in front of belt → defaults to left lane.
         assert_eq!(inserter_target_lane(0, -1, 0, 0, EntityDirection::North), LANE_LEFT);
     }
+
+    #[test]
+    fn inserter_target_lane_south_belt() {
+        // South belt, inserter to the west (left side of southward travel) → far lane is right.
+        assert_eq!(inserter_target_lane(-1, 0, 0, 0, EntityDirection::South), LANE_RIGHT);
+        // South belt, inserter to the east (right side) → far lane is left.
+        assert_eq!(inserter_target_lane(1, 0, 0, 0, EntityDirection::South), LANE_LEFT);
+    }
+
+    #[test]
+    fn inserter_target_lane_west_belt() {
+        // West belt, inserter to the north (left side of westward travel) → far lane is right.
+        assert_eq!(inserter_target_lane(0, -1, 0, 0, EntityDirection::West), LANE_RIGHT);
+        // West belt, inserter to the south (right side) → far lane is left.
+        assert_eq!(inserter_target_lane(0, 1, 0, 0, EntityDirection::West), LANE_LEFT);
+    }
+
+    #[test]
+    fn machine_size_chemical_plant_and_furnace() {
+        assert_eq!(machine_size("chemical-plant"), 3);
+        assert_eq!(machine_size("electric-furnace"), 3);
+    }
+
+    #[test]
+    fn machine_tiles_offset_origin() {
+        // Tiles should be offset by (x, y), not always start at (0, 0).
+        let tiles = machine_tiles(5, 3, 3);
+        assert_eq!(tiles.len(), 9);
+        assert!(tiles.contains(&(5, 3)));
+        assert!(tiles.contains(&(7, 5)));
+        assert!(!tiles.contains(&(0, 0)));
+    }
+
+    #[test]
+    fn belt_throughput_values() {
+        assert_eq!(belt_throughput("transport-belt"), 15.0);
+        assert_eq!(belt_throughput("fast-transport-belt"), 30.0);
+        assert_eq!(belt_throughput("express-transport-belt"), 45.0);
+        // Unknown belt falls back to 15.0
+        assert_eq!(belt_throughput("unknown-belt"), 15.0);
+    }
+
+    #[test]
+    fn dir_from_vec_diagonal_returns_none() {
+        assert_eq!(dir_from_vec(1, 1), None);
+        assert_eq!(dir_from_vec(0, 0), None);
+    }
 }
