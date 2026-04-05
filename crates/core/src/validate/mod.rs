@@ -10,18 +10,18 @@ pub mod underground;
 
 pub use fluids::{check_fluid_port_connectivity, check_pipe_isolation};
 
+pub mod belt_structural;
+
 use thiserror::Error;
 
 use crate::models::{LayoutResult, SolverResult};
 use power::check_power_coverage;
 
 use belt_flow::{
-    check_belt_connectivity, check_belt_dead_ends, check_belt_direction_continuity,
-    check_belt_flow_path, check_belt_flow_reachability, check_belt_inserter_conflict,
-    check_belt_item_isolation, check_belt_junctions, check_belt_loops,
-    check_belt_network_topology, check_belt_throughput, check_lane_throughput,
-    check_output_belt_coverage, check_underground_belt_entry_sideload,
-    check_underground_belt_pairs, check_underground_belt_sideloading,
+    check_belt_connectivity, check_belt_direction_continuity, check_belt_flow_path,
+    check_belt_flow_reachability, check_belt_junctions, check_belt_network_topology,
+    check_underground_belt_entry_sideload, check_underground_belt_pairs,
+    check_underground_belt_sideloading,
 };
 
 /// Layout style: affects which validation checks run and how.
@@ -134,8 +134,8 @@ pub fn validate(
     issues.extend(check_belt_connectivity(layout_result, solver_result));
     issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style));
     issues.extend(check_belt_direction_continuity(layout_result));
-    issues.extend(check_belt_throughput(layout_result));
-    issues.extend(check_output_belt_coverage(layout_result, solver_result));
+    issues.extend(belt_structural::check_belt_throughput(layout_result));
+    issues.extend(belt_structural::check_output_belt_coverage(layout_result, solver_result));
     if layout_style == LayoutStyle::Spaghetti {
         issues.extend(check_belt_network_topology(layout_result, solver_result));
     }
@@ -143,12 +143,12 @@ pub fn validate(
     issues.extend(check_underground_belt_pairs(layout_result));
     issues.extend(check_underground_belt_sideloading(layout_result));
     issues.extend(check_underground_belt_entry_sideload(layout_result));
-    issues.extend(check_belt_dead_ends(layout_result));
-    issues.extend(check_belt_loops(layout_result));
-    issues.extend(check_belt_item_isolation(layout_result));
-    issues.extend(check_belt_inserter_conflict(layout_result));
+    issues.extend(belt_structural::check_belt_dead_ends(layout_result));
+    issues.extend(belt_structural::check_belt_loops(layout_result));
+    issues.extend(belt_structural::check_belt_item_isolation(layout_result));
+    issues.extend(belt_structural::check_belt_inserter_conflict(layout_result));
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style));
-    issues.extend(check_lane_throughput(layout_result, solver_result));
+    issues.extend(belt_structural::check_lane_throughput(layout_result, solver_result));
 
     let errors: Vec<ValidationIssue> = issues
         .iter()
@@ -249,7 +249,6 @@ mod tests {
 
     #[test]
     fn validate_with_machine_returns_errors() {
-        // A machine with no belts, inserters, or poles should trigger validation errors.
         let lr = layout_with_machine();
         let result = validate(&lr, None, LayoutStyle::Bus);
         assert!(result.is_err(), "expected errors for a machine with no belts");
