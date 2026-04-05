@@ -1,9 +1,10 @@
 """Print bus layout with same format as Rust dump_layout example, for diffing."""
+
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
-from collections import Counter, defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -15,11 +16,13 @@ rate = float(sys.argv[2]) if len(sys.argv) > 2 else 10.0
 
 print(f"=== {recipe} @ {rate:.2f}/s ===\n")
 
-solver_result = solve(recipe, rate, ["iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"], "assembling-machine-3")
+raw_inputs = ["iron-ore", "copper-ore", "coal", "crude-oil", "water", "sulfur"]
+solver_result = solve(recipe, rate, raw_inputs, "assembling-machine-3")
 
 print(f"Solver: {len(solver_result.machines)} machines, {len(solver_result.external_inputs)} external inputs")
 for m in solver_result.machines:
     import math
+
     print(f"  {m.recipe} × {math.ceil(m.count)} ({m.entity})")
 print()
 
@@ -44,21 +47,40 @@ if belt_dirs:
     print()
 
 print("ASCII map:")
-machines_3x3 = {"assembling-machine-1", "assembling-machine-2", "assembling-machine-3", "chemical-plant", "electric-furnace"}
+machines_3x3 = {
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "chemical-plant",
+    "electric-furnace",
+}
 machines_5x5 = {"oil-refinery"}
 
 base_sym = {
-    "transport-belt": "=", "fast-transport-belt": "=", "express-transport-belt": "=",
-    "underground-belt": "U", "fast-underground-belt": "U", "express-underground-belt": "U",
-    "inserter": "i", "fast-inserter": "i", "long-handed-inserter": "L",
-    "pipe": "|", "pipe-to-ground": "P",
+    "transport-belt": "=",
+    "fast-transport-belt": "=",
+    "express-transport-belt": "=",
+    "underground-belt": "U",
+    "fast-underground-belt": "U",
+    "express-underground-belt": "U",
+    "inserter": "i",
+    "fast-inserter": "i",
+    "long-handed-inserter": "L",
+    "pipe": "|",
+    "pipe-to-ground": "P",
     "medium-electric-pole": "+",
-    "splitter": "S", "fast-splitter": "S", "express-splitter": "S",
+    "splitter": "S",
+    "fast-splitter": "S",
+    "express-splitter": "S",
 }
 
 digits = "123456789abcdefghijklmnop"
 recipe_to_sym = {}
-def is_machine(n): return n in machines_3x3 or n in machines_5x5
+
+
+def is_machine(n):
+    return n in machines_3x3 or n in machines_5x5
+
 
 for e in layout.entities:
     if is_machine(e.name) and e.recipe and e.recipe not in recipe_to_sym:
@@ -73,20 +95,20 @@ for e in layout.entities:
         size = 5 if e.name in machines_5x5 else 3
         for dx in range(size):
             for dy in range(size):
-                grid[(x+dx, y+dy)] = sym
+                grid[(x + dx, y + dy)] = sym
     else:
         grid[(x, y)] = base_sym.get(e.name, "?")
 
 if grid:
-    min_x = min(x for x,_ in grid)
-    max_x = max(x for x,_ in grid)
-    min_y = min(y for _,y in grid)
-    max_y = max(y for _,y in grid)
+    min_x = min(x for x, _ in grid)
+    max_x = max(x for x, _ in grid)
+    min_y = min(y for _, y in grid)
+    max_y = max(y for _, y in grid)
     print(f"   x: {min_x} → {max_x}  y: {min_y} → {max_y}")
-    for y in range(min_y, max_y+1):
+    for y in range(min_y, max_y + 1):
         print(f"{y:>4} ", end="")
-        for x in range(min_x, max_x+1):
-            print(grid.get((x,y), " "), end="")
+        for x in range(min_x, max_x + 1):
+            print(grid.get((x, y), " "), end="")
         print()
     print()
     print("Legend:")

@@ -7,7 +7,7 @@
 //! - `check_belt_network_topology`
 //! - `check_belt_junctions`
 //! - `check_belt_flow_reachability`
-//! Plus underground-belt helpers used by those checks.
+//!   Plus underground-belt helpers used by those checks.
 
 use std::collections::VecDeque;
 
@@ -407,7 +407,7 @@ pub fn check_belt_connectivity(
             is_machine(&e.name)
                 && e.recipe
                     .as_deref()
-                    .map_or(true, |r| !fluid_only.contains(r))
+                    .is_none_or(|r| !fluid_only.contains(r))
         });
         if has_solid {
             issues.push(ValidationIssue::new(
@@ -427,7 +427,7 @@ pub fn check_belt_connectivity(
         if !checked.insert((e.x, e.y)) {
             continue;
         }
-        if e.recipe.as_deref().map_or(false, |r| fluid_only.contains(r)) {
+        if e.recipe.as_deref().is_some_and(|r| fluid_only.contains(r)) {
             continue;
         }
 
@@ -591,7 +591,7 @@ pub fn check_belt_flow_path(
         if !checked.insert((e.x, e.y)) {
             continue;
         }
-        if e.recipe.as_deref().map_or(false, |r| fluid_only.contains(r)) {
+        if e.recipe.as_deref().is_some_and(|r| fluid_only.contains(r)) {
             continue;
         }
 
@@ -665,10 +665,10 @@ pub fn check_belt_flow_path(
         }
 
         // --- Output path check ---
-        let has_solid_output = solver.map_or(true, |_| {
+        let has_solid_output = solver.is_none_or(|_| {
             e.recipe
                 .as_deref()
-                .map_or(false, |r| solid_output_recipes.contains(r))
+                .is_some_and(|r| solid_output_recipes.contains(r))
         });
         if !has_solid_output {
             continue;
@@ -1191,7 +1191,7 @@ pub fn check_belt_flow_reachability(
         if !checked.insert(mpos) {
             continue;
         }
-        if e.recipe.as_deref().map_or(false, |r| fluid_only.contains(r)) {
+        if e.recipe.as_deref().is_some_and(|r| fluid_only.contains(r)) {
             continue;
         }
         let belts = match machine_input_belts.get(&mpos) {
@@ -1234,7 +1234,7 @@ pub fn check_belt_flow_reachability(
         if !checked.insert(mpos) {
             continue;
         }
-        if e.recipe.as_deref().map_or(false, |r| fluid_only.contains(r)) {
+        if e.recipe.as_deref().is_some_and(|r| fluid_only.contains(r)) {
             continue;
         }
         let belts = match machine_output_belts.get(&mpos) {
@@ -1348,7 +1348,7 @@ pub fn check_output_belt_coverage(
         }
         if e.recipe
             .as_deref()
-            .map_or(false, |r| fluid_output_recipes.contains(r))
+            .is_some_and(|r| fluid_output_recipes.contains(r))
         {
             continue;
         }
@@ -2219,7 +2219,7 @@ fn do_propagate(
             // Check if sideload (downstream has a straight feeder) or turn
             let ds_feeders = feeders.get(&downstream);
             let has_straight =
-                ds_feeders.map_or(false, |fs| fs.iter().any(|(_, ft)| *ft == 0));
+                ds_feeders.is_some_and(|fs| fs.iter().any(|(_, ft)| *ft == 0));
 
             if has_straight {
                 // Sideload: all items go onto the near lane

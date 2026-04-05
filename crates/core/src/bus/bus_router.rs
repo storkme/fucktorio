@@ -110,7 +110,7 @@ pub fn plan_bus_lanes(
     let mut item_to_consumers: FxHashMap<String, Vec<usize>> = FxHashMap::default();
     for (idx, rs) in row_spans.iter().enumerate() {
         for inp in &rs.spec.inputs {
-            item_to_consumers.entry(inp.item.clone()).or_insert_with(Vec::new).push(idx);
+            item_to_consumers.entry(inp.item.clone()).or_default().push(idx);
         }
     }
 
@@ -148,7 +148,7 @@ pub fn plan_bus_lanes(
 
     for (idx, rs) in row_spans.iter().enumerate() {
         for out in &rs.spec.outputs {
-            item_to_producers.entry(out.item.clone()).or_insert_with(Vec::new).push(idx);
+            item_to_producers.entry(out.item.clone()).or_default().push(idx);
             *item_to_rate.entry(out.item.clone()).or_insert(0.0) += out.rate * rs.machine_count as f64;
             item_is_fluid.insert(out.item.clone(), out.is_fluid);
         }
@@ -336,13 +336,6 @@ fn underground_for_belt(belt: &str) -> &'static str {
         .unwrap_or("underground-belt")
 }
 
-fn factorio_dir_to_entity(dir: usize) -> EntityDirection {
-    FACTORIO_DIR_TO_ENTITY.iter()
-        .find(|(d, _)| *d == dir)
-        .map(|(_, e)| *e)
-        .unwrap_or_default()
-}
-
 /// Collect all producer row indices for a lane.
 fn lane_all_producers(lane: &BusLane) -> Vec<usize> {
     let mut rows = Vec::new();
@@ -355,7 +348,6 @@ fn lane_all_producers(lane: &BusLane) -> Vec<usize> {
 
 /// Count total underground crossings for a given lane ordering.
 fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
-    let n = ordered.len();
     let mut score = 0;
 
     fn active_range(lane: &BusLane, row_spans: &[RowSpan]) -> (i32, i32) {
@@ -386,12 +378,10 @@ fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
 
     let ranges: Vec<(i32, i32)> = ordered.iter().map(|ln| active_range(ln, row_spans)).collect();
 
-    for pos in 0..n {
-        let lane = &ordered[pos];
+    for (pos, lane) in ordered.iter().enumerate() {
         // EAST tap-off crossings
         for &tap_y in &lane.tap_off_ys {
-            for rpos in (pos + 1)..n {
-                let (rs, re) = ranges[rpos];
+            for &(rs, re) in &ranges[(pos + 1)..] {
                 if rs <= tap_y && tap_y <= re {
                     score += 1;
                 }
@@ -402,8 +392,7 @@ fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
         let all_producers = lane_all_producers(lane);
         for &pri in &all_producers {
             let ret_y = row_spans[pri].output_belt_y;
-            for rpos in (pos + 1)..n {
-                let (rs, re) = ranges[rpos];
+            for &(rs, re) in &ranges[(pos + 1)..] {
                 if rs <= ret_y && ret_y <= re {
                     score += 1;
                 }
@@ -432,7 +421,7 @@ fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane>
         sorted.sort_by_key(|ln| {
             let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
             let y = if !ln.tap_off_ys.is_empty() {
-                -(*ln.tap_off_ys.iter().min().unwrap() as i32)
+                -*ln.tap_off_ys.iter().min().unwrap()
             } else {
                 9999
             };
@@ -606,9 +595,7 @@ fn split_overflowing_lanes(
             families.push(LaneFamily {
                 item: lane.item.clone(),
                 shape,
-                producer_rows: all_producer_rows.iter()
-                    .copied()
-                    .collect::<Vec<_>>(),
+                producer_rows: all_producer_rows.to_vec(),
                 lane_xs: Vec::new(),
                 balancer_y_start,
                 balancer_y_end: balancer_y_start,  // Placeholder
@@ -790,11 +777,15 @@ pub(crate) fn render_path(
 
             if dist > 1 {
                 // Underground jump: entry at (x,y), exit at (nx,ny)
+                let ug_dir = if dx != 0 {
+                    if dx > 0 { EntityDirection::East } else { EntityDirection::West }
+                } else if dy > 0 { EntityDirection::South } else { EntityDirection::North };
                 entities.push(PlacedEntity {
                     name: ug_name.to_string(),
                     x,
                     y,
-                    direction: EntityDirection::North, // direction doesn't matter for UG entry
+                    direction: ug_dir,
+                    io_type: Some("input".to_string()),
                     carries: Some(item.to_string()),
                     ..Default::default()
                 });
@@ -802,7 +793,8 @@ pub(crate) fn render_path(
                     name: ug_name.to_string(),
                     x: nx,
                     y: ny,
-                    direction: EntityDirection::North, // direction doesn't matter for UG exit
+                    direction: ug_dir,
+                    io_type: Some("output".to_string()),
                     carries: Some(item.to_string()),
                     ..Default::default()
                 });
@@ -884,7 +876,7 @@ pub(crate) fn render_family_input_paths(
     let mut producers = family.producer_rows.clone();
     producers.sort_by_key(|&p| row_spans[p].output_belt_y);
 
-    let mut inputs: Vec<(i32, i32)> = template.input_tiles.iter().copied().collect();
+    let mut inputs: Vec<(i32, i32)> = template.input_tiles.to_vec();
     inputs.sort_by_key(|t| t.0);
 
     let mut entities: Vec<PlacedEntity> = Vec::new();
@@ -1586,7 +1578,7 @@ fn foreign_trunk_skip_ys(
             continue;
         }
         let y = row_spans[p].output_belt_y;
-        if trunk_start_y + 1 <= y && y <= trunk_end_y - 1 {
+        if trunk_start_y < y && y < trunk_end_y {
             foreign.insert(y);
         }
     }
@@ -1741,11 +1733,11 @@ pub(crate) fn route_fluid_lane(
     let mut port_xs_by_y: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
 
     for &(_ri, port_x, port_y) in &lane.fluid_port_positions {
-        port_xs_by_y.entry(port_y).or_insert_with(FxHashSet::default).insert(port_x);
+        port_xs_by_y.entry(port_y).or_default().insert(port_x);
     }
 
     for &(_ri, port_x, port_y) in &lane.fluid_output_port_positions {
-        port_xs_by_y.entry(port_y).or_insert_with(FxHashSet::default).insert(port_x);
+        port_xs_by_y.entry(port_y).or_default().insert(port_x);
     }
 
     for (port_y, xs) in port_xs_by_y.iter() {
@@ -1878,7 +1870,7 @@ pub(crate) fn negotiate_and_route(
         producers_sorted.sort_by_key(|&p| {
             if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
         });
-        let mut inputs_sorted: Vec<(i32, i32)> = template.input_tiles.iter().copied().collect();
+        let mut inputs_sorted: Vec<(i32, i32)> = template.input_tiles.to_vec();
         inputs_sorted.sort_by_key(|t| t.0);
 
         let item_id = item_to_id.get(&fam.item).copied().unwrap_or(0);
@@ -1898,7 +1890,7 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Feeder spec: A* horizontal WEST, priority=4
-            if input_x + 1 <= bw - 1 {
+            if input_x < bw - 1 {
                 let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
                 id_to_key.insert(lane_id, feeder_key);
                 let wps = vec![(bw as i16 - 1, out_y as i16), (input_x as i16 + 1, out_y as i16)];
@@ -2055,7 +2047,7 @@ pub(crate) fn negotiate_and_route(
             } else {
                 last_tap_y
             };
-            if x <= bw - 1 {
+            if x < bw {
                 let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
                 id_to_key.insert(lane_id, tap_key);
                 let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
@@ -2110,7 +2102,7 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Tap-off: horizontal EAST, priority=6
-            if x <= bw - 1 {
+            if x < bw {
                 let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
                 id_to_key.insert(lane_id, tap_key);
                 let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
