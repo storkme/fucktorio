@@ -5,3 +5,4 @@ pub mod common;
 pub mod models;
 pub mod recipe_db;
 pub mod solver;
+pub mod validate;
