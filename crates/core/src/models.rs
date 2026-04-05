@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 /// An item flowing at a certain rate.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemFlow {
     pub item: String,
@@ -9,6 +11,8 @@ pub struct ItemFlow {
 }
 
 /// One production step: which machine, which recipe, how many.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineSpec {
     pub entity: String,
@@ -19,6 +23,8 @@ pub struct MachineSpec {
 }
 
 /// Everything the solver produces — no positional data.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolverResult {
     pub machines: Vec<MachineSpec>,
@@ -28,6 +34,8 @@ pub struct SolverResult {
 }
 
 /// Matches Factorio's 16-way direction constants (we only use 4).
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum EntityDirection {
@@ -44,6 +52,8 @@ impl Default for EntityDirection {
 }
 
 /// A single entity placed in the blueprint grid.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacedEntity {
     pub name: String,
@@ -59,9 +69,13 @@ pub struct PlacedEntity {
     pub io_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub carries: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mirror: bool,
 }
 
 /// Everything the layout engine produces — no rate data.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutResult {
     pub entities: Vec<PlacedEntity>,
