@@ -3,8 +3,11 @@
 //! Port of `src/validate.py` — foundation types and top-level `validate()` dispatcher.
 
 pub mod inserters;
+mod fluids;
 pub mod power;
 pub mod underground;
+
+pub use fluids::{check_fluid_port_connectivity, check_pipe_isolation};
 
 use thiserror::Error;
 
@@ -108,14 +111,14 @@ fn format_issues(issues: &[ValidationIssue]) -> String {
 
 /// Run all functional validation checks on a layout.
 ///
-/// Returns a list of issues found.  Raises [`ValidationError`] if any
+/// Returns a list of issues found.  Returns [`Err(ValidationError)`] if any
 /// errors (not just warnings) are present.
 pub fn validate(
     layout_result: &LayoutResult,
     solver_result: Option<&SolverResult>,
-    _layout_style: LayoutStyle,
+    layout_style: LayoutStyle,
 ) -> Result<Vec<ValidationIssue>, ValidationError> {
-    let mut issues = Vec::new();
+    let mut issues: Vec<ValidationIssue> = Vec::new();
 
     issues.extend(check_power_coverage(layout_result));
     issues.extend(check_underground_belt_pairs(layout_result));
@@ -123,8 +126,14 @@ pub fn validate(
     issues.extend(check_underground_belt_entry_sideload(layout_result));
     issues.extend(inserters::check_inserter_chains(layout_result, solver_result));
     issues.extend(inserters::check_inserter_direction(layout_result));
+    issues.extend(check_pipe_isolation(layout_result));
+    issues.extend(check_fluid_port_connectivity(layout_result, layout_style));
 
-    let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).cloned().collect();
+    let errors: Vec<ValidationIssue> = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .cloned()
+        .collect();
     if !errors.is_empty() {
         return Err(ValidationError::new(errors));
     }
