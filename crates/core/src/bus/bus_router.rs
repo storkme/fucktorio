@@ -1,16 +1,18 @@
-//! Bus layout routing: trunk belt placement and tap-off coordination.
+//! Bus layout routing: trunk belt placement, tap-off coordination, and balancer family stamping.
 //!
 //! Each item that flows between rows gets a dedicated vertical bus lane.
 //! Lanes run SOUTH (top to bottom). At the consuming row, the lane turns
 //! EAST into the row's input belt (tap-off). When a tap-off crosses another
 //! lane's vertical segment, the tap-off goes underground (EAST) past it.
 //!
-//! Port of `src/bus/bus_router.py` lines 1-700 (trunk placement + tap-off infrastructure).
+//! Port of `src/bus/bus_router.py`:
+//! - Lines 1-700: trunk placement + tap-off infrastructure
+//! - Lines 700-1400: N-to-M balancer family stamping, producer-to-input wiring
 
 use std::cmp::Ordering;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::models::SolverResult;
+use crate::models::{SolverResult, PlacedEntity, EntityDirection};
 use crate::bus::placer::RowSpan;
 
 /// Per-lane capacity for each belt tier (half of total throughput).
@@ -282,6 +284,51 @@ impl Default for BusLane {
             fluid_output_port_positions: Vec::new(),
         }
     }
+}
+
+/// Splitter name mapping by belt tier.
+const SPLITTER_MAP: &[(&str, &str)] = &[
+    ("transport-belt", "splitter"),
+    ("fast-transport-belt", "fast-splitter"),
+    ("express-transport-belt", "express-splitter"),
+];
+
+/// Underground belt name mapping by belt tier.
+const UNDERGROUND_MAP: &[(&str, &str)] = &[
+    ("transport-belt", "underground-belt"),
+    ("fast-transport-belt", "fast-underground-belt"),
+    ("express-transport-belt", "express-underground-belt"),
+];
+
+/// Factorio direction IDs mapped to EntityDirection
+#[allow(dead_code)]
+const FACTORIO_DIR_TO_ENTITY: &[(usize, EntityDirection)] = &[
+    (0, EntityDirection::North),
+    (2, EntityDirection::East),
+    (4, EntityDirection::South),
+    (6, EntityDirection::West),
+];
+
+#[allow(dead_code)]
+fn splitter_for_belt(belt: &str) -> &'static str {
+    SPLITTER_MAP.iter()
+        .find(|(b, _)| *b == belt)
+        .map(|(_, s)| *s)
+        .unwrap_or("splitter")
+}
+
+fn underground_for_belt(belt: &str) -> &'static str {
+    UNDERGROUND_MAP.iter()
+        .find(|(b, _)| *b == belt)
+        .map(|(_, u)| *u)
+        .unwrap_or("underground-belt")
+}
+
+fn factorio_dir_to_entity(dir: usize) -> EntityDirection {
+    FACTORIO_DIR_TO_ENTITY.iter()
+        .find(|(d, _)| *d == dir)
+        .map(|(_, e)| *e)
+        .unwrap_or_default()
 }
 
 /// Collect all producer row indices for a lane.
@@ -647,6 +694,231 @@ pub fn bus_width_for_lanes(lanes: &[BusLane]) -> i32 {
     }
 }
 
+/// Stamp a balancer template at the family's origin position.
+///
+/// Template entity tiles are offset by the family's stamp origin
+/// (x = min(lane_xs), y = balancer_y_start). The item each entity
+/// carries is set to the family's item. Belt and splitter tiers are
+/// chosen from the family's total rate so the balancer matches its
+/// sibling trunks.
+pub fn stamp_family_balancer(
+    family: &LaneFamily,
+    max_belt_tier: Option<&str>,
+) -> Result<Vec<PlacedEntity>, String> {
+    use crate::bus::balancer_library::balancer_templates;
+    use crate::common::belt_entity_for_rate;
+
+    let templates = balancer_templates();
+    let template_key = (family.shape.0 as u32, family.shape.1 as u32);
+    let template = templates.get(&template_key)
+        .ok_or_else(|| format!("No balancer template for shape {:?}", family.shape))?;
+
+    if family.lane_xs.is_empty() {
+        return Err(format!("LaneFamily for item {} has no lane_xs assigned", family.item));
+    }
+
+    let origin_x = *family.lane_xs.iter().min().unwrap();
+    let origin_y = family.balancer_y_start;
+
+    let belt_tier = belt_entity_for_rate(family.total_rate, max_belt_tier);
+    let splitter_name = splitter_for_belt(belt_tier);
+    let ug_name = underground_for_belt(belt_tier);
+
+    let entities = template.stamp(
+        origin_x,
+        origin_y,
+        belt_tier,
+        splitter_name,
+        ug_name,
+        Some(&family.item),
+    );
+
+    Ok(entities)
+}
+
+/// Render path entities from A*-routed belts and underground segments.
+///
+/// Gaps in the path (manhattan distance > 1 between consecutive tiles)
+/// indicate underground belt jumps — UG entry at the first tile, UG exit
+/// at the second. Surface tiles get regular belt entities.
+///
+/// For single-tile paths, `direction_hint` determines the belt direction.
+pub fn render_path(
+    path: &[(i32, i32)],
+    item: &str,
+    belt_name: &str,
+    direction_hint: EntityDirection,
+) -> Vec<PlacedEntity> {
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+    if path.is_empty() {
+        return entities;
+    }
+
+    if path.len() == 1 {
+        entities.push(PlacedEntity {
+            name: belt_name.to_string(),
+            x: path[0].0,
+            y: path[0].1,
+            direction: direction_hint,
+            carries: Some(item.to_string()),
+            ..Default::default()
+        });
+        return entities;
+    }
+
+    let ug_name = underground_for_belt(belt_name);
+    let mut i = 0;
+    while i < path.len() {
+        let (x, y) = path[i];
+        if i + 1 < path.len() {
+            let (nx, ny) = path[i + 1];
+            let dx = nx - x;
+            let dy = ny - y;
+            let dist = (dx.abs() + dy.abs()) as usize;
+
+            if dist > 1 {
+                // Underground jump: entry at (x,y), exit at (nx,ny)
+                entities.push(PlacedEntity {
+                    name: ug_name.to_string(),
+                    x,
+                    y,
+                    direction: EntityDirection::North, // direction doesn't matter for UG entry
+                    carries: Some(item.to_string()),
+                    ..Default::default()
+                });
+                entities.push(PlacedEntity {
+                    name: ug_name.to_string(),
+                    x: nx,
+                    y: ny,
+                    direction: EntityDirection::North, // direction doesn't matter for UG exit
+                    carries: Some(item.to_string()),
+                    ..Default::default()
+                });
+                i += 2;
+                continue;
+            }
+
+            // Surface belt: determine direction from movement
+            let direction = if dx != 0 {
+                if dx > 0 { EntityDirection::East } else { EntityDirection::West }
+            } else if dy != 0 {
+                if dy > 0 { EntityDirection::South } else { EntityDirection::North }
+            } else {
+                direction_hint // shouldn't happen
+            };
+
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x,
+                y,
+                direction,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+            i += 1;
+        } else {
+            // Last tile
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x,
+                y,
+                direction: direction_hint,
+                carries: Some(item.to_string()),
+                ..Default::default()
+            });
+            i += 1;
+        }
+    }
+
+    entities
+}
+
+/// Wire each producer's WEST output belt to its designated template input.
+///
+/// The template places SOUTH-facing input tiles at its top row. The
+/// horizontal WEST feeder segment (from the row's leftmost output belt
+/// at `x=bw` to `(input_x+1, out_y)`) is A*-routed via the negotiator.
+///
+/// The SOUTH descent column (from the feeder row down to the balancer's
+/// top row) is placed manually since it sits inside the balancer's
+/// reserved x-columns.
+///
+/// Producer-to-input assignment: topmost producer (smallest out_y)
+/// maps to leftmost input tile (smallest dx). This keeps the per-
+/// producer SOUTH columns non-crossing.
+pub fn render_family_input_paths(
+    family: &LaneFamily,
+    row_spans: &[RowSpan],
+    _bw: i32,
+    belt_tier: &str,
+    routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+) -> Result<Vec<PlacedEntity>, String> {
+    use crate::bus::balancer_library::balancer_templates;
+
+    let templates = balancer_templates();
+    let template_key = (family.shape.0 as u32, family.shape.1 as u32);
+    let template = templates.get(&template_key)
+        .ok_or_else(|| format!("No balancer template for shape {:?}", family.shape))?;
+
+    if family.lane_xs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let origin_x = *family.lane_xs.iter().min().unwrap();
+    let origin_y = family.balancer_y_start;
+    let default_paths = FxHashMap::default();
+    let paths = routed_paths.unwrap_or(&default_paths);
+
+    // Sort producers top-to-bottom, input tiles left-to-right
+    let mut producers = family.producer_rows.clone();
+    producers.sort_by_key(|&p| row_spans[p].output_belt_y);
+
+    let mut inputs: Vec<(i32, i32)> = template.input_tiles.iter().copied().collect();
+    inputs.sort_by_key(|t| t.0);
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+
+    for (producer_row_idx, input_tile) in producers.iter().zip(inputs.iter()) {
+        let out_y = row_spans[*producer_row_idx].output_belt_y;
+        let input_x = origin_x + input_tile.0;
+
+        // Horizontal WEST feeder: A*-routed by the negotiator
+        let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
+        if let Some(feeder_path) = paths.get(&feeder_key) {
+            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West);
+            entities.extend(feeder_entities);
+        }
+
+        if out_y == origin_y {
+            // N == 1 case: template's input tile is the turn point
+            continue;
+        }
+
+        // Turn: SOUTH belt at (input_x, out_y), then descend to (input_x, origin_y - 1)
+        entities.push(PlacedEntity {
+            name: belt_tier.to_string(),
+            x: input_x,
+            y: out_y,
+            direction: EntityDirection::South,
+            carries: Some(family.item.clone()),
+            ..Default::default()
+        });
+
+        for y in (out_y + 1)..origin_y {
+            entities.push(PlacedEntity {
+                name: belt_tier.to_string(),
+                x: input_x,
+                y,
+                direction: EntityDirection::South,
+                carries: Some(family.item.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
+    Ok(entities)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,5 +1087,188 @@ mod tests {
         let score = score_lane_ordering(&lanes, &row_spans);
         // Iron-ore taps at y=10, copper-ore is only active from y=0 to y=5, no crossing
         assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn test_stamp_family_balancer() {
+        let family = LaneFamily {
+            item: "iron-plate".to_string(),
+            shape: (1, 2),  // 1 producer, 2 lanes
+            producer_rows: vec![0],
+            lane_xs: vec![1, 2],
+            balancer_y_start: 10,
+            balancer_y_end: 11,
+            total_rate: 20.0,  // should use fast-transport-belt
+        };
+
+        let entities = stamp_family_balancer(&family, None);
+        assert!(entities.is_ok());
+
+        let entities = entities.unwrap();
+        assert!(!entities.is_empty());
+        // Verify that the stamped entities have the correct origin and item
+        for e in &entities {
+            assert_eq!(e.carries, Some("iron-plate".to_string()));
+            assert!(e.x >= 1);  // origin_x should be >= 1 (min of lane_xs)
+            assert!(e.y >= 10); // origin_y should be >= 10
+        }
+    }
+
+    #[test]
+    fn test_render_path_single_tile() {
+        let path = vec![(5, 10)];
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "transport-belt");
+        assert_eq!(entities[0].x, 5);
+        assert_eq!(entities[0].y, 10);
+        assert_eq!(entities[0].direction, EntityDirection::East);
+        assert_eq!(entities[0].carries, Some("iron-plate".to_string()));
+    }
+
+    #[test]
+    fn test_render_path_east_movement() {
+        let path = vec![(5, 10), (6, 10), (7, 10)];
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+
+        assert_eq!(entities.len(), 3);
+        for e in &entities {
+            assert_eq!(e.name, "transport-belt");
+            assert_eq!(e.direction, EntityDirection::East);
+            assert_eq!(e.carries, Some("iron-plate".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_render_path_south_movement() {
+        let path = vec![(5, 10), (5, 11), (5, 12)];
+        let entities = render_path(&path, "copper-ore", "transport-belt", EntityDirection::South);
+
+        assert_eq!(entities.len(), 3);
+        for e in &entities {
+            assert_eq!(e.name, "transport-belt");
+            assert_eq!(e.direction, EntityDirection::South);
+            assert_eq!(e.carries, Some("copper-ore".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_render_path_with_underground_jump() {
+        // Gap of 3 tiles = underground jump
+        let path = vec![(5, 10), (8, 10)];  // x moves from 5 to 8, distance = 3
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+
+        assert_eq!(entities.len(), 2);
+        assert_eq!(entities[0].name, "underground-belt");
+        assert_eq!(entities[0].x, 5);
+        assert_eq!(entities[0].y, 10);
+        assert_eq!(entities[1].name, "underground-belt");
+        assert_eq!(entities[1].x, 8);
+        assert_eq!(entities[1].y, 10);
+    }
+
+    #[test]
+    fn test_render_family_input_paths_no_lane_xs() {
+        let family = LaneFamily {
+            item: "iron-plate".to_string(),
+            shape: (1, 2),
+            producer_rows: vec![0],
+            lane_xs: vec![],  // empty
+            balancer_y_start: 10,
+            balancer_y_end: 11,
+            total_rate: 20.0,
+        };
+
+        let row_span = make_test_row_span(
+            "iron-plate",
+            8,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 20.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let result = render_family_input_paths(&family, &[row_span], 10, "transport-belt", None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_render_family_input_paths_n_equals_1() {
+        // N=1 case: no descent column needed
+        let family = LaneFamily {
+            item: "iron-plate".to_string(),
+            shape: (1, 2),
+            producer_rows: vec![0],
+            lane_xs: vec![1, 2],
+            balancer_y_start: 10,  // Same as producer output_belt_y
+            balancer_y_end: 11,
+            total_rate: 20.0,
+        };
+
+        let row_span = make_test_row_span(
+            "iron-plate",
+            8,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 20.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        // Manually override output_belt_y to match balancer_y_start
+        let mut row_span = row_span;
+        row_span.output_belt_y = 10;
+
+        let result = render_family_input_paths(&family, &[row_span], 10, "transport-belt", None);
+        assert!(result.is_ok());
+
+        // For N=1 with out_y == origin_y, no descent column is needed
+        // We expect only the feeder path (if provided) or nothing
+        let entities = result.unwrap();
+        // No descent column should be added
+        assert!(entities.iter().all(|e| e.y != 10 || e.name != "transport-belt" || e.direction != EntityDirection::South));
+    }
+
+    #[test]
+    fn test_render_family_input_paths_n_greater_than_1() {
+        // N>1 case: descent column needed
+        let family = LaneFamily {
+            item: "iron-plate".to_string(),
+            shape: (2, 2),
+            producer_rows: vec![0, 1],
+            lane_xs: vec![1, 2],
+            balancer_y_start: 15,
+            balancer_y_end: 18,
+            total_rate: 20.0,
+        };
+
+        let row_span1 = make_test_row_span(
+            "iron-plate",
+            5,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let row_span2 = make_test_row_span(
+            "iron-plate",
+            10,
+            vec![],
+            vec![ItemFlow { item: "iron-plate".to_string(), rate: 10.0, is_fluid: false }],
+            1,
+            vec![],
+        );
+
+        let result = render_family_input_paths(&family, &[row_span1, row_span2], 15, "transport-belt", None);
+        assert!(result.is_ok());
+
+        let entities = result.unwrap();
+        // Should have descent columns
+        let descent_belts: Vec<_> = entities.iter()
+            .filter(|e| e.direction == EntityDirection::South)
+            .collect();
+        assert!(!descent_belts.is_empty());
     }
 }
