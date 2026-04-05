@@ -3,6 +3,7 @@ import wasmInit, {
   solve as wasmSolve,
   all_producible_items,
   all_producer_machines,
+  default_machine_for_item as wasmDefaultMachineForItem,
   export_blueprint as wasmExportBlueprint,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
@@ -44,13 +45,18 @@ function exportBlueprint(layout: LayoutResult, label: string): string {
   return wasmExportBlueprint(layout, label);
 }
 
+function defaultMachineForItem(item: string, fallback: string): string {
+  return wasmDefaultMachineForItem(item, fallback);
+}
+
 export type Engine = {
   solve: typeof solve;
   allProducibleItems: typeof allProducibleItems;
   allProducerMachines: typeof allProducerMachines;
   exportBlueprint: typeof exportBlueprint;
+  defaultMachineForItem: typeof defaultMachineForItem;
 };
 
 export function getEngine(): Engine {
-  return { solve, allProducibleItems, allProducerMachines, exportBlueprint };
+  return { solve, allProducibleItems, allProducerMachines, exportBlueprint, defaultMachineForItem };
 }

@@ -1,4 +1,6 @@
 import type { Engine, SolverResult, ItemFlow } from "../engine.js";
+import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
+import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 
 const STYLE = `
   .sidebar-inner {
@@ -28,7 +30,8 @@ const STYLE = `
     font-size: 12px;
   }
   .sidebar-inner select,
-  .sidebar-inner input[type="number"] {
+  .sidebar-inner input[type="number"],
+  .sidebar-inner input[type="text"] {
     width: 100%;
     box-sizing: border-box;
     background: #252526;
@@ -37,6 +40,10 @@ const STYLE = `
     border-radius: 3px;
     padding: 4px 6px;
     font-size: 13px;
+  }
+  .sidebar-inner input[type="text"].item-invalid {
+    border-color: #c44;
+    color: #f88;
   }
   .sidebar-inner .inputs-section {
     background: #252526;
@@ -53,19 +60,6 @@ const STYLE = `
   }
   .sidebar-inner .inputs-section label input[type="checkbox"] {
     accent-color: #569cd6;
-  }
-  .sidebar-inner button {
-    background: #0e639c;
-    color: #fff;
-    border: none;
-    border-radius: 3px;
-    padding: 7px 12px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .sidebar-inner button:hover {
-    background: #1177bb;
   }
   .sidebar-inner .result-error {
     color: #f44;
@@ -115,19 +109,35 @@ const STYLE = `
     color: #c8c8c8;
     padding: 2px 0;
   }
+  .sidebar-inner .totals-section {
+    background: #252526;
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: monospace;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .sidebar-inner .totals-section .totals-row {
+    color: #c8c8c8;
+  }
+  .sidebar-inner .belt-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    border-left: 3px solid;
+    margin-left: 6px;
+  }
+  .sidebar-inner .belt-overflow {
+    color: #f88;
+  }
+  .sidebar-inner .tier-rate {
+    font-weight: 700;
+  }
 `;
-
-const DEFAULT_INPUTS = [
-  "iron-plate",
-  "copper-plate",
-  "steel-plate",
-  "stone",
-  "coal",
-  "water",
-  "crude-oil",
-  "iron-ore",
-  "copper-ore",
-];
 
 function makeOption(value: string, defaultValue: string): HTMLOptionElement {
   const opt = document.createElement("option");
@@ -152,7 +162,10 @@ function appendFlows(container: HTMLElement, flows: ItemFlow[], className: strin
   flows.forEach((flow) => {
     const el = document.createElement("div");
     el.className = className;
-    el.textContent = `${prefix}${flow.rate.toFixed(2)}/s ${flow.item}`;
+    const tier = beltTierForRate(flow.rate);
+    const rateColor = tier ? hexToCss(tier.color) : "#f88";
+    el.innerHTML =
+      `${prefix}<span class="tier-rate" style="color:${rateColor}">${flow.rate.toFixed(2)}/s</span> ${flow.item}`;
     container.appendChild(el);
   });
 }
@@ -182,9 +195,22 @@ export function renderSidebar(
   itemLabel.textContent = "Target item";
   inner.appendChild(itemLabel);
 
-  const itemSelect = document.createElement("select");
-  engine.allProducibleItems().forEach((item) => itemSelect.appendChild(makeOption(item, "iron-gear-wheel")));
-  inner.appendChild(itemSelect);
+  const datalist = document.createElement("datalist");
+  datalist.id = "fucktorio-items-datalist";
+  const allItems = engine.allProducibleItems();
+  const itemSet = new Set(allItems);
+  allItems.forEach((item) => {
+    const opt = document.createElement("option");
+    opt.value = item;
+    datalist.appendChild(opt);
+  });
+  inner.appendChild(datalist);
+
+  const itemInput = document.createElement("input");
+  itemInput.type = "text";
+  itemInput.setAttribute("list", "fucktorio-items-datalist");
+  itemInput.autocomplete = "off";
+  inner.appendChild(itemInput);
 
   const rateLabel = document.createElement("label");
   rateLabel.textContent = "Rate (items/sec)";
@@ -192,7 +218,6 @@ export function renderSidebar(
 
   const rateInput = document.createElement("input");
   rateInput.type = "number";
-  rateInput.value = "10";
   rateInput.step = "0.5";
   rateInput.min = "0.1";
   inner.appendChild(rateInput);
@@ -217,7 +242,6 @@ export function renderSidebar(
     const lbl = document.createElement("label");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = true;
     cb.value = inp;
     checkboxes.set(inp, cb);
     lbl.appendChild(cb);
@@ -226,24 +250,66 @@ export function renderSidebar(
   });
   inner.appendChild(inputsSection);
 
-  const solveBtn = document.createElement("button");
-  solveBtn.textContent = "Solve";
-  inner.appendChild(solveBtn);
-
   const resultContainer = document.createElement("div");
   inner.appendChild(resultContainer);
 
   el.appendChild(inner);
 
-  solveBtn.addEventListener("click", () => {
-    resultContainer.innerHTML = "";
-    const targetItem = itemSelect.value;
+  const urlState = readUrlState();
+  itemInput.value = urlState.item;
+  rateInput.value = String(urlState.rate);
+  // If URL didn't specify a machine, derive from the item.
+  machineSelect.value =
+    urlState.machine ?? engine.defaultMachineForItem(urlState.item, "assembling-machine-3");
+  const machineOpts = machineSelect.options;
+  checkboxes.forEach((cb, name) => {
+    cb.checked = urlState.inputs.includes(name);
+  });
+
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let previousItem = urlState.item;
+
+  function scheduleAutoSolve(): void {
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runSolve, 150);
+  }
+
+  function runSolve(): void {
+    const targetItem = itemInput.value.trim();
     const targetRate = parseFloat(rateInput.value);
     const machineEntity = machineSelect.value;
     const availableInputs = DEFAULT_INPUTS.filter((inp) => checkboxes.get(inp)?.checked);
 
+    if (!itemSet.has(targetItem)) {
+      itemInput.classList.add("item-invalid");
+      // Don't clear existing results on unknown item — preserve last valid solve
+      return;
+    }
+    itemInput.classList.remove("item-invalid");
+
+    if (isNaN(targetRate) || targetRate <= 0) return;
+
+    if (targetItem !== previousItem) {
+      const suggestedMachine = engine.defaultMachineForItem(targetItem, machineEntity);
+      for (let i = 0; i < machineOpts.length; i++) {
+        if (machineOpts[i].value === suggestedMachine) {
+          machineSelect.selectedIndex = i;
+          break;
+        }
+      }
+      previousItem = targetItem;
+    }
+
+    writeUrlState({
+      item: targetItem,
+      rate: targetRate,
+      machine: machineSelect.value,
+      inputs: availableInputs,
+    });
+
+    resultContainer.innerHTML = "";
     try {
-      const result = engine.solve(targetItem, targetRate, availableInputs, machineEntity);
+      const result = engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
       renderResult(resultContainer, result);
       renderGraph(result);
     } catch (err) {
@@ -253,7 +319,14 @@ export function renderSidebar(
       errDiv.textContent = String(err);
       resultContainer.appendChild(errDiv);
     }
-  });
+  }
+
+  itemInput.addEventListener("input", scheduleAutoSolve);
+  rateInput.addEventListener("input", scheduleAutoSolve);
+  machineSelect.addEventListener("change", scheduleAutoSolve);
+  checkboxes.forEach((cb) => cb.addEventListener("change", scheduleAutoSolve));
+
+  runSolve();
 }
 
 function renderResult(container: HTMLElement, result: SolverResult): void {
@@ -289,4 +362,39 @@ function renderResult(container: HTMLElement, result: SolverResult): void {
     appendFlows(extBody, result.external_inputs, "ext-flow", "");
     container.appendChild(extSection);
   }
+
+  const totalsDiv = document.createElement("div");
+  totalsDiv.className = "totals-section";
+
+  const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
+  const chainDepth = result.dependency_order.length;
+
+  const machinesRow = document.createElement("div");
+  machinesRow.className = "totals-row";
+  machinesRow.textContent = `Total machines: ${totalMachines}`;
+  totalsDiv.appendChild(machinesRow);
+
+  const depthRow = document.createElement("div");
+  depthRow.className = "totals-row";
+  depthRow.textContent = `Chain depth: ${chainDepth}`;
+  totalsDiv.appendChild(depthRow);
+
+  result.external_outputs.forEach((flow) => {
+    const row = document.createElement("div");
+    row.className = "totals-row";
+    const tier = beltTierForRate(flow.rate);
+    if (tier) {
+      const tierColor = hexToCss(tier.color);
+      row.innerHTML =
+        `${flow.item} ${flow.rate.toFixed(1)}/s` +
+        `<span class="belt-chip" style="border-color:${tierColor};color:${tierColor}">${tier.name}</span>`;
+    } else {
+      row.innerHTML =
+        `${flow.item} ${flow.rate.toFixed(1)}/s` +
+        `<span class="belt-overflow">⚠ overflow (needs multiple belts)</span>`;
+    }
+    totalsDiv.appendChild(row);
+  });
+
+  container.appendChild(totalsDiv);
 }

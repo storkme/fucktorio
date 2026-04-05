@@ -91,11 +91,22 @@ pub fn db() -> &'static RecipeDb {
     &DB
 }
 
-/// Find the first recipe whose products include *item*.
+/// Find the canonical recipe whose products include *item*.
 ///
-/// Skips recycling/crushing recipes. Iteration order is unspecified but stable
-/// per run (FxHashMap ordering). Returns `None` if no recipe produces this item.
+/// Prefers the recipe whose `name` matches *item* (the canonical recipe).
+/// Falls back to the first non-excluded recipe that produces *item* if no
+/// name-matching recipe exists.
+/// Skips recycling/crushing recipes. Returns `None` if no recipe produces this item.
 pub fn find_recipe_for_item(item: &str) -> Option<&'static Recipe> {
+    // Prefer name-matched recipe (canonical, avoids bioplastic→plastic-bar etc.)
+    if let Some(recipe) = db().recipes.get(item) {
+        if !EXCLUDED_CATEGORIES.contains(&recipe.category.as_str())
+            && recipe.products.iter().any(|p| p.name == item)
+        {
+            return Some(recipe);
+        }
+    }
+    // Fall back to any non-excluded recipe producing this item
     for recipe in db().recipes.values() {
         if EXCLUDED_CATEGORIES.contains(&recipe.category.as_str()) {
             continue;
@@ -151,6 +162,15 @@ pub fn all_producer_machines() -> Vec<String> {
     out
 }
 
+/// Return the canonical machine for an item, falling back to `fallback` if
+/// the item has no recipe or the recipe uses the default crafting category.
+pub fn default_machine_for_item(item: &str, fallback: &str) -> String {
+    match find_recipe_for_item(item) {
+        Some(recipe) => machine_for_recipe(recipe, fallback).to_string(),
+        None => fallback.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +192,21 @@ mod tests {
     fn crafting_speed_defaults_to_one() {
         assert_eq!(get_crafting_speed("nonexistent-machine"), 1.0);
         assert!(get_crafting_speed("assembling-machine-3") > 0.0);
+    }
+
+    #[test]
+    fn default_machine_for_item_picks_correct_machine() {
+        assert_eq!(
+            default_machine_for_item("plastic-bar", "assembling-machine-3"),
+            "chemical-plant"
+        );
+        assert_eq!(
+            default_machine_for_item("iron-gear-wheel", "assembling-machine-3"),
+            "assembling-machine-3"
+        );
+        assert_eq!(
+            default_machine_for_item("nonexistent-item-xyz", "assembling-machine-3"),
+            "assembling-machine-3"
+        );
     }
 }

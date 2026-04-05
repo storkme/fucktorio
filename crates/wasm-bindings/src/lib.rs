@@ -33,6 +33,11 @@ pub fn all_producer_machines() -> Vec<String> {
 }
 
 #[wasm_bindgen]
+pub fn default_machine_for_item(item: &str, fallback: &str) -> String {
+    recipe_db::default_machine_for_item(item, fallback)
+}
+
+#[wasm_bindgen]
 pub fn layout(_solver: SolverResult) -> Result<LayoutResult, JsError> {
     // Layout engine not yet ported — see docs/port-plan.md (bus-* units).
     Ok(LayoutResult {

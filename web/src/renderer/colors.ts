@@ -44,3 +44,31 @@ export const ENTITY_COLORS: Record<string, number> = {
 };
 
 export const DEFAULT_COLOR = 0x888888;
+
+/** Convert a 0xRRGGBB color number to a CSS rgb() string for use in HTML/CSS. */
+export function hexToCss(color: number): string {
+  const r = (color >> 16) & 0xff;
+  const g = (color >> 8) & 0xff;
+  const b = color & 0xff;
+  return `rgb(${r},${g},${b})`;
+}
+
+export interface BeltTier {
+  name: string;
+  color: number;
+  throughput: number;
+}
+
+export const BELT_TIERS: BeltTier[] = [
+  { name: "transport-belt", color: ENTITY_COLORS["transport-belt"], throughput: 15 },
+  { name: "fast-transport-belt", color: ENTITY_COLORS["fast-transport-belt"], throughput: 30 },
+  { name: "express-transport-belt", color: ENTITY_COLORS["express-transport-belt"], throughput: 45 },
+];
+
+/** Returns the cheapest belt tier that handles `rate`, or null if rate exceeds all tiers. */
+export function beltTierForRate(rate: number): BeltTier | null {
+  for (const tier of BELT_TIERS) {
+    if (rate <= tier.throughput) return tier;
+  }
+  return null;
+}
