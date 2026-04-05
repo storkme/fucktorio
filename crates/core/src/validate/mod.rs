@@ -2,6 +2,7 @@
 //!
 //! Port of `src/validate.py` — foundation types and top-level `validate()` dispatcher.
 
+pub mod inserters;
 pub mod power;
 pub mod underground;
 
@@ -111,7 +112,7 @@ fn format_issues(issues: &[ValidationIssue]) -> String {
 /// errors (not just warnings) are present.
 pub fn validate(
     layout_result: &LayoutResult,
-    _solver_result: Option<&SolverResult>,
+    solver_result: Option<&SolverResult>,
     _layout_style: LayoutStyle,
 ) -> Result<Vec<ValidationIssue>, ValidationError> {
     let mut issues = Vec::new();
@@ -120,13 +121,15 @@ pub fn validate(
     issues.extend(check_underground_belt_pairs(layout_result));
     issues.extend(check_underground_belt_sideloading(layout_result));
     issues.extend(check_underground_belt_entry_sideload(layout_result));
+    issues.extend(inserters::check_inserter_chains(layout_result, solver_result));
+    issues.extend(inserters::check_inserter_direction(layout_result));
 
-    let has_errors = issues.iter().any(|i| i.severity == Severity::Error);
-    if has_errors {
-        Err(ValidationError::new(issues))
-    } else {
-        Ok(issues)
+    let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).cloned().collect();
+    if !errors.is_empty() {
+        return Err(ValidationError::new(errors));
     }
+
+    Ok(issues)
 }
 
 #[cfg(test)]
@@ -215,14 +218,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_with_machine_no_pole_returns_warning() {
+    fn validate_machine_without_inserter_returns_err() {
+        // A machine with no adjacent inserter should produce a validation error.
         let lr = layout_with_machine();
         let result = validate(&lr, None, LayoutStyle::Bus);
-        assert!(result.is_ok());
-        let issues = result.unwrap();
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].severity, Severity::Warning);
-        assert_eq!(issues[0].category, "power");
+        assert!(result.is_err(), "machine with no inserter should fail validation");
     }
 
     #[test]
