@@ -5,7 +5,6 @@ Run: uv run python scripts/extract_factorio_data.py
 """
 
 import json
-import sys
 from pathlib import Path
 
 from draftsman.data import entities as _entities
@@ -43,11 +42,13 @@ def extract_recipes() -> dict:
 
         ingredients = []
         for ing in raw.get("ingredients", []):
-            ingredients.append({
-                "name": ing["name"],
-                "amount": ing["amount"],
-                "type": ing.get("type", "item"),
-            })
+            ingredients.append(
+                {
+                    "name": ing["name"],
+                    "amount": ing["amount"],
+                    "type": ing.get("type", "item"),
+                }
+            )
 
         results = []
         for prod in raw.get("results", []):
@@ -102,10 +103,12 @@ def extract_machines() -> dict:
                     if conn:
                         connections.append(conn)
                 if connections:
-                    boxes.append({
-                        "pipe_connections": connections,
-                        "production_type": fb.get("production_type", "input"),
-                    })
+                    boxes.append(
+                        {
+                            "pipe_connections": connections,
+                            "production_type": fb.get("production_type", "input"),
+                        }
+                    )
             if boxes:
                 entry["fluid_boxes"] = boxes
 

@@ -29,7 +29,6 @@ from src.validate import (
     ValidationError,
     check_belt_dead_ends,
     check_belt_flow_path,
-    check_fluid_port_connectivity,
     validate,
 )
 
@@ -42,10 +41,10 @@ def main() -> None:
     parser.add_argument("--machine", default=None, help="Override machine entity")
     parser.add_argument("--belt", default=None, help="Max belt tier (e.g. transport-belt)")
     parser.add_argument("--item", default=None, help="Filter entity dump to this item/carries")
-    parser.add_argument("--region", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"),
-                        help="Dump all entities in this bounding box")
-    parser.add_argument("--row-at", type=int, metavar="Y",
-                        help="Show full row context at this y coordinate")
+    parser.add_argument(
+        "--region", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"), help="Dump all entities in this bounding box"
+    )
+    parser.add_argument("--row-at", type=int, metavar="Y", help="Show full row context at this y coordinate")
     args = parser.parse_args()
 
     # Default inputs for processing-unit-from-ores
@@ -65,10 +64,10 @@ def main() -> None:
         fluid_in = [f"{i.item}(F)" for i in m.inputs if i.is_fluid]
         print(f"  {m.recipe:30s} x{m.count:5.1f}  {m.entity}  in=[{', '.join(solid_in + fluid_in)}]")
 
-    print(f"\n--- Dependency order ---")
+    print("\n--- Dependency order ---")
     print("  " + " → ".join(result.dependency_order))
 
-    print(f"\n=== Building layout ===")
+    print("\n=== Building layout ===")
     layout_kwargs = {}
     if args.belt:
         layout_kwargs["max_belt_tier"] = args.belt
@@ -76,7 +75,7 @@ def main() -> None:
     print(f"Layout: {layout.width}w × {layout.height}h, {len(layout.entities)} entities")
 
     # Validation
-    print(f"\n=== Validation ===")
+    print("\n=== Validation ===")
     try:
         validate(layout, result, layout_style="bus")
         print("  validate(): clean (no exception)")
@@ -100,7 +99,7 @@ def main() -> None:
         print(f"    {i.message[:100]}")
 
     # Belt network summary per item
-    print(f"\n=== Belt networks by item ===")
+    print("\n=== Belt networks by item ===")
     by_item: dict[str, list] = {}
     for e in layout.entities:
         if e.carries and "belt" in e.name:
@@ -111,10 +110,13 @@ def main() -> None:
         ys = [e.y for e in ents]
         dirs = {(e.direction.name if e.direction else "-") for e in ents}
         types = {e.name for e in ents}
-        print(f"  {item:30s}: {len(ents):4d} tiles  x={min(xs):3d}..{max(xs):3d}  y={min(ys):4d}..{max(ys):4d}  dirs={dirs}")
+        print(
+            f"  {item:30s}: {len(ents):4d} tiles  "
+            f"x={min(xs):3d}..{max(xs):3d}  y={min(ys):4d}..{max(ys):4d}  dirs={dirs}"
+        )
 
     # Machine listing
-    print(f"\n=== Placed machines (sorted by y) ===")
+    print("\n=== Placed machines (sorted by y) ===")
     machines = sorted([e for e in layout.entities if e.recipe], key=lambda e: (e.y, e.x))
     for e in machines:
         print(f"  ({e.x:3d},{e.y:4d})  {e.name:25s}  {e.recipe}")
@@ -125,7 +127,8 @@ def main() -> None:
         print(f"\n=== Entity dump ({x1},{y1})..({x2},{y2}) ===")
         region = [e for e in layout.entities if x1 <= e.x <= x2 and y1 <= e.y <= y2]
         for e in sorted(region, key=lambda e: (e.y, e.x)):
-            print(f"  ({e.x:3d},{e.y:4d})  {e.name:30s}  dir={e.direction.name if e.direction else '-':5s}  carries={e.carries}  recipe={e.recipe}")
+            dir_name = e.direction.name if e.direction else "-"
+            print(f"  ({e.x:3d},{e.y:4d})  {e.name:30s}  dir={dir_name:5s}  carries={e.carries}  recipe={e.recipe}")
 
     # Row-at dump
     if args.row_at is not None:
@@ -133,7 +136,8 @@ def main() -> None:
         print(f"\n=== Full row at y={y} ===")
         row = sorted([e for e in layout.entities if e.y == y], key=lambda e: e.x)
         for e in row:
-            print(f"  ({e.x:3d},{e.y:4d})  {e.name:30s}  dir={e.direction.name if e.direction else '-':5s}  carries={e.carries}  recipe={e.recipe}")
+            dir_name = e.direction.name if e.direction else "-"
+            print(f"  ({e.x:3d},{e.y:4d})  {e.name:30s}  dir={dir_name:5s}  carries={e.carries}  recipe={e.recipe}")
 
     # Item filter dump
     if args.item:

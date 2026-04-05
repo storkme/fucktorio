@@ -1823,15 +1823,21 @@ def _route_intermediate_lane(
     for fy in foreign_skips:
         entities.append(
             PlacedEntity(
-                name=ug_name, x=x, y=fy - 1,
-                direction=EntityDirection.SOUTH, io_type="input",
+                name=ug_name,
+                x=x,
+                y=fy - 1,
+                direction=EntityDirection.SOUTH,
+                io_type="input",
                 carries=lane.item,
             )
         )
         entities.append(
             PlacedEntity(
-                name=ug_name, x=x, y=fy + 1,
-                direction=EntityDirection.SOUTH, io_type="output",
+                name=ug_name,
+                x=x,
+                y=fy + 1,
+                direction=EntityDirection.SOUTH,
+                io_type="output",
                 carries=lane.item,
             )
         )
@@ -1918,15 +1924,21 @@ def _route_belt_lane(
     for fy in foreign_skips:
         entities.append(
             PlacedEntity(
-                name=ug_name, x=x, y=fy - 1,
-                direction=EntityDirection.SOUTH, io_type="input",
+                name=ug_name,
+                x=x,
+                y=fy - 1,
+                direction=EntityDirection.SOUTH,
+                io_type="input",
                 carries=lane.item,
             )
         )
         entities.append(
             PlacedEntity(
-                name=ug_name, x=x, y=fy + 1,
-                direction=EntityDirection.SOUTH, io_type="output",
+                name=ug_name,
+                x=x,
+                y=fy + 1,
+                direction=EntityDirection.SOUTH,
+                io_type="output",
                 carries=lane.item,
             )
         )

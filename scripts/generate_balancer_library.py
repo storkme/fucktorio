@@ -11,6 +11,7 @@ Run manually:
 This is an offline workflow: Factorio-SAT is NOT a runtime dependency.
 The generated library ships in the repo.
 """
+
 from __future__ import annotations
 
 import base64
@@ -197,10 +198,7 @@ def normalize(entities: list[RawEntity]) -> tuple[list[RawEntity], float, float]
     # Target: smallest belt tile should be at (0.5, 0.5).
     dx = 0.5 - min_x
     dy = 0.5 - min_y
-    shifted = [
-        RawEntity(e.name, e.x + dx, e.y + dy, e.direction, e.io_type)
-        for e in entities
-    ]
+    shifted = [RawEntity(e.name, e.x + dx, e.y + dy, e.direction, e.io_type) for e in entities]
     return shifted, dx, dy
 
 
@@ -236,16 +234,8 @@ def identify_ports(
     min_y = min(ty for (_, ty), _ in belt_tiles)
     max_y = max(ty for (_, ty), _ in belt_tiles)
 
-    inputs = sorted(
-        (tx, ty)
-        for (tx, ty), e in belt_tiles
-        if ty == min_y and e.direction == FACTORIO_SOUTH
-    )
-    outputs = sorted(
-        (tx, ty)
-        for (tx, ty), e in belt_tiles
-        if ty == max_y and e.direction == FACTORIO_SOUTH
-    )
+    inputs = sorted((tx, ty) for (tx, ty), e in belt_tiles if ty == min_y and e.direction == FACTORIO_SOUTH)
+    outputs = sorted((tx, ty) for (tx, ty), e in belt_tiles if ty == max_y and e.direction == FACTORIO_SOUTH)
     return inputs, outputs
 
 
@@ -346,9 +336,7 @@ def emit_library(templates: dict[tuple[int, int], dict]) -> None:
         lines.append(f"        height={t['height']},")
         lines.append("        entities=(")
         for e in t["entities"]:
-            io_suffix = (
-                f', io_type="{e["io_type"]}"' if e["io_type"] is not None else ""
-            )
+            io_suffix = f', io_type="{e["io_type"]}"' if e["io_type"] is not None else ""
             lines.append(
                 f'            BalancerTemplateEntity(name="{e["name"]}", '
                 f"x={e['x']}, y={e['y']}, direction={e['direction']}{io_suffix}),"

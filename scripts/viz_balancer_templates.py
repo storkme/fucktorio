@@ -3,6 +3,7 @@
 Run: .venv/bin/python scripts/viz_balancer_templates.py
 Produces: test_viz/balancer-{n}x{m}.html for each template.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,9 +21,7 @@ _DIR_MAP = {
 }
 
 
-def stamp_template(
-    template: BalancerTemplate, origin_x: int = 0, origin_y: int = 0
-) -> list[PlacedEntity]:
+def stamp_template(template: BalancerTemplate, origin_x: int = 0, origin_y: int = 0) -> list[PlacedEntity]:
     return [
         PlacedEntity(
             name=e.name,
