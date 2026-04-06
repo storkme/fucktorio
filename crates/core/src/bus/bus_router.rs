@@ -50,6 +50,7 @@ pub struct BusLane {
     pub family_id: Option<usize>,  // index into LaneFamily list if fed by N-to-M balancer
     pub fluid_port_positions: Vec<(usize, i32, i32)>,  // (row_index, x, y) of pipe-to-ground exit
     pub fluid_output_port_positions: Vec<(usize, i32, i32)>,  // (row_index, x, y) of producer output ports
+    pub family_balancer_range: Option<(i32, i32)>,  // (y_start, y_end) inclusive — full balancer zone to skip
 }
 
 impl BusLane {
@@ -75,6 +76,7 @@ impl BusLane {
             family_id: None,
             fluid_port_positions: Vec::new(),
             fluid_output_port_positions: Vec::new(),
+            family_balancer_range: None,
         }
     }
 }
@@ -275,6 +277,23 @@ pub fn plan_bus_lanes(
         }
     }
 
+    // Resolve balancer_y_end from actual template heights and propagate the
+    // full balancer zone to each lane so trunks skip the entire zone.
+    let templates = crate::bus::balancer_library::balancer_templates();
+    for fam in &mut families {
+        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
+        if let Some(tpl) = templates.get(&shape_key) {
+            fam.balancer_y_end = fam.balancer_y_start + tpl.height as i32 - 1;
+        }
+        // Store the full zone on each family lane so route_belt_lane can skip it.
+        let range = (fam.balancer_y_start, fam.balancer_y_end);
+        for lane in lanes.iter_mut() {
+            if lane.family_id.is_some() && lane.item == fam.item {
+                lane.family_balancer_range = Some(range);
+            }
+        }
+    }
+
     Ok((lanes, families))
 }
 
@@ -294,6 +313,7 @@ impl Default for BusLane {
             family_id: None,
             fluid_port_positions: Vec::new(),
             fluid_output_port_positions: Vec::new(),
+            family_balancer_range: None,
         }
     }
 }
@@ -1292,6 +1312,12 @@ fn route_belt_lane(
     let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, end_y);
     let mut skip_ys = tap_off_set.clone();
     skip_ys.extend(lane.balancer_y);
+    // Skip the entire family balancer zone (not just one tile).
+    if let Some((by_start, by_end)) = lane.family_balancer_range {
+        for y in by_start..=by_end {
+            skip_ys.insert(y);
+        }
+    }
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
 
     // UG-pair bridges over foreign skip y's
@@ -1822,6 +1848,7 @@ pub(crate) fn negotiate_and_route(
     row_entities: &[PlacedEntity],
     solver_result: &SolverResult,
     families: &[LaneFamily],
+    max_belt_tier: Option<&str>,
 ) -> FxHashMap<String, Vec<(i32, i32)>> {
     use crate::astar::{LaneSpec, negotiate_lanes};
     use crate::bus::balancer_library::balancer_templates;
@@ -2119,9 +2146,18 @@ pub(crate) fn negotiate_and_route(
             if let Some(bal_y) = lane.balancer_y {
                 skip_ys.insert(bal_y);
             }
+            // Skip the entire family balancer zone.
+            if let Some((by_start, by_end)) = lane.family_balancer_range {
+                for y in by_start..=by_end {
+                    skip_ys.insert(y);
+                }
+            }
             let mut end_y = tap_y;
             if let Some(bal_y) = lane.balancer_y {
                 end_y = end_y.max(bal_y + 1);
+            }
+            if let Some((_, by_end)) = lane.family_balancer_range {
+                end_y = end_y.max(by_end + 1);
             }
             let foreign_skips = foreign_trunk_skip_ys(lane, lanes, row_spans, lane.source_y, end_y);
             skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
@@ -2280,20 +2316,22 @@ pub(crate) fn negotiate_and_route(
     }
 
     let max_extent = (bw.max(total_height) + 50) as i16;
+    let effective_belt = crate::common::belt_entity_for_rate(f64::MAX, max_belt_tier);
+    let reach = crate::common::ug_max_reach(effective_belt) as i16;
     let routed = negotiate_lanes(
         &specs,
         &obstacles,
         /* max_iterations */ 20,
         max_extent,
         /* allow_underground */ true,
-        /* ug_max_reach */ 8,
+        reach,
         /* history_factor */ 0.5,
         /* present_factor */ 1.0,
     );
 
     // Build result map: string key → path (cast i16 coords back to i32)
     let mut result: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
-    for r in routed {
+    for r in &routed {
         if let Some(key) = id_to_key.get(&r.id) {
             if !r.path.is_empty() {
                 let path: Vec<(i32, i32)> = r.path.iter().map(|&(x, y)| (x as i32, y as i32)).collect();
@@ -2719,6 +2757,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let row_span = make_test_row_span(
@@ -2753,6 +2792,7 @@ mod tests {
                 family_id: None,
                 fluid_port_positions: vec![],
                 fluid_output_port_positions: vec![],
+            family_balancer_range: None,
             },
             BusLane {
                 item: "iron-plate".to_string(),
@@ -2768,6 +2808,7 @@ mod tests {
                 family_id: None,
                 fluid_port_positions: vec![],
                 fluid_output_port_positions: vec![],
+            family_balancer_range: None,
             },
         ];
 
@@ -2805,6 +2846,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let entities = route_fluid_lane(&lane);
@@ -2888,6 +2930,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![(0, 7, 10), (0, 8, 10)],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let entities = route_fluid_lane(&lane);
@@ -3119,6 +3162,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let row_span = make_test_row_span(
@@ -3175,6 +3219,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let row_span = make_test_row_span(
@@ -3215,6 +3260,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
         let east_lane = BusLane {
             item: "iron-plate".to_string(),
@@ -3230,6 +3276,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let producer_row = make_test_row_span(
@@ -3288,6 +3335,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let entities = route_fluid_lane(&lane);
@@ -3329,6 +3377,7 @@ mod tests {
             family_id: None,
             fluid_port_positions: vec![],
             fluid_output_port_positions: vec![],
+            family_balancer_range: None,
         };
 
         let entities = route_fluid_lane(&lane);

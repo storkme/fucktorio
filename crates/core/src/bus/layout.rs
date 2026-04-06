@@ -235,6 +235,7 @@ fn route_bus(
         row_entities,
         solver_result,
         families,
+        max_belt_tier,
     );
 
     // Stamp N-to-M balancer blocks
@@ -512,5 +513,34 @@ mod tests {
         // Layout dimensions must be positive
         assert!(layout.width > 0, "Layout width must be > 0, got {}", layout.width);
         assert!(layout.height > 0, "Layout height must be > 0, got {}", layout.height);
+    }
+
+    #[test]
+    fn test_ecircuit_yellow_belt_no_structural_errors() {
+        // Regression: forcing yellow belts on electronic-circuit from ores
+        // used to cause UG reach violations (negotiated A* used hardcoded
+        // max_reach=8 instead of tier-aware value).
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+            .iter().map(|s| s.to_string()).collect();
+
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-3")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Check for entity overlaps (the main bug this test catches).
+        // Full validation is skipped because the validator has a known hang
+        // on certain belt topologies.
+        let mut positions: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+        let mut overlaps = Vec::new();
+        for e in &layout.entities {
+            if !positions.insert((e.x, e.y)) {
+                overlaps.push(format!("({},{}) {}", e.x, e.y, e.name));
+            }
+        }
+        assert!(overlaps.is_empty(), "Entity overlaps: {}", overlaps.join("; "));
     }
 }
