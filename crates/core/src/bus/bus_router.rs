@@ -284,14 +284,16 @@ pub fn plan_bus_lanes(
         let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
         if let Some(tpl) = templates.get(&shape_key) {
             fam.balancer_y_end = fam.balancer_y_start + tpl.height as i32 - 1;
-        }
-        // Store the full zone on each family lane so route_belt_lane can skip it.
-        let range = (fam.balancer_y_start, fam.balancer_y_end);
-        for lane in lanes.iter_mut() {
-            if lane.family_id.is_some() && lane.item == fam.item {
-                lane.family_balancer_range = Some(range);
+            // Store the full zone on each family lane so route_belt_lane can skip it.
+            let range = (fam.balancer_y_start, fam.balancer_y_end);
+            for lane in lanes.iter_mut() {
+                if lane.family_id.is_some() && lane.item == fam.item {
+                    lane.family_balancer_range = Some(range);
+                }
             }
         }
+        // If no template exists, don't set family_balancer_range — lanes operate
+        // independently with no zone to skip.
     }
 
     Ok((lanes, families))
@@ -729,8 +731,10 @@ pub(crate) fn stamp_family_balancer(
 
     let templates = balancer_templates();
     let template_key = (family.shape.0 as u32, family.shape.1 as u32);
-    let template = templates.get(&template_key)
-        .ok_or_else(|| format!("No balancer template for shape {:?}", family.shape))?;
+    let template = match templates.get(&template_key) {
+        Some(t) => t,
+        None => return Ok(Vec::new()), // No template — skip balancer, lanes operate independently
+    };
 
     if family.lane_xs.is_empty() {
         return Err(format!("LaneFamily for item {} has no lane_xs assigned", family.item));
@@ -891,8 +895,10 @@ pub(crate) fn render_family_input_paths(
 
     let templates = balancer_templates();
     let template_key = (family.shape.0 as u32, family.shape.1 as u32);
-    let template = templates.get(&template_key)
-        .ok_or_else(|| format!("No balancer template for shape {:?}", family.shape))?;
+    let template = match templates.get(&template_key) {
+        Some(t) => t,
+        None => return Ok(Vec::new()), // No template — skip feeder paths
+    };
 
     if family.lane_xs.is_empty() {
         return Ok(Vec::new());
