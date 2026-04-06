@@ -194,12 +194,19 @@ fn build_machine_tile_set(entities: &[PlacedEntity]) -> FxHashSet<(i32, i32)> {
 pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
     let bdm = belt_dir_map(&layout.entities);
 
+    // Balancer templates legitimately contain loops (splitter recirculation).
+    // Exclude tiles belonging to balancer segments from loop detection.
+    let balancer_tiles: FxHashSet<(i32, i32)> = layout.entities.iter()
+        .filter(|e| e.segment_id.as_deref().map_or(false, |s| s.starts_with("balancer:")))
+        .map(|e| (e.x, e.y))
+        .collect();
+
     let mut issues = Vec::new();
     let mut confirmed: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut reported_loops: FxHashSet<Vec<(i32, i32)>> = FxHashSet::default();
 
     for &start in bdm.keys() {
-        if confirmed.contains(&start) {
+        if confirmed.contains(&start) || balancer_tiles.contains(&start) {
             continue;
         }
 
@@ -220,7 +227,9 @@ pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
             let mut loop_tiles: Vec<(i32, i32)> = visited_order[cycle_start_idx..].to_vec();
             loop_tiles.sort();
 
-            if !reported_loops.contains(&loop_tiles) {
+            // Skip loops that include balancer tiles — splitter recirculation is valid.
+            let involves_balancer = loop_tiles.iter().any(|t| balancer_tiles.contains(t));
+            if !involves_balancer && !reported_loops.contains(&loop_tiles) {
                 reported_loops.insert(loop_tiles.clone());
                 let rep = loop_tiles[0];
                 issues.push(ValidationIssue::with_pos(

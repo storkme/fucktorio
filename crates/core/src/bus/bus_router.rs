@@ -1053,14 +1053,57 @@ pub(crate) fn merge_output_rows(
         }
     }
 
-    // Sequential splitter merge at bottom-right.
-    // First output at merge_x, each subsequent merges from merge_x+1
-    // via a SOUTH-facing splitter.
+    // Sequential splitter cascade merging N south columns into 1.
+    // Columns are at x = merge_x (row n-1) through merge_x + n-1 (row 0).
+    //
+    // At each step we place a SOUTH splitter that merges two adjacent columns.
+    // A SOUTH splitter at (x, y) spans tiles (x, y) and (x+1, y), accepting
+    // input from (x, y-1) and (x+1, y-1), outputting at (x, y+1) and (x+1, y+1).
+    // We use the left output (x) and discard the right.
+    //
+    // Between steps, ALL surviving columns need a continuation belt at each row
+    // so they stay connected through to the next splitter.
     let mut y_cursor = merge_start_y;
-    for _ in 1..n {
+    // Active columns, sorted left-to-right.
+    let mut active: Vec<i32> = (0..n as i32).map(|i| merge_x + i).collect();
+
+    while active.len() > 1 {
+        let right_x = active.pop().unwrap();
+        let left_x = *active.last().unwrap();
+
+        // Splitter merging left_x and left_x+1 (right_x should equal left_x+1)
+        // If not adjacent, route right column west first.
+        if right_x != left_x + 1 {
+            for x in ((left_x + 2)..=right_x).rev() {
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x,
+                    y: y_cursor,
+                    direction: EntityDirection::West,
+                    carries: Some(item.to_string()),
+                    segment_id: merger_seg_id.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        // Pass-through belts at the splitter row for uninvolved columns.
+        // The splitter occupies (left_x, y_cursor) and (left_x+1, y_cursor).
+        for &ax in &active {
+            if ax != left_x && ax != left_x + 1 {
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x: ax,
+                    y: y_cursor,
+                    direction: EntityDirection::South,
+                    carries: Some(item.to_string()),
+                    segment_id: merger_seg_id.clone(),
+                    ..Default::default()
+                });
+            }
+        }
         entities.push(PlacedEntity {
             name: splitter_name.to_string(),
-            x: merge_x,
+            x: left_x,
             y: y_cursor,
             direction: EntityDirection::South,
             carries: Some(item.to_string()),
@@ -1068,15 +1111,19 @@ pub(crate) fn merge_output_rows(
             ..Default::default()
         });
         y_cursor += 1;
-        entities.push(PlacedEntity {
-            name: belt_name.to_string(),
-            x: merge_x,
-            y: y_cursor,
-            direction: EntityDirection::South,
-            carries: Some(item.to_string()),
-            segment_id: merger_seg_id.clone(),
-            ..Default::default()
-        });
+
+        // Continuation belts below the splitter for all surviving columns.
+        for &ax in &active {
+            entities.push(PlacedEntity {
+                name: belt_name.to_string(),
+                x: ax,
+                y: y_cursor,
+                direction: EntityDirection::South,
+                carries: Some(item.to_string()),
+                segment_id: merger_seg_id.clone(),
+                ..Default::default()
+            });
+        }
         y_cursor += 1;
     }
 

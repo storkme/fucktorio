@@ -543,4 +543,32 @@ mod tests {
         }
         assert!(overlaps.is_empty(), "Entity overlaps: {}", overlaps.join("; "));
     }
+
+    #[test]
+    fn test_ecircuit_yellow_validation_checks() {
+        use crate::solver::solve;
+        use crate::validate::{Severity, belt_structural, belt_flow};
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-3")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Run individual validators (full validate() hangs on some topologies).
+        let mut all_issues = Vec::new();
+        all_issues.extend(belt_structural::check_belt_throughput(&layout));
+        all_issues.extend(belt_structural::check_belt_dead_ends(&layout));
+        all_issues.extend(belt_structural::check_belt_item_isolation(&layout));
+        all_issues.extend(belt_structural::check_belt_loops(&layout));
+        all_issues.extend(belt_flow::check_belt_junctions(&layout));
+        all_issues.extend(belt_flow::check_underground_belt_pairs(&layout));
+
+        let errors: Vec<_> = all_issues.iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "Expected 0 errors, got {}", errors.len());
+    }
 }

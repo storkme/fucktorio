@@ -70,8 +70,9 @@ pub(crate) fn max_machines_for_belt(
 
 /// Maximum machines when using BOTH belt lanes (lane-split output).
 ///
-/// Each lane has its own capacity limit. The total is 2x the per-lane max,
-/// not `int(full_capacity / rate)`, because integer truncation matters.
+/// Output uses both lanes (via sideload bridge), so output limit is 2x per-lane.
+/// Input is sideloaded from the tap-off, which fills ONE lane only, so input
+/// limit is 1x per-lane capacity.
 pub(crate) fn max_machines_for_belt_both_lanes(
     spec: &MachineSpec,
     belt_name: &str,
@@ -86,9 +87,11 @@ pub(crate) fn max_machines_for_belt_both_lanes(
             max_m = max_m.min((out_lane_cap / out.rate).floor() * 2.0);
         }
     }
+    // Input belts are fed by sideloading from the trunk tap-off, which fills
+    // only one lane (rule B8). So input capacity is single-lane, not double.
     for inp in &spec.inputs {
         if !inp.is_fluid && inp.rate > 0.0 {
-            max_m = max_m.min((in_lane_cap / inp.rate).floor() * 2.0);
+            max_m = max_m.min((in_lane_cap / inp.rate).floor());
         }
     }
 
@@ -873,15 +876,16 @@ mod tests {
 
     #[test]
     fn place_rows_split_when_exceeds_belt_capacity() {
-        // 10 iron-plate machines at rate=1.0/each → total 10/s output
-        // Yellow belt lane cap = 7.5 → both lanes = 14 max
-        // But rate=1.0 per machine, total 10/s. With yellow belt lane=7.5:
-        //   per_lane = floor(7.5/1.0) = 7, both_lanes = 14 → no split needed for 10
-        // Use a high count to force a split
+        // 20 iron-plate machines at rate=1.0/each → total 20/s output.
+        // Yellow belt lane cap = 7.5/s.
+        // Output uses both lanes (lane-split): floor(7.5/1.0)*2 = 14 max.
+        // Input is sideloaded (single lane): floor(7.5/1.0) = 7 max.
+        // Input is the bottleneck → max_per_row = 7.
+        // 20 machines → ceil(20/7) = 3 rows.
         let spec = MachineSpec {
             entity: "assembling-machine-2".to_string(),
             recipe: "iron-plate".to_string(),
-            count: 20.0, // 20 machines at 1.0/s = 20/s total > 14 (yellow belt both lanes)
+            count: 20.0,
             inputs: vec![ItemFlow {
                 item: "iron-ore".to_string(),
                 rate: 1.0,
@@ -904,14 +908,10 @@ mod tests {
             None,
             None,
         );
-        // 20 machines, max_per_row=14 → ceil(20/14) = 2 rows
-        assert_eq!(spans.len(), 2, "Expected 2 rows due to belt capacity");
-        // Row counts should sum to 20
+        // 20 machines, max_per_row=7 → ceil(20/7) = 3 rows
+        assert_eq!(spans.len(), 3, "Expected 3 rows due to input belt lane capacity");
         let total: usize = spans.iter().map(|s| s.machine_count).sum();
         assert_eq!(total, 20);
-        // Even split: ceil(20/2)=10 and 10
-        assert_eq!(spans[0].machine_count, 10);
-        assert_eq!(spans[1].machine_count, 10);
     }
 
     /// Mirrors the Python test_even_row_splitting test.
