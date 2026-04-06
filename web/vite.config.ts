@@ -44,4 +44,7 @@ function wasmPackPlugin(): Plugin {
 export default defineConfig({
   root: ".",
   plugins: [wasmPackPlugin(), wasm(), topLevelAwait()],
+  server: {
+    host: "0.0.0.0",
+  },
 });

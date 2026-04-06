@@ -1,7 +1,7 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import type { LayoutResult, PlacedEntity, EntityDirection } from "../engine";
 
-const TILE_PX = 32;
+export const TILE_PX = 32;
 
 // Colors sourced from src/visualize.py _MACHINE_COLORS / _INFRA_COLORS
 const MACHINE_COLORS: Record<string, number> = {
@@ -54,6 +54,54 @@ const PIPE_COLOR = 0x4a7ab5;
 const PIPE_TO_GROUND_COLOR = 0x3a6090;
 const POLE_COLOR = 0xc0a030;
 const POLE_BG = 0x2a2510;
+
+// Item-to-color mapping for visual debugging
+
+const ITEM_PALETTE: Record<string, number> = {
+  "iron-plate": 0x9a9a9a,
+  "copper-plate": 0xd07840,
+  "iron-gear-wheel": 0x707070,
+  "copper-cable": 0xe06020,
+  "electronic-circuit": 0x50c050,
+  "advanced-circuit": 0xc05050,
+  "processing-unit": 0x5050c0,
+  "plastic-bar": 0x8080a0,
+  "steel-plate": 0x707888,
+  "iron-ore": 0xa07070,
+  "copper-ore": 0xd08060,
+  "coal": 0x404040,
+  "stone": 0xa09070,
+  "sulfur": 0xc0c040,
+  "crude-oil": 0x303050,
+  "water": 0x4060b0,
+  "petroleum-gas": 0xa0a060,
+  "light-oil": 0xa0a0b0,
+  "heavy-oil": 0x705040,
+  "sulfuric-acid": 0xb0b030,
+  "lubricant": 0x60b060,
+};
+
+function hslToHex(h: number, s: number, l: number): number {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h * 12) % 12;
+    return Math.round((l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255);
+  };
+  return (f(0) << 16) | (f(8) << 8) | f(4);
+}
+
+let itemColoringEnabled = true;
+export function setItemColoring(enabled: boolean): void { itemColoringEnabled = enabled; }
+
+function itemColor(item: string | undefined): number {
+  if (!itemColoringEnabled) return 0x777777;
+  if (!item) return 0x666666;
+  if (item in ITEM_PALETTE) return ITEM_PALETTE[item];
+  let h = 0;
+  for (let i = 0; i < item.length; i++) h = (((h << 5) - h) + item.charCodeAt(i)) | 0;
+  const hue = (Math.abs(h) % 30) * 12;
+  return hslToHex(hue / 360, 0.55, 0.48);
+}
 
 // [width, height] in tiles for multi-tile entities
 const MACHINE_SIZES: Record<string, [number, number]> = {
@@ -169,9 +217,10 @@ function drawBelt(entity: PlacedEntity, turn: BeltTurn | null): Graphics {
   const g = new Graphics();
   const s = TILE_PX;
   const [, chev] = BELT_COLORS[entity.name] ?? [0xa89030, 0xe0d070];
+  const laneColor = itemColor(entity.carries);
 
   if (turn) {
-    drawBeltCorner(g, s, chev, entity.direction, turn);
+    drawBeltCorner(g, s, chev, entity.direction, turn, laneColor);
   } else {
     // Dark belt body with subtle border
     g.rect(0, 0, s, s).fill(BELT_BODY);
@@ -182,6 +231,13 @@ function drawBelt(entity: PlacedEntity, turn: BeltTurn | null): Graphics {
     rg.x = s / 2;
     rg.y = s / 2;
     rg.rotation = dirAngle(entity.direction);
+
+    // Lane stripes: left lane = left half, right lane = right half
+    rg.rect(-s / 2, -s / 2, s / 2 - 1, s).fill({ color: laneColor, alpha: 0.45 });
+    rg.rect(1, -s / 2, s / 2 - 1, s).fill({ color: laneColor, alpha: 0.45 });
+    // Dark center divider
+    rg.rect(-1, -s / 2, 2, s).fill(0x0a0a0a);
+
     addBeltChevrons(rg, s, chev);
     g.addChild(rg);
   }
@@ -196,6 +252,7 @@ function drawBeltCorner(
   chev: number,
   direction: EntityDirection | undefined,
   turn: BeltTurn,
+  laneColor: number,
 ): void {
   const cg = new Graphics();
   cg.x = s / 2;
@@ -220,6 +277,27 @@ function drawBeltCorner(
     .arc(cornerX, cornerY, s, startA, endA, false)
     .closePath()
     .stroke();
+
+  // Lane stripes: inner arc sector + outer annular sector, matching straight belt alpha.
+  const rMid = s * 0.5;
+  const rDiv = 1.5; // divider half-width px
+
+  // Inner lane: pie sector from corner to rMid - divider
+  cg.moveTo(cornerX, cornerY)
+    .arc(cornerX, cornerY, rMid - rDiv, startA, endA, false)
+    .closePath()
+    .fill({ color: laneColor, alpha: 0.45 });
+
+  // Outer lane: annular sector from rMid + divider to s
+  const csA = Math.cos(startA), snA = Math.sin(startA);
+  const csE = Math.cos(endA), snE = Math.sin(endA);
+  cg.moveTo(cornerX + (rMid + rDiv) * csA, cornerY + (rMid + rDiv) * snA)
+    .lineTo(cornerX + s * csA, cornerY + s * snA)
+    .arc(cornerX, cornerY, s, startA, endA, false)
+    .lineTo(cornerX + (rMid + rDiv) * csE, cornerY + (rMid + rDiv) * snE)
+    .arc(cornerX, cornerY, rMid + rDiv, endA, startA, true)
+    .closePath()
+    .fill({ color: laneColor, alpha: 0.45 });
 
   // 2 chevrons projected onto the arc: tip sits on the centreline, arms splay
   // to outer/inner radii along an angular offset BEHIND the tip (opposite flow).
@@ -284,8 +362,8 @@ function drawUndergroundBelt(entity: PlacedEntity): Graphics {
   // Underground half — near-black to read as "buried"
   m.rect(-half, tunnelY, s, half).fill(0x181818);
 
-  // Surface half — belt tier colour so it reads as a belt connection
-  m.rect(-half, surfaceY, s, half).fill(darken(base, 0.55));
+  // Surface half — item colour so it reads as a belt connection
+  m.rect(-half, surfaceY, s, half).fill({ color: itemColor(entity.carries), alpha: 0.7 });
 
   // Dividing line between the two halves
   m.setStrokeStyle({ width: 1, color: 0x505050 });
@@ -321,6 +399,8 @@ function drawSplitter(entity: PlacedEntity): Graphics {
   const barThick = Math.max(2, Math.min(pw, ph) * 0.18);
 
   g.roundRect(0, 0, pw, ph, TILE_RADIUS).fill(base);
+  // Item tint overlay
+  g.roundRect(0, 0, pw, ph, TILE_RADIUS).fill({ color: itemColor(entity.carries), alpha: 0.3 });
   if (isNS) {
     g.rect(cell - barThick / 2, 0, barThick, ph).fill(darken(base, 0.5));
   } else {
@@ -348,7 +428,7 @@ function drawSplitter(entity: PlacedEntity): Graphics {
 function drawInserter(entity: PlacedEntity): Graphics {
   const g = new Graphics();
   const s = TILE_PX - 1;
-  const armColor = INSERTER_COLORS[entity.name] ?? 0x6a8e3e;
+  const armColor = entity.carries ? itemColor(entity.carries) : (INSERTER_COLORS[entity.name] ?? 0x6a8e3e);
 
   g.roundRect(0, 0, s, s, TILE_RADIUS).fill(0x2a3a2a);
 
@@ -469,7 +549,11 @@ function drawGenericEntity(): Graphics {
 
 // Main renderer
 
-export function renderLayout(layout: LayoutResult, container: Container): void {
+export function renderLayout(
+  layout: LayoutResult,
+  container: Container,
+  onHover?: (entity: PlacedEntity | null) => void,
+): void {
   container.removeChildren();
 
   // Build tile map for belt turn detection
@@ -501,6 +585,14 @@ export function renderLayout(layout: LayoutResult, container: Container): void {
 
     g.x = (entity.x ?? 0) * TILE_PX;
     g.y = (entity.y ?? 0) * TILE_PX;
+
+    if (onHover) {
+      g.eventMode = "static";
+      g.cursor = "crosshair";
+      g.on("pointerenter", () => onHover(entity));
+      g.on("pointerleave", () => onHover(null));
+    }
+
     container.addChild(g);
   }
 }

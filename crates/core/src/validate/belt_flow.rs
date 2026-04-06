@@ -2275,6 +2275,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -2288,6 +2289,7 @@ mod tests {
             io_type: None,
             carries: Some(item.to_string()),
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -2301,6 +2303,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -2314,6 +2317,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -2327,6 +2331,7 @@ mod tests {
             io_type: Some(io_type.to_string()),
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 

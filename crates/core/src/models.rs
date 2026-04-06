@@ -68,6 +68,8 @@ pub struct PlacedEntity {
     pub carries: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirror: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_id: Option<String>,
 }
 
 /// Everything the layout engine produces — no rate data.

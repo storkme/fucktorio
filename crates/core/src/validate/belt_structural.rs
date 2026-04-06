@@ -974,6 +974,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -1003,6 +1004,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -1118,6 +1120,7 @@ mod tests {
             recipe: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         };
         let lr = layout(vec![belt(0, 0, EntityDirection::East), ug_input]);
         assert!(check_belt_dead_ends(&lr).is_empty());
@@ -1159,6 +1162,7 @@ mod tests {
             carries: Some("iron-plate".to_string()),
             recipe: None,
             mirror: false,
+            segment_id: None,
         };
         let lr = layout(vec![ug_input, belt_carrying(1, 0, EntityDirection::East, "copper-plate")]);
         assert!(check_belt_item_isolation(&lr).is_empty());

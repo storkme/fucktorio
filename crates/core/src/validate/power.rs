@@ -90,6 +90,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -103,6 +104,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         }
     }
 
@@ -189,6 +191,7 @@ mod tests {
                 io_type: None,
                 carries: None,
                 mirror: false,
+                segment_id: None,
             },
             pole(5, 5),
         ]);
@@ -235,6 +238,7 @@ mod tests {
             io_type: None,
             carries: None,
             mirror: false,
+            segment_id: None,
         };
         // No poles, but only a belt → the "No power poles" warning fires (not a per-entity warning)
         let lr = layout(vec![belt]);

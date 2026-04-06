@@ -75,6 +75,7 @@ impl BalancerTemplateEntity {
             io_type: self.io_type.map(|s| s.to_owned()),
             carries: item.map(|s| s.to_owned()),
             mirror: false,
+            segment_id: None,
         }
     }
 }

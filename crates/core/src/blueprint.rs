@@ -110,6 +110,7 @@ mod tests {
                     io_type: None,
                     carries: None,
                     mirror: false,
+                    segment_id: None,
                 },
                 PlacedEntity {
                     name: "transport-belt".into(),
@@ -120,6 +121,7 @@ mod tests {
                     io_type: None,
                     carries: None,
                     mirror: false,
+                    segment_id: None,
                 },
             ],
             width: 4,

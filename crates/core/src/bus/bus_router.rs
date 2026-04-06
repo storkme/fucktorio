@@ -723,7 +723,8 @@ pub(crate) fn stamp_family_balancer(
     let splitter_name = splitter_for_belt(belt_tier);
     let ug_name = underground_for_belt(belt_tier);
 
-    let entities = template.stamp(
+    let balancer_seg_id = Some(format!("balancer:{}", family.item));
+    let mut entities = template.stamp(
         origin_x,
         origin_y,
         belt_tier,
@@ -731,6 +732,9 @@ pub(crate) fn stamp_family_balancer(
         ug_name,
         Some(&family.item),
     );
+    for ent in &mut entities {
+        ent.segment_id = balancer_seg_id.clone();
+    }
 
     Ok(entities)
 }
@@ -747,6 +751,7 @@ pub(crate) fn render_path(
     item: &str,
     belt_name: &str,
     direction_hint: EntityDirection,
+    segment_id: Option<String>,
 ) -> Vec<PlacedEntity> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
     if path.is_empty() {
@@ -834,6 +839,12 @@ pub(crate) fn render_path(
         }
     }
 
+    if segment_id.is_some() {
+        for ent in &mut entities {
+            ent.segment_id = segment_id.clone();
+        }
+    }
+
     entities
 }
 
@@ -888,7 +899,7 @@ pub(crate) fn render_family_input_paths(
         // Horizontal WEST feeder: A*-routed by the negotiator
         let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
         if let Some(feeder_path) = paths.get(&feeder_key) {
-            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West);
+            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West, Some(format!("family-input:{}", family.item)));
             entities.extend(feeder_entities);
         }
 
@@ -898,12 +909,14 @@ pub(crate) fn render_family_input_paths(
         }
 
         // Turn: SOUTH belt at (input_x, out_y), then descend to (input_x, origin_y - 1)
+        let fam_input_seg_id = Some(format!("family-input:{}", family.item));
         entities.push(PlacedEntity {
             name: belt_tier.to_string(),
             x: input_x,
             y: out_y,
             direction: EntityDirection::South,
             carries: Some(family.item.clone()),
+            segment_id: fam_input_seg_id.clone(),
             ..Default::default()
         });
 
@@ -914,6 +927,7 @@ pub(crate) fn render_family_input_paths(
                 y,
                 direction: EntityDirection::South,
                 carries: Some(family.item.clone()),
+                segment_id: fam_input_seg_id.clone(),
                 ..Default::default()
             });
         }
@@ -957,6 +971,7 @@ pub(crate) fn merge_output_rows(
     if n == 0 {
         return (entities, merge_start_y, 0);
     }
+    let merger_seg_id = Some(format!("merger:{}", item));
 
     // Calculate total rate
     let total_rate = output_rows.iter()
@@ -999,6 +1014,7 @@ pub(crate) fn merge_output_rows(
                 y: out_y,
                 direction: EntityDirection::East,
                 carries: Some(item.to_string()),
+                segment_id: merger_seg_id.clone(),
                 ..Default::default()
             });
         }
@@ -1011,6 +1027,7 @@ pub(crate) fn merge_output_rows(
                 y,
                 direction: EntityDirection::South,
                 carries: Some(item.to_string()),
+                segment_id: merger_seg_id.clone(),
                 ..Default::default()
             });
         }
@@ -1027,6 +1044,7 @@ pub(crate) fn merge_output_rows(
             y: y_cursor,
             direction: EntityDirection::South,
             carries: Some(item.to_string()),
+            segment_id: merger_seg_id.clone(),
             ..Default::default()
         });
         y_cursor += 1;
@@ -1036,6 +1054,7 @@ pub(crate) fn merge_output_rows(
             y: y_cursor,
             direction: EntityDirection::South,
             carries: Some(item.to_string()),
+            segment_id: merger_seg_id.clone(),
             ..Default::default()
         });
         y_cursor += 1;
@@ -1079,6 +1098,7 @@ pub(crate) fn place_merger_block(
 
     let splitter_name = splitter_for_belt(belt_name);
     let item = &trunk_lanes[0].item;
+    let merger_seg_id = Some(format!("merger:{}", item));
 
     // Build set of already-occupied positions to avoid overlaps
     let occupied: FxHashSet<(i32, i32)> = existing_entities.iter()
@@ -1103,6 +1123,7 @@ pub(crate) fn place_merger_block(
                     y,
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
+                    segment_id: merger_seg_id.clone(),
                     ..Default::default()
                 });
             }
@@ -1132,6 +1153,7 @@ pub(crate) fn place_merger_block(
                         y: y_cursor,
                         direction: EntityDirection::West,
                         carries: Some(item.clone()),
+                        segment_id: merger_seg_id.clone(),
                         ..Default::default()
                     });
                 }
@@ -1143,6 +1165,7 @@ pub(crate) fn place_merger_block(
                     y: y_cursor,
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
+                    segment_id: merger_seg_id.clone(),
                     ..Default::default()
                 });
 
@@ -1153,6 +1176,7 @@ pub(crate) fn place_merger_block(
                     y: y_cursor + 1,
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
+                    segment_id: merger_seg_id.clone(),
                     ..Default::default()
                 });
 
@@ -1163,6 +1187,7 @@ pub(crate) fn place_merger_block(
                     y: y_cursor + 2,
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
+                    segment_id: merger_seg_id.clone(),
                     ..Default::default()
                 });
 
@@ -1179,6 +1204,7 @@ pub(crate) fn place_merger_block(
                         y: y_cursor + dy,
                         direction: EntityDirection::South,
                         carries: Some(item.clone()),
+                        segment_id: merger_seg_id.clone(),
                         ..Default::default()
                     });
                 }
@@ -1269,6 +1295,7 @@ fn route_belt_lane(
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
 
     // UG-pair bridges over foreign skip y's
+    let trunk_seg_id = Some(format!("trunk:{}", lane.item));
     let ug_name = underground_for_belt(belt_name);
     for &fy in &foreign_skips {
         entities.push(PlacedEntity {
@@ -1278,6 +1305,7 @@ fn route_belt_lane(
             direction: EntityDirection::South,
             io_type: Some("input".to_string()),
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1287,6 +1315,7 @@ fn route_belt_lane(
             direction: EntityDirection::South,
             io_type: Some("output".to_string()),
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
     }
@@ -1301,7 +1330,7 @@ fn route_belt_lane(
         };
         let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
         if let Some(trunk_path) = paths.get(&trunk_key) {
-            entities.extend(render_path(trunk_path, &lane.item, tier, EntityDirection::South));
+            entities.extend(render_path(trunk_path, &lane.item, tier, EntityDirection::South, trunk_seg_id.clone()));
         } else {
             for y in seg_start..=seg_end {
                 entities.push(PlacedEntity {
@@ -1310,6 +1339,7 @@ fn route_belt_lane(
                     y,
                     direction: EntityDirection::South,
                     carries: Some(lane.item.clone()),
+                    segment_id: trunk_seg_id.clone(),
                     ..Default::default()
                 });
             }
@@ -1325,6 +1355,7 @@ fn route_belt_lane(
             y: by,
             direction: EntityDirection::South,
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1333,15 +1364,17 @@ fn route_belt_lane(
             y: by + 1,
             direction: EntityDirection::East,
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
     }
 
     // Tap-offs
+    let tapoff_seg_id = Some(format!("tapoff:{}", lane.item));
     for &tap_y in &lane.tap_off_ys {
         let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
         if let Some(tap_path) = paths.get(&tap_key) {
-            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East));
+            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone()));
         } else {
             entities.push(PlacedEntity {
                 name: horiz_belt.to_string(),
@@ -1349,6 +1382,7 @@ fn route_belt_lane(
                 y: tap_y,
                 direction: EntityDirection::East,
                 carries: Some(lane.item.clone()),
+                segment_id: tapoff_seg_id.clone(),
                 ..Default::default()
             });
         }
@@ -1373,6 +1407,8 @@ fn route_intermediate_lane(
     let horiz_belt = belt_name;
     let empty: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
     let paths = routed_paths.unwrap_or(&empty);
+    let trunk_seg_id = Some(format!("trunk:{}", lane.item));
+    let tapoff_seg_id = Some(format!("tapoff:{}", lane.item));
 
     let mut all_producers: Vec<usize> = Vec::new();
     if let Some(pr) = lane.producer_row {
@@ -1427,18 +1463,19 @@ fn route_intermediate_lane(
                 y: out_y - 1,
                 direction: EntityDirection::West,
                 carries: Some(lane.item.clone()),
+                segment_id: trunk_seg_id.clone(),
                 ..Default::default()
             });
             // Normal return via A*-routed path
             let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
             if let Some(ret_path) = paths.get(&ret_key) {
-                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West));
+                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
             }
             // Balance route
             let split_y = out_y - 1;
             let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
             if let Some(bal_path) = paths.get(&bal_key) {
-                let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West);
+                let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)));
                 if let Some(last) = bal_entities.last_mut() {
                     last.direction = EntityDirection::East;
                 }
@@ -1448,7 +1485,7 @@ fn route_intermediate_lane(
             // Normal return
             let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
             if let Some(ret_path) = paths.get(&ret_key) {
-                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West));
+                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
             }
         }
     }
@@ -1467,6 +1504,7 @@ fn route_intermediate_lane(
                 y: out_y,
                 direction: EntityDirection::South,
                 carries: Some(lane.item.clone()),
+                segment_id: trunk_seg_id.clone(),
                 ..Default::default()
             });
         }
@@ -1482,6 +1520,7 @@ fn route_intermediate_lane(
             direction: EntityDirection::South,
             io_type: Some("input".to_string()),
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1491,6 +1530,7 @@ fn route_intermediate_lane(
             direction: EntityDirection::South,
             io_type: Some("output".to_string()),
             carries: Some(lane.item.clone()),
+            segment_id: trunk_seg_id.clone(),
             ..Default::default()
         });
     }
@@ -1498,7 +1538,7 @@ fn route_intermediate_lane(
     for (seg_start, seg_end) in trunk_segments(start_y, tap_y - 1, &skip_ys) {
         let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
         if let Some(trunk_path) = paths.get(&trunk_key) {
-            entities.extend(render_path(trunk_path, &lane.item, belt_name, EntityDirection::South));
+            entities.extend(render_path(trunk_path, &lane.item, belt_name, EntityDirection::South, trunk_seg_id.clone()));
         } else {
             for y in seg_start..=seg_end {
                 entities.push(PlacedEntity {
@@ -1507,6 +1547,7 @@ fn route_intermediate_lane(
                     y,
                     direction: EntityDirection::South,
                     carries: Some(lane.item.clone()),
+                    segment_id: trunk_seg_id.clone(),
                     ..Default::default()
                 });
             }
@@ -1516,7 +1557,7 @@ fn route_intermediate_lane(
     // Tap-off
     let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
     if let Some(tap_path) = paths.get(&tap_key) {
-        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East));
+        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East, tapoff_seg_id.clone()));
     } else {
         entities.push(PlacedEntity {
             name: belt_name.to_string(),
@@ -1524,6 +1565,7 @@ fn route_intermediate_lane(
             y: tap_y,
             direction: EntityDirection::East,
             carries: Some(lane.item.clone()),
+            segment_id: tapoff_seg_id.clone(),
             ..Default::default()
         });
     }
@@ -2460,7 +2502,7 @@ mod tests {
     #[test]
     fn test_render_path_single_tile() {
         let path = vec![(5, 10)];
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
 
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].name, "transport-belt");
@@ -2473,7 +2515,7 @@ mod tests {
     #[test]
     fn test_render_path_east_movement() {
         let path = vec![(5, 10), (6, 10), (7, 10)];
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
 
         assert_eq!(entities.len(), 3);
         for e in &entities {
@@ -2486,7 +2528,7 @@ mod tests {
     #[test]
     fn test_render_path_south_movement() {
         let path = vec![(5, 10), (5, 11), (5, 12)];
-        let entities = render_path(&path, "copper-ore", "transport-belt", EntityDirection::South);
+        let entities = render_path(&path, "copper-ore", "transport-belt", EntityDirection::South, None);
 
         assert_eq!(entities.len(), 3);
         for e in &entities {
@@ -2500,7 +2542,7 @@ mod tests {
     fn test_render_path_with_underground_jump() {
         // Gap of 3 tiles = underground jump
         let path = vec![(5, 10), (8, 10)];  // x moves from 5 to 8, distance = 3
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
 
         assert_eq!(entities.len(), 2);
         assert_eq!(entities[0].name, "underground-belt");

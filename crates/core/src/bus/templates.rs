@@ -215,6 +215,11 @@ pub fn single_input_row(
 ) -> (Vec<PlacedEntity>, i32) {
     const ROW_HEIGHT: i32 = 7;
     let mut entities = Vec::new();
+    let belt_in_seg = Some(format!("row:{recipe}:belt-in:{input_item}"));
+    let inserter_in_seg = Some(format!("row:{recipe}:inserter-in:{input_item}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
+    let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     let lane_split = lane_split && machine_count >= 2;
     let mxs = machine_xs(x_offset, machine_count, lane_split);
@@ -229,6 +234,7 @@ pub fn single_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(input_item.to_string()),
+                segment_id: belt_in_seg.clone(),
                 ..Default::default()
             });
         }
@@ -240,6 +246,7 @@ pub fn single_input_row(
             y: y_offset + 1,
             direction: EntityDirection::South,
             carries: Some(input_item.to_string()),
+            segment_id: inserter_in_seg.clone(),
             ..Default::default()
         });
 
@@ -250,6 +257,7 @@ pub fn single_input_row(
             y: y_offset + 2,
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -260,6 +268,7 @@ pub fn single_input_row(
             y: y_offset + 5,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
+            segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
@@ -272,6 +281,7 @@ pub fn single_input_row(
                 y: y_offset + 6,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
         }
@@ -287,6 +297,7 @@ pub fn single_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(input_item.to_string()),
+                segment_id: belt_in_seg.clone(),
                 ..Default::default()
             });
         }
@@ -331,6 +342,13 @@ pub fn dual_input_row(
 
     let (input1, input2) = input_items;
     let (belt1, belt2) = input_belts;
+    let belt_in1_seg = Some(format!("row:{recipe}:belt-in:{input1}"));
+    let belt_in2_seg = Some(format!("row:{recipe}:belt-in:{input2}"));
+    let inserter_in1_seg = Some(format!("row:{recipe}:inserter-in:{input1}"));
+    let inserter_in2_seg = Some(format!("row:{recipe}:inserter-in:{input2}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
+    let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     let lane_split = lane_split && machine_count >= 2;
     let mxs = machine_xs(x_offset, machine_count, lane_split);
@@ -345,6 +363,7 @@ pub fn dual_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(input1.to_string()),
+                segment_id: belt_in1_seg.clone(),
                 ..Default::default()
             });
         }
@@ -357,6 +376,7 @@ pub fn dual_input_row(
                 y: y_offset + 1,
                 direction: EntityDirection::East,
                 carries: Some(input2.to_string()),
+                segment_id: belt_in2_seg.clone(),
                 ..Default::default()
             });
         }
@@ -368,6 +388,7 @@ pub fn dual_input_row(
             y: y_offset + 2,
             direction: EntityDirection::South,
             carries: Some(input1.to_string()),
+            segment_id: inserter_in1_seg.clone(),
             ..Default::default()
         });
 
@@ -378,6 +399,7 @@ pub fn dual_input_row(
             y: y_offset + 2,
             direction: EntityDirection::South,
             carries: Some(input2.to_string()),
+            segment_id: inserter_in2_seg.clone(),
             ..Default::default()
         });
 
@@ -388,6 +410,7 @@ pub fn dual_input_row(
             y: y_offset + 3,
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -398,6 +421,7 @@ pub fn dual_input_row(
             y: y_offset + 6,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
+            segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
@@ -410,6 +434,7 @@ pub fn dual_input_row(
                 y: y_offset + 7,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
         }
@@ -425,6 +450,7 @@ pub fn dual_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(input1.to_string()),
+                segment_id: belt_in1_seg.clone(),
                 ..Default::default()
             });
             entities.push(PlacedEntity {
@@ -433,6 +459,7 @@ pub fn dual_input_row(
                 y: y_offset + 1,
                 direction: EntityDirection::East,
                 carries: Some(input2.to_string()),
+                segment_id: belt_in2_seg.clone(),
                 ..Default::default()
             });
         }
@@ -476,6 +503,15 @@ pub fn triple_input_row(
 
     let (input1, input2, input3) = input_items;
     let (belt1, belt2, belt3) = input_belts;
+    let belt_in1_seg = Some(format!("row:{recipe}:belt-in:{input1}"));
+    let belt_in2_seg = Some(format!("row:{recipe}:belt-in:{input2}"));
+    let belt_in3_seg = Some(format!("row:{recipe}:belt-in:{input3}"));
+    let inserter_in1_seg = Some(format!("row:{recipe}:inserter-in:{input1}"));
+    let inserter_in2_seg = Some(format!("row:{recipe}:inserter-in:{input2}"));
+    let inserter_in3_seg = Some(format!("row:{recipe}:inserter-in:{input3}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
+    let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
         let mx = x_offset + i as i32 * MACHINE_PITCH;
@@ -488,6 +524,7 @@ pub fn triple_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(input1.to_string()),
+                segment_id: belt_in1_seg.clone(),
                 ..Default::default()
             });
         }
@@ -500,6 +537,7 @@ pub fn triple_input_row(
                 y: y_offset + 1,
                 direction: EntityDirection::East,
                 carries: Some(input2.to_string()),
+                segment_id: belt_in2_seg.clone(),
                 ..Default::default()
             });
         }
@@ -511,6 +549,7 @@ pub fn triple_input_row(
             y: y_offset + 2,
             direction: EntityDirection::South,
             carries: Some(input1.to_string()),
+            segment_id: inserter_in1_seg.clone(),
             ..Default::default()
         });
 
@@ -521,6 +560,7 @@ pub fn triple_input_row(
             y: y_offset + 2,
             direction: EntityDirection::South,
             carries: Some(input2.to_string()),
+            segment_id: inserter_in2_seg.clone(),
             ..Default::default()
         });
 
@@ -531,6 +571,7 @@ pub fn triple_input_row(
             y: y_offset + 3,
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -541,6 +582,7 @@ pub fn triple_input_row(
             y: y_offset + 6,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
+            segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
@@ -551,6 +593,7 @@ pub fn triple_input_row(
             y: y_offset + 6,
             direction: EntityDirection::North,
             carries: Some(input3.to_string()),
+            segment_id: inserter_in3_seg.clone(),
             ..Default::default()
         });
 
@@ -563,6 +606,7 @@ pub fn triple_input_row(
                 y: y_offset + 7,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
         }
@@ -575,6 +619,7 @@ pub fn triple_input_row(
                 y: y_offset + 8,
                 direction: EntityDirection::East,
                 carries: Some(input3.to_string()),
+                segment_id: belt_in3_seg.clone(),
                 ..Default::default()
             });
         }
@@ -613,6 +658,12 @@ pub fn fluid_input_row(
     let mut entities = Vec::new();
     let port_dx = fluid_input_port_dx(machine_entity);
     let mut fluid_port_pipes = Vec::new();
+    let belt_in_seg = Some(format!("row:{recipe}:belt-in:{solid_item}"));
+    let inserter_in_seg = Some(format!("row:{recipe}:inserter-in:{solid_item}"));
+    let fluid_in_seg = Some(format!("row:{recipe}:belt-in:{fluid_item}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
+    let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
         let mx = x_offset + i as i32 * MACHINE_PITCH;
@@ -625,6 +676,7 @@ pub fn fluid_input_row(
                 y: y_offset,
                 direction: EntityDirection::East,
                 carries: Some(solid_item.to_string()),
+                segment_id: belt_in_seg.clone(),
                 ..Default::default()
             });
         }
@@ -636,6 +688,7 @@ pub fn fluid_input_row(
             y: y_offset + 1,
             direction: EntityDirection::South,
             carries: Some(solid_item.to_string()),
+            segment_id: inserter_in_seg.clone(),
             ..Default::default()
         });
 
@@ -650,6 +703,7 @@ pub fn fluid_input_row(
                 direction: EntityDirection::East,
                 io_type: Some("input".to_string()),
                 carries: Some(fluid_item.to_string()),
+                segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
             entities.push(PlacedEntity {
@@ -659,6 +713,7 @@ pub fn fluid_input_row(
                 direction: EntityDirection::East,
                 io_type: Some("output".to_string()),
                 carries: Some(fluid_item.to_string()),
+                segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
         } else {
@@ -668,6 +723,7 @@ pub fn fluid_input_row(
                 x: mx + port_dx,
                 y: y_offset + 1,
                 carries: Some(fluid_item.to_string()),
+                segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
         }
@@ -683,6 +739,7 @@ pub fn fluid_input_row(
             y: y_offset + 2,
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -693,6 +750,7 @@ pub fn fluid_input_row(
             y: y_offset + 5,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
+            segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
@@ -705,6 +763,7 @@ pub fn fluid_input_row(
                 y: y_offset + 6,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
         }
@@ -756,6 +815,14 @@ pub fn fluid_dual_input_row(
     let (input1, input2) = solid_items;
     let (belt1, belt2) = input_belts;
     let port_dx = fluid_input_port_dx(machine_entity);
+    let fluid_in_seg = Some(format!("row:{recipe}:belt-in:{fluid_item}"));
+    let belt_in1_seg = Some(format!("row:{recipe}:belt-in:{input1}"));
+    let belt_in2_seg = Some(format!("row:{recipe}:belt-in:{input2}"));
+    let inserter_in1_seg = Some(format!("row:{recipe}:inserter-in:{input1}"));
+    let inserter_in2_seg = Some(format!("row:{recipe}:inserter-in:{input2}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
+    let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     let header_y = y_offset;
     let ptg_in_y = y_offset + 1;
@@ -774,6 +841,7 @@ pub fn fluid_dual_input_row(
             x,
             y: header_y,
             carries: Some(fluid_item.to_string()),
+            segment_id: fluid_in_seg.clone(),
             ..Default::default()
         });
     }
@@ -791,6 +859,7 @@ pub fn fluid_dual_input_row(
             direction: EntityDirection::South,
             io_type: Some("input".to_string()),
             carries: Some(fluid_item.to_string()),
+            segment_id: fluid_in_seg.clone(),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -800,6 +869,7 @@ pub fn fluid_dual_input_row(
             direction: EntityDirection::South,
             io_type: Some("output".to_string()),
             carries: Some(fluid_item.to_string()),
+            segment_id: fluid_in_seg.clone(),
             ..Default::default()
         });
 
@@ -811,6 +881,7 @@ pub fn fluid_dual_input_row(
                 y: belt1_y,
                 direction: EntityDirection::East,
                 carries: Some(input1.to_string()),
+                segment_id: belt_in1_seg.clone(),
                 ..Default::default()
             });
             entities.push(PlacedEntity {
@@ -819,6 +890,7 @@ pub fn fluid_dual_input_row(
                 y: belt2_y,
                 direction: EntityDirection::East,
                 carries: Some(input2.to_string()),
+                segment_id: belt_in2_seg.clone(),
                 ..Default::default()
             });
         }
@@ -839,6 +911,7 @@ pub fn fluid_dual_input_row(
             y: inserter_y,
             direction: EntityDirection::South,
             carries: Some(input1.to_string()),
+            segment_id: inserter_in1_seg.clone(),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -847,6 +920,7 @@ pub fn fluid_dual_input_row(
             y: inserter_y,
             direction: EntityDirection::South,
             carries: Some(input2.to_string()),
+            segment_id: inserter_in2_seg.clone(),
             ..Default::default()
         });
 
@@ -857,6 +931,7 @@ pub fn fluid_dual_input_row(
             y: machine_y,
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -869,6 +944,7 @@ pub fn fluid_dual_input_row(
                 x: mx,
                 y: output_y,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
             entities.push(PlacedEntity {
@@ -876,6 +952,7 @@ pub fn fluid_dual_input_row(
                 x: mx + 2,
                 y: output_y,
                 carries: Some(output_item.to_string()),
+                segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
             fluid_output_port_pipes.push((mx, output_y));
@@ -888,6 +965,7 @@ pub fn fluid_dual_input_row(
                 y: output_y,
                 direction: EntityDirection::South,
                 carries: Some(output_item.to_string()),
+                segment_id: inserter_out_seg.clone(),
                 ..Default::default()
             });
             let out_dir = output_dir(output_east);
@@ -898,6 +976,7 @@ pub fn fluid_dual_input_row(
                     y: output_y + 1,
                     direction: out_dir,
                     carries: Some(output_item.to_string()),
+                    segment_id: belt_out_seg.clone(),
                     ..Default::default()
                 });
             }
@@ -934,6 +1013,9 @@ pub fn oil_refinery_row(
     let mut entities = Vec::new();
     let mut fluid_input_port_pipes = Vec::new();
     let mut fluid_output_port_pipes = Vec::new();
+    let fluid_in_seg = Some(format!("row:{recipe}:belt-in:{fluid_input_item}"));
+    let machine_seg = Some(format!("row:{recipe}:machine"));
+    let fluid_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
         let mx = x_offset + i as i32 * OIL_REFINERY_PITCH;
@@ -946,6 +1028,7 @@ pub fn oil_refinery_row(
             x: input_x,
             y: input_y,
             carries: Some(fluid_input_item.to_string()),
+            segment_id: fluid_in_seg.clone(),
             ..Default::default()
         });
         fluid_input_port_pipes.push((input_x, input_y));
@@ -958,6 +1041,7 @@ pub fn oil_refinery_row(
             direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
             mirror: true,
+            segment_id: machine_seg.clone(),
             ..Default::default()
         });
 
@@ -968,6 +1052,7 @@ pub fn oil_refinery_row(
             x: mx,
             y: output_y,
             carries: Some(fluid_output_item.to_string()),
+            segment_id: fluid_out_seg.clone(),
             ..Default::default()
         });
         fluid_output_port_pipes.push((mx, output_y));

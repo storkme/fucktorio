@@ -186,6 +186,7 @@ mod tests {
                 io_type: None,
                 carries: None,
                 mirror: false,
+                segment_id: None,
             }],
             width: 10,
             height: 10,
