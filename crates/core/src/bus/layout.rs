@@ -558,6 +558,7 @@ mod tests {
             .expect("layout");
 
         // Run individual validators (full validate() hangs on some topologies).
+        // Run individual validators (full validate() still slow on large layouts).
         let mut all_issues = Vec::new();
         all_issues.extend(belt_structural::check_belt_throughput(&layout));
         all_issues.extend(belt_structural::check_belt_dead_ends(&layout));
@@ -565,6 +566,9 @@ mod tests {
         all_issues.extend(belt_structural::check_belt_loops(&layout));
         all_issues.extend(belt_flow::check_belt_junctions(&layout));
         all_issues.extend(belt_flow::check_underground_belt_pairs(&layout));
+        all_issues.extend(belt_flow::check_belt_connectivity(&layout, Some(&sr)));
+        all_issues.extend(belt_flow::check_belt_flow_path(&layout, Some(&sr), crate::validate::LayoutStyle::Bus));
+        all_issues.extend(belt_flow::check_belt_direction_continuity(&layout));
 
         let errors: Vec<_> = all_issues.iter()
             .filter(|i| i.severity == Severity::Error)
