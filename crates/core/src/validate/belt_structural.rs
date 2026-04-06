@@ -197,7 +197,7 @@ pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
     // Balancer templates legitimately contain loops (splitter recirculation).
     // Exclude tiles belonging to balancer segments from loop detection.
     let balancer_tiles: FxHashSet<(i32, i32)> = layout.entities.iter()
-        .filter(|e| e.segment_id.as_deref().map_or(false, |s| s.starts_with("balancer:")))
+        .filter(|e| e.segment_id.as_deref().is_some_and(|s| s.starts_with("balancer:")))
         .map(|e| (e.x, e.y))
         .collect();
 
