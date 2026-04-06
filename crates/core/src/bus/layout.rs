@@ -542,6 +542,7 @@ mod tests {
             }
         }
         assert!(overlaps.is_empty(), "Entity overlaps: {}", overlaps.join("; "));
+
     }
 
     #[test]
