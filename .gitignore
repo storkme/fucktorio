@@ -22,6 +22,10 @@ target/
 external/*
 !external/README.md
 
+# Playwright CLI artifacts
+.playwright-cli/
+web/.playwright-cli/
+
 # Web app
 web/node_modules/
 web/dist/

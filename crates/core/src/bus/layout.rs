@@ -589,7 +589,8 @@ mod tests {
         let errors: Vec<_> = all_issues.iter()
             .filter(|i| i.severity == Severity::Error)
             .collect();
-        assert!(errors.is_empty(), "Expected 0 errors, got {}", errors.len());
+        assert!(errors.is_empty(), "Expected 0 errors, got {}: {}", errors.len(),
+            errors.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("; "));
     }
 
     #[test]
@@ -629,6 +630,51 @@ mod tests {
             }
         }
         assert!(overlaps.is_empty(), "Entity overlaps: {}", overlaps.join("; "));
+    }
+
+    #[test]
+    fn test_ecircuit_10s_yellow_from_plates_ug_valid() {
+        // Regression: 10/s electronic-circuit from plates with AM1 + yellow belts had an
+        // iron-plate tap-off crossing a 5-lane copper-cable bus with a span of 6,
+        // exceeding yellow UG belt's max reach of 4 (max distance = 5).
+        // The underground belt validation must catch any span violation or unpaired UG.
+        use crate::solver::solve;
+        use crate::validate::belt_flow;
+        use crate::validate::Severity;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+            .iter().map(|s| s.to_string()).collect();
+
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Check entity overlaps — a UG input placed on an occupied trunk tile is the
+        // routing bug this test guards against.
+        let mut positions: std::collections::HashMap<(i32, i32), &str> = std::collections::HashMap::new();
+        let mut overlaps: Vec<String> = Vec::new();
+        for e in &layout.entities {
+            if let Some(prev) = positions.insert((e.x, e.y), &e.name) {
+                overlaps.push(format!("({},{}) {} vs {}", e.x, e.y, prev, e.name));
+            }
+        }
+        assert!(
+            overlaps.is_empty(),
+            "Entity overlaps detected (UG input placed on occupied tile): {}",
+            overlaps.join("; ")
+        );
+
+        let ug_issues = belt_flow::check_underground_belt_pairs(&layout);
+        let errors: Vec<_> = ug_issues.iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Underground belt validation errors: {}",
+            errors.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("; ")
+        );
     }
 
     #[test]

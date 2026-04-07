@@ -1399,6 +1399,9 @@ fn route_belt_lane(
     let trunk_seg_id = Some(format!("trunk:{}", lane.item));
     let ug_name = underground_for_belt(belt_name);
     for &fy in &foreign_skips {
+        // Remove any previously placed entity at the bridge input position so the
+        // UG input can replace it (e.g. a balancer-stamp surface belt at fy-1).
+        entities.retain(|e| !(e.x == x && e.y == fy - 1));
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
             x,
@@ -1624,6 +1627,9 @@ fn route_intermediate_lane(
     // UG-pair bridges over foreign skip y's
     let ug_name = underground_for_belt(belt_name);
     for &fy in &foreign_skips {
+        // Remove any previously placed entity at the bridge input position (e.g. a
+        // balancer-stamp surface belt) so the UG input can take that tile.
+        entities.retain(|e| !(e.x == x && e.y == fy - 1));
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
             x,
@@ -1705,7 +1711,16 @@ fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i3
     segments
 }
 
-/// Y-rows the lane's trunk must skip to free up its west-neighbor's ret-path landing tile.
+/// Y-rows where this trunk must bridge underground so other items can use the
+/// surface tile at that y.  Two cases handled:
+///
+/// 1. The immediate western neighbor produces items whose output-return belt lands
+///    here — that y must be surface-free so the return belt can enter the trunk.
+/// 2. Any lane to the left taps off at a y that falls inside this trunk's range
+///    and that tap-off crosses this column.  The tap-off's UG input sits on this
+///    column, so the trunk tile must be free.
+///    Guard: if the bridge output (tap_y + 1) would land on this trunk's own
+///    tap-off belt, skip it — the geometry is handled differently there.
 fn foreign_trunk_skip_ys(
     lane: &BusLane,
     all_lanes: &[BusLane],
@@ -1713,32 +1728,63 @@ fn foreign_trunk_skip_ys(
     trunk_start_y: i32,
     trunk_end_y: i32,
 ) -> FxHashSet<i32> {
-    let west_col = lane.x - 1;
-    let neighbor = all_lanes.iter().find(|other| {
-        !other.is_fluid && !std::ptr::eq(*other, lane) && other.x == west_col
-    });
-    let neighbor = match neighbor {
-        Some(n) => n,
-        None => return FxHashSet::default(),
-    };
-    let mut producer_rows: Vec<usize> = Vec::new();
-    if let Some(pr) = neighbor.producer_row {
-        producer_rows.push(pr);
-    }
-    producer_rows.extend(&neighbor.extra_producer_rows);
-    if producer_rows.is_empty() {
-        return FxHashSet::default();
-    }
     let mut foreign: FxHashSet<i32> = FxHashSet::default();
-    for p in producer_rows {
-        if p >= row_spans.len() {
+
+    // Case 1: west neighbor's output-return rows need a free landing tile here.
+    let west_col = lane.x - 1;
+    if let Some(neighbor) = all_lanes.iter().find(|other| {
+        !other.is_fluid && !std::ptr::eq(*other, lane) && other.x == west_col
+    }) {
+        let mut producer_rows: Vec<usize> = Vec::new();
+        if let Some(pr) = neighbor.producer_row {
+            producer_rows.push(pr);
+        }
+        producer_rows.extend(&neighbor.extra_producer_rows);
+        for p in producer_rows {
+            if p >= row_spans.len() {
+                continue;
+            }
+            let y = row_spans[p].output_belt_y;
+            if trunk_start_y < y && y < trunk_end_y {
+                foreign.insert(y);
+            }
+        }
+    }
+
+    // Case 2: any left-lane tap-off that would cross this trunk column and whose
+    // UG input would sit here.  Only add if the bridge output (tap_y + 1) doesn't
+    // collide with this trunk's own tap-off belt at that position.
+    let own_tap_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+    for other in all_lanes {
+        if other.is_fluid || std::ptr::eq(other, lane) || other.x >= lane.x {
             continue;
         }
-        let y = row_spans[p].output_belt_y;
-        if trunk_start_y < y && y < trunk_end_y {
-            foreign.insert(y);
+        for &tap_y in &other.tap_off_ys {
+            if !(trunk_start_y < tap_y && tap_y < trunk_end_y) {
+                continue;
+            }
+            if own_tap_set.contains(&(tap_y + 1)) {
+                continue;
+            }
+            // Only bridge if the tap-off travels surface all the way to this
+            // trunk.  If any intermediate lane has a surface belt at tap_y, the
+            // tap-off already went underground before reaching lane.x — no
+            // bridge needed here.
+            let all_intermediate_clear = all_lanes.iter()
+                .filter(|mid| !mid.is_fluid && mid.x > other.x && mid.x < lane.x)
+                .all(|mid| {
+                    // mid has no surface belt at tap_y when:
+                    // (a) mid skips tap_y (tap_y is one of its own tap-offs), OR
+                    // (b) mid's trunk doesn't reach tap_y (all its tap_off_ys are above)
+                    mid.tap_off_ys.contains(&tap_y)
+                        || mid.tap_off_ys.iter().all(|&y| y < tap_y)
+                });
+            if all_intermediate_clear {
+                foreign.insert(tap_y);
+            }
         }
     }
+
     foreign
 }
 
