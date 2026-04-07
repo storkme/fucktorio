@@ -26,7 +26,7 @@ RS_OUT = REPO_ROOT / "crates" / "core" / "src" / "bus" / "balancer_library.rs"
 # Import the Python library directly
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(REPO_ROOT))
-from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplateEntity  # noqa: E402
+from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplateEntity  # noqa: E402, I001
 
 
 # ---------------------------------------------------------------------------
