@@ -591,10 +591,12 @@ export function isBeltEntity(name: string): boolean {
 const ENTITY_FRAME_TILE_PX = 64;
 
 export async function initEntityIcons(slugs: string[]): Promise<void> {
-  await Assets.load([
+  const urls = [
     ...slugs.map((s) => `/icons/${s}.png`),
     ...slugs.map((s) => `/entity-frames/${s}.png`),
-  ]);
+  ];
+  // Load individually and ignore 404s — not all slugs have sprites yet
+  await Promise.allSettled(urls.map((url) => Assets.load(url)));
 }
 
 // Chain highlight controller returned by renderLayout
