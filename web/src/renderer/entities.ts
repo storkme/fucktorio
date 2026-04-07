@@ -1,4 +1,4 @@
-import { Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Assets, Container, Graphics, Sprite, Text, TextStyle, Texture } from "pixi.js";
 import type { LayoutResult, PlacedEntity, EntityDirection } from "../engine";
 import {
   buildBeltGraph,
@@ -529,6 +529,31 @@ function drawMachine(entity: PlacedEntity): Graphics {
   g.setStrokeStyle({ width: 1, color: 0x000000, alpha: 0.5 });
   g.roundRect(0, 0, pw, ph, r).stroke();
 
+  // Prefer full entity-frame sprite (body + shadow, sized to tile footprint).
+  // Fall back to centered icon if no frame available.
+  const frameTexture = Assets.get<Texture>(`/entity-frames/${entity.name}.png`);
+  if (frameTexture) {
+    const sprite = new Sprite(frameTexture);
+    // entity-frames are generated at ENTITY_FRAME_TILE_PX; scale to our TILE_PX
+    sprite.scale.set(TILE_PX / ENTITY_FRAME_TILE_PX);
+    // origin (0,0) of the frame image = top-left of entity footprint
+    sprite.x = 0;
+    sprite.y = 0;
+    g.addChild(sprite);
+  } else {
+    const iconTexture = Assets.get<Texture>(`/icons/${entity.name}.png`);
+    if (iconTexture) {
+      const sprite = new Sprite(iconTexture);
+      const iconSize = Math.min(pw, ph) * 0.55;
+      sprite.width = iconSize;
+      sprite.height = iconSize;
+      sprite.x = pw / 2 - iconSize / 2;
+      sprite.y = ph / 2 - iconSize / 2;
+      sprite.alpha = 0.7;
+      g.addChild(sprite);
+    }
+  }
+
   if (entity.recipe) {
     const label = entity.recipe.replace(/-/g, "\u2011");
     const fontSize = Math.max(7, Math.min(11, (TILE_PX * Math.min(tw, th)) / 4));
@@ -560,6 +585,16 @@ function drawGenericEntity(): Graphics {
 
 export function isBeltEntity(name: string): boolean {
   return BELT_ENTITIES.has(name) || UG_BELT_ENTITIES.has(name) || SPLITTER_ENTITIES.has(name);
+}
+
+// Pixel-per-tile used when generating entity-frame PNGs (see scripts/extract_entity_frames.py)
+const ENTITY_FRAME_TILE_PX = 64;
+
+export async function initEntityIcons(slugs: string[]): Promise<void> {
+  await Assets.load([
+    ...slugs.map((s) => `/icons/${s}.png`),
+    ...slugs.map((s) => `/entity-frames/${s}.png`),
+  ]);
 }
 
 // Chain highlight controller returned by renderLayout

@@ -172,6 +172,16 @@ const STYLE = `
   }
 `;
 
+function itemIcon(slug: string, size = 18): HTMLImageElement {
+  const img = document.createElement("img");
+  img.src = `/icons/${slug}.png`;
+  img.width = size;
+  img.height = size;
+  img.style.cssText = "vertical-align:middle;margin-right:4px;image-rendering:pixelated";
+  img.onerror = () => { img.style.display = "none"; };
+  return img;
+}
+
 function makeOption(value: string, defaultValue: string): HTMLOptionElement {
   const opt = document.createElement("option");
   opt.value = value;
@@ -197,8 +207,14 @@ function appendFlows(container: HTMLElement, flows: ItemFlow[], className: strin
     el.className = className;
     const tier = beltTierForRate(flow.rate);
     const rateColor = tier ? hexToCss(tier.color) : "#f88";
-    el.innerHTML =
-      `${prefix}<span class="tier-rate" style="color:${rateColor}">${flow.rate.toFixed(2)}/s</span> ${flow.item}`;
+    if (prefix) el.appendChild(document.createTextNode(prefix));
+    el.appendChild(itemIcon(flow.item));
+    const rateSpan = document.createElement("span");
+    rateSpan.className = "tier-rate";
+    rateSpan.style.color = rateColor;
+    rateSpan.textContent = `${flow.rate.toFixed(2)}/s`;
+    el.appendChild(rateSpan);
+    el.appendChild(document.createTextNode(` ${flow.item}`));
     container.appendChild(el);
   });
 }
@@ -283,6 +299,7 @@ export function renderSidebar(
     cb.value = inp;
     checkboxes.set(inp, cb);
     lbl.appendChild(cb);
+    lbl.appendChild(itemIcon(inp));
     lbl.appendChild(document.createTextNode(inp));
     inputsSection.appendChild(lbl);
   });
@@ -451,7 +468,8 @@ function renderResult(container: HTMLElement, result: SolverResult): void {
 
     const title = document.createElement("div");
     title.className = "machine-title";
-    title.textContent = `${machine.count.toFixed(2)} × ${machine.entity}`;
+    title.appendChild(itemIcon(machine.entity, 20));
+    title.appendChild(document.createTextNode(`${machine.count.toFixed(2)} × ${machine.entity}`));
     entry.appendChild(title);
 
     const recipe = document.createElement("div");

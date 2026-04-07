@@ -2,14 +2,23 @@ import { Container } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
-import { renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, TILE_PX, type HighlightController } from "./renderer/entities";
+import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, TILE_PX, type HighlightController } from "./renderer/entities";
 import { renderSidebar } from "./ui/sidebar";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity } from "./engine";
 
+const MACHINE_SLUGS = [
+  "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
+  "electric-furnace", "steel-furnace", "stone-furnace",
+  "chemical-plant", "oil-refinery", "centrifuge", "lab", "rocket-silo",
+  "foundry", "electromagnetic-plant", "cryogenic-plant", "biochamber", "biolab",
+  "recycler", "crusher", "beacon", "storage-tank", "electric-mining-drill",
+];
+
 async function main(): Promise<void> {
   await initEngine();
   const engine = getEngine();
+  await initEntityIcons(MACHINE_SLUGS);
 
   const container = document.getElementById("canvas-container");
   if (!container) throw new Error("Missing #canvas-container element");
