@@ -11,6 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ RS_OUT = REPO_ROOT / "crates" / "core" / "src" / "bus" / "balancer_library.rs"
 # Import the Python library directly
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(REPO_ROOT))
-from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplate, BalancerTemplateEntity  # noqa: E402
+from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplateEntity  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +40,11 @@ def key_to_const(n: int, m: int) -> str:
 
 def format_entity(e: BalancerTemplateEntity) -> str:
     """Render one BalancerTemplateEntity as a Rust struct literal."""
-    if e.io_type is None:
-        io_type = "None"
-    else:
-        io_type = f'Some("{e.io_type}")'
+    io_type = "None" if e.io_type is None else f'Some("{e.io_type}")'
     return (
-        f'    BalancerTemplateEntity {{ '
+        f"    BalancerTemplateEntity {{ "
         f'name: "{e.name}", x: {e.x}, y: {e.y}, '
-        f'direction: {e.direction}, io_type: {io_type} }},'
+        f"direction: {e.direction}, io_type: {io_type} }},"
     )
 
 
@@ -93,23 +91,40 @@ def generate_registry(templates: dict) -> str:
     lines.append("// Global registry")
     lines.append("// " + "-" * 75)
     lines.append("")
-    lines.append("/// Lazily-initialised map from (n_inputs, n_outputs) to [`BalancerTemplate`].")
-    lines.append("pub fn balancer_templates() -> &'static FxHashMap<(u32, u32), BalancerTemplate> {")
-    lines.append("    static MAP: OnceLock<FxHashMap<(u32, u32), BalancerTemplate>> = OnceLock::new();")
+    lines.append(
+        "/// Lazily-initialised map from (n_inputs, n_outputs) to [`BalancerTemplate`]."
+    )
+    lines.append(
+        "pub fn balancer_templates()"
+        " -> &'static FxHashMap<(u32, u32), BalancerTemplate> {"
+    )
+    lines.append(
+        "    static MAP: OnceLock<FxHashMap<(u32, u32), BalancerTemplate>>"
+        " = OnceLock::new();"
+    )
     lines.append("    MAP.get_or_init(build_templates)")
     lines.append("}")
     lines.append("")
-    lines.append(f"fn build_templates() -> FxHashMap<(u32, u32), BalancerTemplate> {{")
-    lines.append(f"    let mut m = FxHashMap::with_capacity_and_hasher({count}, Default::default());")
+    lines.append("fn build_templates() -> FxHashMap<(u32, u32), BalancerTemplate> {")
+    lines.append(
+        f"    let mut m = FxHashMap::with_capacity_and_hasher({count},"
+        " Default::default());"
+    )
 
-    for (n, m), tmpl in sorted(templates.items()):
-        prefix = key_to_const(n, m)
-        # Escape backslashes in the blueprint string (none expected, but be safe)
-        bp = tmpl.source_blueprint.replace('\\', '\\\\').replace('"', '\\"')
+    for (n, m_val), tmpl in sorted(templates.items()):
+        prefix = key_to_const(n, m_val)
+        bp = tmpl.source_blueprint.replace("\\", "\\\\").replace('"', '\\"')
         lines.append("")
-        lines.append(f"    m.insert(({n}, {m}), BalancerTemplate {{")
-        lines.append(f"        n_inputs: {tmpl.n_inputs}, n_outputs: {tmpl.n_outputs}, width: {tmpl.width}, height: {tmpl.height},")
-        lines.append(f"        entities: {prefix}_ENTITIES, input_tiles: {prefix}_INPUT, output_tiles: {prefix}_OUTPUT,")
+        lines.append(f"    m.insert(({n}, {m_val}), BalancerTemplate {{")
+        lines.append(
+            f"        n_inputs: {tmpl.n_inputs}, n_outputs: {tmpl.n_outputs},"
+            f" width: {tmpl.width}, height: {tmpl.height},"
+        )
+        lines.append(
+            f"        entities: {prefix}_ENTITIES,"
+            f" input_tiles: {prefix}_INPUT,"
+            f" output_tiles: {prefix}_OUTPUT,"
+        )
         lines.append(f'        source_blueprint: "{bp}",')
         lines.append("    });")
 
@@ -166,7 +181,10 @@ def split_rust_file(text: str) -> tuple[str, str]:
 
 def main() -> None:
     print(f"Reading Python library from: {PY_SRC}")
-    print(f"  Found {len(BALANCER_TEMPLATES)} templates: {sorted(BALANCER_TEMPLATES.keys())}")
+    print(
+        f"  Found {len(BALANCER_TEMPLATES)} templates:"
+        f" {sorted(BALANCER_TEMPLATES.keys())}"
+    )
 
     print(f"Reading existing Rust file from: {RS_OUT}")
     existing = RS_OUT.read_text(encoding="utf-8")
@@ -176,8 +194,6 @@ def main() -> None:
     data_section = generate_data_section(BALANCER_TEMPLATES)
     registry_section = generate_registry(BALANCER_TEMPLATES)
 
-    # Update the test that checks count
-    # Find "assert_eq!(templates.len(), NN);" and replace with new count
     count = len(BALANCER_TEMPLATES)
 
     new_content = (
@@ -190,10 +206,9 @@ def main() -> None:
     )
 
     # Fix the template count assertion in the tests
-    import re
     new_content = re.sub(
-        r'assert_eq!\(templates\.len\(\), \d+\)',
-        f'assert_eq!(templates.len(), {count})',
+        r"assert_eq!\(templates\.len\(\), \d+\)",
+        f"assert_eq!(templates.len(), {count})",
         new_content,
     )
 

@@ -307,7 +307,6 @@ export function renderSidebar(
     opt.textContent = label;
     beltSelect.appendChild(opt);
   });
-  if (urlState.belt) beltSelect.value = urlState.belt;
   inner.appendChild(beltSelect);
 
   const layoutBtn = document.createElement("button");
@@ -338,6 +337,7 @@ export function renderSidebar(
   checkboxes.forEach((cb, name) => {
     cb.checked = urlState.inputs.includes(name);
   });
+  if (urlState.belt) beltSelect.value = urlState.belt;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let previousItem = urlState.item;
