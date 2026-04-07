@@ -31,24 +31,13 @@ OUT_PATH = Path(__file__).parent.parent / "src" / "bus" / "balancer_library.py"
 FACTORIO_NORTH, FACTORIO_EAST, FACTORIO_SOUTH, FACTORIO_WEST = 0, 2, 4, 6
 
 # Shapes to generate: (N inputs, M outputs)
+# Cover all combinations up to 5×5 (except 1×1 identity and 5×5
+# which is too hard for the SAT solver in reasonable time).
 SHAPES: list[tuple[int, int]] = [
-    (1, 2),
-    (1, 3),
-    (1, 4),
-    (2, 1),
-    (2, 2),
-    (2, 3),
-    (2, 4),
-    (2, 5),
-    (3, 1),
-    (3, 2),
-    (3, 3),
-    (3, 4),
-    (4, 1),
-    (4, 2),
-    (4, 3),
-    (4, 4),
-    (5, 2),
+    (n, m)
+    for n in range(1, 6)
+    for m in range(1, 6)
+    if (n, m) not in ((1, 1), (5, 5))
 ]
 
 
