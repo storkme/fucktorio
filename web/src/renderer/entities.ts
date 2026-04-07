@@ -703,7 +703,7 @@ export function renderLayout(
           continue;
         }
         if (allBelt.has(k)) {
-          g.alpha = 1.0;
+          g.alpha = 0.5;
         } else if (inserters.has(k)) {
           g.alpha = 0.9;
         } else if (machines.has(k)) {

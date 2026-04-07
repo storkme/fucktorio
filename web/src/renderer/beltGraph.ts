@@ -313,6 +313,47 @@ export function findAdjacentMachines(
   return machines;
 }
 
+// Corner arc parameters lookup: key = "inDir_outDir"
+// Arc center offsets (as pixel coords relative to tile origin px,py), startAngle, endAngle,
+// anticlockwise flag — all in canvas coordinates (y increases downward).
+interface CornerArcDef {
+  cx: (px: number, py: number, s: number) => number;
+  cy: (px: number, py: number, s: number) => number;
+  startAngle: number;
+  endAngle: number;
+  anticlockwise: boolean;
+}
+
+const CORNER_ARC_TABLE: Record<string, CornerArcDef> = {
+  // CW turns (anticlockwise=false)
+  East_South:  { cx: (px) => px,   cy: (_px, py, s) => py + s, startAngle: -Math.PI / 2,     endAngle: 0,              anticlockwise: false },
+  South_West:  { cx: (px) => px,   cy: (_px, py)    => py,     startAngle: 0,                 endAngle: Math.PI / 2,    anticlockwise: false },
+  West_North:  { cx: (px, _py, s) => px + s, cy: (_px, py) => py, startAngle: Math.PI / 2,  endAngle: Math.PI,         anticlockwise: false },
+  North_East:  { cx: (px, _py, s) => px + s, cy: (_px, py, s) => py + s, startAngle: Math.PI, endAngle: 3 * Math.PI / 2, anticlockwise: false },
+  // CCW turns (anticlockwise=true)
+  East_North:  { cx: (px) => px,   cy: (_px, py)    => py,     startAngle: Math.PI / 2,       endAngle: 0,              anticlockwise: true  },
+  North_West:  { cx: (px) => px,   cy: (_px, py, s) => py + s, startAngle: 0,                 endAngle: -Math.PI / 2,   anticlockwise: true  },
+  West_South:  { cx: (px, _py, s) => px + s, cy: (_px, py, s) => py + s, startAngle: -Math.PI / 2, endAngle: -Math.PI, anticlockwise: true  },
+  South_East:  { cx: (px, _py, s) => px + s, cy: (_px, py) => py, startAngle: Math.PI,       endAngle: Math.PI / 2,    anticlockwise: true  },
+};
+
+/** Detect if belt at key k is a 90° corner; returns {inDir, outDir} or null. */
+function getCornerTurn(
+  k: string,
+  graph: BeltGraph,
+): { inDir: string; outDir: string } | null {
+  const e = graph.nodes.get(k);
+  if (!e || !BELT_NAMES.has(e.name)) return null;
+  const outDir = e.direction ?? "North";
+  for (const edge of graph.inEdges.get(k) ?? []) {
+    const src = graph.nodes.get(edge.from);
+    if (!src) continue;
+    const inDir = src.direction ?? "North";
+    if (`${inDir}_${outDir}` in CORNER_ARC_TABLE) return { inDir, outDir };
+  }
+  return null;
+}
+
 function drawDashedLine(
   g: Graphics,
   x1: number,
@@ -342,6 +383,31 @@ function drawDashedLine(
   }
 }
 
+function drawDashedArc(
+  g: Graphics,
+  cx: number, cy: number, r: number,
+  startAngle: number, endAngle: number,
+  anticlockwise: boolean,
+  dashAngleRad: number, gapAngleRad: number,
+): void {
+  let span = anticlockwise ? startAngle - endAngle : endAngle - startAngle;
+  if (span < 0) span += 2 * Math.PI;
+  let pos = 0;
+  let drawing = true;
+  while (pos < span) {
+    const segSpan = Math.min(drawing ? dashAngleRad : gapAngleRad, span - pos);
+    if (drawing) {
+      const segStart = anticlockwise ? startAngle - pos : startAngle + pos;
+      const segEnd = anticlockwise ? segStart - segSpan : segStart + segSpan;
+      const sx = cx + r * Math.cos(segStart);
+      const sy = cy + r * Math.sin(segStart);
+      g.moveTo(sx, sy).arc(cx, cy, r, segStart, segEnd, anticlockwise).stroke();
+    }
+    pos += segSpan;
+    drawing = !drawing;
+  }
+}
+
 export function drawBeltNetworkOverlay(
   g: Graphics,
   downstream: Set<string>,
@@ -350,8 +416,9 @@ export function drawBeltNetworkOverlay(
   graph: BeltGraph,
 ): void {
   const s = TILE_PX;
+  const r = s / 2; // corner arc radius (entry/exit at edge centres)
 
-  // Upstream (dashed) — drawn first so downstream appears on top
+  // Upstream (subtle dashed) — drawn first so downstream renders on top
   for (const k of upstream) {
     if (downstream.has(k)) continue;
     const e = graph.nodes.get(k);
@@ -363,20 +430,21 @@ export function drawBeltNetworkOverlay(
     const cx = px + s / 2;
     const cy = py + s / 2;
 
-    g.rect(px, py, s, s).fill({ color: chev, alpha: 0.1 });
-    g.setStrokeStyle({ width: 2, color: chev, alpha: 0.55, cap: "round" });
-    drawDashedLine(
-      g,
-      cx - dx * s * 0.3,
-      cy - dy * s * 0.3,
-      cx + dx * s * 0.3,
-      cy + dy * s * 0.3,
-      5,
-      3,
-    );
+    g.rect(px, py, s, s).fill({ color: chev, alpha: 0.05 });
+    g.setStrokeStyle({ width: 1.5, color: chev, alpha: 0.28, cap: "round" });
+
+    const corner = getCornerTurn(k, graph);
+    if (corner) {
+      const def = CORNER_ARC_TABLE[`${corner.inDir}_${corner.outDir}`];
+      const acx = def.cx(px, py, s);
+      const acy = def.cy(px, py, s);
+      drawDashedArc(g, acx, acy, r, def.startAngle, def.endAngle, def.anticlockwise, 5 / r, 3 / r);
+    } else {
+      drawDashedLine(g, cx - dx * s * 0.45, cy - dy * s * 0.45, cx + dx * s * 0.45, cy + dy * s * 0.45, 5, 3);
+    }
   }
 
-  // Downstream (solid)
+  // Downstream (solid, brighter)
   for (const k of downstream) {
     const e = graph.nodes.get(k);
     if (!e) continue;
@@ -387,11 +455,22 @@ export function drawBeltNetworkOverlay(
     const cx = px + s / 2;
     const cy = py + s / 2;
 
-    g.rect(px, py, s, s).fill({ color: chev, alpha: 0.22 });
-    g.setStrokeStyle({ width: 3, color: chev, alpha: 0.9, cap: "round" });
-    g.moveTo(cx - dx * s * 0.3, cy - dy * s * 0.3)
-      .lineTo(cx + dx * s * 0.3, cy + dy * s * 0.3)
-      .stroke();
+    g.rect(px, py, s, s).fill({ color: chev, alpha: 0.2 });
+    g.setStrokeStyle({ width: 2, color: chev, alpha: 0.85, cap: "round" });
+
+    const corner = getCornerTurn(k, graph);
+    if (corner) {
+      const def = CORNER_ARC_TABLE[`${corner.inDir}_${corner.outDir}`];
+      const acx = def.cx(px, py, s);
+      const acy = def.cy(px, py, s);
+      const sx = acx + r * Math.cos(def.startAngle);
+      const sy = acy + r * Math.sin(def.startAngle);
+      g.moveTo(sx, sy).arc(acx, acy, r, def.startAngle, def.endAngle, def.anticlockwise).stroke();
+    } else {
+      g.moveTo(cx - dx * s * 0.45, cy - dy * s * 0.45)
+        .lineTo(cx + dx * s * 0.45, cy + dy * s * 0.45)
+        .stroke();
+    }
   }
 
   // White border around the hovered tile
@@ -399,7 +478,7 @@ export function drawBeltNetworkOverlay(
   if (he) {
     const px = (he.x ?? 0) * s;
     const py = (he.y ?? 0) * s;
-    g.setStrokeStyle({ width: 2, color: 0xffffff, alpha: 0.85 });
+    g.setStrokeStyle({ width: 2, color: 0xffffff, alpha: 0.8 });
     g.rect(px + 1, py + 1, s - 2, s - 2).stroke();
   }
 }
