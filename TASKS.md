@@ -40,6 +40,16 @@ Layout bugs are hard to diagnose because the placement engine doesn't emit inter
 - [ ] Validation issue overlay — render validation errors/warnings as positioned markers on the web app canvas (using `x`/`y` from `ValidationIssue`)
 - [ ] Export intermediate layout states — snapshot `LayoutResult` at each routing phase for step-through debugging
 
+## Visual Polish: Game Icons & Entity Graphics
+
+The web app currently renders entities as colored rectangles. Using actual Factorio sprites/icons would make layouts much easier to read and validate visually.
+
+- [ ] Research sprite extraction — Factorio game assets are in `.png` sprite sheets; figure out legal/practical way to extract or reference them (factorio-icon-browser, wiki assets, or ship a curated subset)
+- [ ] Item icons in sidebar — show item icons next to names in the item picker, input checkboxes, and solver result display
+- [ ] Entity sprites on canvas — render machines, belts, inserters, pipes etc. with their Factorio sprites instead of colored boxes (direction-aware)
+- [ ] Belt direction indicators — at minimum, add arrow overlays showing belt flow direction if full sprites aren't feasible
+- [ ] Recipe icons — show recipe icons on machines (the output item icon overlaid on the machine sprite)
+
 ## Research: Verifactory
 
 [verifactory](https://github.com/alegnani/verifactory) is a Rust library for formal verification of Factorio blueprints using bounded model checking. Worth investigating what it validates that we don't — particularly around flow rate analysis.
