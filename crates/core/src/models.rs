@@ -75,11 +75,13 @@ pub struct PlacedEntity {
 /// Everything the layout engine produces — no rate data.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LayoutResult {
     pub entities: Vec<PlacedEntity>,
     #[serde(default)]
     pub width: i32,
     #[serde(default)]
     pub height: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }

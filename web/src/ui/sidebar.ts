@@ -307,6 +307,7 @@ export function renderSidebar(
     opt.textContent = label;
     beltSelect.appendChild(opt);
   });
+  if (urlState.belt) beltSelect.value = urlState.belt;
   inner.appendChild(beltSelect);
 
   const layoutBtn = document.createElement("button");
@@ -378,6 +379,7 @@ export function renderSidebar(
       rate: targetRate,
       machine: machineSelect.value,
       inputs: availableInputs,
+      belt: beltSelect.value || null,
     });
 
     resultContainer.innerHTML = "";
@@ -408,6 +410,14 @@ export function renderSidebar(
       currentLayout = engine.buildLayout(currentResult, maxTier);
       callbacks.renderLayout(currentLayout);
       blueprintSection.style.display = "block";
+      if (currentLayout.warnings?.length) {
+        for (const w of currentLayout.warnings) {
+          const wDiv = document.createElement("div");
+          wDiv.className = "result-error";
+          wDiv.textContent = `\u26A0 ${w}`;
+          resultContainer.appendChild(wDiv);
+        }
+      }
     } catch (err) {
       const errDiv = document.createElement("div");
       errDiv.className = "result-error";

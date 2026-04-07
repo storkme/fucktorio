@@ -130,6 +130,19 @@ pub fn build_bus_layout(
     // Place power poles
     let pole_entities = place_poles(width, max_y, Some(occupied), Some(machine_centers));
 
+    // Check for missing balancer templates and collect warnings
+    let mut warnings = Vec::new();
+    let templates = crate::bus::balancer_library::balancer_templates();
+    for fam in &families {
+        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
+        if !templates.contains_key(&shape_key) {
+            warnings.push(format!(
+                "No {}→{} balancer template for {}; producer outputs are disconnected",
+                fam.shape.0, fam.shape.1, fam.item
+            ));
+        }
+    }
+
     // Combine all entities: row_entities + bus_entities + pole_entities
     let mut all_entities = Vec::new();
     all_entities.extend(row_entities);
@@ -140,6 +153,7 @@ pub fn build_bus_layout(
         entities: all_entities,
         width,
         height: max_y,
+        warnings,
     })
 }
 
@@ -575,5 +589,77 @@ mod tests {
             .filter(|i| i.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "Expected 0 errors, got {}", errors.len());
+    }
+
+    #[test]
+    fn test_ecircuit_am1_tapoffs() {
+        // Regression: 5/s electronic-circuit with AM1 + yellow belt had a gap
+        // at y=14 where the copper-cable feeder couldn't cross the iron-ore trunk.
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = [
+            "copper-plate", "steel-plate", "stone", "coal",
+            "water", "crude-oil", "iron-ore", "copper-ore",
+        ].iter().map(|s| s.to_string()).collect();
+
+        let sr = solve("electronic-circuit", 5.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Should have no warnings
+        assert!(layout.warnings.is_empty(), "Unexpected warnings: {:?}", layout.warnings);
+
+        // Check that every feeder-carrying belt in the bus zone (x < bus_width)
+        // is connected — no isolated single belts. We verify by checking that
+        // the layout has a reasonable entity count (feeder paths add entities).
+        let belt_count = layout.entities.iter()
+            .filter(|e| e.name.contains("belt"))
+            .count();
+        assert!(belt_count > 50, "Expected >50 belt entities, got {}", belt_count);
+
+        // Check no entity overlaps
+        let mut positions: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+        let mut overlaps = Vec::new();
+        for e in &layout.entities {
+            if !positions.insert((e.x, e.y)) {
+                overlaps.push(format!("({},{}) {}", e.x, e.y, e.name));
+            }
+        }
+        assert!(overlaps.is_empty(), "Entity overlaps: {}", overlaps.join("; "));
+    }
+
+    #[test]
+    fn test_ecircuit_10s_asm1_yellow_from_plates() {
+        // Regression: 10/s electronic-circuit with AM1 + yellow belt from plates
+        // had missing (3,5) balancer template causing disconnected feeders.
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = [
+            "iron-plate", "copper-plate", "steel-plate", "stone", "coal",
+            "water", "crude-oil", "iron-ore", "copper-ore",
+        ].iter().map(|s| s.to_string()).collect();
+
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Should have no warnings about missing templates
+        assert!(
+            layout.warnings.is_empty(),
+            "Expected no warnings, got: {:?}",
+            layout.warnings
+        );
+
+        // Layout should have a reasonable number of entities (was ~1048 after fix,
+        // was ~897 when feeders were broken/skipped)
+        assert!(
+            layout.entities.len() > 950,
+            "Expected >950 entities (full layout with feeders), got {}",
+            layout.entities.len()
+        );
     }
 }

@@ -1527,44 +1527,46 @@ fn route_intermediate_lane(
         None
     };
 
-    // Output returns
-    for &pri in &all_producers {
-        if pri >= row_spans.len() {
-            continue;
-        }
-        let out_y = row_spans[pri].output_belt_y;
-        if Some(out_y) == balance_y {
-            // Splitter for lane balancing
-            let splitter_name = splitter_for_belt(horiz_belt);
-            entities.push(PlacedEntity {
-                name: splitter_name.to_string(),
-                x: bw,
-                y: out_y - 1,
-                direction: EntityDirection::West,
-                carries: Some(lane.item.clone()),
-                segment_id: trunk_seg_id.clone(),
-                ..Default::default()
-            });
-            // Normal return via A*-routed path
-            let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
-            if let Some(ret_path) = paths.get(&ret_key) {
-                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
+    // Output returns — skip when lane has a family balancer (feeders handle routing)
+    if lane.family_balancer_range.is_none() {
+        for &pri in &all_producers {
+            if pri >= row_spans.len() {
+                continue;
             }
-            // Balance route
-            let split_y = out_y - 1;
-            let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
-            if let Some(bal_path) = paths.get(&bal_key) {
-                let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)));
-                if let Some(last) = bal_entities.last_mut() {
-                    last.direction = EntityDirection::East;
+            let out_y = row_spans[pri].output_belt_y;
+            if Some(out_y) == balance_y {
+                // Splitter for lane balancing
+                let splitter_name = splitter_for_belt(horiz_belt);
+                entities.push(PlacedEntity {
+                    name: splitter_name.to_string(),
+                    x: bw,
+                    y: out_y - 1,
+                    direction: EntityDirection::West,
+                    carries: Some(lane.item.clone()),
+                    segment_id: trunk_seg_id.clone(),
+                    ..Default::default()
+                });
+                // Normal return via A*-routed path
+                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                if let Some(ret_path) = paths.get(&ret_key) {
+                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
                 }
-                entities.extend(bal_entities);
-            }
-        } else {
-            // Normal return
-            let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
-            if let Some(ret_path) = paths.get(&ret_key) {
-                entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
+                // Balance route
+                let split_y = out_y - 1;
+                let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
+                if let Some(bal_path) = paths.get(&bal_key) {
+                    let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)));
+                    if let Some(last) = bal_entities.last_mut() {
+                        last.direction = EntityDirection::East;
+                    }
+                    entities.extend(bal_entities);
+                }
+            } else {
+                // Normal return
+                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                if let Some(ret_path) = paths.get(&ret_key) {
+                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
+                }
             }
         }
     }
@@ -2011,6 +2013,17 @@ pub(crate) fn negotiate_and_route(
                 }
             }
 
+            // If a foreign trunk occupies the feeder landing column (input_x+1),
+            // mark it as a static obstacle so the trunk is forced underground,
+            // leaving the surface free for the feeder to land.
+            let landing_x = input_x + 1;
+            let has_foreign_trunk_at_landing = lanes.iter().any(|l| {
+                !l.is_fluid && l.item != fam.item && l.x == landing_x
+            });
+            if has_foreign_trunk_at_landing && landing_x < bw {
+                obstacles.insert((landing_x as i16, out_y as i16));
+            }
+
             // Feeder spec: A* horizontal WEST, priority=4
             if input_x < bw - 1 {
                 let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
@@ -2115,30 +2128,33 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Output returns: horizontal WEST, priority=4
-            for &pri in &all_producers {
-                if pri >= row_spans.len() {
-                    continue;
+            // Skip when lane has a family balancer — feeders handle routing instead.
+            if lane.family_balancer_range.is_none() {
+                for &pri in &all_producers {
+                    if pri >= row_spans.len() {
+                        continue;
+                    }
+                    let out_y = row_spans[pri].output_belt_y;
+                    let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                    id_to_key.insert(lane_id, ret_key);
+                    let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id,
+                        item_id,
+                        waypoints: wps,
+                        strategy: 2,
+                        priority: 4,
+                        y_constraint: Some(out_y as i16),
+                        x_constraint: None,
+                        flow_dir: fd,
+                    });
+                    lane_id += 1;
                 }
-                let out_y = row_spans[pri].output_belt_y;
-                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
-                id_to_key.insert(lane_id, ret_key);
-                let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
-                let fd = flow_dir(&wps);
-                specs.push(LaneSpec {
-                    id: lane_id,
-                    item_id,
-                    waypoints: wps,
-                    strategy: 2,
-                    priority: 4,
-                    y_constraint: Some(out_y as i16),
-                    x_constraint: None,
-                    flow_dir: fd,
-                });
-                lane_id += 1;
             }
 
             // Splitter balance return (Z-wrap), priority=4
-            if all_producers.len() >= 2 && x > 1 {
+            if lane.family_balancer_range.is_none() && all_producers.len() >= 2 && x > 1 {
                 if let Some(&last_pri) = all_producers.last() {
                     if last_pri < row_spans.len() {
                         let last_out_y = row_spans[last_pri].output_belt_y;
@@ -2289,26 +2305,29 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Output returns: horizontal WEST, priority=4
-            for &pri in &all_producers {
-                if pri >= row_spans.len() {
-                    continue;
+            // Skip when lane has a family balancer — feeders handle routing.
+            if lane.family_balancer_range.is_none() {
+                for &pri in &all_producers {
+                    if pri >= row_spans.len() {
+                        continue;
+                    }
+                    let out_y = row_spans[pri].output_belt_y;
+                    let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
+                    id_to_key.insert(lane_id, ret_key);
+                    let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id,
+                        item_id,
+                        waypoints: wps,
+                        strategy: 2,
+                        priority: 4,
+                        y_constraint: Some(out_y as i16),
+                        x_constraint: None,
+                        flow_dir: fd,
+                    });
+                    lane_id += 1;
                 }
-                let out_y = row_spans[pri].output_belt_y;
-                let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
-                id_to_key.insert(lane_id, ret_key);
-                let wps = vec![(bw as i16 - 1, out_y as i16), (x as i16 + 1, out_y as i16)];
-                let fd = flow_dir(&wps);
-                specs.push(LaneSpec {
-                    id: lane_id,
-                    item_id,
-                    waypoints: wps,
-                    strategy: 2,
-                    priority: 4,
-                    y_constraint: Some(out_y as i16),
-                    x_constraint: None,
-                    flow_dir: fd,
-                });
-                lane_id += 1;
             }
         }
     }
@@ -2907,7 +2926,7 @@ mod tests {
         // Should have surface pipes at source and tap-off y
         let pipe_entities: Vec<_> = entities
             .iter()
-            .filter(|e| e.name == "pipe" && e.carries.as_ref().map(|s| s.as_str()) == Some("water"))
+            .filter(|e| e.name == "pipe" && e.carries.as_deref() == Some("water"))
             .collect();
         assert_eq!(pipe_entities.len(), 2); // source_y=0 and tap_off_y=10
 
@@ -2950,7 +2969,7 @@ mod tests {
         // Then gap from 10 to 14 remaining (4 tiles), another pair at y=11 (input) and y=14 (output)
         let ptg_inputs: Vec<_> = entities
             .iter()
-            .filter(|e| e.name == "pipe-to-ground" && e.io_type.as_ref().map(|s| s.as_str()) == Some("input"))
+            .filter(|e| e.name == "pipe-to-ground" && e.io_type.as_deref() == Some("input"))
             .collect();
         assert_eq!(ptg_inputs.len(), 2);
     }
@@ -3228,7 +3247,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, &[lane.clone()], &[row_span], 3, None, None);
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None);
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -3285,7 +3304,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, &[lane.clone()], &[row_span], 4, None, None);
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None);
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));

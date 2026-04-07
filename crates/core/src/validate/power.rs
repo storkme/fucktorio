@@ -113,6 +113,7 @@ mod tests {
             entities,
             width: 20,
             height: 20,
+            ..Default::default()
         }
     }
 

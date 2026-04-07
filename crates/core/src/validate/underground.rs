@@ -384,7 +384,7 @@ mod tests {
     }
 
     fn layout(entities: Vec<PlacedEntity>) -> LayoutResult {
-        LayoutResult { entities, width: 20, height: 20 }
+        LayoutResult { entities, width: 20, height: 20, ..Default::default() }
     }
 
     // --- check_underground_belt_pairs ---

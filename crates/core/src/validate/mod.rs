@@ -172,6 +172,7 @@ mod tests {
             entities: vec![],
             width: 0,
             height: 0,
+            ..Default::default()
         }
     }
 
@@ -190,6 +191,7 @@ mod tests {
             }],
             width: 10,
             height: 10,
+            ..Default::default()
         }
     }
 

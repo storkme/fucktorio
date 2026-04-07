@@ -2400,6 +2400,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let pairs = build_ug_pairs(&layout);
         assert_eq!(pairs.get(&(0, 0)), Some(&(3, 0)));
@@ -2415,6 +2416,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let pairs = build_ug_pairs(&layout);
         assert!(pairs.is_empty());
@@ -2457,6 +2459,7 @@ mod tests {
             ],
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_belt_connectivity(&lr, None);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2469,6 +2472,7 @@ mod tests {
             entities: vec![machine(0, 0, "iron-gear-wheel")],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_connectivity(&lr, None);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2484,6 +2488,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_connectivity(&lr, None);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2501,6 +2506,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_connectivity(&lr, None);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2523,6 +2529,7 @@ mod tests {
             ],
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_belt_flow_path(&lr, None, LayoutStyle::Spaghetti);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2543,6 +2550,7 @@ mod tests {
             ],
             width: 50,
             height: 50,
+            ..Default::default()
         };
         let issues = check_belt_flow_path(&lr, None, LayoutStyle::Spaghetti);
         let errors: Vec<_> = issues
@@ -2563,6 +2571,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_direction_continuity(&lr).is_empty());
     }
@@ -2576,6 +2585,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_direction_continuity(&lr).is_empty());
     }
@@ -2589,6 +2599,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_direction_continuity(&lr);
         let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
@@ -2605,6 +2616,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_direction_continuity(&lr);
         let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
@@ -2622,6 +2634,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_throughput(&lr).is_empty());
     }
@@ -2635,6 +2648,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_throughput(&lr);
         let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
@@ -2654,6 +2668,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_junctions(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2670,6 +2685,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_junctions(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2685,6 +2701,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_junctions(&lr).is_empty());
     }
@@ -2698,6 +2715,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_junctions(&lr).is_empty());
     }
@@ -2725,6 +2743,7 @@ mod tests {
             entities,
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_belt_flow_reachability(&lr, Some(&sr), LayoutStyle::Spaghetti);
         let errors: Vec<_> = issues
@@ -2755,6 +2774,7 @@ mod tests {
             entities,
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_belt_flow_reachability(&lr, Some(&sr), LayoutStyle::Spaghetti);
         let errors: Vec<_> = issues
@@ -2788,6 +2808,7 @@ mod tests {
             entities,
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_belt_flow_reachability(&lr, Some(&sr), LayoutStyle::Spaghetti);
         let errors: Vec<_> = issues
@@ -2808,6 +2829,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_underground_belt_pairs(&lr).is_empty());
     }
@@ -2818,6 +2840,7 @@ mod tests {
             entities: vec![ug_belt(0, 0, EntityDirection::East, "input")],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2831,6 +2854,7 @@ mod tests {
             entities: vec![ug_belt(5, 0, EntityDirection::East, "output")],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2848,6 +2872,7 @@ mod tests {
             ],
             width: 20,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2863,6 +2888,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2878,6 +2904,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2894,6 +2921,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_pairs(&lr);
         let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
@@ -2911,6 +2939,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_underground_belt_sideloading(&lr).is_empty());
     }
@@ -2924,6 +2953,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_sideloading(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2940,6 +2970,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_underground_belt_sideloading(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -2955,6 +2986,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_underground_belt_sideloading(&lr).is_empty());
     }
@@ -2971,6 +3003,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_loops(&lr).is_empty());
     }
@@ -2987,6 +3020,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_loops(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -3005,6 +3039,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_item_isolation(&lr).is_empty());
     }
@@ -3018,6 +3053,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_item_isolation(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -3050,6 +3086,7 @@ mod tests {
             entities: vec![belt_e, ins],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_belt_inserter_conflict(&lr).is_empty());
     }
@@ -3085,6 +3122,7 @@ mod tests {
             entities: vec![belt_e, ins1, ins2],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_belt_inserter_conflict(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -3161,6 +3199,7 @@ mod tests {
             entities,
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_lane_throughput(&lr, Some(&sr));
         assert!(issues.is_empty(), "unexpected issues: {:?}", issues);
@@ -3172,6 +3211,7 @@ mod tests {
             entities: vec![],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         assert!(check_lane_throughput(&lr, None).is_empty());
     }

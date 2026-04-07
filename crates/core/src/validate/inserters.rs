@@ -224,6 +224,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -253,6 +254,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -282,6 +284,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -311,6 +314,7 @@ mod tests {
             ],
             width: 20,
             height: 20,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -340,6 +344,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -369,6 +374,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -391,6 +397,7 @@ mod tests {
             }],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, None);
         assert_eq!(issues.len(), 1);
@@ -420,6 +427,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, None);
         assert_eq!(issues.len(), 0);
@@ -451,6 +459,7 @@ mod tests {
             }],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, Some(&sr));
         assert_eq!(issues.len(), 0, "fluid-only machine should be skipped");
@@ -482,6 +491,7 @@ mod tests {
             }],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, Some(&sr));
         assert_eq!(issues.len(), 1, "mixed recipe still needs an inserter");
@@ -511,6 +521,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, None);
         assert_eq!(issues.len(), 0, "long-handed inserter at -2 should satisfy chain");
@@ -540,6 +551,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_direction(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
@@ -573,6 +585,7 @@ mod tests {
             ],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let dir_issues = check_inserter_direction(&lr);
         let chain_issues = check_inserter_chains(&lr, None);
@@ -594,6 +607,7 @@ mod tests {
             }],
             width: 10,
             height: 10,
+            ..Default::default()
         };
         let issues = check_inserter_chains(&lr, None);
         // Without solver context, we can't know it's fluid-only → should flag

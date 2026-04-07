@@ -364,11 +364,11 @@ pub fn astar_inner(
                     continue;
                 }
             }
-            // Allow reaching goal tiles on obstacles only for x_constrained
-            // (trunk) routing — trunks need to reach goals that are promoted
-            // by higher-priority tap-offs.  Other specs (mergers) must not
-            // place surface entities on obstacle tiles.
-            let goal_on_obstacle_ok = x_constraint.is_some() && goals.contains(&(nx, ny));
+            // Allow reaching goal tiles on obstacles for constrained specs:
+            // x_constrained (trunks) need to reach goals promoted by tap-offs,
+            // y_constrained (feeders) need to reach goals on trunk tiles.
+            // Unconstrained specs (mergers) must not place on obstacle tiles.
+            let goal_on_obstacle_ok = (x_constraint.is_some() || y_constraint.is_some()) && goals.contains(&(nx, ny));
             if obstacles.contains(&(nx, ny)) && !goal_on_obstacle_ok {
                 continue;
             }

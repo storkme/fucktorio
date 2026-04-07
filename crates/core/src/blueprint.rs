@@ -126,6 +126,7 @@ mod tests {
             ],
             width: 4,
             height: 1,
+            ..Default::default()
         };
         let s = export(&layout, "test");
 

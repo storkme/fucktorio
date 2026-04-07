@@ -4,6 +4,8 @@ export interface FormState {
   /** null means "no machine in URL — caller should derive from item". */
   machine: string | null;
   inputs: string[];
+  /** Max belt tier override, e.g. "transport-belt". null = auto. */
+  belt: string | null;
 }
 
 export const DEFAULT_INPUTS: string[] = [
@@ -31,8 +33,9 @@ export function readUrlState(): FormState {
   const machine = params.get("machine");
   const inParam = params.get("in");
   const inputs = inParam ? inParam.split(",").filter((s) => s.length > 0) : DEFAULT_INPUTS;
+  const belt = params.get("belt");
 
-  return { item, rate, machine, inputs };
+  return { item, rate, machine, inputs, belt };
 }
 
 export function writeUrlState(state: Omit<FormState, "machine"> & { machine: string }): void {
@@ -41,7 +44,8 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
     state.rate === DEFAULT_RATE &&
     state.machine === DEFAULT_MACHINE &&
     state.inputs.length === DEFAULT_INPUTS.length &&
-    state.inputs.every((v, i) => v === DEFAULT_INPUTS[i]);
+    state.inputs.every((v, i) => v === DEFAULT_INPUTS[i]) &&
+    !state.belt;
 
   if (isDefault) {
     history.replaceState(null, "", window.location.pathname);
@@ -53,5 +57,6 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
   params.set("rate", String(state.rate));
   params.set("machine", state.machine);
   params.set("in", state.inputs.join(","));
+  if (state.belt) params.set("belt", state.belt);
   history.replaceState(null, "", "?" + params.toString());
 }
