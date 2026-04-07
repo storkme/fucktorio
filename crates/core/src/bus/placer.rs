@@ -451,6 +451,28 @@ pub(crate) fn build_one_row(
         }
     };
 
+    // Stamp throughput rates onto row entities based on their carried item.
+    let mut row_ents = row_ents;
+    {
+        let mut item_rates: FxHashMap<&str, f64> = FxHashMap::default();
+        for f in &spec.inputs {
+            item_rates.insert(&f.item, f.rate * count as f64);
+        }
+        for f in &spec.outputs {
+            item_rates.insert(&f.item, f.rate * count as f64);
+        }
+        for ent in &mut row_ents {
+            if ent.rate.is_some() {
+                continue;
+            }
+            if let Some(item) = &ent.carries {
+                if let Some(&r) = item_rates.get(item.as_str()) {
+                    ent.rate = Some(r);
+                }
+            }
+        }
+    }
+
     let machine_pitch: i32 = if spec.entity == "oil-refinery" { 5 } else { 3 };
     let gap = if lane_split { LANE_SPLIT_GAP } else { 0 };
     let row_width = bus_width + count as i32 * machine_pitch + gap;

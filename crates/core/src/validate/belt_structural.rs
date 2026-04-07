@@ -979,11 +979,7 @@ mod tests {
             x,
             y,
             direction: dir,
-            recipe: None,
-            io_type: None,
-            carries: None,
-            mirror: false,
-            segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -1008,12 +1004,8 @@ mod tests {
             name: name.to_string(),
             x,
             y,
-            direction: EntityDirection::North,
             recipe: Some(recipe.to_string()),
-            io_type: None,
-            carries: None,
-            mirror: false,
-            segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -1126,10 +1118,7 @@ mod tests {
             y: 0,
             direction: EntityDirection::East,
             io_type: Some("input".to_string()),
-            recipe: None,
-            carries: None,
-            mirror: false,
-            segment_id: None,
+            ..Default::default()
         };
         let lr = layout(vec![belt(0, 0, EntityDirection::East), ug_input]);
         assert!(check_belt_dead_ends(&lr).is_empty());
@@ -1169,9 +1158,7 @@ mod tests {
             direction: EntityDirection::East,
             io_type: Some("input".to_string()),
             carries: Some("iron-plate".to_string()),
-            recipe: None,
-            mirror: false,
-            segment_id: None,
+            ..Default::default()
         };
         let lr = layout(vec![ug_input, belt_carrying(1, 0, EntityDirection::East, "copper-plate")]);
         assert!(check_belt_item_isolation(&lr).is_empty());

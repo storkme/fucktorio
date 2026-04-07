@@ -111,6 +111,7 @@ mod tests {
                     carries: None,
                     mirror: false,
                     segment_id: None,
+                    ..Default::default()
                 },
                 PlacedEntity {
                     name: "transport-belt".into(),
@@ -122,6 +123,7 @@ mod tests {
                     carries: None,
                     mirror: false,
                     segment_id: None,
+                    ..Default::default()
                 },
             ],
             width: 4,

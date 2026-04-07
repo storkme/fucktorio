@@ -76,6 +76,7 @@ impl BalancerTemplateEntity {
             carries: item.map(|s| s.to_owned()),
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 }

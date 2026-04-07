@@ -91,6 +91,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -105,6 +106,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -193,6 +195,7 @@ mod tests {
                 carries: None,
                 mirror: false,
                 segment_id: None,
+                ..Default::default()
             },
             pole(5, 5),
         ]);
@@ -240,6 +243,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         };
         // No poles, but only a belt → the "No power poles" warning fires (not a per-entity warning)
         let lr = layout(vec![belt]);

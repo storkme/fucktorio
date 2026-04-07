@@ -358,6 +358,7 @@ fn make_pole(x: i32, y: i32) -> PlacedEntity {
         carries: None,
         mirror: false,
         segment_id: Some("pole".to_string()),
+        ..Default::default()
     }
 }
 

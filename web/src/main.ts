@@ -2,7 +2,7 @@ import { Container } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
-import { renderLayout, setItemColoring, TILE_PX } from "./renderer/entities";
+import { renderLayout, setItemColoring, TILE_PX, type HighlightController } from "./renderer/entities";
 import { renderSidebar } from "./ui/sidebar";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity } from "./engine";
@@ -32,20 +32,29 @@ async function main(): Promise<void> {
     tooltip.style.top = e.clientY - 10 + "px";
   });
 
+  let highlightCtrl: HighlightController | null = null;
+
   function onHover(entity: PlacedEntity | null): void {
     if (entity) {
       const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
       let html = `<b>${entity.name}</b>`;
       if (entity.direction) html += `<br>${dirArrow[entity.direction] ?? ""} ${entity.direction}`;
       if (entity.carries) html += `<br>carries: ${entity.carries}`;
+      if (entity.rate != null) html += `<br><span style="color:#b5cea8">${entity.rate.toFixed(1)}/s</span>`;
       if (entity.io_type) html += `<br>io: ${entity.io_type}`;
       if (entity.recipe) html += `<br>recipe: ${entity.recipe}`;
       if (entity.segment_id) html += `<br><span style="color:#9cdcfe">${entity.segment_id}</span>`;
       html += `<br>pos: ${entity.x ?? 0}, ${entity.y ?? 0}`;
       tooltip.innerHTML = html;
       tooltip.style.display = "block";
+
+      // Highlight the item chain this entity belongs to
+      if (highlightCtrl) {
+        highlightCtrl.highlightItem(highlightCtrl.chainKey(entity));
+      }
     } else {
       tooltip.style.display = "none";
+      if (highlightCtrl) highlightCtrl.highlightItem(null);
     }
   }
 
@@ -72,7 +81,7 @@ async function main(): Promise<void> {
     setItemColoring(colorCb.checked);
     if (lastLayout) {
       entityLayer.removeChildren();
-      renderLayout(lastLayout, entityLayer, onHover);
+      highlightCtrl = renderLayout(lastLayout, entityLayer, onHover);
     }
   });
 
@@ -99,7 +108,7 @@ async function main(): Promise<void> {
     lastLayout = layout;
     // Replace the DAG with the actual bus layout.
     drawGraph(viewport, null);
-    renderLayout(layout, entityLayer, onHover);
+    highlightCtrl = renderLayout(layout, entityLayer, onHover);
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {

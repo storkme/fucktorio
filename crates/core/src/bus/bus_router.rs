@@ -776,6 +776,7 @@ pub(crate) fn render_path(
     belt_name: &str,
     direction_hint: EntityDirection,
     segment_id: Option<String>,
+    rate: Option<f64>,
 ) -> Vec<PlacedEntity> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
     if path.is_empty() {
@@ -863,9 +864,14 @@ pub(crate) fn render_path(
         }
     }
 
-    if segment_id.is_some() {
+    if segment_id.is_some() || rate.is_some() {
         for ent in &mut entities {
-            ent.segment_id = segment_id.clone();
+            if segment_id.is_some() {
+                ent.segment_id = segment_id.clone();
+            }
+            if rate.is_some() {
+                ent.rate = rate;
+            }
         }
     }
 
@@ -925,7 +931,8 @@ pub(crate) fn render_family_input_paths(
         // Horizontal WEST feeder: A*-routed by the negotiator
         let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
         if let Some(feeder_path) = paths.get(&feeder_key) {
-            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West, Some(format!("family-input:{}", family.item)));
+            let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
+            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West, Some(format!("family-input:{}", family.item)), Some(per_producer_rate));
             entities.extend(feeder_entities);
         }
 
@@ -936,6 +943,7 @@ pub(crate) fn render_family_input_paths(
 
         // Turn: SOUTH belt at (input_x, out_y), then descend to (input_x, origin_y - 1)
         let fam_input_seg_id = Some(format!("family-input:{}", family.item));
+        let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
         entities.push(PlacedEntity {
             name: belt_tier.to_string(),
             x: input_x,
@@ -943,6 +951,7 @@ pub(crate) fn render_family_input_paths(
             direction: EntityDirection::South,
             carries: Some(family.item.clone()),
             segment_id: fam_input_seg_id.clone(),
+            rate: Some(per_producer_rate),
             ..Default::default()
         });
 
@@ -954,6 +963,7 @@ pub(crate) fn render_family_input_paths(
                 direction: EntityDirection::South,
                 carries: Some(family.item.clone()),
                 segment_id: fam_input_seg_id.clone(),
+                rate: Some(per_producer_rate),
                 ..Default::default()
             });
         }
@@ -1041,6 +1051,7 @@ pub(crate) fn merge_output_rows(
                 direction: EntityDirection::East,
                 carries: Some(item.to_string()),
                 segment_id: merger_seg_id.clone(),
+                rate: Some(total_rate),
                 ..Default::default()
             });
         }
@@ -1054,6 +1065,7 @@ pub(crate) fn merge_output_rows(
                 direction: EntityDirection::South,
                 carries: Some(item.to_string()),
                 segment_id: merger_seg_id.clone(),
+                rate: Some(total_rate),
                 ..Default::default()
             });
         }
@@ -1088,6 +1100,7 @@ pub(crate) fn merge_output_rows(
                     direction: EntityDirection::West,
                     carries: Some(item.to_string()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(total_rate),
                     ..Default::default()
                 });
             }
@@ -1103,6 +1116,7 @@ pub(crate) fn merge_output_rows(
                     direction: EntityDirection::South,
                     carries: Some(item.to_string()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(total_rate),
                     ..Default::default()
                 });
             }
@@ -1114,6 +1128,7 @@ pub(crate) fn merge_output_rows(
             direction: EntityDirection::South,
             carries: Some(item.to_string()),
             segment_id: merger_seg_id.clone(),
+            rate: Some(total_rate),
             ..Default::default()
         });
         y_cursor += 1;
@@ -1127,6 +1142,7 @@ pub(crate) fn merge_output_rows(
                 direction: EntityDirection::South,
                 carries: Some(item.to_string()),
                 segment_id: merger_seg_id.clone(),
+                rate: Some(total_rate),
                 ..Default::default()
             });
         }
@@ -1197,6 +1213,7 @@ pub(crate) fn place_merger_block(
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(lane.rate),
                     ..Default::default()
                 });
             }
@@ -1227,6 +1244,7 @@ pub(crate) fn place_merger_block(
                         direction: EntityDirection::West,
                         carries: Some(item.clone()),
                         segment_id: merger_seg_id.clone(),
+                        rate: Some(total_rate),
                         ..Default::default()
                     });
                 }
@@ -1239,6 +1257,7 @@ pub(crate) fn place_merger_block(
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(total_rate),
                     ..Default::default()
                 });
 
@@ -1250,6 +1269,7 @@ pub(crate) fn place_merger_block(
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(total_rate),
                     ..Default::default()
                 });
 
@@ -1261,6 +1281,7 @@ pub(crate) fn place_merger_block(
                     direction: EntityDirection::South,
                     carries: Some(item.clone()),
                     segment_id: merger_seg_id.clone(),
+                    rate: Some(total_rate),
                     ..Default::default()
                 });
 
@@ -1278,6 +1299,7 @@ pub(crate) fn place_merger_block(
                         direction: EntityDirection::South,
                         carries: Some(item.clone()),
                         segment_id: merger_seg_id.clone(),
+                        rate: Some(total_rate),
                         ..Default::default()
                     });
                 }
@@ -1385,6 +1407,7 @@ fn route_belt_lane(
             io_type: Some("input".to_string()),
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1395,6 +1418,7 @@ fn route_belt_lane(
             io_type: Some("output".to_string()),
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
     }
@@ -1409,7 +1433,7 @@ fn route_belt_lane(
         };
         let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
         if let Some(trunk_path) = paths.get(&trunk_key) {
-            entities.extend(render_path(trunk_path, &lane.item, tier, EntityDirection::South, trunk_seg_id.clone()));
+            entities.extend(render_path(trunk_path, &lane.item, tier, EntityDirection::South, trunk_seg_id.clone(), Some(lane.rate)));
         } else {
             for y in seg_start..=seg_end {
                 entities.push(PlacedEntity {
@@ -1419,6 +1443,7 @@ fn route_belt_lane(
                     direction: EntityDirection::South,
                     carries: Some(lane.item.clone()),
                     segment_id: trunk_seg_id.clone(),
+                    rate: Some(lane.rate),
                     ..Default::default()
                 });
             }
@@ -1435,6 +1460,7 @@ fn route_belt_lane(
             direction: EntityDirection::South,
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1444,6 +1470,7 @@ fn route_belt_lane(
             direction: EntityDirection::East,
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
     }
@@ -1453,7 +1480,7 @@ fn route_belt_lane(
     for &tap_y in &lane.tap_off_ys {
         let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
         if let Some(tap_path) = paths.get(&tap_key) {
-            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone()));
+            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
         } else {
             entities.push(PlacedEntity {
                 name: horiz_belt.to_string(),
@@ -1462,6 +1489,7 @@ fn route_belt_lane(
                 direction: EntityDirection::East,
                 carries: Some(lane.item.clone()),
                 segment_id: tapoff_seg_id.clone(),
+                rate: Some(lane.rate),
                 ..Default::default()
             });
         }
@@ -1544,18 +1572,19 @@ fn route_intermediate_lane(
                     direction: EntityDirection::West,
                     carries: Some(lane.item.clone()),
                     segment_id: trunk_seg_id.clone(),
+                    rate: Some(lane.rate),
                     ..Default::default()
                 });
                 // Normal return via A*-routed path
                 let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
                 if let Some(ret_path) = paths.get(&ret_key) {
-                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
+                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)), Some(lane.rate)));
                 }
                 // Balance route
                 let split_y = out_y - 1;
                 let bal_key = format!("bal:{}:{}:{}", lane.item, x, split_y);
                 if let Some(bal_path) = paths.get(&bal_key) {
-                    let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)));
+                    let mut bal_entities = render_path(bal_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)), Some(lane.rate));
                     if let Some(last) = bal_entities.last_mut() {
                         last.direction = EntityDirection::East;
                     }
@@ -1565,7 +1594,7 @@ fn route_intermediate_lane(
                 // Normal return
                 let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
                 if let Some(ret_path) = paths.get(&ret_key) {
-                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item))));
+                    entities.extend(render_path(ret_path, &lane.item, horiz_belt, EntityDirection::West, Some(format!("trunk:{}", lane.item)), Some(lane.rate)));
                 }
             }
         }
@@ -1586,6 +1615,7 @@ fn route_intermediate_lane(
                 direction: EntityDirection::South,
                 carries: Some(lane.item.clone()),
                 segment_id: trunk_seg_id.clone(),
+                rate: Some(lane.rate),
                 ..Default::default()
             });
         }
@@ -1602,6 +1632,7 @@ fn route_intermediate_lane(
             io_type: Some("input".to_string()),
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
         entities.push(PlacedEntity {
@@ -1612,6 +1643,7 @@ fn route_intermediate_lane(
             io_type: Some("output".to_string()),
             carries: Some(lane.item.clone()),
             segment_id: trunk_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
     }
@@ -1619,7 +1651,7 @@ fn route_intermediate_lane(
     for (seg_start, seg_end) in trunk_segments(start_y, tap_y - 1, &skip_ys) {
         let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
         if let Some(trunk_path) = paths.get(&trunk_key) {
-            entities.extend(render_path(trunk_path, &lane.item, belt_name, EntityDirection::South, trunk_seg_id.clone()));
+            entities.extend(render_path(trunk_path, &lane.item, belt_name, EntityDirection::South, trunk_seg_id.clone(), Some(lane.rate)));
         } else {
             for y in seg_start..=seg_end {
                 entities.push(PlacedEntity {
@@ -1629,6 +1661,7 @@ fn route_intermediate_lane(
                     direction: EntityDirection::South,
                     carries: Some(lane.item.clone()),
                     segment_id: trunk_seg_id.clone(),
+                    rate: Some(lane.rate),
                     ..Default::default()
                 });
             }
@@ -1638,7 +1671,7 @@ fn route_intermediate_lane(
     // Tap-off
     let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
     if let Some(tap_path) = paths.get(&tap_key) {
-        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East, tapoff_seg_id.clone()));
+        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
     } else {
         entities.push(PlacedEntity {
             name: belt_name.to_string(),
@@ -1647,6 +1680,7 @@ fn route_intermediate_lane(
             direction: EntityDirection::East,
             carries: Some(lane.item.clone()),
             segment_id: tapoff_seg_id.clone(),
+            rate: Some(lane.rate),
             ..Default::default()
         });
     }
@@ -1842,6 +1876,7 @@ pub(crate) fn route_fluid_lane(
             x,
             y,
             carries: Some(lane.item.clone()),
+            rate: Some(lane.rate),
             ..Default::default()
         });
     }
@@ -2612,7 +2647,7 @@ mod tests {
     #[test]
     fn test_render_path_single_tile() {
         let path = vec![(5, 10)];
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None, None);
 
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].name, "transport-belt");
@@ -2625,7 +2660,7 @@ mod tests {
     #[test]
     fn test_render_path_east_movement() {
         let path = vec![(5, 10), (6, 10), (7, 10)];
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None, None);
 
         assert_eq!(entities.len(), 3);
         for e in &entities {
@@ -2638,7 +2673,7 @@ mod tests {
     #[test]
     fn test_render_path_south_movement() {
         let path = vec![(5, 10), (5, 11), (5, 12)];
-        let entities = render_path(&path, "copper-ore", "transport-belt", EntityDirection::South, None);
+        let entities = render_path(&path, "copper-ore", "transport-belt", EntityDirection::South, None, None);
 
         assert_eq!(entities.len(), 3);
         for e in &entities {
@@ -2652,7 +2687,7 @@ mod tests {
     fn test_render_path_with_underground_jump() {
         // Gap of 3 tiles = underground jump
         let path = vec![(5, 10), (8, 10)];  // x moves from 5 to 8, distance = 3
-        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None);
+        let entities = render_path(&path, "iron-plate", "transport-belt", EntityDirection::East, None, None);
 
         assert_eq!(entities.len(), 2);
         assert_eq!(entities[0].name, "underground-belt");

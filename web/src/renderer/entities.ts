@@ -547,13 +547,22 @@ function drawGenericEntity(): Graphics {
   return g;
 }
 
+// Chain highlight controller returned by renderLayout
+
+export interface HighlightController {
+  /** Highlight all entities that carry the given item; dim everything else. */
+  highlightItem(item: string | null): void;
+  /** Get the item chain key for an entity (its `carries` value, or recipe for machines). */
+  chainKey(entity: PlacedEntity): string | null;
+}
+
 // Main renderer
 
 export function renderLayout(
   layout: LayoutResult,
   container: Container,
   onHover?: (entity: PlacedEntity | null) => void,
-): void {
+): HighlightController {
   container.removeChildren();
 
   // Build tile map for belt turn detection
@@ -561,6 +570,10 @@ export function renderLayout(
   for (const e of layout.entities) {
     tileMap.set(`${e.x ?? 0},${e.y ?? 0}`, e);
   }
+
+  // Index: item name → list of Graphics in that chain
+  const itemIndex = new Map<string, Graphics[]>();
+  const allGraphics: Graphics[] = [];
 
   for (const entity of layout.entities) {
     let g: Graphics;
@@ -593,6 +606,44 @@ export function renderLayout(
       g.on("pointerleave", () => onHover(null));
     }
 
+    // Register in item chain index
+    const key = chainKey(entity);
+    if (key) {
+      if (!itemIndex.has(key)) itemIndex.set(key, []);
+      itemIndex.get(key)!.push(g);
+    }
+    allGraphics.push(g);
+
     container.addChild(g);
   }
+
+  return {
+    highlightItem(item: string | null): void {
+      if (!item) {
+        // Reset: restore all to full opacity
+        for (const g of allGraphics) g.alpha = 1;
+        return;
+      }
+      const highlighted = itemIndex.get(item);
+      if (!highlighted || highlighted.length === 0) {
+        // No match — don't dim anything
+        for (const g of allGraphics) g.alpha = 1;
+        return;
+      }
+      const highlightSet = new Set(highlighted);
+      for (const g of allGraphics) {
+        g.alpha = highlightSet.has(g) ? 1 : 0.15;
+      }
+    },
+    chainKey,
+  };
+}
+
+/** Get the item chain key for an entity. */
+function chainKey(entity: PlacedEntity): string | null {
+  // Belts, underground belts, splitters, inserters, pipes — use carries
+  if (entity.carries) return entity.carries;
+  // Machines — use recipe as chain key (connects to the items it produces)
+  if (entity.recipe) return entity.recipe;
+  return null;
 }

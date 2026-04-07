@@ -70,6 +70,9 @@ pub struct PlacedEntity {
     pub mirror: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segment_id: Option<String>,
+    /// Throughput rate (items/s or fluid units/s) flowing through this entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
 }
 
 /// Everything the layout engine produces — no rate data.

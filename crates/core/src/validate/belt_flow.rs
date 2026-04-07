@@ -2276,6 +2276,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -2290,6 +2291,7 @@ mod tests {
             carries: Some(item.to_string()),
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -2304,6 +2306,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -2318,6 +2321,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
@@ -2332,6 +2336,7 @@ mod tests {
             carries: None,
             mirror: false,
             segment_id: None,
+            ..Default::default()
         }
     }
 
