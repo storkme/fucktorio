@@ -33,12 +33,7 @@ FACTORIO_NORTH, FACTORIO_EAST, FACTORIO_SOUTH, FACTORIO_WEST = 0, 2, 4, 6
 # Shapes to generate: (N inputs, M outputs)
 # Cover all combinations up to 5×5 (except 1×1 identity and 5×5
 # which is too hard for the SAT solver in reasonable time).
-SHAPES: list[tuple[int, int]] = [
-    (n, m)
-    for n in range(1, 6)
-    for m in range(1, 6)
-    if (n, m) not in ((1, 1), (5, 5))
-]
+SHAPES: list[tuple[int, int]] = [(n, m) for n in range(1, 6) for m in range(1, 6) if (n, m) not in ((1, 1), (5, 5))]
 
 
 @dataclass

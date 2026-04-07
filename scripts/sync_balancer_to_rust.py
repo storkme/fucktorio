@@ -9,6 +9,7 @@ crates/core/src/bus/balancer_library.rs, keeping the header
 Usage:
     uv run python scripts/sync_balancer_to_rust.py
 """
+
 from __future__ import annotations
 
 import re
@@ -32,6 +33,7 @@ from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplateEntity 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def key_to_const(n: int, m: int) -> str:
     """Return the Rust static array name prefix, e.g. 'T_2_3'."""
@@ -91,25 +93,14 @@ def generate_registry(templates: dict) -> str:
     lines.append("// Global registry")
     lines.append("// " + "-" * 75)
     lines.append("")
-    lines.append(
-        "/// Lazily-initialised map from (n_inputs, n_outputs) to [`BalancerTemplate`]."
-    )
-    lines.append(
-        "pub fn balancer_templates()"
-        " -> &'static FxHashMap<(u32, u32), BalancerTemplate> {"
-    )
-    lines.append(
-        "    static MAP: OnceLock<FxHashMap<(u32, u32), BalancerTemplate>>"
-        " = OnceLock::new();"
-    )
+    lines.append("/// Lazily-initialised map from (n_inputs, n_outputs) to [`BalancerTemplate`].")
+    lines.append("pub fn balancer_templates() -> &'static FxHashMap<(u32, u32), BalancerTemplate> {")
+    lines.append("    static MAP: OnceLock<FxHashMap<(u32, u32), BalancerTemplate>> = OnceLock::new();")
     lines.append("    MAP.get_or_init(build_templates)")
     lines.append("}")
     lines.append("")
     lines.append("fn build_templates() -> FxHashMap<(u32, u32), BalancerTemplate> {")
-    lines.append(
-        f"    let mut m = FxHashMap::with_capacity_and_hasher({count},"
-        " Default::default());"
-    )
+    lines.append(f"    let mut m = FxHashMap::with_capacity_and_hasher({count}, Default::default());")
 
     for (n, m_val), tmpl in sorted(templates.items()):
         prefix = key_to_const(n, m_val)
@@ -121,9 +112,7 @@ def generate_registry(templates: dict) -> str:
             f" width: {tmpl.width}, height: {tmpl.height},"
         )
         lines.append(
-            f"        entities: {prefix}_ENTITIES,"
-            f" input_tiles: {prefix}_INPUT,"
-            f" output_tiles: {prefix}_OUTPUT,"
+            f"        entities: {prefix}_ENTITIES, input_tiles: {prefix}_INPUT, output_tiles: {prefix}_OUTPUT,"
         )
         lines.append(f'        source_blueprint: "{bp}",')
         lines.append("    });")
@@ -159,16 +148,11 @@ def split_rust_file(text: str) -> tuple[str, str]:
                 header_end = pos
                 break
     if header_end == -1:
-        raise RuntimeError(
-            "Could not find '// Template data' section in Rust file. "
-            "Check the file format."
-        )
+        raise RuntimeError("Could not find '// Template data' section in Rust file. Check the file format.")
 
     tests_start = text.find(f"\n{TESTS_SENTINEL}")
     if tests_start == -1:
-        raise RuntimeError(
-            f"Could not find '{TESTS_SENTINEL}' section in Rust file."
-        )
+        raise RuntimeError(f"Could not find '{TESTS_SENTINEL}' section in Rust file.")
     # Include the leading newline before #[cfg(test)] in the tail
     tests_section = text[tests_start:]
 
@@ -179,12 +163,10 @@ def split_rust_file(text: str) -> tuple[str, str]:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     print(f"Reading Python library from: {PY_SRC}")
-    print(
-        f"  Found {len(BALANCER_TEMPLATES)} templates:"
-        f" {sorted(BALANCER_TEMPLATES.keys())}"
-    )
+    print(f"  Found {len(BALANCER_TEMPLATES)} templates: {sorted(BALANCER_TEMPLATES.keys())}")
 
     print(f"Reading existing Rust file from: {RS_OUT}")
     existing = RS_OUT.read_text(encoding="utf-8")
@@ -196,14 +178,7 @@ def main() -> None:
 
     count = len(BALANCER_TEMPLATES)
 
-    new_content = (
-        header
-        + data_section
-        + "\n"
-        + registry_section
-        + "\n"
-        + tests_section
-    )
+    new_content = header + data_section + "\n" + registry_section + "\n" + tests_section
 
     # Fix the template count assertion in the tests
     new_content = re.sub(

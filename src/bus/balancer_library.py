@@ -6,6 +6,7 @@ DO NOT EDIT MANUALLY. Regenerate with:
 Shapes are oriented for vertical SOUTH flow: inputs at the top
 (facing SOUTH), outputs at the bottom (facing SOUTH).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
