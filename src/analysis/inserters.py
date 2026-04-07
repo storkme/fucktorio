@@ -62,6 +62,7 @@ def resolve_inserters(
                     machine_id=drop_machine,
                     network_id=pickup_network,
                     role="input",
+                    name=ins.name,
                 )
             )
         elif pickup_machine is not None:
@@ -73,6 +74,7 @@ def resolve_inserters(
                     machine_id=pickup_machine,
                     network_id=drop_network,
                     role="output",
+                    name=ins.name,
                 )
             )
         # else: inserter between two belts or two machines — skip

@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from ..solver.recipe_db import get_crafting_speed, get_recipe
+from .bus_detect import extract_bus_stats
 from .models import BlueprintGraph
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,27 @@ class BlueprintStats:
     # Lightweight validation
     machines_without_inserters: int = 0
     orphan_networks: int = 0
+
+    # Bus layout detection
+    is_bus_layout: bool = False
+    bus_orientation: str | None = None      # "horizontal" | "vertical"
+    bus_lane_count: int = 0
+    bus_pitch: float = 0.0                  # median tile spacing between adjacent trunk columns
+    bus_span_tiles: int = 0                 # total trunk width (max_x - min_x + 1)
+
+    # Row structure
+    row_pitch: float = 0.0                  # median gap between machine row Y centers
+    row_count: int = 0
+    machines_per_row: float = 0.0
+    machines_per_row_list: list[float] = field(default_factory=list)
+
+    # Fluid handling
+    fluid_row_count: int = 0
+    pipe_net_beside_belt: int = 0           # pipe networks within 3 tiles of trunk belt lanes
+
+    # Recipe grouping
+    recipe_groups: int = 0
+    machines_per_recipe_group: float = 0.0
 
 
 def extract_stats(graph: BlueprintGraph) -> BlueprintStats:
@@ -160,6 +182,9 @@ def extract_stats(graph: BlueprintGraph) -> BlueprintStats:
     linked_networks = {lk.network_id for lk in graph.inserter_links if lk.network_id is not None}
     linked_networks |= {fl.network_id for fl in graph.fluid_links}
     stats.orphan_networks = sum(1 for n in graph.networks if n.id not in linked_networks)
+
+    # --- Bus layout detection ---
+    extract_bus_stats(graph, stats)
 
     return stats
 

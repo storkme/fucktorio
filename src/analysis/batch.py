@@ -253,6 +253,17 @@ def aggregate_stats(results: list[tuple[str, BlueprintStats | None]]) -> Aggrega
         "poles_per_machine",
         "machines_without_inserters",
         "orphan_networks",
+        # Bus layout metrics
+        "bus_lane_count",
+        "bus_pitch",
+        "bus_span_tiles",
+        "row_pitch",
+        "row_count",
+        "machines_per_row",
+        "fluid_row_count",
+        "pipe_net_beside_belt",
+        "recipe_groups",
+        "machines_per_recipe_group",
     ]
 
     for field_name in numeric_fields:
@@ -307,6 +318,29 @@ def print_summary(agg: AggregateStats) -> None:
             if d is None:
                 continue
             print(f"  {label:<30} {d.mean:>8.2f} {d.median:>8.2f} {d.min:>8.2f} {d.max:>8.2f} {d.stdev:>8.2f}")
+
+        # Bus-specific metrics (only shown when at least one bus layout found)
+        bus_metrics = [
+            ("bus_lane_count", "Bus lane count"),
+            ("bus_pitch", "Bus pitch (tiles)"),
+            ("bus_span_tiles", "Bus span (tiles)"),
+            ("row_pitch", "Row pitch (tiles)"),
+            ("row_count", "Row count"),
+            ("machines_per_row", "Machines/row"),
+            ("fluid_row_count", "Fluid rows"),
+            ("recipe_groups", "Recipe groups"),
+            ("machines_per_recipe_group", "Machines/recipe group"),
+        ]
+        bus_fields = {f for f, _ in bus_metrics if f in agg.distributions and agg.distributions[f].count > 0}
+        if bus_fields:
+            print("\n--- Bus Layout Metrics ---")
+            print(f"  {'Metric':<30} {'Mean':>8} {'Median':>8} {'Min':>8} {'Max':>8} {'StdDev':>8}")
+            print(f"  {'-' * 78}")
+            for field_name, label in bus_metrics:
+                d = agg.distributions.get(field_name)
+                if d is None or d.count == 0:
+                    continue
+                print(f"  {label:<30} {d.mean:>8.2f} {d.median:>8.2f} {d.min:>8.2f} {d.max:>8.2f} {d.stdev:>8.2f}")
 
         print("\n--- All Distributions ---")
         for field_name, d in sorted(agg.distributions.items()):

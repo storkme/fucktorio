@@ -81,6 +81,14 @@ The web app currently renders entities as colored rectangles. Using actual Facto
 - [ ] Belt direction indicators — at minimum, add arrow overlays showing belt flow direction if full sprites aren't feasible
 - [ ] Recipe icons — show recipe icons on machines (the output item icon overlaid on the machine sprite)
 
+## Blueprint Mining & Corpus Analysis
+
+The `src/analysis/` Python pipeline parses community blueprints into production graphs and extracts layout metrics. The `scripts/analysis/mine_corpus.py` CLI outputs `corpus.json` consumed by the web app corpus browser.
+
+- [ ] Port Python analysis pipeline to Rust (`crates/core/src/analysis/`) — `blueprint_parser.rs` already exists; the remaining work is network tracing (BFS over belt/pipe segments), inserter resolution, item inference, and stats extraction. Python uses `draftsman` for entity data; Rust already has entity sizes and recipes in `recipe_db.rs`. Once complete, the Python mining script becomes a thin wrapper or is replaced by a Rust binary.
+- [ ] Rust mining binary (`crates/mining-cli/`) — reads blueprint strings (stdin or dir), outputs `corpus.json`. Blocked on the analysis port above.
+- [ ] UMAP/scatter explorer — optional `--umap` output for `mine_corpus.py` using `umap-learn` + `plotly`. Cheap way to visualize blueprint clusters without ML.
+
 ## Research: Verifactory
 
 [verifactory](https://github.com/alegnani/verifactory) is a Rust library for formal verification of Factorio blueprints using bounded model checking. Worth investigating what it validates that we don't — particularly around flow rate analysis.

@@ -1,7 +1,7 @@
 // Build: wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
 
 use fucktorio_core::models::{LayoutResult, SolverResult};
-use fucktorio_core::{blueprint, bus::layout::build_bus_layout, recipe_db, solver};
+use fucktorio_core::{blueprint, blueprint_parser, bus::layout::build_bus_layout, recipe_db, solver};
 use rustc_hash::FxHashSet;
 use wasm_bindgen::prelude::*;
 
@@ -45,4 +45,9 @@ pub fn layout(solver_result: SolverResult, max_belt_tier: Option<String>) -> Res
 #[wasm_bindgen]
 pub fn export_blueprint(layout_result: LayoutResult, label: String) -> String {
     blueprint::export(&layout_result, &label)
+}
+
+#[wasm_bindgen]
+pub fn parse_blueprint(bp_string: &str) -> Result<LayoutResult, JsError> {
+    blueprint_parser::parse_blueprint_string(bp_string).map_err(|e| JsError::new(&e))
 }

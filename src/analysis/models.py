@@ -55,6 +55,7 @@ class InserterLink:
     network_id: int | None = None  # None if no belt/pipe found on other side
     role: str = "input"  # "input" (belt→machine) or "output" (machine→belt)
     inferred_item: str | None = None
+    name: str = "inserter"  # entity name: inserter / fast-inserter / long-handed-inserter
 
 
 @dataclass

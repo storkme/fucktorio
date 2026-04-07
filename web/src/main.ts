@@ -4,6 +4,7 @@ import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
 import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, TILE_PX, type HighlightController } from "./renderer/entities";
 import { renderSidebar } from "./ui/sidebar";
+import { initCorpusPanel } from "./ui/corpus";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity } from "./engine";
 
@@ -205,12 +206,57 @@ async function main(): Promise<void> {
     }
   }
 
-  const sidebar = document.getElementById("sidebar");
-  if (sidebar) {
-    renderSidebar(sidebar, engine, {
+  const sidebarEl = document.getElementById("sidebar");
+  if (sidebarEl) {
+    // ---- Tab bar ----
+    const tabBar = document.createElement("div");
+    tabBar.style.cssText = "display:flex;border-bottom:1px solid #333;background:#252526;flex-shrink:0";
+
+    function makeTab(label: string): HTMLButtonElement {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.style.cssText = "flex:1;padding:8px 4px;background:none;border:none;border-bottom:2px solid transparent;color:#aaa;font:13px sans-serif;cursor:pointer;";
+      return btn;
+    }
+
+    const tabGenerate = makeTab("Generate");
+    const tabCorpus = makeTab("Corpus");
+    tabBar.appendChild(tabGenerate);
+    tabBar.appendChild(tabCorpus);
+
+    // ---- Panels ----
+    const generatePanel = document.createElement("div");
+    generatePanel.style.cssText = "flex:1;overflow:hidden;display:flex;flex-direction:column;";
+
+    const corpusPanel = document.createElement("div");
+    corpusPanel.style.cssText = "flex:1;overflow:hidden;display:none;flex-direction:column;";
+
+    // Make sidebar a flex column
+    sidebarEl.style.cssText += ";display:flex;flex-direction:column;padding:0;overflow:hidden;";
+    sidebarEl.appendChild(tabBar);
+    sidebarEl.appendChild(generatePanel);
+    sidebarEl.appendChild(corpusPanel);
+
+    function switchTab(tab: "generate" | "corpus"): void {
+      const isGenerate = tab === "generate";
+      generatePanel.style.display = isGenerate ? "flex" : "none";
+      corpusPanel.style.display = isGenerate ? "none" : "flex";
+      tabGenerate.style.borderBottomColor = isGenerate ? "#569cd6" : "transparent";
+      tabGenerate.style.color = isGenerate ? "#e0e0e0" : "#aaa";
+      tabCorpus.style.borderBottomColor = isGenerate ? "transparent" : "#569cd6";
+      tabCorpus.style.color = isGenerate ? "#aaa" : "#e0e0e0";
+    }
+
+    tabGenerate.onclick = () => switchTab("generate");
+    tabCorpus.onclick = () => switchTab("corpus");
+    switchTab("generate");
+
+    renderSidebar(generatePanel, engine, {
       renderGraph,
       renderLayout: renderLayoutOnCanvas,
     });
+
+    initCorpusPanel(corpusPanel, renderLayoutOnCanvas);
   }
 }
 

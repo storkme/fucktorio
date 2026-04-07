@@ -3,6 +3,7 @@
 
 pub mod astar;
 pub mod blueprint;
+pub mod blueprint_parser;
 pub mod bus;
 pub mod common;
 pub mod models;

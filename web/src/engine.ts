@@ -6,6 +6,7 @@ import wasmInit, {
   default_machine_for_item as wasmDefaultMachineForItem,
   export_blueprint as wasmExportBlueprint,
   layout as wasmLayout,
+  parse_blueprint as wasmParseBlueprint,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
 export type {
@@ -59,6 +60,10 @@ function exportBlueprint(layout: LayoutResult, label: string): string {
 
 function defaultMachineForItem(item: string, fallback: string): string {
   return wasmDefaultMachineForItem(item, fallback);
+}
+
+export function parseBlueprint(bpString: string): LayoutResult {
+  return wasmParseBlueprint(bpString);
 }
 
 export type Engine = {
