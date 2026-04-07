@@ -22,6 +22,37 @@ The bus layout works but is wider/taller than necessary in many cases.
 - [ ] Multi-tile entity positioning — assemblers and chemical plants use center-offset positioning; verify blueprint export handles 3x3 and 3x3+ footprints correctly (there's a TODO in blueprint.rs)
 - [ ] Row merging — when two recipe groups have compatible input sets, consider placing them in adjacent rows sharing tap-offs
 
+## Space Age Machine Support (Rust Pipeline)
+
+The Rust solver and bus layout engine don't handle Space Age (DLC) machines. Three areas need fixes before Space Age recipes can be solved and laid out correctly.
+
+### `crates/core/src/recipe_db.rs` — category → machine mapping
+
+`machine_for_recipe()` only maps `chemistry`, `oil-processing`, `crafting`, `smelting` etc. All Space Age categories fall through to the default assembling machine. Add:
+
+- [ ] `"electromagnetics"` → `"electromagnetic-plant"`
+- [ ] `"cryogenics"` → `"cryogenic-plant"`
+- [ ] `"metallurgy"` → `"foundry"`
+- [ ] `"organic"` → `"biochamber"`
+- [ ] `"recycling"` → `"recycler"`
+- [ ] `"crushing"` → `"crusher"`
+- [ ] Hybrid categories (`"cryogenics-or-assembling"`, `"organic-or-assembling"`, `"metallurgy-or-assembling"`) — prefer the Space Age machine, fall back to assembling-machine-3
+
+### `crates/core/src/common.rs` — machine sizes and entity name list
+
+`machine_size()` returns 3 for all unrecognised slugs (wrong for non-3×3 Space Age machines). `MACHINE_ENTITY_NAMES` doesn't include Space Age machines so they never appear in layouts.
+
+- [ ] Add `machine_size()` cases: `electromagnetic-plant` → 4, `cryogenic-plant` → 5, `foundry` → 5, `recycler` → (2, 4), `crusher` → (2, 3) (recycler/crusher are non-square — may need `machine_size()` to return `(w, h)` instead of a single `u32`)
+- [ ] Add Space Age slugs to `MACHINE_ENTITY_NAMES`: electromagnetic-plant, cryogenic-plant, foundry, biochamber, recycler, crusher
+
+### `crates/core/src/bus/placer.rs` — row pitch and row kind
+
+`row_kind()` only special-cases `oil-refinery`; all Space Age machines get treated as 3×3 assemblers. Machine pitch is hardcoded as oil-refinery=5, else=3.
+
+- [ ] Fix `row_kind()` to check machine footprint (via `machine_size()`) rather than slug name, so 5×5 machines get the same wide-row treatment as oil-refinery
+- [ ] Fix pitch calculation to use `machine_size().max_dim()` so 4×4 and 5×5 machines get correct inter-row spacing
+- [ ] Handle non-square machines (recycler 2×4, crusher 2×3) — inserter placement and pitch may need separate w/h
+
 ## Kovarex
 
 Kovarex enrichment process (`kovarex-enrichment-process`) is a self-feeding recipe: it consumes 40 U-235 + 5 U-238 and produces 41 U-235 + 2 U-238. The solver currently doesn't handle cyclic recipes.
