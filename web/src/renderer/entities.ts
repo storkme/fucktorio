@@ -1,5 +1,13 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import type { LayoutResult, PlacedEntity, EntityDirection } from "../engine";
+import {
+  buildBeltGraph,
+  traceBeltNetwork,
+  findAdjacentInserters,
+  findAdjacentMachines,
+  drawBeltNetworkOverlay,
+  type BeltGraph,
+} from "./beltGraph";
 
 export const TILE_PX = 32;
 
@@ -93,7 +101,10 @@ function hslToHex(h: number, s: number, l: number): number {
 let itemColoringEnabled = true;
 export function setItemColoring(enabled: boolean): void { itemColoringEnabled = enabled; }
 
-function itemColor(item: string | undefined): number {
+let rateOverlayEnabled = false;
+export function setRateOverlay(enabled: boolean): void { rateOverlayEnabled = enabled; }
+
+export function itemColor(item: string | undefined): number {
   if (!itemColoringEnabled) return 0x777777;
   if (!item) return 0x666666;
   if (item in ITEM_PALETTE) return ITEM_PALETTE[item];
@@ -547,11 +558,19 @@ function drawGenericEntity(): Graphics {
   return g;
 }
 
+export function isBeltEntity(name: string): boolean {
+  return BELT_ENTITIES.has(name) || UG_BELT_ENTITIES.has(name) || SPLITTER_ENTITIES.has(name);
+}
+
 // Chain highlight controller returned by renderLayout
 
 export interface HighlightController {
   /** Highlight all entities that carry the given item; dim everything else. */
   highlightItem(item: string | null): void;
+  /** Highlight the connected belt network (upstream dashed, downstream solid). */
+  highlightBeltNetwork(entity: PlacedEntity | null): void;
+  /** Reset all entities to full opacity and remove any overlay. */
+  clearHighlight(): void;
   /** Get the item chain key for an entity (its `carries` value, or recipe for machines). */
   chainKey(entity: PlacedEntity): string | null;
 }
@@ -562,6 +581,7 @@ export function renderLayout(
   layout: LayoutResult,
   container: Container,
   onHover?: (entity: PlacedEntity | null) => void,
+  onSelect?: (entity: PlacedEntity | null) => void,
 ): HighlightController {
   container.removeChildren();
 
@@ -574,6 +594,8 @@ export function renderLayout(
   // Index: item name → list of Graphics in that chain
   const itemIndex = new Map<string, Graphics[]>();
   const allGraphics: Graphics[] = [];
+  // Maps each Graphics object back to its tile key "x,y" for belt network lookup
+  const graphicsKeyMap = new Map<Graphics, string>();
 
   for (const entity of layout.entities) {
     let g: Graphics;
@@ -599,11 +621,26 @@ export function renderLayout(
     g.x = (entity.x ?? 0) * TILE_PX;
     g.y = (entity.y ?? 0) * TILE_PX;
 
+    // Rate overlay: small text label on belt/inserter entities with a rate
+    if (rateOverlayEnabled && entity.rate != null) {
+      const rateText = new Text({
+        text: entity.rate.toFixed(1),
+        style: { fontSize: 8, fill: 0xffffff, align: "center" },
+      });
+      rateText.x = TILE_PX / 2 - rateText.width / 2;
+      rateText.y = TILE_PX / 2 - rateText.height / 2;
+      g.addChild(rateText);
+    }
+
+    // Make every entity interactive for hover + click
+    g.eventMode = "static";
+    g.cursor = "pointer";
     if (onHover) {
-      g.eventMode = "static";
-      g.cursor = "crosshair";
       g.on("pointerenter", () => onHover(entity));
       g.on("pointerleave", () => onHover(null));
+    }
+    if (onSelect) {
+      g.on("click", () => onSelect(entity));
     }
 
     // Register in item chain index
@@ -612,29 +649,79 @@ export function renderLayout(
       if (!itemIndex.has(key)) itemIndex.set(key, []);
       itemIndex.get(key)!.push(g);
     }
+    graphicsKeyMap.set(g, `${entity.x ?? 0},${entity.y ?? 0}`);
     allGraphics.push(g);
 
     container.addChild(g);
   }
 
+  // Build belt connectivity graph (once per layout)
+  const beltGraph: BeltGraph = buildBeltGraph(layout);
+
+  // Overlay Graphics for belt network highlight — created/destroyed on hover
+  let overlayGraphics: Graphics | null = null;
+
+  function clearHighlightInternal(): void {
+    if (overlayGraphics) {
+      container.removeChild(overlayGraphics);
+      overlayGraphics.destroy();
+      overlayGraphics = null;
+    }
+    for (const g of allGraphics) g.alpha = 1;
+  }
+
   return {
     highlightItem(item: string | null): void {
-      if (!item) {
-        // Reset: restore all to full opacity
-        for (const g of allGraphics) g.alpha = 1;
-        return;
-      }
+      clearHighlightInternal();
+      if (!item) return;
       const highlighted = itemIndex.get(item);
-      if (!highlighted || highlighted.length === 0) {
-        // No match — don't dim anything
-        for (const g of allGraphics) g.alpha = 1;
-        return;
-      }
+      if (!highlighted || highlighted.length === 0) return;
       const highlightSet = new Set(highlighted);
       for (const g of allGraphics) {
         g.alpha = highlightSet.has(g) ? 1 : 0.15;
       }
     },
+
+    highlightBeltNetwork(entity: PlacedEntity | null): void {
+      clearHighlightInternal();
+      if (!entity) return;
+
+      const startKey = `${entity.x ?? 0},${entity.y ?? 0}`;
+      // Resolve to anchor (handles clicking on splitter's second tile)
+      const anchor = beltGraph.tileToAnchor.get(startKey) ?? startKey;
+      if (!beltGraph.nodes.has(anchor)) return;
+
+      const { downstream, upstream } = traceBeltNetwork(anchor, beltGraph);
+      const allBelt = new Set([...downstream, ...upstream]);
+      const inserters = findAdjacentInserters(allBelt, beltGraph.entityMap);
+      const machines = findAdjacentMachines(inserters, beltGraph.entityMap);
+
+      for (const g of allGraphics) {
+        const k = graphicsKeyMap.get(g);
+        if (!k) {
+          g.alpha = 0.15;
+          continue;
+        }
+        if (allBelt.has(k)) {
+          g.alpha = 1.0;
+        } else if (inserters.has(k)) {
+          g.alpha = 0.9;
+        } else if (machines.has(k)) {
+          g.alpha = 0.75;
+        } else {
+          g.alpha = 0.15;
+        }
+      }
+
+      overlayGraphics = new Graphics();
+      drawBeltNetworkOverlay(overlayGraphics, downstream, upstream, anchor, beltGraph);
+      container.addChild(overlayGraphics);
+    },
+
+    clearHighlight(): void {
+      clearHighlightInternal();
+    },
+
     chainKey,
   };
 }
