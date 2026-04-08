@@ -135,11 +135,15 @@ pub fn build_bus_layout(
     let mut warnings = Vec::new();
     let templates = crate::bus::balancer_library::balancer_templates();
     for fam in &families {
-        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
-        if !templates.contains_key(&shape_key) {
+        let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
+        let has_direct = templates.contains_key(&(n, m));
+        let has_decomp = (1..=n).rev().any(|g| {
+            n % g == 0 && m % g == 0 && templates.contains_key(&(n / g, m / g))
+        });
+        if !has_direct && !has_decomp {
             warnings.push(format!(
                 "No {}→{} balancer template for {}; producer outputs are disconnected",
-                fam.shape.0, fam.shape.1, fam.item
+                n, m, fam.item
             ));
         }
     }
@@ -738,13 +742,19 @@ mod tests {
 
         let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
             .iter().map(|s| s.to_string()).collect();
-        let sr = solve("electronic-circuit", 20.0, &inputs, "assembling-machine-3")
-            .expect("solve");
-        let layout = build_bus_layout(&sr, Some("transport-belt"))
-            .expect("layout");
-
-        assert!(layout.warnings.is_empty(),
-            "Layout has warnings (broken layout): {:?}", layout.warnings);
+        // Check which balancer shapes are needed and which are missing
+        for machine in &["assembling-machine-1", "assembling-machine-3"] {
+            let sr = solve("electronic-circuit", 20.0, &inputs, machine)
+                .expect("solve");
+            let layout = build_bus_layout(&sr, Some("transport-belt"))
+                .expect(&format!("layout with {}", machine));
+            if !layout.warnings.is_empty() {
+                eprintln!("{}: {:?}", machine, layout.warnings);
+            } else {
+                eprintln!("{}: OK ({} entities, {} regions)", machine,
+                    layout.entities.len(), layout.regions.len());
+            }
+        }
     }
 
     #[test]

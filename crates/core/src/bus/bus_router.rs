@@ -730,37 +730,72 @@ pub(crate) fn stamp_family_balancer(
     use crate::common::belt_entity_for_rate;
 
     let templates = balancer_templates();
-    let template_key = (family.shape.0 as u32, family.shape.1 as u32);
-    let template = match templates.get(&template_key) {
-        Some(t) => t,
-        None => return Ok(Vec::new()), // No template — skip balancer, lanes operate independently
-    };
+    let (n, m) = (family.shape.0 as u32, family.shape.1 as u32);
+    let template_key = (n, m);
 
     if family.lane_xs.is_empty() {
         return Err(format!("LaneFamily for item {} has no lane_xs assigned", family.item));
     }
 
-    let origin_x = *family.lane_xs.iter().min().unwrap();
-    let origin_y = family.balancer_y_start;
-
     let belt_tier = belt_entity_for_rate(family.total_rate, max_belt_tier);
     let splitter_name = splitter_for_belt(belt_tier);
     let ug_name = underground_for_belt(belt_tier);
-
     let balancer_seg_id = Some(format!("balancer:{}", family.item));
-    let mut entities = template.stamp(
-        origin_x,
-        origin_y,
-        belt_tier,
-        splitter_name,
-        ug_name,
-        Some(&family.item),
-    );
-    for ent in &mut entities {
-        ent.segment_id = balancer_seg_id.clone();
+
+    if let Some(template) = templates.get(&template_key) {
+        // Direct template match.
+        let origin_x = *family.lane_xs.iter().min().unwrap();
+        let origin_y = family.balancer_y_start;
+
+        let mut entities = template.stamp(
+            origin_x, origin_y, belt_tier, splitter_name, ug_name,
+            Some(&family.item),
+        );
+        for ent in &mut entities {
+            ent.segment_id = balancer_seg_id.clone();
+        }
+        return Ok(entities);
     }
 
-    Ok(entities)
+    // Decomposition fallback: try to split (N, M) into groups that have
+    // templates. Search for a divisor g of N where (N/g, M/g) has a template.
+    // E.g., (6,8) → g=2 → 2 copies of (3,4). (5,10) → g=5 → 5 copies of (1,2).
+    for g in (1..=n).rev() {
+        if n % g != 0 || m % g != 0 {
+            continue;
+        }
+        let sub_n = n / g;
+        let sub_m = m / g;
+        if let Some(sub_template) = templates.get(&(sub_n, sub_m)) {
+            let mut all_entities = Vec::new();
+            let producers_per_group = sub_n as usize;
+            let lanes_per_group = sub_m as usize;
+
+            for gi in 0..(g as usize) {
+                let lane_start = gi * lanes_per_group;
+                let lane_end = (lane_start + lanes_per_group).min(family.lane_xs.len());
+                let lane_chunk = &family.lane_xs[lane_start..lane_end];
+                if lane_chunk.is_empty() {
+                    continue;
+                }
+                let sub_origin_x = *lane_chunk.iter().min().unwrap();
+                let sub_origin_y = family.balancer_y_start;
+
+                let mut ents = sub_template.stamp(
+                    sub_origin_x, sub_origin_y, belt_tier, splitter_name, ug_name,
+                    Some(&family.item),
+                );
+                for ent in &mut ents {
+                    ent.segment_id = Some(format!("balancer:{}:{}", family.item, gi));
+                }
+                all_entities.extend(ents);
+            }
+            return Ok(all_entities);
+        }
+    }
+
+    // No template and no decomposition possible — skip.
+    Ok(Vec::new())
 }
 
 /// Render path entities from A*-routed belts and underground segments.
