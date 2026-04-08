@@ -431,7 +431,6 @@ export function renderSidebar(
       const maxTier = beltSelect.value || undefined;
       currentLayout = engine.buildLayout(currentResult, maxTier);
       callbacks.renderLayout(currentLayout);
-      blueprintSection.style.display = "block";
       if (currentLayout.warnings?.length) {
         for (const w of currentLayout.warnings) {
           const wDiv = document.createElement("div");
@@ -439,6 +438,10 @@ export function renderSidebar(
           wDiv.textContent = `\u26A0 ${w}`;
           resultContainer.appendChild(wDiv);
         }
+        // Warnings mean the layout is broken — don't offer blueprint export.
+        blueprintSection.style.display = "none";
+      } else {
+        blueprintSection.style.display = "block";
       }
       if (currentLayout.regions?.length) {
         const zoneDiv = document.createElement("div");
