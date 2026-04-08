@@ -234,6 +234,7 @@ export function renderSidebar(
   el: HTMLElement,
   engine: Engine,
   callbacks: SidebarCallbacks,
+  options?: { getDebugMode?: () => boolean },
 ): { getParams(): SidebarParams | null } {
   el.innerHTML = "";
 
@@ -430,7 +431,10 @@ export function renderSidebar(
     if (!currentResult) return;
     try {
       const maxTier = beltSelect.value || undefined;
-      currentLayout = engine.buildLayout(currentResult, maxTier);
+      const useTraced = options?.getDebugMode?.() ?? false;
+      currentLayout = useTraced
+        ? engine.buildLayoutTraced(currentResult, maxTier)
+        : engine.buildLayout(currentResult, maxTier);
       setRecipeFlows(currentResult.machines);
       callbacks.renderLayout(currentLayout);
       if (currentLayout.warnings?.length) {

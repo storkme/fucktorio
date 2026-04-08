@@ -1,6 +1,7 @@
 // Build: wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
 
 use fucktorio_core::models::{LayoutResult, SolverResult};
+use fucktorio_core::validate::{self, LayoutStyle, ValidationIssue};
 use fucktorio_core::{blueprint, blueprint_parser, bus::layout::build_bus_layout, recipe_db, solver};
 use rustc_hash::FxHashSet;
 use wasm_bindgen::prelude::*;
@@ -56,4 +57,16 @@ pub fn export_blueprint(layout_result: LayoutResult, label: String) -> String {
 #[wasm_bindgen]
 pub fn parse_blueprint(bp_string: &str) -> Result<LayoutResult, JsError> {
     blueprint_parser::parse_blueprint_string(bp_string).map_err(|e| JsError::new(&e))
+}
+
+#[wasm_bindgen]
+pub fn validate_layout(
+    layout_result: LayoutResult,
+    solver_result: Option<SolverResult>,
+    layout_style: Option<LayoutStyle>,
+) -> Result<Vec<ValidationIssue>, JsError> {
+    let style = layout_style.unwrap_or_default();
+    let solver_ref: Option<&SolverResult> = solver_result.as_ref();
+    validate::validate(&layout_result, solver_ref, style)
+        .map_err(|e| JsError::new(&e.to_string()))
 }

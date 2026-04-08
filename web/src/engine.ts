@@ -8,6 +8,7 @@ import wasmInit, {
   layout as wasmLayout,
   layout_traced as wasmLayoutTraced,
   parse_blueprint as wasmParseBlueprint,
+  validate_layout as wasmValidateLayout,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
 export type {
@@ -18,8 +19,10 @@ export type {
   LayoutRegion,
   PlacedEntity,
   EntityDirection,
+  ValidationIssue,
+  TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
-import type { SolverResult, LayoutResult } from "./wasm-pkg/fucktorio_wasm.js";
+import type { SolverResult, LayoutResult, ValidationIssue } from "./wasm-pkg/fucktorio_wasm.js";
 
 let itemsCache: string[] | null = null;
 let machinesCache: string[] | null = null;
@@ -68,6 +71,10 @@ function defaultMachineForItem(item: string, fallback: string): string {
   return wasmDefaultMachineForItem(item, fallback);
 }
 
+function validateLayout(layout: LayoutResult, solverResult: SolverResult | null): ValidationIssue[] {
+  return wasmValidateLayout(layout, solverResult, "Bus");
+}
+
 export function parseBlueprint(bpString: string): LayoutResult {
   return wasmParseBlueprint(bpString);
 }
@@ -80,6 +87,7 @@ export type Engine = {
   buildLayoutTraced: typeof buildLayoutTraced;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
+  validateLayout: typeof validateLayout;
 };
 
 export function getEngine(): Engine {
@@ -91,5 +99,6 @@ export function getEngine(): Engine {
     buildLayoutTraced,
     exportBlueprint,
     defaultMachineForItem,
+    validateLayout,
   };
 }

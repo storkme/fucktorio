@@ -7,7 +7,9 @@ import { createSelectionController, type SelectionController } from "./renderer/
 import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
 import { initEngine, getEngine } from "./engine";
-import type { SolverResult, LayoutResult, PlacedEntity } from "./engine";
+import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
+import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
+import { renderValidationOverlay } from "./renderer/validationOverlay";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -133,6 +135,189 @@ async function main(): Promise<void> {
   rateToggle.appendChild(document.createTextNode("Rates"));
   container.appendChild(rateToggle);
 
+  // --- Debug trace toggle ---
+  const debugToggle = document.createElement("label");
+  debugToggle.style.cssText = "position:absolute;top:60px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
+  const debugCb = document.createElement("input");
+  debugCb.type = "checkbox";
+  debugCb.checked = false;
+  debugCb.style.accentColor = "#569cd6";
+  debugToggle.appendChild(debugCb);
+  debugToggle.appendChild(document.createTextNode("Debug"));
+  container.appendChild(debugToggle);
+
+  let traceOverlayLayer: Container | null = null;
+  let tracePhaseIndex = -1; // -1 = show all phases
+  let snapshotActive = false; // true when entities are from a PhaseSnapshot
+
+  function getSnapshotForPhase(
+    events: TraceEvent[],
+    phaseIndex: number,
+  ): { entities: PlacedEntity[]; width: number; height: number } | null {
+    const phases = getTracePhases(events);
+    if (phaseIndex < 0 || phaseIndex >= phases.length) return null;
+    const phaseName = phases[phaseIndex].name;
+    for (const evt of events) {
+      if (evt.phase === "PhaseSnapshot" && (evt as PhaseSnapshot).data.phase === phaseName) {
+        return (evt as PhaseSnapshot).data;
+      }
+    }
+    return null;
+  }
+
+  // --- Step-through controls ---
+  const stepBar = document.createElement("div");
+  stepBar.style.cssText = "position:absolute;top:60px;right:70px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:2px 6px;border-radius:3px;z-index:10;display:none;align-items:center;gap:4px;user-select:none";
+  const prevBtn = document.createElement("button");
+  prevBtn.textContent = "\u25C0";
+  prevBtn.style.cssText = "background:none;border:1px solid #555;color:#ccc;cursor:pointer;padding:0 4px;border-radius:2px;font-size:10px";
+  const phaseLabel = document.createElement("span");
+  phaseLabel.textContent = "all";
+  phaseLabel.style.minWidth = "80px";
+  phaseLabel.style.textAlign = "center";
+  const nextBtn = document.createElement("button");
+  nextBtn.textContent = "\u25B6";
+  nextBtn.style.cssText = "background:none;border:1px solid #555;color:#ccc;cursor:pointer;padding:0 4px;border-radius:2px;font-size:10px";
+  stepBar.appendChild(prevBtn);
+  stepBar.appendChild(phaseLabel);
+  stepBar.appendChild(nextBtn);
+  container.appendChild(stepBar);
+
+  function updateStepControls(): void {
+    if (!debugCb.checked || !lastLayout?.trace?.length) {
+      stepBar.style.display = "none";
+      return;
+    }
+    const phases = getTracePhases(lastLayout.trace as TraceEvent[]);
+    if (phases.length === 0) {
+      stepBar.style.display = "none";
+      return;
+    }
+    stepBar.style.display = "flex";
+    if (tracePhaseIndex < 0) {
+      phaseLabel.textContent = `all (${phases.length})`;
+    } else {
+      phaseLabel.textContent = phases[tracePhaseIndex].name;
+    }
+    prevBtn.disabled = tracePhaseIndex <= 0 && tracePhaseIndex !== -1;
+    nextBtn.disabled = tracePhaseIndex >= phases.length - 1;
+  }
+
+  function updateTraceOverlay(): void {
+    if (traceOverlayLayer) {
+      entityLayer.removeChild(traceOverlayLayer);
+      traceOverlayLayer.destroy();
+      traceOverlayLayer = null;
+    }
+
+    // Step-through: re-render entities from snapshot for the selected phase.
+    const wantSnapshot = debugCb.checked && tracePhaseIndex >= 0 && !!lastLayout?.trace;
+    const snapshot = wantSnapshot
+      ? getSnapshotForPhase(lastLayout!.trace as TraceEvent[], tracePhaseIndex)
+      : null;
+
+    if (snapshot) {
+      snapshotActive = true;
+      highlightCtrl = renderLayout(
+        { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
+        entityLayer, onHover, onSelect,
+      );
+    } else if (snapshotActive) {
+      // Was showing a snapshot — restore full entity rendering.
+      snapshotActive = false;
+      if (lastLayout) {
+        highlightCtrl = renderLayout(lastLayout, entityLayer, onHover, onSelect);
+      }
+    }
+
+    if (!debugCb.checked || !lastLayout?.trace?.length) {
+      updateStepControls();
+      return;
+    }
+    const events = tracePhaseIndex < 0
+      ? (lastLayout.trace as TraceEvent[])
+      : eventsUpToPhase(lastLayout.trace as TraceEvent[], tracePhaseIndex);
+    traceOverlayLayer = renderTraceOverlay(
+      events,
+      lastLayout.width ?? 0,
+      lastLayout.height ?? 0,
+      entityLayer,
+      (text) => {
+        if (text) {
+          tooltip.innerHTML = `<span style="color:#8af">TRACE</span> ${text}`;
+          tooltip.style.display = "block";
+        } else {
+          tooltip.style.display = "none";
+        }
+      },
+    );
+    updateStepControls();
+  }
+
+  prevBtn.addEventListener("click", () => {
+    const phases = getTracePhases((lastLayout?.trace ?? []) as TraceEvent[]);
+    if (tracePhaseIndex === -1) tracePhaseIndex = phases.length - 1;
+    else if (tracePhaseIndex > 0) tracePhaseIndex--;
+    updateTraceOverlay();
+  });
+  nextBtn.addEventListener("click", () => {
+    const phases = getTracePhases((lastLayout?.trace ?? []) as TraceEvent[]);
+    if (tracePhaseIndex < phases.length - 1) tracePhaseIndex++;
+    updateTraceOverlay();
+  });
+
+  debugCb.addEventListener("change", () => {
+    tracePhaseIndex = -1;
+    updateTraceOverlay();
+  });
+
+  debugCb.addEventListener("change", updateTraceOverlay);
+
+  // --- Validation overlay toggle ---
+  const valToggle = document.createElement("label");
+  valToggle.style.cssText = "position:absolute;top:86px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
+  const valCb = document.createElement("input");
+  valCb.type = "checkbox";
+  valCb.checked = false;
+  valCb.style.accentColor = "#569cd6";
+  valToggle.appendChild(valCb);
+  valToggle.appendChild(document.createTextNode("Validation"));
+  container.appendChild(valToggle);
+
+  let valOverlayLayer: Container | null = null;
+  let cachedValidationIssues: ValidationIssue[] | null = null;
+
+  function updateValidationOverlay(): void {
+    if (valOverlayLayer) {
+      entityLayer.removeChild(valOverlayLayer);
+      valOverlayLayer.destroy();
+      valOverlayLayer = null;
+    }
+    if (!valCb.checked || !lastLayout) return;
+    if (!cachedValidationIssues) {
+      try {
+        cachedValidationIssues = engine.validateLayout(lastLayout, null);
+      } catch {
+        cachedValidationIssues = [];
+      }
+    }
+    if (cachedValidationIssues.length === 0) return;
+    valOverlayLayer = renderValidationOverlay(
+      cachedValidationIssues,
+      entityLayer,
+      (text) => {
+        if (text) {
+          tooltip.innerHTML = `<span style="color:#f44">VALIDATION</span> ${text}`;
+          tooltip.style.display = "block";
+        } else {
+          tooltip.style.display = "none";
+        }
+      },
+    );
+  }
+
+  valCb.addEventListener("change", updateValidationOverlay);
+
   // --- Item color legend (bottom-left) ---
   const legendEl = document.createElement("div");
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
@@ -236,15 +421,21 @@ async function main(): Promise<void> {
 
   function renderLayoutOnCanvas(layout: LayoutResult): void {
     lastLayout = layout;
+    tracePhaseIndex = -1;
+    snapshotActive = false;
     // Destroy previous selection controller (new layout = new tile map)
     if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
     annotationBar.style.display = "none";
     annotationNote.value = "";
+    // Clear cached validation state for new layout
+    cachedValidationIssues = null;
     // Replace the DAG with the actual bus layout.
     drawGraph(viewport, null);
     highlightCtrl = renderLayout(layout, entityLayer, onHover, onSelect);
     selectionCtrl = createSelectionController(app.canvas, viewport, entityLayer, layout, onSelectionChange);
     buildLegend(layout);
+    updateTraceOverlay();
+    updateValidationOverlay();
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {
@@ -316,6 +507,8 @@ async function main(): Promise<void> {
     sidebarCtrl = renderSidebar(generatePanel, engine, {
       renderGraph,
       renderLayout: renderLayoutOnCanvas,
+    }, {
+      getDebugMode: () => debugCb.checked,
     });
 
     initCorpusPanel(corpusPanel, renderLayoutOnCanvas);
