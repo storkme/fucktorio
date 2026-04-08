@@ -286,13 +286,24 @@ fn route_bus(
         entities.extend(path_ents);
     }
 
-    // Route each lane, skipping tiles owned by SAT crossing zones.
+    // Build tap-off tile set from routed paths: positions where the A*
+    // gave priority to tap-offs. Trunks must bridge around these.
+    let mut tapoff_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for (key, path) in &routed_paths {
+        if key.starts_with("tap:") {
+            for &(px, py) in path {
+                tapoff_tiles.insert((px, py));
+            }
+        }
+    }
+
+    // Route each lane, skipping tiles owned by SAT crossing zones
+    // and tiles claimed by A* tap-offs.
     for lane in lanes {
-        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles);
+        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles);
     }
 
     // Remove non-SAT entities at SAT entity positions (SAT entities win).
-    // Only at entity_only tiles — forced-empty tiles keep A* tap-off entities.
     if !crossing_tiles.is_empty() {
         entities.retain(|e| {
             if !crossing_tiles.has_entity(&(e.x, e.y)) {
@@ -740,20 +751,70 @@ mod tests {
         use crate::solver::solve;
         use rustc_hash::FxHashSet;
 
+        use crate::validate::underground::check_underground_belt_pairs;
+        use crate::validate::belt_flow::{
+            check_belt_dead_ends, check_belt_item_isolation, check_belt_loops,
+            check_belt_junctions, check_belt_direction_continuity,
+        };
+        use crate::validate::Severity;
+
         let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
             .iter().map(|s| s.to_string()).collect();
-        // Check which balancer shapes are needed and which are missing
         for machine in &["assembling-machine-1", "assembling-machine-3"] {
             let sr = solve("electronic-circuit", 20.0, &inputs, machine)
                 .expect("solve");
             let layout = build_bus_layout(&sr, Some("transport-belt"))
                 .expect(&format!("layout with {}", machine));
-            if !layout.warnings.is_empty() {
-                eprintln!("{}: {:?}", machine, layout.warnings);
-            } else {
-                eprintln!("{}: OK ({} entities, {} regions)", machine,
-                    layout.entities.len(), layout.regions.len());
+
+            assert!(layout.warnings.is_empty(),
+                "{}: warnings: {:?}", machine, layout.warnings);
+
+            // Check overlaps — report both entities at each position
+            let mut tile_map: std::collections::HashMap<(i32,i32), Vec<String>> = std::collections::HashMap::new();
+            for e in &layout.entities {
+                tile_map.entry((e.x, e.y)).or_default()
+                    .push(format!("{} {:?} seg={:?}", e.name, e.direction, e.segment_id));
             }
+            let overlaps: Vec<_> = tile_map.iter()
+                .filter(|(_, v)| v.len() > 1)
+                .map(|((x,y), v)| format!("({},{}) {:?}", x, y, v))
+                .collect();
+            if !overlaps.is_empty() {
+                eprintln!("{}: {} overlaps:", machine, overlaps.len());
+                for o in &overlaps { eprintln!("  {}", o); }
+            }
+            if !overlaps.is_empty() {
+                eprintln!("{}: {} overlaps (not fatal — dedup handles)", machine, overlaps.len());
+            }
+
+            // Full validation
+            let mut all_errors = Vec::new();
+            for issue in check_underground_belt_pairs(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+            for issue in check_belt_dead_ends(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+            for issue in check_belt_item_isolation(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+            for issue in check_belt_loops(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+            for issue in check_belt_junctions(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+            for issue in check_belt_direction_continuity(&layout) {
+                if issue.severity == Severity::Error { all_errors.push(issue.message); }
+            }
+
+            eprintln!("{}: {} entities, {} regions, {} errors",
+                machine, layout.entities.len(), layout.regions.len(), all_errors.len());
+            for e in &all_errors {
+                eprintln!("  {}", e);
+            }
+            assert!(all_errors.is_empty(),
+                "{}: {} validation errors", machine, all_errors.len());
         }
     }
 

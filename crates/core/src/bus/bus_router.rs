@@ -281,10 +281,21 @@ pub fn plan_bus_lanes(
     // full balancer zone to each lane so trunks skip the entire zone.
     let templates = crate::bus::balancer_library::balancer_templates();
     for fam in &mut families {
-        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
-        if let Some(tpl) = templates.get(&shape_key) {
-            fam.balancer_y_end = fam.balancer_y_start + tpl.height as i32 - 1;
-            // Store the full zone on each family lane so route_belt_lane can skip it.
+        let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
+        // Find the effective template height: direct match or decomposed.
+        let tpl_height = templates.get(&(n, m)).map(|t| t.height)
+            .or_else(|| {
+                // Decomposition: find divisor g where (n/g, m/g) has a template.
+                (1..=n).rev().find_map(|g| {
+                    if n % g == 0 && m % g == 0 {
+                        templates.get(&(n / g, m / g)).map(|t| t.height)
+                    } else {
+                        None
+                    }
+                })
+            });
+        if let Some(h) = tpl_height {
+            fam.balancer_y_end = fam.balancer_y_start + h as i32 - 1;
             let range = (fam.balancer_y_start, fam.balancer_y_end);
             for lane in lanes.iter_mut() {
                 if lane.family_id.is_some() && lane.item == fam.item {
@@ -292,8 +303,6 @@ pub fn plan_bus_lanes(
                 }
             }
         }
-        // If no template exists, don't set family_balancer_range — lanes operate
-        // independently with no zone to skip.
     }
 
     Ok((lanes, families))
@@ -768,7 +777,7 @@ pub(crate) fn stamp_family_balancer(
         let sub_m = m / g;
         if let Some(sub_template) = templates.get(&(sub_n, sub_m)) {
             let mut all_entities = Vec::new();
-            let producers_per_group = sub_n as usize;
+            let _producers_per_group = sub_n as usize;
             let lanes_per_group = sub_m as usize;
 
             for gi in 0..(g as usize) {
@@ -1362,13 +1371,14 @@ pub(crate) fn route_lane(
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
+    _tapoff_tiles: &FxHashSet<(i32, i32)>,
 ) {
     if lane.is_fluid {
         entities.extend(route_fluid_lane(lane));
     } else if is_intermediate(lane) {
-        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles);
+        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
     } else {
-        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles);
+        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
     }
 }
 
@@ -1389,6 +1399,7 @@ fn route_belt_lane(
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
+    _tapoff_tiles: &FxHashSet<(i32, i32)>,
 ) {
     let x = lane.x;
     let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
@@ -1563,6 +1574,7 @@ fn route_intermediate_lane(
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
+    _tapoff_tiles: &FxHashSet<(i32, i32)>,
 ) {
     let x = lane.x;
     // Both belt_name and horiz_belt use the same tier for intermediate lanes
@@ -1660,6 +1672,12 @@ fn route_intermediate_lane(
     let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1);
     let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+    // Skip the family balancer zone (same as route_belt_lane).
+    if let Some((by_start, by_end)) = lane.family_balancer_range {
+        for y in by_start..=by_end {
+            skip_ys.insert(y);
+        }
+    }
     // Skip any y-rows owned by SAT crossing zones at this x.
     for &(cx, cy) in crossing_tiles.iter() {
         if cx == x {
@@ -2475,6 +2493,11 @@ pub(crate) fn negotiate_and_route(
             let foreign_skips = foreign_trunk_skip_ys(lane, lanes, row_spans, start_y, last_tap_y - 1);
             let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
             skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+            if let Some((by_start, by_end)) = lane.family_balancer_range {
+                for y in by_start..=by_end {
+                    skip_ys.insert(y);
+                }
+            }
             for (seg_start, seg_end) in trunk_segments(start_y, last_tap_y - 1, &skip_ys) {
                 let trunk_key = format!("trunk:{}:{}:{}:{}", lane.item, x, seg_start, seg_end);
                 id_to_key.insert(lane_id, trunk_key);
@@ -3684,7 +3707,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty());
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -3741,7 +3764,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty());
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
@@ -3813,7 +3836,7 @@ mod tests {
         let row_spans = vec![producer_row, consumer_row];
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty());
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
 
         // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
         let ug_entities: Vec<_> = entities.iter()
