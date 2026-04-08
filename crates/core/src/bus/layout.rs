@@ -8,6 +8,7 @@ use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 use crate::bus::bus_router::{
     plan_bus_lanes, bus_width_for_lanes, stamp_family_balancer, render_family_input_paths,
     merge_output_rows, place_merger_block, route_lane, negotiate_and_route,
+    extract_and_solve_crossings, SatCrossingRegion,
     BusLane, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};
@@ -240,7 +241,17 @@ fn route_bus(
     let mut max_y = total_height;
     let mut merge_max_x = 0;
 
-    // Pre-compute routed paths via negotiated A* (underground crossing map)
+    // SAT crossing zones: trunk-only approach. SAT determines how trunks
+    // handle crossings (UG bridges). The A* routes tap-offs normally (underground).
+    // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
+    let (solved_crossings, crossing_tiles, _sat_regions) =
+        extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
+    for sc in &solved_crossings {
+        entities.extend(sc.solution.entities.clone());
+    }
+
+    // No spec splitting needed — A* runs normally, SAT only affects trunk rendering.
+    let empty_regions: Vec<SatCrossingRegion> = Vec::new();
     let routed_paths = negotiate_and_route(
         lanes,
         row_spans,
@@ -250,6 +261,8 @@ fn route_bus(
         solver_result,
         families,
         max_belt_tier,
+        &empty_regions,
+        &FxHashSet::default(),
     );
 
     // Stamp N-to-M balancer blocks
@@ -258,7 +271,6 @@ fn route_bus(
             .map_err(|e| format!("balancer stamp failed for family {:?}: {}", fam.shape, e))?;
         entities.extend(balancer_ents);
 
-        // Wire producer outputs into balancer inputs
         let path_ents = render_family_input_paths(
             fam,
             row_spans,
@@ -269,9 +281,19 @@ fn route_bus(
         entities.extend(path_ents);
     }
 
-    // Route each lane (solid + fluid)
+    // Route each lane, skipping tiles owned by SAT crossing zones.
     for lane in lanes {
-        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths));
+        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles);
+    }
+
+    // Remove non-SAT entities at crossing tile positions (SAT entities win).
+    if !crossing_tiles.is_empty() {
+        entities.retain(|e| {
+            if !crossing_tiles.contains(&(e.x, e.y)) {
+                return true;
+            }
+            matches!(&e.segment_id, Some(sid) if sid.starts_with("crossing:"))
+        });
     }
 
     // Merge split lanes if needed

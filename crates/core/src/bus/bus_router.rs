@@ -1326,13 +1326,14 @@ pub(crate) fn route_lane(
     bw: i32,
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+    crossing_tiles: &CrossingTileSet,
 ) {
     if lane.is_fluid {
         entities.extend(route_fluid_lane(lane));
     } else if is_intermediate(lane) {
-        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths);
+        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles);
     } else {
-        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths);
+        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles);
     }
 }
 
@@ -1352,6 +1353,7 @@ fn route_belt_lane(
     row_spans: &[RowSpan],
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+    crossing_tiles: &CrossingTileSet,
 ) {
     let x = lane.x;
     let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
@@ -1394,14 +1396,24 @@ fn route_belt_lane(
         }
     }
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+    // Also skip any y-rows that SAT crossing zones own at this x.
+    for &(cx, cy) in crossing_tiles.iter() {
+        if cx == x {
+            skip_ys.insert(cy);
+        }
+    }
 
-    // UG-pair bridges over foreign skip y's
+    // UG-pair bridges over foreign skip y's — skip if SAT solved this zone.
     let trunk_seg_id = Some(format!("trunk:{}", lane.item));
     let ug_name = underground_for_belt(belt_name);
     for &fy in &foreign_skips {
+        if crossing_tiles.contains(&(x, fy)) {
+            // SAT solver owns this crossing — skip the heuristic bridge.
+            continue;
+        }
         // Remove any previously placed entity at the bridge input position so the
         // UG input can replace it (e.g. a balancer-stamp surface belt at fy-1).
-        entities.retain(|e| !(e.x == x && e.y == fy - 1));
+        entities.retain(|e| !(e.x == x && e.y == fy - 1 && !crossing_tiles.contains(&(e.x, e.y))));
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
             x,
@@ -1496,6 +1508,11 @@ fn route_belt_lane(
                 ..Default::default()
             });
         }
+        // Also render the post-zone segment if the tap-off was split by SAT.
+        let tap_post_key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
+        if let Some(tap_path) = paths.get(&tap_post_key) {
+            entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
+        }
     }
 }
 
@@ -1510,6 +1527,7 @@ fn route_intermediate_lane(
     bw: i32,
     max_belt_tier: Option<&str>,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+    crossing_tiles: &CrossingTileSet,
 ) {
     let x = lane.x;
     // Both belt_name and horiz_belt use the same tier for intermediate lanes
@@ -1607,10 +1625,16 @@ fn route_intermediate_lane(
     let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1);
     let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+    // Skip any y-rows owned by SAT crossing zones at this x.
+    for &(cx, cy) in crossing_tiles.iter() {
+        if cx == x {
+            skip_ys.insert(cy);
+        }
+    }
 
     // Surface belt at each producer output y (return junction points)
     for &out_y in &producer_out_ys {
-        if out_y < tap_y {
+        if out_y < tap_y && !crossing_tiles.contains(&(x, out_y)) {
             entities.push(PlacedEntity {
                 name: belt_name.to_string(),
                 x,
@@ -1624,12 +1648,15 @@ fn route_intermediate_lane(
         }
     }
 
-    // UG-pair bridges over foreign skip y's
+    // UG-pair bridges over foreign skip y's — skip if SAT solved this zone.
     let ug_name = underground_for_belt(belt_name);
     for &fy in &foreign_skips {
+        if crossing_tiles.contains(&(x, fy)) {
+            continue;
+        }
         // Remove any previously placed entity at the bridge input position (e.g. a
         // balancer-stamp surface belt) so the UG input can take that tile.
-        entities.retain(|e| !(e.x == x && e.y == fy - 1));
+        entities.retain(|e| !(e.x == x && e.y == fy - 1 && !crossing_tiles.contains(&(e.x, e.y))));
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
             x,
@@ -1689,6 +1716,11 @@ fn route_intermediate_lane(
             rate: Some(lane.rate),
             ..Default::default()
         });
+    }
+    // Also render the post-zone segment if the tap-off was split by SAT.
+    let tap_post_key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
+    if let Some(tap_path) = paths.get(&tap_post_key) {
+        entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
     }
 }
 
@@ -1797,6 +1829,184 @@ fn foreign_skip_ug_tiles(foreign_skip_ys: &FxHashSet<i32>) -> FxHashSet<i32> {
         result.insert(y + 1);
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// SAT-based crossing zone solver
+// ---------------------------------------------------------------------------
+
+use crate::sat::{self, CrossingZone, CrossingZoneSolution, ZoneBoundary};
+
+/// A solved crossing zone: the SAT solution plus its origin.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct SolvedCrossing {
+    pub zone: CrossingZone,
+    pub solution: CrossingZoneSolution,
+}
+
+/// A SAT-solved region that the A* should route around.
+/// The tap-off at `tap_y` from lane at `tap_x` is handled by SAT
+/// from `x_min` to `x_max` (inclusive).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct SatCrossingRegion {
+    pub tap_x: i32,    // x of the tapping lane
+    pub x_min: i32,
+    pub x_max: i32,
+    pub tap_y: i32,
+    pub tap_item: String,
+}
+
+/// Tile set of all (x, y) positions owned by solved crossing zones.
+pub(crate) type CrossingTileSet = FxHashSet<(i32, i32)>;
+
+/// Extract crossing zones from the lane plan and solve them via SAT.
+///
+/// Returns (solved_crossings, tile_set) where tile_set contains all (x,y)
+/// positions owned by crossing zone entities.
+#[allow(dead_code)]
+pub(crate) fn extract_and_solve_crossings(
+    lanes: &[BusLane],
+    _row_spans: &[RowSpan],
+    max_belt_tier: Option<&str>,
+) -> (Vec<SolvedCrossing>, CrossingTileSet, Vec<SatCrossingRegion>) {
+    let effective_belt = belt_entity_for_rate(f64::MAX, max_belt_tier);
+    let max_reach = crate::common::ug_max_reach(effective_belt);
+
+    // For each left-lane tap-off, find which right-lane trunks it crosses on
+    // the surface. Group contiguous crossed columns into zones.
+    let mut zone_specs: Vec<(String, i32, i32, Vec<(i32, String)>)> = Vec::new();
+    // zone_specs: (tap_item, tap_x, tap_y, vec of (trunk_x, trunk_item))
+
+    for tapping_lane in lanes {
+        if tapping_lane.is_fluid {
+            continue;
+        }
+        for &tap_y in &tapping_lane.tap_off_ys {
+            let mut crossed_trunks: Vec<(i32, String)> = Vec::new();
+
+            // Find trunk columns the tap-off reaches on the surface
+            // (same intermediate-clear check as foreign_trunk_skip_ys Case 2).
+            for trunk_lane in lanes {
+                if trunk_lane.is_fluid
+                    || std::ptr::eq(trunk_lane, tapping_lane)
+                    || trunk_lane.x <= tapping_lane.x
+                {
+                    continue;
+                }
+                let trunk_extends = trunk_lane.tap_off_ys.iter().any(|&y| y >= tap_y);
+                let trunk_skips_tap_y = trunk_lane.tap_off_ys.contains(&tap_y);
+                if !trunk_extends || trunk_skips_tap_y {
+                    continue;
+                }
+                let all_clear = lanes.iter()
+                    .filter(|mid| {
+                        !mid.is_fluid
+                            && mid.x > tapping_lane.x
+                            && mid.x < trunk_lane.x
+                    })
+                    .all(|mid| {
+                        mid.tap_off_ys.contains(&tap_y)
+                            || mid.tap_off_ys.iter().all(|&y| y < tap_y)
+                    });
+                if all_clear {
+                    crossed_trunks.push((trunk_lane.x, trunk_lane.item.clone()));
+                }
+            }
+
+            if !crossed_trunks.is_empty() {
+                crossed_trunks.sort_by_key(|(x, _)| *x);
+                zone_specs.push((
+                    tapping_lane.item.clone(),
+                    tapping_lane.x,
+                    tap_y,
+                    crossed_trunks,
+                ));
+            }
+        }
+    }
+
+    // Deduplicate: if the same tap_y has overlapping zones from multiple
+    // tapping lanes, merge them (take the union of crossed trunks).
+    // For now, just solve each independently.
+
+    let mut solved = Vec::new();
+    let mut tile_set = FxHashSet::default();
+
+    #[allow(unused_variables)]
+    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
+        let x_min = crossed.first().unwrap().0;
+        let x_max = crossed.last().unwrap().0;
+        let zone_width = (x_max - x_min + 1) as u32;
+        let zone_height: u32 = 3;
+        let zone_x = x_min;
+        let zone_y = tap_y - 1;
+
+        let mut boundaries = Vec::new();
+
+        // Trunk boundaries only: each crossed column enters top, exits bottom.
+        // Tap-off tiles are forced empty (the A* routes the tap-off underground).
+        let mut forced_empty = Vec::new();
+        for (trunk_x, trunk_item) in crossed {
+            boundaries.push(ZoneBoundary {
+                x: *trunk_x,
+                y: zone_y,
+                direction: EntityDirection::South,
+                item: trunk_item.clone(),
+                is_input: true,
+            });
+            boundaries.push(ZoneBoundary {
+                x: *trunk_x,
+                y: zone_y + zone_height as i32 - 1,
+                direction: EntityDirection::South,
+                item: trunk_item.clone(),
+                is_input: false,
+            });
+            // Force the tap-off row empty so the trunk must bridge around it.
+            forced_empty.push((*trunk_x, *tap_y));
+        }
+
+        let zone = CrossingZone {
+            x: zone_x,
+            y: zone_y,
+            width: zone_width,
+            height: zone_height,
+            boundaries,
+            forced_empty,
+        };
+
+        if let Some(solution) = sat::solve_crossing_zone(&zone, max_reach, effective_belt) {
+            // Register SAT entity positions in the tile set.
+            for e in &solution.entities {
+                tile_set.insert((e.x, e.y));
+            }
+            solved.push(SolvedCrossing { zone, solution });
+        }
+    }
+
+    // Build SatCrossingRegions for spec-splitting in negotiate_and_route.
+    let mut regions: Vec<SatCrossingRegion> = Vec::new();
+    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
+        if crossed.is_empty() {
+            continue;
+        }
+        let x_min = crossed.first().unwrap().0;
+        let x_max = crossed.last().unwrap().0;
+        // Only create region if SAT actually solved this zone.
+        let zone_origin = (x_min, tap_y - 1);
+        if solved.iter().any(|sc| sc.zone.x == zone_origin.0 && sc.zone.y == zone_origin.1) {
+            regions.push(SatCrossingRegion {
+                tap_x: *tap_x,
+                x_min,
+                x_max,
+                tap_y: *tap_y,
+                tap_item: tap_item.clone(),
+            });
+        }
+    }
+
+    (solved, tile_set, regions)
 }
 
 /// Maximum tiles between PTG input and output positions.
@@ -1985,6 +2195,8 @@ pub(crate) fn negotiate_and_route(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     max_belt_tier: Option<&str>,
+    sat_regions: &[SatCrossingRegion],
+    _sat_obstacles: &FxHashSet<(i32, i32)>,
 ) -> FxHashMap<String, Vec<(i32, i32)>> {
     use crate::astar::{LaneSpec, negotiate_lanes};
     use crate::bus::balancer_library::balancer_templates;
@@ -2027,6 +2239,10 @@ pub(crate) fn negotiate_and_route(
 
     // --- Collect fixed obstacles ---
     let mut obstacles: FxHashSet<(i16, i16)> = FxHashSet::default();
+
+    // SAT crossing zone tiles are NOT added as hard obstacles: the A* tap-off
+    // specs are split around SAT zones (they don't route through), and trunk
+    // specs already skip SAT-owned y-rows via crossing_tiles in route_belt_lane.
 
     for e in row_entities {
         if MACHINE_ENTITIES.contains(&e.name.as_str()) {
@@ -2261,27 +2477,72 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Tap-off: horizontal EAST, priority=6
+            // If a SAT crossing zone covers part of this tap-off, split the
+            // spec into before-zone and after-zone segments.
             let tap_y = if !lane.tap_off_ys.is_empty() {
                 lane.tap_off_ys[0]
             } else {
                 last_tap_y
             };
             if x < bw {
-                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                id_to_key.insert(lane_id, tap_key);
-                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                let fd = flow_dir(&wps);
-                specs.push(LaneSpec {
-                    id: lane_id,
-                    item_id,
-                    waypoints: wps,
-                    strategy: 2,
-                    priority: 6,
-                    y_constraint: Some(tap_y as i16),
-                    x_constraint: None,
-                    flow_dir: fd,
+                let sat_region = sat_regions.iter().find(|r| {
+                    r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
                 });
-                lane_id += 1;
+                if let Some(region) = sat_region {
+                    // Before zone: lane.x → zone.x_min - 1
+                    if x < region.x_min {
+                        let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                        id_to_key.insert(lane_id, key);
+                        let wps = vec![(x as i16, tap_y as i16), ((region.x_min - 1) as i16, tap_y as i16)];
+                        let fd = flow_dir(&wps);
+                        specs.push(LaneSpec {
+                            id: lane_id,
+                            item_id,
+                            waypoints: wps,
+                            strategy: 2,
+                            priority: 6,
+                            y_constraint: Some(tap_y as i16),
+                            x_constraint: None,
+                            flow_dir: fd,
+                        });
+                        lane_id += 1;
+                    }
+                    // After zone: zone.x_max + 1 → bw - 1
+                    if region.x_max + 1 < bw {
+                        let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
+                        id_to_key.insert(lane_id, key);
+                        let wps = vec![((region.x_max + 1) as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                        let fd = flow_dir(&wps);
+                        specs.push(LaneSpec {
+                            id: lane_id,
+                            item_id,
+                            waypoints: wps,
+                            strategy: 2,
+                            priority: 6,
+                            y_constraint: Some(tap_y as i16),
+                            x_constraint: None,
+                            flow_dir: fd,
+                        });
+                        lane_id += 1;
+                    }
+                } else {
+                    // No SAT zone — normal full-width tap-off spec.
+                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                    id_to_key.insert(lane_id, tap_key);
+                    let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id,
+                        item_id,
+                        waypoints: wps,
+                        strategy: 2,
+                        priority: 6,
+                        y_constraint: Some(tap_y as i16),
+                        x_constraint: None,
+                        flow_dir: fd,
+                    });
+                    lane_id += 1;
+                }
             }
         } else if !lane.consumer_rows.is_empty() {
             // External input lane: trunk from source to tap-off, then tap-off EAST.
@@ -2330,22 +2591,48 @@ pub(crate) fn negotiate_and_route(
             }
 
             // Tap-off: horizontal EAST, priority=6
+            // Split around SAT crossing zones if present.
             if x < bw {
-                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                id_to_key.insert(lane_id, tap_key);
-                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                let fd = flow_dir(&wps);
-                specs.push(LaneSpec {
-                    id: lane_id,
-                    item_id,
-                    waypoints: wps,
-                    strategy: 2,
-                    priority: 6,
-                    y_constraint: Some(tap_y as i16),
-                    x_constraint: None,
-                    flow_dir: fd,
+                let sat_region = sat_regions.iter().find(|r| {
+                    r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
                 });
-                lane_id += 1;
+                if let Some(region) = sat_region {
+                    if x < region.x_min {
+                        let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                        id_to_key.insert(lane_id, key);
+                        let wps = vec![(x as i16, tap_y as i16), ((region.x_min - 1) as i16, tap_y as i16)];
+                        let fd = flow_dir(&wps);
+                        specs.push(LaneSpec {
+                            id: lane_id, item_id, waypoints: wps, strategy: 2,
+                            priority: 6, y_constraint: Some(tap_y as i16),
+                            x_constraint: None, flow_dir: fd,
+                        });
+                        lane_id += 1;
+                    }
+                    if region.x_max + 1 < bw {
+                        let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
+                        id_to_key.insert(lane_id, key);
+                        let wps = vec![((region.x_max + 1) as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                        let fd = flow_dir(&wps);
+                        specs.push(LaneSpec {
+                            id: lane_id, item_id, waypoints: wps, strategy: 2,
+                            priority: 6, y_constraint: Some(tap_y as i16),
+                            x_constraint: None, flow_dir: fd,
+                        });
+                        lane_id += 1;
+                    }
+                } else {
+                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                    id_to_key.insert(lane_id, tap_key);
+                    let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id, item_id, waypoints: wps, strategy: 2,
+                        priority: 6, y_constraint: Some(tap_y as i16),
+                        x_constraint: None, flow_dir: fd,
+                    });
+                    lane_id += 1;
+                }
             }
         } else {
             // Collector lane (output/collector only): trunk + output returns.
@@ -3328,7 +3615,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None);
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &FxHashSet::default());
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -3385,7 +3672,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None);
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &FxHashSet::default());
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
@@ -3457,7 +3744,7 @@ mod tests {
         let row_spans = vec![producer_row, consumer_row];
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None);
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &FxHashSet::default());
 
         // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
         let ug_entities: Vec<_> = entities.iter()
