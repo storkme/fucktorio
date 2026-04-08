@@ -142,6 +142,12 @@ pub enum TraceEvent {
         count: usize,
         strategy: String,
     },
+
+    // Phase boundary markers
+    PhaseComplete {
+        phase: String,
+        entity_count: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------

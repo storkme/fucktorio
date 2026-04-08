@@ -12,6 +12,7 @@ pub use fluids::{check_fluid_port_connectivity, check_pipe_isolation};
 
 pub mod belt_structural;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::models::{LayoutResult, SolverResult};
@@ -25,7 +26,9 @@ use belt_flow::{
 };
 
 /// Layout style: affects which validation checks run and how.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LayoutStyle {
     /// Constraint-based spaghetti layout (default).
     #[default]
@@ -35,7 +38,9 @@ pub enum LayoutStyle {
 }
 
 /// Severity level of a single validation finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
     Error,
     Warning,
@@ -51,7 +56,9 @@ impl Severity {
 }
 
 /// A single validation finding, mirroring Python's `ValidationIssue` dataclass.
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValidationIssue {
     pub severity: Severity,
     /// Category tag, e.g. `"pipe-isolation"`, `"fluid-connectivity"`, `"inserter"`, `"power"`.

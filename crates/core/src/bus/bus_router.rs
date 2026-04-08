@@ -530,6 +530,13 @@ fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane>
 
     let mut result = best_solid;
     result.extend(fluid);
+
+    let crossing_score = score_lane_ordering(&result, row_spans);
+    crate::trace::emit(crate::trace::TraceEvent::LaneOrderOptimized {
+        ordering: result.iter().map(|ln| ln.item.clone()).collect(),
+        crossing_score,
+    });
+
     result
 }
 
@@ -641,6 +648,13 @@ fn split_overflowing_lanes(
             result.push(lane.clone());
             continue;
         }
+
+        crate::trace::emit(crate::trace::TraceEvent::LaneSplit {
+            item: lane.item.clone(),
+            rate: lane.rate,
+            max_lane_cap,
+            n_splits,
+        });
 
         // Distribute consumer rows round-robin
         let mut consumers_per_split: Vec<Vec<usize>> = vec![Vec::new(); n_splits];
@@ -1792,6 +1806,14 @@ fn route_belt_lane(
             // fallback to a single East belt at (x+1, tap_y).
             if let Some(tap_path) = paths.get(&tap_key) {
                 entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
+                crate::trace::emit(crate::trace::TraceEvent::TapoffRouted {
+                    item: lane.item.clone(),
+                    from_x: x + 1,
+                    from_y: tap_y,
+                    to_x: tap_path.last().map(|&(ex, _)| ex).unwrap_or(x + 1),
+                    to_y: tap_path.last().map(|&(_, ey)| ey).unwrap_or(tap_y),
+                    path_len: tap_path.len(),
+                });
             } else {
                 entities.push(PlacedEntity {
                     name: horiz_belt.to_string(),
@@ -1809,6 +1831,14 @@ fn route_belt_lane(
             // all remaining items go East. No splitter needed.
             if let Some(tap_path) = paths.get(&tap_key) {
                 entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
+                crate::trace::emit(crate::trace::TraceEvent::TapoffRouted {
+                    item: lane.item.clone(),
+                    from_x: x,
+                    from_y: tap_y,
+                    to_x: tap_path.last().map(|&(ex, _)| ex).unwrap_or(x),
+                    to_y: tap_path.last().map(|&(_, ey)| ey).unwrap_or(tap_y),
+                    path_len: tap_path.len(),
+                });
             } else if !lane.family_balancer_range.is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be) {
                 entities.push(PlacedEntity {
                     name: horiz_belt.to_string(),
@@ -1826,6 +1856,14 @@ fn route_belt_lane(
         let tap_post_key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
         if let Some(tap_path) = paths.get(&tap_post_key) {
             entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
+            crate::trace::emit(crate::trace::TraceEvent::TapoffRouted {
+                item: lane.item.clone(),
+                from_x: tap_path.first().map(|&(sx, _)| sx).unwrap_or(x),
+                from_y: tap_path.first().map(|&(_, sy)| sy).unwrap_or(tap_y),
+                to_x: tap_path.last().map(|&(ex, _)| ex).unwrap_or(x),
+                to_y: tap_path.last().map(|&(_, ey)| ey).unwrap_or(tap_y),
+                path_len: tap_path.len(),
+            });
         }
     }
 }
@@ -2408,6 +2446,13 @@ pub(crate) fn extract_and_solve_crossings(
                 all_tiles.insert((fx, fy));
             }
             solved.push(SolvedCrossing { zone, solution });
+        } else {
+            crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSkipped {
+                tap_item: tap_item.clone(),
+                tap_x: *tap_x,
+                tap_y: *tap_y,
+                reason: "sat-unsolved".into(),
+            });
         }
     }
 
