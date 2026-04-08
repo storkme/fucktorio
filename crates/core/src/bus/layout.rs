@@ -794,6 +794,48 @@ mod tests {
     }
 
     #[test]
+    fn test_iron_gear_wheel_red_belt() {
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let sr = solve(
+            "iron-gear-wheel",
+            10.0,
+            &FxHashSet::default(),
+            "assembling-machine-2",
+        )
+        .expect("solver should succeed for iron-gear-wheel");
+
+        let layout = build_bus_layout(&sr, Some("fast-transport-belt"))
+            .expect("build_bus_layout should succeed with red belt");
+
+        assert!(!layout.entities.is_empty(), "Layout should have entities");
+        assert!(layout.width > 0, "Layout width should be > 0");
+        assert!(layout.height > 0, "Layout height should be > 0");
+    }
+
+    #[test]
+    fn test_ecircuit_10s_blue_belt() {
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-2")
+            .expect("solver should succeed for electronic-circuit");
+
+        let layout = build_bus_layout(&sr, Some("express-transport-belt"))
+            .expect("build_bus_layout should succeed with blue belt");
+
+        assert!(!layout.entities.is_empty(), "Layout should have entities");
+        assert!(layout.width > 0, "Layout width should be > 0");
+        assert!(layout.height > 0, "Layout height should be > 0");
+    }
+
+    #[test]
     #[ignore] // manual investigation — run with --ignored --nocapture
     fn test_ecircuit_20s_yellow_sat_zones() {
         // Investigative test for larger layouts. Asserts no warnings
