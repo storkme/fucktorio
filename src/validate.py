@@ -1921,7 +1921,7 @@ def check_underground_belt_entry_sideload(
                 issues.append(
                     ValidationIssue(
                         severity="warning",
-                        category="underground-belt",
+                        category="underground-belt-sideload",
                         message=(
                             f"Belt at ({nx},{ny}) facing {n_dir.name} sideloads into "
                             f"underground input at ({ug.x},{ug.y}) facing {ug.direction.name} "

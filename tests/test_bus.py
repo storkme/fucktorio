@@ -20,7 +20,10 @@ _BUS_ALLOWED_WARNINGS = {
     # constraint when a fluid trunk immediately follows a solid lane column.
     # Items still flow (one lane only), so it's a throughput limitation, not
     # a connectivity error.  Bus layouts accept this trade-off.
-    "underground-belt",
+    # NOTE: only the sideload *warning* is suppressed. Span violations and
+    # unpaired UG belt *errors* use category "underground-belt" and must NOT
+    # be silently ignored — they indicate a real routing failure.
+    "underground-belt-sideload",
 }
 
 
@@ -64,6 +67,14 @@ class TestBusLayout:
     def test_electronic_circuit(self):
         """Dual input: copper-cable + iron-plate -> electronic-circuit."""
         result = solve("electronic-circuit", 5.0, available_inputs={"iron-plate", "copper-plate"})
+        layout = bus_layout(result)
+
+        assert len(layout.entities) > 0
+        _assert_valid(layout, result)
+
+    def test_electronic_circuit_10s(self):
+        """10/s electronic circuit — exercises multi-lane tap-off crossing the copper-cable bus."""
+        result = solve("electronic-circuit", 10.0, available_inputs={"iron-plate", "copper-plate"})
         layout = bus_layout(result)
 
         assert len(layout.entities) > 0

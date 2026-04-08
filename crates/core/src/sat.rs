@@ -555,18 +555,18 @@ impl CrossingEncoder {
                     //    neighbor's underground channel matches this
                     //    tile's surface item.
                     let n_ug = Self::ug_channel(&n, d);
-                    for bit in 0..nb {
+                    for (tb, nb_var) in t.item_bits[..nb].iter().zip(&n_ug[..nb]) {
                         cnf.add(&[
                             t.is_ug_in.negative(),
                             t.out_dir[d].negative(),
-                            t.item_bits[bit].negative(),
-                            n_ug[bit].positive(),
+                            tb.negative(),
+                            nb_var.positive(),
                         ]);
                         cnf.add(&[
                             t.is_ug_in.negative(),
                             t.out_dir[d].negative(),
-                            t.item_bits[bit].positive(),
-                            n_ug[bit].negative(),
+                            tb.positive(),
+                            nb_var.negative(),
                         ]);
                     }
 
@@ -575,16 +575,16 @@ impl CrossingEncoder {
                     //    tile's underground channel.
                     let t_ug = Self::ug_channel(&t, d);
                     let n_ug = Self::ug_channel(&n, d);
-                    for bit in 0..nb {
+                    for (tu, nu) in t_ug[..nb].iter().zip(&n_ug[..nb]) {
                         cnf.add(&[
                             t.underground[d].negative(),
-                            t_ug[bit].negative(),
-                            n_ug[bit].positive(),
+                            tu.negative(),
+                            nu.positive(),
                         ]);
                         cnf.add(&[
                             t.underground[d].negative(),
-                            t_ug[bit].positive(),
-                            n_ug[bit].negative(),
+                            tu.positive(),
+                            nu.negative(),
                         ]);
                     }
                 }
@@ -594,18 +594,18 @@ impl CrossingEncoder {
                 //    for the incoming direction (d).
                 for &d in &ALL_DIRS {
                     let t_ug = Self::ug_channel(&t, d);
-                    for bit in 0..nb {
+                    for (tu, tb) in t_ug[..nb].iter().zip(&t.item_bits[..nb]) {
                         cnf.add(&[
                             t.is_ug_out.negative(),
                             t.out_dir[d].negative(),
-                            t_ug[bit].negative(),
-                            t.item_bits[bit].positive(),
+                            tu.negative(),
+                            tb.positive(),
                         ]);
                         cnf.add(&[
                             t.is_ug_out.negative(),
                             t.out_dir[d].negative(),
-                            t_ug[bit].positive(),
-                            t.item_bits[bit].negative(),
+                            tu.positive(),
+                            tb.negative(),
                         ]);
                     }
                 }

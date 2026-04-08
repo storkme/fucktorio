@@ -3,6 +3,7 @@ import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
 import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, TILE_PX, type HighlightController } from "./renderer/entities";
+import { createSelectionController, type SelectionController } from "./renderer/selection";
 import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
 import { initEngine, getEngine } from "./engine";
@@ -130,7 +131,38 @@ async function main(): Promise<void> {
   infoPanel.style.cssText = "position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.8);color:#e0e0e0;font:12px monospace;padding:8px 10px;border-radius:4px;border:1px solid #555;z-index:10;display:none;max-width:250px;line-height:1.5";
   container.appendChild(infoPanel);
 
+  // --- Selection annotation bar ---
+  const annotationBar = document.createElement("div");
+  annotationBar.style.cssText = "position:absolute;bottom:34px;left:8px;background:rgba(0,0,0,0.8);color:#e0e0e0;font:11px monospace;padding:6px 8px;border-radius:3px;border:1px solid #00e0a0;z-index:10;display:none;min-width:200px";
+  container.appendChild(annotationBar);
+
+  const annotationCount = document.createElement("div");
+  annotationCount.style.cssText = "color:#00e0a0;margin-bottom:4px";
+  annotationBar.appendChild(annotationCount);
+
+  const annotationNote = document.createElement("textarea");
+  annotationNote.placeholder = "Add a note…";
+  annotationNote.rows = 2;
+  annotationNote.style.cssText = "width:100%;box-sizing:border-box;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;border-radius:2px;font:11px monospace;resize:vertical;margin-bottom:4px";
+  annotationBar.appendChild(annotationNote);
+
+  const annotationHint = document.createElement("div");
+  annotationHint.style.cssText = "color:#777";
+  annotationHint.textContent = "Ctrl+C to copy JSON";
+  annotationBar.appendChild(annotationHint);
+
   let lastLayout: LayoutResult | null = null;
+  let selectionCtrl: SelectionController | null = null;
+
+  function onSelectionChange(entities: PlacedEntity[]): void {
+    if (entities.length === 0) {
+      annotationBar.style.display = "none";
+      annotationNote.value = "";
+    } else {
+      annotationCount.textContent = `${entities.length} entit${entities.length === 1 ? "y" : "ies"} selected`;
+      annotationBar.style.display = "block";
+    }
+  }
 
   colorCb.addEventListener("change", () => {
     setItemColoring(colorCb.checked);
@@ -192,9 +224,14 @@ async function main(): Promise<void> {
 
   function renderLayoutOnCanvas(layout: LayoutResult): void {
     lastLayout = layout;
+    // Destroy previous selection controller (new layout = new tile map)
+    if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
+    annotationBar.style.display = "none";
+    annotationNote.value = "";
     // Replace the DAG with the actual bus layout.
     drawGraph(viewport, null);
     highlightCtrl = renderLayout(layout, entityLayer, onHover, onSelect);
+    selectionCtrl = createSelectionController(app.canvas, viewport, entityLayer, layout, onSelectionChange);
     buildLegend(layout);
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
@@ -206,7 +243,20 @@ async function main(): Promise<void> {
     }
   }
 
+  // Ctrl+C: copy selection JSON when entities are selected
+  document.addEventListener("keydown", (e) => {
+    if (!e.ctrlKey || e.key !== "c") return;
+    if (!selectionCtrl || selectionCtrl.getSelected().length === 0) return;
+    e.preventDefault();
+    const params = sidebarCtrl?.getParams() ?? null;
+    const json = selectionCtrl.buildJson(params, annotationNote.value.trim());
+    navigator.clipboard.writeText(json).catch(() => undefined);
+    annotationHint.textContent = "Copied!";
+    setTimeout(() => { annotationHint.textContent = "Ctrl+C to copy JSON"; }, 2000);
+  });
+
   const sidebarEl = document.getElementById("sidebar");
+  let sidebarCtrl: ReturnType<typeof renderSidebar> | null = null;
   if (sidebarEl) {
     // ---- Tab bar ----
     const tabBar = document.createElement("div");
@@ -251,7 +301,7 @@ async function main(): Promise<void> {
     tabCorpus.onclick = () => switchTab("corpus");
     switchTab("generate");
 
-    renderSidebar(generatePanel, engine, {
+    sidebarCtrl = renderSidebar(generatePanel, engine, {
       renderGraph,
       renderLayout: renderLayoutOnCanvas,
     });

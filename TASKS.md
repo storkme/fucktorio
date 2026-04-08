@@ -12,6 +12,15 @@ The web app renderer shows entities but doesn't let you inspect or understand th
 - [ ] Hover tooltip — show entity details on hover (name, direction, carries, segment_id, coordinates)
 - [ ] Machine info panel — click a machine to see its recipe, input/output rates, inserter assignments
 
+## Factory Footprint: Special Cases & Community Blueprint Mining
+
+The generated layout follows a general-purpose bus pattern, but many recipes have structural properties that allow significantly more compact layouts. We have a collection of downloaded community blueprints that likely demonstrate these optimisations in practice.
+
+- [ ] **Audit downloaded blueprints** — run the analysis tools over our community blueprint collection and look for layout patterns that differ structurally from our generic bus (e.g. machine-to-machine direct insertion, shared inserters, non-standard row groupings)
+- [ ] **Identify candidate "special cases"** — brainstorm and document recipe families or pipeline shapes that could be handled more compactly than the general bus (e.g. smelting columns, circuit lines with direct hand-off, fluid recipes with mirrored machines)
+- [ ] **Direct machine-to-machine insertion** — when a recipe's sole consumer is a single adjacent recipe, skip the bus entirely and use a direct inserter hand-off (already exists in spaghetti engine; port the concept to bus placer)
+- [ ] **Implement and test winning patterns** — pick the highest-impact special case from the audit, implement it as a layout strategy, verify with the recipe complexity ladder
+
 ## Layout Improvements
 
 The bus layout works but is wider/taller than necessary in many cases.

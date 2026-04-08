@@ -337,7 +337,7 @@ pub fn check_underground_belt_entry_sideload(layout_result: &LayoutResult) -> Ve
             if n_dx * ug_dx + n_dy * ug_dy == 0 {
                 issues.push(ValidationIssue::with_pos(
                     Severity::Warning,
-                    "underground-belt",
+                    "underground-belt-sideload",
                     format!(
                         "Belt at ({},{}) facing {:?} sideloads into underground input at ({},{}) facing {:?} \
                          — only one lane loaded, must feed UG inputs straight",

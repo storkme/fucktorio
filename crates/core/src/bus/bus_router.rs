@@ -1867,9 +1867,8 @@ pub(crate) struct CrossingTileSet {
 }
 
 impl CrossingTileSet {
-    pub fn empty() -> Self {
-        Self { all: FxHashSet::default(), entity_only: FxHashSet::default() }
-    }
+    #[allow(dead_code)]
+    pub fn empty() -> Self { Self { all: FxHashSet::default(), entity_only: FxHashSet::default() } }
 
     /// Check if a tile is in the zone (entity or forced-empty).
     pub fn contains(&self, pos: &(i32, i32)) -> bool {

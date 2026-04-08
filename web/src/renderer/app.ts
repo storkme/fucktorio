@@ -18,6 +18,8 @@ export async function createApp(container: HTMLElement): Promise<AppContext> {
 
   container.appendChild(app.canvas);
 
+  app.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
   const viewport = new Viewport({
     screenWidth: container.clientWidth,
     screenHeight: container.clientHeight,
@@ -26,7 +28,7 @@ export async function createApp(container: HTMLElement): Promise<AppContext> {
     events: app.renderer.events,
   });
 
-  viewport.drag().pinch().wheel().decelerate();
+  viewport.drag({ mouseButtons: "middle-right" }).pinch().wheel().decelerate();
 
   app.stage.addChild(viewport);
 
