@@ -156,6 +156,19 @@ pub enum TraceEvent {
         width: i32,
         height: i32,
     },
+
+    // Phase timing (wall-clock milliseconds per major phase)
+    PhaseTime {
+        phase: String,
+        duration_ms: u64,
+    },
+
+    // Negotiate (A*) summary
+    NegotiateComplete {
+        specs: usize,
+        iterations: u32,
+        duration_ms: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------

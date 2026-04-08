@@ -510,22 +510,13 @@ fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane>
     let solid: Vec<BusLane> = lanes.iter().filter(|ln| !ln.is_fluid).cloned().collect();
     let fluid: Vec<BusLane> = lanes.iter().filter(|ln| ln.is_fluid).cloned().collect();
 
-    let best_solid = if solid.len() <= 10 {
-        // Enumerate all permutations
+    // Exact search for tiny sets (≤7 lanes: 7! = 5040 permutations).
+    // Hill-climbing for larger sets: start from heuristic, try all pairwise
+    // swaps repeatedly until no improvement (O(k·n²) where k ≈ n typically).
+    let best_solid = if solid.len() <= 7 {
         find_best_permutation(&solid, row_spans)
     } else {
-        // Heuristic: sort by family_id then by negative min tap_off_y
-        let mut sorted = solid.clone();
-        sorted.sort_by_key(|ln| {
-            let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
-            let y = if !ln.tap_off_ys.is_empty() {
-                -*ln.tap_off_ys.iter().min().unwrap()
-            } else {
-                9999
-            };
-            (fid, y)
-        });
-        sorted
+        hill_climb_lane_order(&solid, row_spans)
     };
 
     let mut result = best_solid;
@@ -601,6 +592,61 @@ fn find_best_permutation(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLan
     }
 
     best_order.iter().map(|&i| solid[i].clone()).collect()
+}
+
+/// Hill-climbing lane order optimizer for larger sets (>7 lanes).
+///
+/// Starts from a heuristic seed (family-grouped, then sorted by earliest tap-off),
+/// then repeatedly tries all pairwise swaps, keeping improvements. Stops when no
+/// swap reduces the crossing score. Runs in O(k·n²) where k ≈ n in practice.
+/// Family-contiguity is checked after every accepted swap.
+fn hill_climb_lane_order(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
+    fn family_contiguous(ordered: &[BusLane]) -> bool {
+        let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
+        for (i, ln) in ordered.iter().enumerate() {
+            if let Some(fid) = ln.family_id {
+                let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
+                seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
+            }
+        }
+        let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
+        for ln in ordered {
+            if let Some(fid) = ln.family_id { *counts.entry(fid).or_insert(0) += 1; }
+        }
+        seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
+    }
+
+    // Seed: group by family, then sort by earliest tap-off within each group
+    let mut order = solid.to_vec();
+    order.sort_by_key(|ln| {
+        let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
+        let y = ln.tap_off_ys.iter().min().copied().map(|y| -y).unwrap_or(9999);
+        (fid, y)
+    });
+
+    let n = order.len();
+    let mut best_score = score_lane_ordering(&order, row_spans);
+
+    loop {
+        let mut improved = false;
+        'outer: for i in 0..n {
+            for j in (i + 1)..n {
+                order.swap(i, j);
+                if family_contiguous(&order) {
+                    let score = score_lane_ordering(&order, row_spans);
+                    if score < best_score {
+                        best_score = score;
+                        improved = true;
+                        continue 'outer; // keep swap, try next i
+                    }
+                }
+                order.swap(i, j); // undo
+            }
+        }
+        if !improved { break; }
+    }
+
+    order
 }
 
 /// Split lanes whose rate exceeds the available belt's per-lane capacity.

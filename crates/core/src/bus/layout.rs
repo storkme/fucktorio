@@ -35,6 +35,7 @@ pub fn build_bus_layout(
 
     // First pass: place rows with temp bus width
     let temp_bw = estimate_bus_width(solver_result);
+    let t_place1 = std::time::Instant::now();
     let (row_entities, row_spans, row_width, total_height) = place_rows(
         &solver_result.machines,
         &solver_result.dependency_order,
@@ -45,13 +46,17 @@ pub fn build_bus_layout(
         None,
     );
 
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_1".to_string(), duration_ms: t_place1.elapsed().as_millis() as u64 });
+    let t_plan1 = std::time::Instant::now();
     let (lanes, families) = plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?;
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_1".to_string(), duration_ms: t_plan1.elapsed().as_millis() as u64 });
     let actual_bw = bus_width_for_lanes(&lanes);
 
     // Compute extra gaps needed for balancer blocks
     let extra_gaps = compute_extra_gaps(&families);
 
     // Re-place rows if bus width changed or balancers need extra space
+    let t_place2 = std::time::Instant::now();
     let (row_entities, row_spans, row_width, total_height) = if actual_bw != temp_bw || !extra_gaps.is_empty()
     {
         place_rows(
@@ -79,12 +84,15 @@ pub fn build_bus_layout(
         });
     }
 
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_2".to_string(), duration_ms: t_place2.elapsed().as_millis() as u64 });
     // Re-plan lanes with final row positions
+    let t_plan2 = std::time::Instant::now();
     let (lanes, families) = if actual_bw != temp_bw || !extra_gaps.is_empty() {
         plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?
     } else {
         (lanes, families)
     };
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_2".to_string(), duration_ms: t_plan2.elapsed().as_millis() as u64 });
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "lanes_planned".into(),
         entity_count: row_entities.len(),
@@ -99,6 +107,7 @@ pub fn build_bus_layout(
     }
 
     // Route bus lanes
+    let t_route_bus = std::time::Instant::now();
     let (bus_entities, max_y, merge_max_x, regions) = route_bus(
         &lanes,
         &row_spans,
@@ -109,6 +118,7 @@ pub fn build_bus_layout(
         &families,
         &row_entities,
     )?;
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "route_bus_total".to_string(), duration_ms: t_route_bus.elapsed().as_millis() as u64 });
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "bus_routed".into(),
         entity_count: bus_entities.len(),
@@ -331,8 +341,13 @@ fn route_bus(
     // SAT crossing zones: trunk-only approach. SAT determines how trunks
     // handle crossings (UG bridges). The A* routes tap-offs normally (underground).
     // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
+    let sat_start = std::time::Instant::now();
     let (solved_crossings, mut crossing_tiles, _sat_regions) =
         extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+        phase: "sat_crossing_zones".to_string(),
+        duration_ms: sat_start.elapsed().as_millis() as u64,
+    });
     for sc in &solved_crossings {
         crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSolved {
             x: sc.zone.x,
@@ -346,6 +361,7 @@ fn route_bus(
 
     // No spec splitting needed — A* runs normally, SAT only affects trunk rendering.
     let empty_regions: Vec<SatCrossingRegion> = Vec::new();
+    let negotiate_start = std::time::Instant::now();
     let routed_paths = negotiate_and_route(
         lanes,
         row_spans,
@@ -358,6 +374,10 @@ fn route_bus(
         &empty_regions,
         &FxHashSet::default(),
     );
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+        phase: "negotiate_astar".to_string(),
+        duration_ms: negotiate_start.elapsed().as_millis() as u64,
+    });
 
     // Stamp N-to-M balancer blocks
     for fam in families {
@@ -437,6 +457,7 @@ fn route_bus(
 
     // Route each lane, skipping tiles owned by SAT crossing zones
     // and tiles claimed by A* tap-offs.
+    let route_lanes_start = std::time::Instant::now();
     for lane in lanes {
         let entity_count_before = entities.len();
         route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles);
@@ -450,6 +471,10 @@ fn route_bus(
             tapoffs: if has_tapoffs { lane.tap_off_ys.len() } else { 0 },
         });
     }
+    crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+        phase: "route_all_lanes".to_string(),
+        duration_ms: route_lanes_start.elapsed().as_millis() as u64,
+    });
 
     // Remove non-SAT entities at SAT entity positions (SAT entities win).
     if !crossing_tiles.is_empty() {
@@ -1300,5 +1325,43 @@ mod tests {
         let plain_layout = build_bus_layout(&solver_result, None)
             .expect("plain layout should succeed");
         assert!(plain_layout.trace.is_none(), "non-traced layout should have no trace");
+    }
+
+    /// Timing breakdown for the ecircuit layout — run manually to diagnose perf.
+    #[test]
+    #[ignore = "diagnostic: prints phase timing, not a correctness test"]
+    fn test_ecircuit_timing_breakdown() {
+        use crate::solver::solve;
+        use crate::trace::TraceEvent;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+
+        let t0 = std::time::Instant::now();
+        let layout = build_bus_layout_traced(&sr, Some("transport-belt"))
+            .expect("layout");
+        let total_ms = t0.elapsed().as_millis();
+
+        let events = layout.trace.unwrap_or_default();
+
+        eprintln!("\n=== ecircuit 10/s timing breakdown (total: {}ms) ===", total_ms);
+        for ev in &events {
+            match ev {
+                TraceEvent::PhaseTime { phase, duration_ms } => {
+                    eprintln!("  {:30} {:5}ms  ({:.0}%)", phase, duration_ms,
+                        100.0 * *duration_ms as f64 / total_ms as f64);
+                }
+                TraceEvent::CrossingZoneSolved { x, y, width, height, solve_time_us } => {
+                    eprintln!("  SAT zone ({},{}) {}x{}: {}µs", x, y, width, height, solve_time_us);
+                }
+                TraceEvent::NegotiateComplete { specs, iterations, duration_ms } => {
+                    eprintln!("  negotiate: {} specs, {} iters, {}ms", specs, iterations, duration_ms);
+                }
+                _ => {}
+            }
+        }
     }
 }
