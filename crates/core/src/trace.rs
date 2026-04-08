@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static COLLECTOR: RefCell<Option<Vec<TraceEvent>>> = RefCell::new(None);
+    static COLLECTOR: RefCell<Option<Vec<TraceEvent>>> = const { RefCell::new(None) };
 }
 
 /// Start trace collection for the current thread. Returns a guard that
