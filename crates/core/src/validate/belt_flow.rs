@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::common::{
-    dir_to_vec, inserter_target_lane, lane_capacity, machine_size, machine_tiles, ug_max_reach,
+    dir_to_vec, inserter_target_lane, machine_size, machine_tiles, ug_max_reach,
     LANE_LEFT,
 };
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
@@ -1285,129 +1285,7 @@ pub fn check_belt_flow_reachability(
 }
 
 // ---------------------------------------------------------------------------
-// 7. check_belt_throughput
-// ---------------------------------------------------------------------------
-
-pub fn check_belt_throughput(layout: &LayoutResult) -> Vec<ValidationIssue> {
-    let mut issues = Vec::new();
-
-    let mut tile_counts: FxHashMap<(i32, i32), usize> = FxHashMap::default();
-    let mut tile_names: FxHashMap<(i32, i32), &str> = FxHashMap::default();
-
-    for e in &layout.entities {
-        if is_belt(&e.name) {
-            let pos = (e.x, e.y);
-            *tile_counts.entry(pos).or_insert(0) += 1;
-            tile_names.insert(pos, &e.name);
-        }
-    }
-
-    for (&pos, &count) in &tile_counts {
-        if count > 1 {
-            let belt_name = tile_names.get(&pos).copied().unwrap_or("transport-belt");
-            let max_throughput = match belt_name {
-                "transport-belt" | "underground-belt" => 15.0_f64,
-                "fast-transport-belt" | "fast-underground-belt" => 30.0,
-                "express-transport-belt" | "express-underground-belt" => 45.0,
-                _ => 15.0,
-            };
-            issues.push(ValidationIssue::with_pos(
-                Severity::Warning,
-                "belt-throughput",
-                format!(
-                    "Belt at ({},{}): {} overlapping routes on {} (max {}/s)",
-                    pos.0, pos.1, count, belt_name, max_throughput
-                ),
-                pos.0,
-                pos.1,
-            ));
-        }
-    }
-
-    issues
-}
-
-// ---------------------------------------------------------------------------
-// 8. check_output_belt_coverage
-// ---------------------------------------------------------------------------
-
-pub fn check_output_belt_coverage(
-    layout: &LayoutResult,
-    solver: Option<&SolverResult>,
-) -> Vec<ValidationIssue> {
-    let mut issues = Vec::new();
-
-    let mut fluid_output_recipes: FxHashSet<String> = FxHashSet::default();
-    if let Some(sr) = solver {
-        for spec in &sr.machines {
-            if !spec.outputs.iter().any(|f| !f.is_fluid) {
-                fluid_output_recipes.insert(spec.recipe.clone());
-            }
-        }
-    }
-
-    let machine_tiles_set = build_machine_tile_set(layout);
-    let belt_tiles = build_belt_tile_set(&layout.entities);
-
-    let mut checked: FxHashSet<(i32, i32)> = FxHashSet::default();
-    for e in &layout.entities {
-        if !is_machine(&e.name) {
-            continue;
-        }
-        if !checked.insert((e.x, e.y)) {
-            continue;
-        }
-        if e.recipe
-            .as_deref()
-            .is_some_and(|r| fluid_output_recipes.contains(r))
-        {
-            continue;
-        }
-
-        let size = machine_size(&e.name) as i32;
-        let my_tiles: FxHashSet<(i32, i32)> = (0..size)
-            .flat_map(|dx| (0..size).map(move |dy| (e.x + dx, e.y + dy)))
-            .collect();
-
-        let mut has_output_belt = false;
-        'outer: for ins in &layout.entities {
-            if !is_inserter(&ins.name) {
-                continue;
-            }
-            let (dx, dy) = dir_to_vec(ins.direction);
-            let reach = inserter_reach(&ins.name);
-            let (odx, ody) = (-dx, -dy);
-            let pickup_pos = (ins.x + odx * reach, ins.y + ody * reach);
-            let drop_pos = (ins.x + dx * reach, ins.y + dy * reach);
-
-            if my_tiles.contains(&pickup_pos)
-                && !machine_tiles_set.contains(&drop_pos)
-                && belt_tiles.contains(&drop_pos)
-            {
-                has_output_belt = true;
-                break 'outer;
-            }
-        }
-
-        if !has_output_belt {
-            issues.push(ValidationIssue::with_pos(
-                Severity::Error,
-                "output-belt",
-                format!(
-                    "{} at ({},{}): no output inserter has a belt at its drop position",
-                    e.name, e.x, e.y
-                ),
-                e.x,
-                e.y,
-            ));
-        }
-    }
-
-    issues
-}
-
-// ---------------------------------------------------------------------------
-// 9. check_underground_belt_pairs
+// 7. check_underground_belt_pairs
 // ---------------------------------------------------------------------------
 
 pub fn check_underground_belt_pairs(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1548,7 +1426,7 @@ pub fn check_underground_belt_pairs(layout: &LayoutResult) -> Vec<ValidationIssu
 }
 
 // ---------------------------------------------------------------------------
-// 10. check_underground_belt_sideloading
+// 8. check_underground_belt_sideloading
 // ---------------------------------------------------------------------------
 
 pub fn check_underground_belt_sideloading(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1592,7 +1470,7 @@ pub fn check_underground_belt_sideloading(layout: &LayoutResult) -> Vec<Validati
 }
 
 // ---------------------------------------------------------------------------
-// 11. check_underground_belt_entry_sideload
+// 9. check_underground_belt_entry_sideload
 // ---------------------------------------------------------------------------
 
 pub fn check_underground_belt_entry_sideload(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1649,7 +1527,7 @@ pub fn check_underground_belt_entry_sideload(layout: &LayoutResult) -> Vec<Valid
 }
 
 // ---------------------------------------------------------------------------
-// 12. check_belt_dead_ends
+// 10. check_belt_dead_ends
 // ---------------------------------------------------------------------------
 
 pub fn check_belt_dead_ends(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1770,7 +1648,7 @@ fn chain_has_pickup(
 }
 
 // ---------------------------------------------------------------------------
-// 13. check_belt_loops
+// 11. check_belt_loops
 // ---------------------------------------------------------------------------
 
 pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1826,7 +1704,7 @@ pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
 }
 
 // ---------------------------------------------------------------------------
-// 14. check_belt_item_isolation
+// 12. check_belt_item_isolation
 // ---------------------------------------------------------------------------
 
 pub fn check_belt_item_isolation(layout: &LayoutResult) -> Vec<ValidationIssue> {
@@ -1878,106 +1756,6 @@ pub fn check_belt_item_isolation(layout: &LayoutResult) -> Vec<ValidationIssue> 
                         ay,
                     ));
                 }
-            }
-        }
-    }
-
-    issues
-}
-
-// ---------------------------------------------------------------------------
-// 15. check_belt_inserter_conflict
-// ---------------------------------------------------------------------------
-
-pub fn check_belt_inserter_conflict(layout: &LayoutResult) -> Vec<ValidationIssue> {
-    let mut issues = Vec::new();
-
-    let belt_tiles = build_belt_tile_set(&layout.entities);
-    let mut drop_map: FxHashMap<(i32, i32), Vec<String>> = FxHashMap::default();
-
-    for e in &layout.entities {
-        if !is_inserter(&e.name) {
-            continue;
-        }
-        let carries = match &e.carries {
-            Some(c) => c.clone(),
-            None => continue,
-        };
-        let (dx, dy) = dir_to_vec(e.direction);
-        let reach = inserter_reach(&e.name);
-        let drop = (e.x + dx * reach, e.y + dy * reach);
-        if belt_tiles.contains(&drop) {
-            drop_map.entry(drop).or_default().push(carries);
-        }
-    }
-
-    for (&(bx, by), items) in &drop_map {
-        let unique: FxHashSet<&str> = items.iter().map(|s| s.as_str()).collect();
-        if unique.len() >= 2 {
-            let mut sorted: Vec<&str> = unique.into_iter().collect();
-            sorted.sort();
-            issues.push(ValidationIssue::with_pos(
-                Severity::Error,
-                "belt-item-isolation",
-                format!(
-                    "Belt at ({},{}): inserters drop conflicting items {:?} and {:?}",
-                    bx, by, sorted[0], sorted[1]
-                ),
-                bx,
-                by,
-            ));
-        }
-    }
-
-    issues
-}
-
-// ---------------------------------------------------------------------------
-// 16. compute_lane_rates + check_lane_throughput
-// ---------------------------------------------------------------------------
-
-pub fn compute_lane_rates(
-    layout: &LayoutResult,
-    solver: Option<&SolverResult>,
-) -> FxHashMap<(i32, i32), [f64; 2]> {
-    compute_lane_rates_impl(layout, solver)
-}
-
-pub fn check_lane_throughput(
-    layout: &LayoutResult,
-    solver: Option<&SolverResult>,
-) -> Vec<ValidationIssue> {
-    let mut issues = Vec::new();
-
-    let lane_rates = compute_lane_rates_impl(layout, solver);
-    if lane_rates.is_empty() {
-        return issues;
-    }
-
-    let mut belt_name_map: FxHashMap<(i32, i32), &str> = FxHashMap::default();
-    for e in &layout.entities {
-        if is_surface_belt(&e.name) {
-            belt_name_map.insert((e.x, e.y), &e.name);
-        } else if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output") {
-            belt_name_map.insert((e.x, e.y), ug_to_surface_tier(&e.name));
-        }
-    }
-
-    for (&pos, &[left, right]) in &lane_rates {
-        let belt_name = belt_name_map.get(&pos).copied().unwrap_or("transport-belt");
-        let cap = lane_capacity(belt_name);
-        for (lane_name, rate) in [("left", left), ("right", right)] {
-            if rate > cap + 0.01 {
-                issues.push(ValidationIssue::with_pos(
-                    Severity::Error,
-                    "lane-throughput",
-                    format!(
-                        "Belt at ({},{}): {} lane {:.1}/s exceeds {} per-lane capacity {}/s",
-                        pos.0, pos.1, lane_name, rate, belt_name, cap
-                    ),
-                    pos.0,
-                    pos.1,
-                ));
             }
         }
     }
@@ -2788,40 +2566,6 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
-    // --- check_belt_throughput ---
-
-    #[test]
-    fn belt_throughput_no_overlap_ok() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(1, 0, EntityDirection::East),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        assert!(check_belt_throughput(&lr).is_empty());
-    }
-
-    #[test]
-    fn belt_throughput_overlapping_warning() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(0, 0, EntityDirection::South),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        let issues = check_belt_throughput(&lr);
-        let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].category, "belt-throughput");
-        assert!(warnings[0].message.contains("2 overlapping"));
-    }
-
     // --- check_belt_junctions ---
 
     #[test]
@@ -3265,160 +3009,6 @@ mod tests {
         assert!(!errors.is_empty());
         assert!(errors[0].message.contains("iron-plate"));
         assert!(errors[0].message.contains("copper-plate"));
-    }
-
-    // --- check_belt_inserter_conflict ---
-
-    #[test]
-    fn inserter_conflict_same_item_ok() {
-        let belt_e = PlacedEntity {
-            name: "transport-belt".to_string(),
-            x: 0,
-            y: 1,
-            direction: EntityDirection::East,
-            carries: Some("iron-plate".to_string()),
-            ..Default::default()
-        };
-        let ins = PlacedEntity {
-            name: "inserter".to_string(),
-            x: 0,
-            y: 0,
-            direction: EntityDirection::South,
-            carries: Some("iron-plate".to_string()),
-            ..Default::default()
-        };
-        let lr = LayoutResult {
-            entities: vec![belt_e, ins],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        assert!(check_belt_inserter_conflict(&lr).is_empty());
-    }
-
-    #[test]
-    fn inserter_conflict_different_items_error() {
-        // Two inserters dropping onto the same belt tile with different items
-        let belt_e = PlacedEntity {
-            name: "transport-belt".to_string(),
-            x: 0,
-            y: 1,
-            direction: EntityDirection::East,
-            carries: Some("iron-plate".to_string()),
-            ..Default::default()
-        };
-        let ins1 = PlacedEntity {
-            name: "inserter".to_string(),
-            x: 0,
-            y: 0,
-            direction: EntityDirection::South,
-            carries: Some("iron-plate".to_string()),
-            ..Default::default()
-        };
-        let ins2 = PlacedEntity {
-            name: "inserter".to_string(),
-            x: 1,
-            y: 1,
-            direction: EntityDirection::West,
-            carries: Some("copper-plate".to_string()),
-            ..Default::default()
-        };
-        let lr = LayoutResult {
-            entities: vec![belt_e, ins1, ins2],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        let issues = check_belt_inserter_conflict(&lr);
-        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
-        assert!(!errors.is_empty());
-    }
-
-    // --- check_lane_throughput ---
-
-    #[test]
-    fn lane_throughput_single_inserter_within_capacity() {
-        let sr = SolverResult {
-            machines: vec![MachineSpec {
-                entity: "assembling-machine-3".to_string(),
-                recipe: "iron-gear-wheel".to_string(),
-                count: 1.0,
-                inputs: vec![ItemFlow {
-                    item: "iron-plate".to_string(),
-                    rate: 5.0,
-                    is_fluid: false,
-                }],
-                outputs: vec![ItemFlow {
-                    item: "iron-gear-wheel".to_string(),
-                    rate: 2.5,
-                    is_fluid: false,
-                }],
-            }],
-            external_inputs: vec![ItemFlow {
-                item: "iron-plate".to_string(),
-                rate: 5.0,
-                is_fluid: false,
-            }],
-            external_outputs: vec![ItemFlow {
-                item: "iron-gear-wheel".to_string(),
-                rate: 2.5,
-                is_fluid: false,
-            }],
-            dependency_order: vec!["iron-gear-wheel".to_string()],
-        };
-
-        let entities = vec![
-            PlacedEntity {
-                name: "assembling-machine-3".to_string(),
-                x: 3,
-                y: 0,
-                direction: EntityDirection::North,
-                recipe: Some("iron-gear-wheel".to_string()),
-                ..Default::default()
-            },
-            PlacedEntity {
-                name: "inserter".to_string(),
-                x: 4,
-                y: 3,
-                direction: EntityDirection::South,
-                ..Default::default()
-            },
-            PlacedEntity {
-                name: "transport-belt".to_string(),
-                x: 4,
-                y: 4,
-                direction: EntityDirection::East,
-                carries: Some("iron-gear-wheel".to_string()),
-                ..Default::default()
-            },
-            PlacedEntity {
-                name: "transport-belt".to_string(),
-                x: 5,
-                y: 4,
-                direction: EntityDirection::East,
-                carries: Some("iron-gear-wheel".to_string()),
-                ..Default::default()
-            },
-        ];
-        let lr = LayoutResult {
-            entities,
-            width: 20,
-            height: 20,
-            ..Default::default()
-        };
-        let issues = check_lane_throughput(&lr, Some(&sr));
-        assert!(issues.is_empty(), "unexpected issues: {:?}", issues);
-    }
-
-    #[test]
-    fn lane_throughput_no_solver_returns_empty() {
-        let lr = LayoutResult {
-            entities: vec![],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        assert!(check_lane_throughput(&lr, None).is_empty());
     }
 
     // --- check_input_rate_delivery ---
