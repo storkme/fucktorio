@@ -1,80 +1,14 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX } from "./entities";
-import type { PlacedEntity } from "../engine";
+import type { TraceEvent } from "../engine";
 
-// --- Trace event types (mirrors Rust TraceEvent) ---
-// These must match the #[serde(tag = "phase", content = "data")] format.
+export type { TraceEvent } from "../engine";
 
-export interface RowsPlaced {
-  phase: "RowsPlaced";
-  data: { rows: RowInfo[] };
-}
-export interface RowSplit {
-  phase: "RowSplit";
-  data: { recipe: string; original_count: number; split_into: number; reason: string };
-}
-export interface LanesPlanned {
-  phase: "LanesPlanned";
-  data: { lanes: LaneInfo[]; families: FamilyInfo[]; bus_width: number };
-}
-export interface LaneSplit {
-  phase: "LaneSplit";
-  data: { item: string; rate: number; max_lane_cap: number; n_splits: number };
-}
-export interface LaneOrderOptimized {
-  phase: "LaneOrderOptimized";
-  data: { ordering: string[]; crossing_score: number };
-}
-export interface CrossingZoneSolved {
-  phase: "CrossingZoneSolved";
-  data: { x: number; y: number; width: number; height: number; solve_time_us: number };
-}
-export interface CrossingZoneSkipped {
-  phase: "CrossingZoneSkipped";
-  data: { tap_item: string; tap_x: number; tap_y: number; reason: string };
-}
-export interface BalancerStamped {
-  phase: "BalancerStamped";
-  data: { item: string; shape: [number, number]; y_start: number; y_end: number; template_found: boolean };
-}
-export interface LaneRouted {
-  phase: "LaneRouted";
-  data: { item: string; x: number; is_fluid: boolean; trunk_segments: number; tapoffs: number };
-}
-export interface TapoffRouted {
-  phase: "TapoffRouted";
-  data: { item: string; from_x: number; from_y: number; to_x: number; to_y: number; path_len: number };
-}
-export interface OutputMerged {
-  phase: "OutputMerged";
-  data: { item: string; rows: number[]; merge_y: number };
-}
-export interface MergerBlockPlaced {
-  phase: "MergerBlockPlaced";
-  data: { item: string; lanes: number; block_y: number; block_height: number };
-}
-export interface PolesPlaced {
-  phase: "PolesPlaced";
-  data: { count: number; strategy: string };
-}
-export interface PhaseComplete {
-  phase: "PhaseComplete";
-  data: { phase: string; entity_count: number };
-}
-export interface PhaseSnapshot {
-  phase: "PhaseSnapshot";
-  data: { phase: string; entities: PlacedEntity[]; width: number; height: number };
-}
-
-export type TraceEvent =
-  | RowsPlaced | RowSplit | LanesPlanned | LaneSplit | LaneOrderOptimized
-  | CrossingZoneSolved | CrossingZoneSkipped | BalancerStamped
-  | LaneRouted | TapoffRouted | OutputMerged | MergerBlockPlaced | PolesPlaced
-  | PhaseComplete | PhaseSnapshot;
-
-interface RowInfo { index: number; recipe: string; machine: string; machine_count: number; y_start: number; y_end: number; row_kind: string; }
-interface LaneInfo { item: string; x: number; rate: number; is_fluid: boolean; source_y: number; tap_off_ys: number[]; consumer_rows: number[]; producer_row: number | null; family_id: number | null; }
-interface FamilyInfo { item: string; shape: [number, number]; lane_xs: number[]; balancer_y_start: number; balancer_y_end: number; total_rate: number; producer_rows: number[]; }
+// Convenience narrowing aliases for event variants used in this file.
+type RowsPlaced   = Extract<TraceEvent, { phase: "RowsPlaced" }>;
+type LanesPlanned = Extract<TraceEvent, { phase: "LanesPlanned" }>;
+export type PhaseSnapshot = Extract<TraceEvent, { phase: "PhaseSnapshot" }>;
+export type PhaseComplete = Extract<TraceEvent, { phase: "PhaseComplete" }>;
 
 export function renderTraceOverlay(
   events: TraceEvent[],

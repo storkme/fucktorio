@@ -20,6 +20,7 @@ export type {
   PlacedEntity,
   EntityDirection,
   ValidationIssue,
+  TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
 import type { SolverResult, LayoutResult, ValidationIssue } from "./wasm-pkg/fucktorio_wasm.js";
 
