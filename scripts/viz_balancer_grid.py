@@ -9,7 +9,6 @@ entity types, direction arrows, and input/output port highlights.
 
 from __future__ import annotations
 
-import html
 from pathlib import Path
 
 from src.bus.balancer_library import BALANCER_TEMPLATES, BalancerTemplate
@@ -65,34 +64,46 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
             for tx, ty in tiles:
                 px = tx * TILE_PX + 1
                 py = ty * TILE_PX + 1
-                lines.append(f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>')
+                lines.append(
+                    f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>'
+                )
             # Arrow in center of splitter
             cx = (tiles[0][0] + tiles[1][0] + 1) * TILE_PX / 2 + 1
             cy = (tiles[0][1] + tiles[1][1] + 1) * TILE_PX / 2 + 1
-            lines.append(f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-                         f'font-size="{TILE_PX * 0.6}" fill="#333">{arrow}</text>')
+            lines.append(
+                f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
+                f'font-size="{TILE_PX * 0.6}" fill="#333">{arrow}</text>'
+            )
         else:
             px = e.x * TILE_PX + 1
             py = e.y * TILE_PX + 1
             # Darker shade for underground outputs (exit points)
             if e.name == "underground-belt" and e.io_type == "output":
                 colour = "#6d9eeb"
-            lines.append(f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>')
+            lines.append(
+                f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>'
+            )
             cx = px + TILE_PX / 2
             cy = py + TILE_PX / 2
             fs = TILE_PX * 0.55
-            lines.append(f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-                         f'font-size="{fs}" fill="#333">{arrow}</text>')
+            lines.append(
+                f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
+                f'font-size="{fs}" fill="#333">{arrow}</text>'
+            )
 
     # Highlight input/output ports
-    for (ix, iy) in input_set:
+    for ix, iy in input_set:
         px = ix * TILE_PX + 1
         py = iy * TILE_PX + 1
-        lines.append(f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#00ff88" stroke-width="2" rx="2"/>')
-    for (ox, oy) in output_set:
+        lines.append(
+            f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#00ff88" stroke-width="2" rx="2"/>'
+        )
+    for ox, oy in output_set:
         px = ox * TILE_PX + 1
         py = oy * TILE_PX + 1
-        lines.append(f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#ff6688" stroke-width="2" rx="2"/>')
+        lines.append(
+            f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#ff6688" stroke-width="2" rx="2"/>'
+        )
 
     lines.append("</svg>")
     return "\n".join(lines)
@@ -133,8 +144,7 @@ td.empty { background: #161b22; }
 
     total = max_n * max_m - 1  # exclude 1×1
     covered = len(BALANCER_TEMPLATES)
-    rows.append(f'<div class="summary">{covered}/{total} templates generated '
-                f'(excluding 1&times;1 identity)</div>')
+    rows.append(f'<div class="summary">{covered}/{total} templates generated (excluding 1&times;1 identity)</div>')
 
     # Legend
     rows.append('<div class="legend">')
@@ -142,9 +152,13 @@ td.empty { background: #161b22; }
     rows.append('<div class="legend-item"><div class="legend-swatch" style="background:#a4c2f4"></div> UG Input</div>')
     rows.append('<div class="legend-item"><div class="legend-swatch" style="background:#6d9eeb"></div> UG Output</div>')
     rows.append('<div class="legend-item"><div class="legend-swatch" style="background:#b6d7a8"></div> Splitter</div>')
-    rows.append('<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #00ff88"></div> Input port</div>')
-    rows.append('<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #ff6688"></div> Output port</div>')
-    rows.append('</div>')
+    rows.append(
+        '<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #00ff88"></div> Input port</div>'
+    )
+    rows.append(
+        '<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #ff6688"></div> Output port</div>'
+    )
+    rows.append("</div>")
 
     # Coverage bar
     rows.append('<div class="coverage">')
@@ -157,7 +171,7 @@ td.empty { background: #161b22; }
         rows.append(f'<span class="missing">Missing: {", ".join(missing)}</span>')
     else:
         rows.append('<span class="covered">Full coverage!</span>')
-    rows.append('</div>')
+    rows.append("</div>")
 
     # Grid table
     rows.append("<table>")
@@ -175,9 +189,11 @@ td.empty { background: #161b22; }
             elif (n, m) in BALANCER_TEMPLATES:
                 tmpl = BALANCER_TEMPLATES[(n, m)]
                 svg = render_template_svg(tmpl)
-                label = (f'<div class="cell-label">'
-                         f'<span class="dims">{tmpl.width}W &times; {tmpl.height}H</span> '
-                         f'<span class="entities">({len(tmpl.entities)} ent)</span></div>')
+                label = (
+                    f'<div class="cell-label">'
+                    f'<span class="dims">{tmpl.width}W &times; {tmpl.height}H</span> '
+                    f'<span class="entities">({len(tmpl.entities)} ent)</span></div>'
+                )
                 rows.append(f"<td>{svg}{label}</td>")
             else:
                 rows.append('<td class="empty"><span style="color:#f85149">--</span></td>')
