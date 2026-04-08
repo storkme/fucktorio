@@ -11,20 +11,30 @@ from pathlib import Path
 # Old pre-rename Factorio recipe names (0.15–1.x era, removed/renamed in 2.0)
 OLD_RECIPES = {
     # Science packs (renamed in 1.0)
-    "science-pack-1", "science-pack-2", "science-pack-3",
+    "science-pack-1",
+    "science-pack-2",
+    "science-pack-3",
     "high-tech-science-pack",
     # Removed in 2.0
     "rocket-control-unit",
     # Modules (renamed in 1.0)
-    "effectivity-module", "effectivity-module-2", "effectivity-module-3",
+    "effectivity-module",
+    "effectivity-module-2",
+    "effectivity-module-3",
     # Inserters (renamed in 2.0)
-    "filter-inserter", "stack-filter-inserter",
+    "filter-inserter",
+    "stack-filter-inserter",
     # Logistics chests (renamed in 2.0)
-    "logistic-chest-active-provider", "logistic-chest-passive-provider",
-    "logistic-chest-requester", "logistic-chest-storage",
+    "logistic-chest-active-provider",
+    "logistic-chest-passive-provider",
+    "logistic-chest-requester",
+    "logistic-chest-storage",
     # Barrels (old style)
-    "fill-sulfuric-acid-barrel", "fill-mineral-water-barrel",
-    "empty-sulfuric-acid-barrel", "empty-mineral-water-barrel", "empty-barrel",
+    "fill-sulfuric-acid-barrel",
+    "fill-mineral-water-barrel",
+    "empty-sulfuric-acid-barrel",
+    "empty-mineral-water-barrel",
+    "empty-barrel",
     # Other old names
     "steel-gear-wheel",
 }
@@ -34,11 +44,16 @@ MOD_PREFIXES = ("kr-",)
 
 # Standalone mod recipe names
 MOD_RECIPES = {
-    "steel-beam", "iron-beam",
-    "automation-core", "ai-core",
-    "nitric-acid", "ammonia",
-    "mining-drone", "mining-depot",
-    "glass", "biusart-lab",
+    "steel-beam",
+    "iron-beam",
+    "automation-core",
+    "ai-core",
+    "nitric-acid",
+    "ammonia",
+    "mining-drone",
+    "mining-depot",
+    "glass",
+    "biusart-lab",
 }
 
 
@@ -106,6 +121,7 @@ def is_reject(recipes: set[str]) -> tuple[bool, str]:
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("blueprints_dir", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="Print moves without executing")

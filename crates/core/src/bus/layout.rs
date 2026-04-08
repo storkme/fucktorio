@@ -764,7 +764,7 @@ mod tests {
             let sr = solve("electronic-circuit", 20.0, &inputs, machine)
                 .expect("solve");
             let layout = build_bus_layout(&sr, Some("transport-belt"))
-                .expect(&format!("layout with {}", machine));
+                .unwrap_or_else(|e| panic!("layout with {}: {}", machine, e));
 
             assert!(layout.warnings.is_empty(),
                 "{}: warnings: {:?}", machine, layout.warnings);
