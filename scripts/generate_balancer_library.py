@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import zlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,9 +33,8 @@ OUT_PATH = Path(__file__).parent.parent / "src" / "bus" / "balancer_library.py"
 FACTORIO_NORTH, FACTORIO_EAST, FACTORIO_SOUTH, FACTORIO_WEST = 0, 2, 4, 6
 
 # Shapes to generate: (N inputs, M outputs)
-# Cover all combinations up to 5×5 (except 1×1 identity and 5×5
-# which is too hard for the SAT solver in reasonable time).
-SHAPES: list[tuple[int, int]] = [(n, m) for n in range(1, 6) for m in range(1, 6) if (n, m) not in ((1, 1), (5, 5))]
+# Cover all combinations up to 8×8 (except 1×1 identity).
+SHAPES: list[tuple[int, int]] = [(n, m) for n in range(1, 9) for m in range(1, 9) if (n, m) != (1, 1)]
 
 
 @dataclass
@@ -93,28 +94,41 @@ def find_balancer(n: int, m: int) -> tuple[str, int, int] | None:
     """Search for a compact balancer by increasing width.
 
     Returns (blueprint_string, width, height) for the first solution found.
-    Tries --fast first across widths 3..20, then falls back to full solver
-    on widths where --fast failed (per-shape budget).
+    Tries --fast first across widths, then falls back to full solver.
+    Larger shapes (max(n,m) >= 5) get wider search ranges and more
+    height attempts to account for deeper splitter trees.
     """
     base_h = max(n, m)
-    # Try incrementally larger heights — some shapes (e.g. 3x3) require
-    # extra perpendicular room to fit the splitter tree.
-    for height in (base_h, base_h + 1, base_h + 2):
-        # Phase 1: fast probe at each width.
-        for width in range(3, 21):
+    # Scale search space with shape complexity.
+    if base_h >= 7:
+        max_width = 40
+        extra_heights = 4
+        fast_timeout = 180
+    elif base_h >= 5:
+        max_width = 30
+        extra_heights = 3
+        fast_timeout = 150
+    else:
+        max_width = 21
+        extra_heights = 2
+        fast_timeout = 120
+    heights = [base_h + i for i in range(extra_heights + 1)]
+    # Phase 1: fast probe across heights and widths.
+    for height in heights:
+        for width in range(3, max_width + 1):
             print(f"  probing {n}x{m} at {width}x{height} (fast)...", flush=True)
-            bp = run_sat(n, m, width, height, fast=True, timeout=120)
+            bp = run_sat(n, m, width, height, fast=True, timeout=fast_timeout)
             if bp is not None:
                 print(f"  -> solved at {width}x{height} (fast)")
                 return bp, width, height
-    # Phase 2: full solver as fallback at base height.
-    height = base_h
-    for width in range(3, 21):
-        print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
-        bp = run_sat(n, m, width, height, fast=False, timeout=300)
-        if bp is not None:
-            print(f"  -> solved at {width}x{height} (full)")
-            return bp, width, height
+    # Phase 2: full solver as fallback across all heights.
+    for height in heights:
+        for width in range(3, max_width + 1):
+            print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+            bp = run_sat(n, m, width, height, fast=False, timeout=300)
+            if bp is not None:
+                print(f"  -> solved at {width}x{height} (full)")
+                return bp, width, height
     return None
 
 
@@ -338,6 +352,11 @@ def emit_library(templates: dict[tuple[int, int], dict]) -> None:
     print(f"Wrote {OUT_PATH} ({len(templates)} templates)")
 
 
+def _build_shape(shape: tuple[int, int]) -> tuple[tuple[int, int], dict | None]:
+    """Worker function for parallel generation. Returns (shape, template_or_None)."""
+    return shape, build_template(*shape)
+
+
 def main() -> None:
     if not SAT_PY.exists():
         print(f"Factorio-SAT venv not found at {SAT_PY}", file=sys.stderr)
@@ -348,13 +367,32 @@ def main() -> None:
         print("  .venv/bin/python -m pip install --editable .", file=sys.stderr)
         sys.exit(1)
 
-    templates = {}
-    for shape in SHAPES:
-        t = build_template(*shape)
-        if t is not None:
-            templates[shape] = t
+    workers = int(os.environ.get("BALANCER_WORKERS", "0")) or min(os.cpu_count() or 1, len(SHAPES))
+
+    templates: dict[tuple[int, int], dict] = {}
+    if workers <= 1:
+        # Sequential mode (legacy behavior).
+        for shape in SHAPES:
+            t = build_template(*shape)
+            if t is not None:
+                templates[shape] = t
+    else:
+        print(f"Parallel mode: {workers} workers for {len(SHAPES)} shapes", flush=True)
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_build_shape, s): s for s in SHAPES}
+            for future in as_completed(futures):
+                shape = futures[future]
+                try:
+                    _, t = future.result()
+                    if t is not None:
+                        templates[shape] = t
+                    else:
+                        print(f"  SKIPPED: no solution for {shape}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"  ERROR: {shape} raised {exc}", file=sys.stderr)
 
     emit_library(templates)
+    print(f"Generated {len(templates)}/{len(SHAPES)} templates")
 
 
 if __name__ == "__main__":
