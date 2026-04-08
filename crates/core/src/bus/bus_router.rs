@@ -309,6 +309,30 @@ pub fn plan_bus_lanes(
         }
     }
 
+    crate::trace::emit(crate::trace::TraceEvent::LanesPlanned {
+        lanes: lanes.iter().map(|l| crate::trace::LaneInfo {
+            item: l.item.clone(),
+            x: l.x,
+            rate: l.rate,
+            is_fluid: l.is_fluid,
+            source_y: l.source_y,
+            tap_off_ys: l.tap_off_ys.clone(),
+            consumer_rows: l.consumer_rows.clone(),
+            producer_row: l.producer_row,
+            family_id: l.family_id,
+        }).collect(),
+        families: families.iter().map(|f| crate::trace::FamilyInfo {
+            item: f.item.clone(),
+            shape: f.shape,
+            lane_xs: f.lane_xs.clone(),
+            balancer_y_start: f.balancer_y_start,
+            balancer_y_end: f.balancer_y_end,
+            total_rate: f.total_rate,
+            producer_rows: f.producer_rows.clone(),
+        }).collect(),
+        bus_width: lanes.iter().map(|l| l.x).max().map(|x| x + 1).unwrap_or(0),
+    });
+
     Ok((lanes, families))
 }
 
