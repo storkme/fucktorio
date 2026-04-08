@@ -56,16 +56,10 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
     # Grid lines
     for gx in range(tmpl.width + 1):
         px = gx * TILE_PX + 1
-        lines.append(
-            f'<line x1="{px}" y1="1" x2="{px}" y2="{h - 1}"'
-            ' stroke="#333" stroke-width="0.5"/>'
-        )
+        lines.append(f'<line x1="{px}" y1="1" x2="{px}" y2="{h - 1}" stroke="#333" stroke-width="0.5"/>')
     for gy in range(tmpl.height + 1):
         py = gy * TILE_PX + 1
-        lines.append(
-            f'<line x1="1" y1="{py}" x2="{w - 1}" y2="{py}"'
-            ' stroke="#333" stroke-width="0.5"/>'
-        )
+        lines.append(f'<line x1="1" y1="{py}" x2="{w - 1}" y2="{py}" stroke="#333" stroke-width="0.5"/>')
 
     # Entities
     for e in tmpl.entities:
@@ -102,13 +96,9 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
 
     # Highlight input/output ports
     for ix, iy in input_set:
-        lines.append(
-            _svg_rect(ix * TILE_PX + 1, iy * TILE_PX + 1, "none", "#00ff88", "2")
-        )
+        lines.append(_svg_rect(ix * TILE_PX + 1, iy * TILE_PX + 1, "none", "#00ff88", "2"))
     for ox, oy in output_set:
-        lines.append(
-            _svg_rect(ox * TILE_PX + 1, oy * TILE_PX + 1, "none", "#ff6688", "2")
-        )
+        lines.append(_svg_rect(ox * TILE_PX + 1, oy * TILE_PX + 1, "none", "#ff6688", "2"))
 
     lines.append("</svg>")
     return "\n".join(lines)
