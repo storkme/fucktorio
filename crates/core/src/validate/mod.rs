@@ -134,6 +134,7 @@ pub fn validate(
     issues.extend(check_belt_connectivity(layout_result, solver_result));
     issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style));
     issues.extend(check_belt_direction_continuity(layout_result));
+    issues.extend(belt_structural::check_entity_overlaps(layout_result));
     issues.extend(belt_structural::check_belt_throughput(layout_result));
     issues.extend(belt_structural::check_output_belt_coverage(layout_result, solver_result));
     if layout_style == LayoutStyle::Spaghetti {
