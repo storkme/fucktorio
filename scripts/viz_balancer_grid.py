@@ -35,6 +35,13 @@ def _splitter_tiles(x: int, y: int, direction: int) -> list[tuple[int, int]]:
         return [(x, y), (x, y + 1)]
 
 
+def _svg_rect(x: int, y: int, fill: str, stroke: str = "#555", sw: str = "0.5") -> str:
+    return (
+        f'<rect x="{x}" y="{y}" width="{TILE_PX}" height="{TILE_PX}"'
+        f' fill="{fill}" stroke="{stroke}" stroke-width="{sw}" rx="2"/>'
+    )
+
+
 def render_template_svg(tmpl: BalancerTemplate) -> str:
     """Render a single template as an inline SVG element."""
     w = tmpl.width * TILE_PX + 2
@@ -49,10 +56,16 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
     # Grid lines
     for gx in range(tmpl.width + 1):
         px = gx * TILE_PX + 1
-        lines.append(f'<line x1="{px}" y1="1" x2="{px}" y2="{h - 1}" stroke="#333" stroke-width="0.5"/>')
+        lines.append(
+            f'<line x1="{px}" y1="1" x2="{px}" y2="{h - 1}"'
+            ' stroke="#333" stroke-width="0.5"/>'
+        )
     for gy in range(tmpl.height + 1):
         py = gy * TILE_PX + 1
-        lines.append(f'<line x1="1" y1="{py}" x2="{w - 1}" y2="{py}" stroke="#333" stroke-width="0.5"/>')
+        lines.append(
+            f'<line x1="1" y1="{py}" x2="{w - 1}" y2="{py}"'
+            ' stroke="#333" stroke-width="0.5"/>'
+        )
 
     # Entities
     for e in tmpl.entities:
@@ -62,17 +75,14 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
         if e.name == "splitter":
             tiles = _splitter_tiles(e.x, e.y, e.direction)
             for tx, ty in tiles:
-                px = tx * TILE_PX + 1
-                py = ty * TILE_PX + 1
-                lines.append(
-                    f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>'
-                )
+                lines.append(_svg_rect(tx * TILE_PX + 1, ty * TILE_PX + 1, colour))
             # Arrow in center of splitter
             cx = (tiles[0][0] + tiles[1][0] + 1) * TILE_PX / 2 + 1
             cy = (tiles[0][1] + tiles[1][1] + 1) * TILE_PX / 2 + 1
             lines.append(
-                f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-                f'font-size="{TILE_PX * 0.6}" fill="#333">{arrow}</text>'
+                f'<text x="{cx}" y="{cy}" text-anchor="middle"'
+                f' dominant-baseline="central" font-size="{TILE_PX * 0.6}"'
+                f' fill="#333">{arrow}</text>'
             )
         else:
             px = e.x * TILE_PX + 1
@@ -80,29 +90,24 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
             # Darker shade for underground outputs (exit points)
             if e.name == "underground-belt" and e.io_type == "output":
                 colour = "#6d9eeb"
-            lines.append(
-                f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="{colour}" stroke="#555" stroke-width="0.5" rx="2"/>'
-            )
+            lines.append(_svg_rect(px, py, colour))
             cx = px + TILE_PX / 2
             cy = py + TILE_PX / 2
             fs = TILE_PX * 0.55
             lines.append(
-                f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-                f'font-size="{fs}" fill="#333">{arrow}</text>'
+                f'<text x="{cx}" y="{cy}" text-anchor="middle"'
+                f' dominant-baseline="central" font-size="{fs}"'
+                f' fill="#333">{arrow}</text>'
             )
 
     # Highlight input/output ports
     for ix, iy in input_set:
-        px = ix * TILE_PX + 1
-        py = iy * TILE_PX + 1
         lines.append(
-            f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#00ff88" stroke-width="2" rx="2"/>'
+            _svg_rect(ix * TILE_PX + 1, iy * TILE_PX + 1, "none", "#00ff88", "2")
         )
     for ox, oy in output_set:
-        px = ox * TILE_PX + 1
-        py = oy * TILE_PX + 1
         lines.append(
-            f'<rect x="{px}" y="{py}" width="{TILE_PX}" height="{TILE_PX}" fill="none" stroke="#ff6688" stroke-width="2" rx="2"/>'
+            _svg_rect(ox * TILE_PX + 1, oy * TILE_PX + 1, "none", "#ff6688", "2")
         )
 
     lines.append("</svg>")
@@ -111,8 +116,8 @@ def render_template_svg(tmpl: BalancerTemplate) -> str:
 
 def build_html() -> str:
     """Build a single HTML page with all templates in an N×M grid."""
-    max_n = max(n for n, _ in BALANCER_TEMPLATES.keys())
-    max_m = max(m for _, m in BALANCER_TEMPLATES.keys())
+    max_n = max(n for n, _ in BALANCER_TEMPLATES)
+    max_m = max(m for _, m in BALANCER_TEMPLATES)
 
     rows: list[str] = []
     rows.append("""<!DOCTYPE html>
@@ -153,10 +158,12 @@ td.empty { background: #161b22; }
     rows.append('<div class="legend-item"><div class="legend-swatch" style="background:#6d9eeb"></div> UG Output</div>')
     rows.append('<div class="legend-item"><div class="legend-swatch" style="background:#b6d7a8"></div> Splitter</div>')
     rows.append(
-        '<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #00ff88"></div> Input port</div>'
+        '<div class="legend-item"><div class="legend-swatch"'
+        ' style="background:none;border:2px solid #00ff88"></div> Input port</div>'
     )
     rows.append(
-        '<div class="legend-item"><div class="legend-swatch" style="background:none;border:2px solid #ff6688"></div> Output port</div>'
+        '<div class="legend-item"><div class="legend-swatch"'
+        ' style="background:none;border:2px solid #ff6688"></div> Output port</div>'
     )
     rows.append("</div>")
 
