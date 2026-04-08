@@ -1859,7 +1859,36 @@ pub(crate) struct SatCrossingRegion {
 }
 
 /// Tile set of all (x, y) positions owned by solved crossing zones.
-pub(crate) type CrossingTileSet = FxHashSet<(i32, i32)>;
+/// `all` includes entity positions + forced-empty tiles (for trunk skip_ys).
+/// `entity_only` has just entity positions (for the retain filter).
+pub(crate) struct CrossingTileSet {
+    all: FxHashSet<(i32, i32)>,
+    entity_only: FxHashSet<(i32, i32)>,
+}
+
+impl CrossingTileSet {
+    pub fn empty() -> Self {
+        Self { all: FxHashSet::default(), entity_only: FxHashSet::default() }
+    }
+
+    /// Check if a tile is in the zone (entity or forced-empty).
+    pub fn contains(&self, pos: &(i32, i32)) -> bool {
+        self.all.contains(pos)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.all.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(i32, i32)> {
+        self.all.iter()
+    }
+
+    /// Check if a tile has a SAT entity (not forced-empty).
+    pub fn has_entity(&self, pos: &(i32, i32)) -> bool {
+        self.entity_only.contains(pos)
+    }
+}
 
 /// Extract crossing zones from the lane plan and solve them via SAT.
 ///
@@ -1887,7 +1916,7 @@ pub(crate) fn extract_and_solve_crossings(
             let mut crossed_trunks: Vec<(i32, String)> = Vec::new();
 
             // Find trunk columns the tap-off reaches on the surface
-            // (same intermediate-clear check as foreign_trunk_skip_ys Case 2).
+            // (intermediate-clear check, same as foreign_trunk_skip_ys Case 2).
             for trunk_lane in lanes {
                 if trunk_lane.is_fluid
                     || std::ptr::eq(trunk_lane, tapping_lane)
@@ -1932,7 +1961,8 @@ pub(crate) fn extract_and_solve_crossings(
     // For now, just solve each independently.
 
     let mut solved = Vec::new();
-    let mut tile_set = FxHashSet::default();
+    let mut entity_tiles = FxHashSet::default();
+    let mut all_tiles = FxHashSet::default();
 
     #[allow(unused_variables)]
     for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
@@ -1977,9 +2007,13 @@ pub(crate) fn extract_and_solve_crossings(
         };
 
         if let Some(solution) = sat::solve_crossing_zone(&zone, max_reach, effective_belt) {
-            // Register SAT entity positions in the tile set.
+            // Register entity positions and forced-empty tiles.
             for e in &solution.entities {
-                tile_set.insert((e.x, e.y));
+                entity_tiles.insert((e.x, e.y));
+                all_tiles.insert((e.x, e.y));
+            }
+            for &(fx, fy) in &zone.forced_empty {
+                all_tiles.insert((fx, fy));
             }
             solved.push(SolvedCrossing { zone, solution });
         }
@@ -2006,7 +2040,8 @@ pub(crate) fn extract_and_solve_crossings(
         }
     }
 
-    (solved, tile_set, regions)
+    let tile_sets = CrossingTileSet { all: all_tiles, entity_only: entity_tiles };
+    (solved, tile_sets, regions)
 }
 
 /// Maximum tiles between PTG input and output positions.
@@ -3615,7 +3650,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &FxHashSet::default());
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty());
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -3672,7 +3707,7 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &FxHashSet::default());
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty());
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
@@ -3744,7 +3779,7 @@ mod tests {
         let row_spans = vec![producer_row, consumer_row];
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &FxHashSet::default());
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty());
 
         // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
         let ug_entities: Vec<_> = entities.iter()

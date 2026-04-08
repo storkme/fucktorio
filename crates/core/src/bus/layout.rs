@@ -287,10 +287,11 @@ fn route_bus(
         route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles);
     }
 
-    // Remove non-SAT entities at crossing tile positions (SAT entities win).
+    // Remove non-SAT entities at SAT entity positions (SAT entities win).
+    // Only at entity_only tiles — forced-empty tiles keep A* tap-off entities.
     if !crossing_tiles.is_empty() {
         entities.retain(|e| {
-            if !crossing_tiles.contains(&(e.x, e.y)) {
+            if !crossing_tiles.has_entity(&(e.x, e.y)) {
                 return true;
             }
             matches!(&e.segment_id, Some(sid) if sid.starts_with("crossing:"))
@@ -725,6 +726,54 @@ mod tests {
             "Underground belt validation errors: {}",
             errors.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("; ")
         );
+    }
+
+    #[test]
+    #[ignore] // manual investigation — run with --ignored --nocapture
+    fn test_ecircuit_20s_yellow_from_plates_sat_zones() {
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 20.0, &inputs, "assembling-machine-3")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        eprintln!("Layout: {}x{}, {} entities", layout.width, layout.height, layout.entities.len());
+        eprintln!("SAT regions: {}", layout.regions.len());
+        for r in &layout.regions {
+            eprintln!("  zone ({},{}) {}x{}: {} vars, {} clauses, {}µs | in={:?} out={:?}",
+                r.x, r.y, r.width, r.height,
+                r.variables, r.clauses, r.solve_time_us,
+                r.inputs, r.outputs);
+        }
+
+        // Run validation
+        use crate::validate::underground::check_underground_belt_pairs;
+        let ug_issues = check_underground_belt_pairs(&layout);
+        let ug_errors: Vec<_> = ug_issues.iter()
+            .filter(|i| i.severity == crate::validate::Severity::Error)
+            .collect();
+        eprintln!("UG errors: {}", ug_errors.len());
+        for e in &ug_errors {
+            eprintln!("  {}", e.message);
+        }
+
+        // Check overlaps
+        use std::collections::HashMap;
+        let mut tile_entities: HashMap<(i32, i32), Vec<&str>> = HashMap::new();
+        for e in &layout.entities {
+            tile_entities.entry((e.x, e.y)).or_default().push(&e.name);
+        }
+        let overlaps: Vec<_> = tile_entities.iter()
+            .filter(|(_, v)| v.len() > 1)
+            .collect();
+        eprintln!("Overlaps: {}", overlaps.len());
+        for ((x, y), names) in &overlaps {
+            eprintln!("  ({},{}) {:?}", x, y, names);
+        }
     }
 
     #[test]
