@@ -1,14 +1,102 @@
-//! Power coverage validation.
+//! Power coverage and pole network connectivity validation.
 //!
 //! Port of `check_power_coverage` from `src/validate.py`.
 //!
 //! Checks that every machine is within range of a medium-electric-pole.
 //! A medium electric pole has a 7×7 supply area (3 tiles in each direction
 //! from the pole center).
+//!
+//! Also checks that all power poles form a single connected graph via copper
+//! wire (P6). Disconnected poles are a Warning, not an Error — they still
+//! function but require separate power sources.
+
+use std::collections::VecDeque;
 
 use crate::common::machine_size;
 use crate::models::LayoutResult;
 use crate::validate::{Severity, ValidationIssue};
+
+/// Wire reach (tile distance between centers) for each pole type.
+const MEDIUM_POLE_WIRE_REACH: f64 = 9.0;
+const SMALL_POLE_WIRE_REACH: f64 = 7.5;
+
+/// Returns the center in tile-space for a pole at integer grid position.
+/// Both medium (2×2) and small (1×1) poles have their center at +0.5 from
+/// the top-left corner tile.
+fn pole_center(x: i32, y: i32) -> (f64, f64) {
+    (x as f64 + 0.5, y as f64 + 0.5)
+}
+
+/// Wire reach for a given pole name; returns `None` for unknown pole types.
+fn wire_reach(name: &str) -> Option<f64> {
+    match name {
+        "medium-electric-pole" => Some(MEDIUM_POLE_WIRE_REACH),
+        "small-electric-pole" => Some(SMALL_POLE_WIRE_REACH),
+        _ => None,
+    }
+}
+
+/// Check that all power poles form a single connected graph via copper wire.
+///
+/// Two poles are connected when the Euclidean distance between their centers
+/// is ≤ the wire reach of the *smaller* reach of the two poles (Factorio uses
+/// the minimum of both poles' wire reaches).
+///
+/// Returns a single `Warning` issue if any pole is unreachable from the first
+/// pole in the layout.
+pub fn check_pole_network_connectivity(layout: &LayoutResult) -> Vec<ValidationIssue> {
+    // Collect (center_x, center_y, wire_reach) for every known pole type.
+    let poles: Vec<(f64, f64, f64)> = layout
+        .entities
+        .iter()
+        .filter_map(|e| {
+            wire_reach(&e.name).map(|r| {
+                let (cx, cy) = pole_center(e.x, e.y);
+                (cx, cy, r)
+            })
+        })
+        .collect();
+
+    if poles.len() <= 1 {
+        // 0 or 1 pole — trivially connected (or no poles, covered by check_power_coverage).
+        return vec![];
+    }
+
+    let mut visited = vec![false; poles.len()];
+    let mut queue = VecDeque::new();
+    queue.push_back(0usize);
+    visited[0] = true;
+
+    while let Some(i) = queue.pop_front() {
+        let (acx, acy, ar) = poles[i];
+        for (j, &(bcx, bcy, br)) in poles.iter().enumerate() {
+            if visited[j] {
+                continue;
+            }
+            let dx = acx - bcx;
+            let dy = acy - bcy;
+            let reach = ar.min(br);
+            // Compare squared distances to avoid sqrt.
+            if dx * dx + dy * dy <= reach * reach {
+                visited[j] = true;
+                queue.push_back(j);
+            }
+        }
+    }
+
+    let disconnected: usize = visited.iter().filter(|&&v| !v).count();
+    if disconnected == 0 {
+        return vec![];
+    }
+
+    vec![ValidationIssue::new(
+        Severity::Warning,
+        "power",
+        format!(
+            "{disconnected} power pole(s) are not connected to the main pole network via copper wire"
+        ),
+    )]
+}
 
 /// Machine entities that must be covered by power.
 ///
@@ -310,5 +398,98 @@ mod tests {
         let lr = layout(vec![machine("assembling-machine-1", -1, -1), pole(4, 0)]);
         let issues = check_power_coverage(&lr);
         assert_eq!(issues.len(), 1, "distance of 4 should be out of range");
+    }
+
+    // -----------------------------------------------------------------------
+    // check_pole_network_connectivity tests
+    // -----------------------------------------------------------------------
+
+    fn small_pole(x: i32, y: i32) -> PlacedEntity {
+        PlacedEntity {
+            name: "small-electric-pole".to_string(),
+            x,
+            y,
+            direction: EntityDirection::North,
+            recipe: None,
+            io_type: None,
+            carries: None,
+            mirror: false,
+            segment_id: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn single_pole_trivially_connected() {
+        let lr = layout(vec![pole(0, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 0);
+    }
+
+    #[test]
+    fn no_poles_trivially_connected() {
+        let lr = layout(vec![machine("assembling-machine-1", 0, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 0);
+    }
+
+    #[test]
+    fn two_medium_poles_within_wire_reach_connected() {
+        // Medium pole wire reach = 9 tiles. Centers at (0.5, 0.5) and (8.5, 0.5) → dist = 8.0
+        let lr = layout(vec![pole(0, 0), pole(8, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 0, "poles 8 tiles apart should be within medium-pole reach of 9");
+    }
+
+    #[test]
+    fn two_medium_poles_exactly_at_wire_reach_connected() {
+        // Centers at (0.5, 0.5) and (9.5, 0.5) → dist = 9.0 == reach → connected
+        let lr = layout(vec![pole(0, 0), pole(9, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 0, "distance of exactly 9.0 should be within reach");
+    }
+
+    #[test]
+    fn two_medium_poles_just_outside_wire_reach_disconnected() {
+        // Centers at (0.5, 0.5) and (10.5, 0.5) → dist = 10.0 > 9.0
+        let lr = layout(vec![pole(0, 0), pole(10, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Warning);
+        assert_eq!(issues[0].category, "power");
+        assert!(issues[0].message.contains("not connected"));
+    }
+
+    #[test]
+    fn connected_line_of_poles_no_issues() {
+        // Three medium poles spaced 8 tiles apart: 0, 8, 16 — each adjacent pair within reach
+        let lr = layout(vec![pole(0, 0), pole(8, 0), pole(16, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 0);
+    }
+
+    #[test]
+    fn disconnected_cluster_reports_warning() {
+        // Two groups: poles at x=0 and x=20 (dist=20 > reach=9)
+        let lr = layout(vec![pole(0, 0), pole(0, 8), pole(20, 0), pole(20, 8)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.contains("2 power pole(s)"));
+    }
+
+    #[test]
+    fn small_pole_uses_smaller_wire_reach() {
+        // Small pole reach = 7.5. Centers at (0.5,0.5) and (8.5,0.5) → dist = 8.0 > 7.5
+        let lr = layout(vec![small_pole(0, 0), small_pole(8, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 1, "small poles 8 tiles apart should be out of reach (7.5)");
+    }
+
+    #[test]
+    fn mixed_pole_types_use_minimum_reach() {
+        // medium (reach=9) + small (reach=7.5): min=7.5. dist between (0.5,0.5) and (8.5,0.5) = 8.0 > 7.5
+        let lr = layout(vec![pole(0, 0), small_pole(8, 0)]);
+        let issues = check_pole_network_connectivity(&lr);
+        assert_eq!(issues.len(), 1, "mixed poles should use min reach (7.5), distance 8.0 > 7.5");
     }
 }
