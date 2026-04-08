@@ -4,7 +4,7 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::common::{belt_entity_for_rate, lane_capacity, BELT_TIERS};
+use crate::common::{belt_entity_for_rate, lane_capacity, machine_size, BELT_TIERS};
 use crate::models::{MachineSpec, PlacedEntity, SolverResult};
 
 /// Best available per-lane capacity across all belt tiers.
@@ -221,11 +221,13 @@ impl RowKind {
 
 /// Classify a spec into a RowKind.
 fn row_kind(spec: &MachineSpec) -> RowKind {
-    if spec.entity == "oil-refinery" {
-        return RowKind::OilRefinery;
-    }
     let solid_inputs = spec.inputs.iter().filter(|f| !f.is_fluid).count();
     let fluid_inputs = spec.inputs.iter().filter(|f| f.is_fluid).count();
+
+    // Large machines (5×5) with only fluid inputs use the dedicated fluid-only template.
+    if solid_inputs == 0 && fluid_inputs > 0 && machine_size(&spec.entity) >= 5 {
+        return RowKind::OilRefinery;
+    }
 
     let has_fluid_dual_solid = solid_inputs == 2 && fluid_inputs == 1;
     let has_fluid = fluid_inputs > 0 && solid_inputs > 0 && !has_fluid_dual_solid;
@@ -296,8 +298,11 @@ pub(crate) fn build_one_row(
         RowKind::OilRefinery => {
             let fluid_input = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let fluid_output = fluid_outputs.first().map(|f| f.item.as_str()).unwrap_or("");
-            let (ents, rh, in_port_pipes, out_port_pipes) = templates::oil_refinery_row(
+            let msz = machine_size(&spec.entity);
+            let (ents, rh, in_port_pipes, out_port_pipes) = templates::fluid_only_row(
                 &spec.recipe,
+                &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -323,9 +328,11 @@ pub(crate) fn build_one_row(
                 solid_inputs.get(1).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
+            let msz = machine_size(&spec.entity);
             let (ents, rh, in_port_pipes, out_port_pipes) = templates::fluid_dual_input_row(
                 &spec.recipe,
                 &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -337,11 +344,13 @@ pub(crate) fn build_one_row(
                 out_belt,
                 output_east,
             );
+            let machine_y = y_cursor + 5;
+            let output_y = machine_y + msz as i32;
             fluid_port_ys = in_port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = in_port_pipes;
             fluid_output_port_pipes = out_port_pipes;
             let input_ys = vec![y_cursor + 2, y_cursor + 3];
-            let out_y = y_cursor + 8;
+            let out_y = output_y;
             (ents, rh, input_ys, out_y)
         }
         RowKind::FluidInput => {
@@ -349,9 +358,11 @@ pub(crate) fn build_one_row(
             let fluid_item = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let in_rate = solid_inputs.first().map(|f| f.rate * count as f64).unwrap_or(0.0);
             let in_belt = belt_entity_for_rate(in_rate * 2.0, max_belt_tier);
+            let msz = machine_size(&spec.entity);
             let (ents, rh, port_pipes) = templates::fluid_input_row(
                 &spec.recipe,
                 &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -365,16 +376,18 @@ pub(crate) fn build_one_row(
             fluid_port_ys = port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = port_pipes;
             let input_ys = vec![y_cursor];
-            let out_y = y_cursor + 6;
+            let out_y = y_cursor + 2 + msz as i32 + 1;
             (ents, rh, input_ys, out_y)
         }
         RowKind::SingleInput => {
             let input_item = solid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let in_rate = solid_inputs.first().map(|f| f.rate * count as f64).unwrap_or(0.0);
             let in_belt = belt_entity_for_rate(in_rate * 2.0, max_belt_tier);
+            let msz = machine_size(&spec.entity);
             let (ents, rh) = templates::single_input_row(
                 &spec.recipe,
                 &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -386,7 +399,7 @@ pub(crate) fn build_one_row(
                 output_east,
             );
             let input_ys = vec![y_cursor];
-            let out_y = y_cursor + 6;
+            let out_y = y_cursor + 2 + msz as i32 + 1;
             (ents, rh, input_ys, out_y)
         }
         RowKind::TripleInput => {
@@ -405,9 +418,11 @@ pub(crate) fn build_one_row(
                 solid_inputs.get(2).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
+            let msz = machine_size(&spec.entity);
             let (ents, rh) = templates::triple_input_row(
                 &spec.recipe,
                 &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -417,8 +432,8 @@ pub(crate) fn build_one_row(
                 out_belt,
                 output_east,
             );
-            let input_ys = vec![y_cursor, y_cursor + 1, y_cursor + 8];
-            let out_y = y_cursor + 7;
+            let input_ys = vec![y_cursor, y_cursor + 1, y_cursor + 3 + msz as i32 + 2];
+            let out_y = y_cursor + 3 + msz as i32 + 1;
             (ents, rh, input_ys, out_y)
         }
         RowKind::DualInput => {
@@ -432,9 +447,11 @@ pub(crate) fn build_one_row(
                 solid_inputs.get(1).map(|f| f.rate * count as f64 * 2.0).unwrap_or(0.0),
                 max_belt_tier,
             );
+            let msz = machine_size(&spec.entity);
             let (ents, rh) = templates::dual_input_row(
                 &spec.recipe,
                 &spec.entity,
+                msz,
                 count,
                 y_cursor,
                 bus_width,
@@ -473,7 +490,7 @@ pub(crate) fn build_one_row(
         }
     }
 
-    let machine_pitch: i32 = if spec.entity == "oil-refinery" { 5 } else { 3 };
+    let machine_pitch: i32 = machine_size(&spec.entity) as i32;
     let gap = if lane_split { LANE_SPLIT_GAP } else { 0 };
     let row_width = bus_width + count as i32 * machine_pitch + gap;
 
@@ -1146,6 +1163,48 @@ mod tests {
             }],
         };
         assert_eq!(row_kind(&spec), RowKind::OilRefinery);
+    }
+
+    #[test]
+    fn foundry_fluid_only_row_kind() {
+        // Foundry (5×5) with fluid-only inputs should use OilRefinery template
+        let spec = MachineSpec {
+            entity: "foundry".to_string(),
+            recipe: "molten-iron".to_string(),
+            count: 1.0,
+            inputs: vec![ItemFlow {
+                item: "iron-ore".to_string(),
+                rate: 10.0,
+                is_fluid: true,
+            }],
+            outputs: vec![ItemFlow {
+                item: "molten-iron".to_string(),
+                rate: 5.0,
+                is_fluid: true,
+            }],
+        };
+        assert_eq!(row_kind(&spec), RowKind::OilRefinery);
+    }
+
+    #[test]
+    fn foundry_solid_input_row_kind() {
+        // Foundry (5×5) with solid inputs should use SingleInput, not OilRefinery
+        let spec = MachineSpec {
+            entity: "foundry".to_string(),
+            recipe: "iron-plate".to_string(),
+            count: 1.0,
+            inputs: vec![ItemFlow {
+                item: "iron-ore".to_string(),
+                rate: 10.0,
+                is_fluid: false,
+            }],
+            outputs: vec![ItemFlow {
+                item: "iron-plate".to_string(),
+                rate: 10.0,
+                is_fluid: false,
+            }],
+        };
+        assert_eq!(row_kind(&spec), RowKind::SingleInput);
     }
 
     #[test]

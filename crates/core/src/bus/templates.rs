@@ -11,16 +11,10 @@
 
 use crate::models::{EntityDirection, PlacedEntity};
 
-/// Horizontal pitch: machine width with no gap.
-pub const MACHINE_PITCH: i32 = 3;
-
 /// Gap between machine groups when lane-splitting output belts.
 /// 3 tiles: 1 for sideload target filler, 1 for through-belt filler,
 /// 1 for the NORTH lift from group 2.
 pub const LANE_SPLIT_GAP: i32 = 3;
-
-/// Oil refinery pitch (5×5 machine).
-pub const OIL_REFINERY_PITCH: i32 = 5;
 
 // Fluid port dx (relative to machine tile_position) for each machine type.
 fn fluid_input_port_dx(machine_entity: &str) -> i32 {
@@ -36,20 +30,20 @@ fn output_dir(output_east: bool) -> EntityDirection {
 }
 
 /// Return x-coordinates for each machine, accounting for lane-split gap.
-fn machine_xs(x_offset: i32, machine_count: usize, lane_split: bool) -> Vec<i32> {
+fn machine_xs(x_offset: i32, machine_count: usize, pitch: i32, lane_split: bool) -> Vec<i32> {
     if !lane_split || machine_count < 2 {
         return (0..machine_count as i32)
-            .map(|i| x_offset + i * MACHINE_PITCH)
+            .map(|i| x_offset + i * pitch)
             .collect();
     }
 
     let g1 = machine_count / 2;
     let mut positions = Vec::with_capacity(machine_count);
     for i in 0..g1 {
-        positions.push(x_offset + i as i32 * MACHINE_PITCH);
+        positions.push(x_offset + i as i32 * pitch);
     }
     for j in 0..(machine_count - g1) {
-        positions.push(x_offset + g1 as i32 * MACHINE_PITCH + LANE_SPLIT_GAP + j as i32 * MACHINE_PITCH);
+        positions.push(x_offset + g1 as i32 * pitch + LANE_SPLIT_GAP + j as i32 * pitch);
     }
     positions
 }
@@ -187,13 +181,13 @@ fn sideload_bridge(
 
 /// Row for a recipe with 1 solid input.
 ///
-/// Layout per machine (3-tile horizontal pitch, no gaps):
+/// Layout per machine (`msz`-tile horizontal pitch, no gaps):
 /// ```text
 ///   y+0 : input belt (EAST)
 ///   y+1 : input inserter (SOUTH)
-///   y+2..y+4 : machine (3x3)
-///   y+5 : output inserter (SOUTH)
-///   y+6 : output belt (WEST -- toward bus)
+///   y+2..y+2+msz-1 : machine (msz×msz)
+///   y+2+msz : output inserter (SOUTH)
+///   y+2+msz+1 : output belt (WEST -- toward bus)
 /// ```
 ///
 /// When `lane_split=true`, machines are split into two groups with a
@@ -203,6 +197,7 @@ fn sideload_bridge(
 pub fn single_input_row(
     recipe: &str,
     machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
@@ -213,7 +208,9 @@ pub fn single_input_row(
     lane_split: bool,
     output_east: bool,
 ) -> (Vec<PlacedEntity>, i32) {
-    const ROW_HEIGHT: i32 = 7;
+    let msz = machine_size as i32;
+    let pitch = msz;
+    let row_height = msz + 4;
     let mut entities = Vec::new();
     let belt_in_seg = Some(format!("row:{recipe}:belt-in:{input_item}"));
     let inserter_in_seg = Some(format!("row:{recipe}:inserter-in:{input_item}"));
@@ -222,12 +219,12 @@ pub fn single_input_row(
     let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     let lane_split = lane_split && machine_count >= 2;
-    let mxs = machine_xs(x_offset, machine_count, lane_split);
+    let mxs = machine_xs(x_offset, machine_count, pitch, lane_split);
     let g1 = if lane_split { machine_count / 2 } else { machine_count };
 
     for &mx in &mxs {
-        // Input belt (3 tiles wide, continuous with adjacent machines)
-        for dx in 0..3_i32 {
+        // Input belt (machine_size tiles wide, continuous with adjacent machines)
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: input_belt.to_string(),
                 x: mx + dx,
@@ -250,7 +247,7 @@ pub fn single_input_row(
             ..Default::default()
         });
 
-        // Machine (3x3)
+        // Machine
         entities.push(PlacedEntity {
             name: machine_entity.to_string(),
             x: mx,
@@ -262,23 +259,25 @@ pub fn single_input_row(
         });
 
         // Output inserter
+        let out_ins_y = y_offset + 2 + msz;
         entities.push(PlacedEntity {
             name: "inserter".to_string(),
             x: mx + 1,
-            y: y_offset + 5,
+            y: out_ins_y,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
             segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
-        // Output belt (3 tiles wide)
+        // Output belt (machine_size tiles wide)
+        let out_belt_y = y_offset + 2 + msz + 1;
         let out_dir = output_dir(output_east);
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: output_belt.to_string(),
                 x: mx + dx,
-                y: y_offset + 6,
+                y: out_belt_y,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
                 segment_id: belt_out_seg.clone(),
@@ -288,7 +287,7 @@ pub fn single_input_row(
     }
 
     if lane_split {
-        let gap_start_x = x_offset + g1 as i32 * MACHINE_PITCH;
+        let gap_start_x = x_offset + g1 as i32 * pitch;
         // Input belt tiles through the gap (keep items flowing to group2)
         for dx in 0..LANE_SPLIT_GAP {
             entities.push(PlacedEntity {
@@ -301,23 +300,23 @@ pub fn single_input_row(
                 ..Default::default()
             });
         }
-        // Sideload bridge
-        entities.extend(sideload_bridge(gap_start_x, y_offset, 6, output_belt, output_item, output_east));
+        // Sideload bridge (output_row_dy = 2 + msz + 1)
+        entities.extend(sideload_bridge(gap_start_x, y_offset, 2 + msz + 1, output_belt, output_item, output_east));
     }
 
-    (entities, ROW_HEIGHT)
+    (entities, row_height)
 }
 
 /// Row for a recipe with 2 solid inputs.
 ///
-/// Layout per machine (3-tile horizontal pitch, no gaps):
+/// Layout per machine (`msz`-tile horizontal pitch, no gaps):
 /// ```text
 ///   y+0 : input belt 1 (EAST) -- far belt
 ///   y+1 : input belt 2 (EAST) -- close belt
 ///   y+2 : long-handed inserter (picks y+0) + inserter (picks y+1)
-///   y+3..y+5 : machine (3x3)
-///   y+6 : output inserter (SOUTH)
-///   y+7 : output belt (WEST -- toward bus)
+///   y+3..y+3+msz-1 : machine (msz×msz)
+///   y+3+msz : output inserter (SOUTH)
+///   y+3+msz+1 : output belt (WEST -- toward bus)
 /// ```
 ///
 /// When `lane_split=true`, machines are split into two groups with a
@@ -327,6 +326,7 @@ pub fn single_input_row(
 pub fn dual_input_row(
     recipe: &str,
     machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
@@ -337,7 +337,9 @@ pub fn dual_input_row(
     lane_split: bool,
     output_east: bool,
 ) -> (Vec<PlacedEntity>, i32) {
-    const ROW_HEIGHT: i32 = 8;
+    let msz = machine_size as i32;
+    let pitch = msz;
+    let row_height = msz + 5;
     let mut entities = Vec::new();
 
     let (input1, input2) = input_items;
@@ -351,12 +353,12 @@ pub fn dual_input_row(
     let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     let lane_split = lane_split && machine_count >= 2;
-    let mxs = machine_xs(x_offset, machine_count, lane_split);
+    let mxs = machine_xs(x_offset, machine_count, pitch, lane_split);
     let g1 = if lane_split { machine_count / 2 } else { machine_count };
 
     for &mx in &mxs {
         // Input belt 1 -- far belt
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt1.to_string(),
                 x: mx + dx,
@@ -369,7 +371,7 @@ pub fn dual_input_row(
         }
 
         // Input belt 2 -- close belt
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt2.to_string(),
                 x: mx + dx,
@@ -403,7 +405,7 @@ pub fn dual_input_row(
             ..Default::default()
         });
 
-        // Machine (3x3)
+        // Machine
         entities.push(PlacedEntity {
             name: machine_entity.to_string(),
             x: mx,
@@ -415,10 +417,11 @@ pub fn dual_input_row(
         });
 
         // Output inserter
+        let out_ins_y = y_offset + 3 + msz;
         entities.push(PlacedEntity {
             name: "inserter".to_string(),
             x: mx + 1,
-            y: y_offset + 6,
+            y: out_ins_y,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
             segment_id: inserter_out_seg.clone(),
@@ -426,12 +429,13 @@ pub fn dual_input_row(
         });
 
         // Output belt
+        let out_belt_y = y_offset + 3 + msz + 1;
         let out_dir = output_dir(output_east);
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: output_belt.to_string(),
                 x: mx + dx,
-                y: y_offset + 7,
+                y: out_belt_y,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
                 segment_id: belt_out_seg.clone(),
@@ -441,7 +445,7 @@ pub fn dual_input_row(
     }
 
     if lane_split {
-        let gap_start_x = x_offset + g1 as i32 * MACHINE_PITCH;
+        let gap_start_x = x_offset + g1 as i32 * pitch;
         // Input belt tiles through the gap for both input belts
         for dx in 0..LANE_SPLIT_GAP {
             entities.push(PlacedEntity {
@@ -463,24 +467,24 @@ pub fn dual_input_row(
                 ..Default::default()
             });
         }
-        // Sideload bridge (output belt at y+7, bridge at y+6)
-        entities.extend(sideload_bridge(gap_start_x, y_offset, 7, output_belt, output_item, output_east));
+        // Sideload bridge (output_row_dy = 3 + msz + 1)
+        entities.extend(sideload_bridge(gap_start_x, y_offset, 3 + msz + 1, output_belt, output_item, output_east));
     }
 
-    (entities, ROW_HEIGHT)
+    (entities, row_height)
 }
 
 /// Row for a recipe with 3 solid inputs.
 ///
-/// Layout per machine (3-tile horizontal pitch, no gaps):
+/// Layout per machine (`msz`-tile horizontal pitch, no gaps):
 /// ```text
 ///   y+0 : input belt 1 (EAST) -- far belt (long-handed reach)
 ///   y+1 : input belt 2 (EAST) -- close belt (regular reach)
 ///   y+2 : long-handed-inserter at mx (picks y+0) + inserter at mx+2 (picks y+1)
-///   y+3..y+5 : machine (3x3)
-///   y+6 : output inserter at mx+1 (SOUTH) + long-handed inserter at mx+2 (NORTH, picks y+8)
-///   y+7 : output belt (WEST or EAST)
-///   y+8 : input belt 3 (EAST) -- delivered from south side
+///   y+3..y+3+msz-1 : machine (msz×msz)
+///   y+3+msz : output inserter at mx+1 (SOUTH) + long-handed inserter at mx+2 (NORTH)
+///   y+3+msz+1 : output belt (WEST or EAST)
+///   y+3+msz+2 : input belt 3 (EAST) -- delivered from south side
 /// ```
 ///
 /// Lane splitting is not supported for 3-input rows.
@@ -489,6 +493,7 @@ pub fn dual_input_row(
 pub fn triple_input_row(
     recipe: &str,
     machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
@@ -498,7 +503,9 @@ pub fn triple_input_row(
     output_belt: &str,
     output_east: bool,
 ) -> (Vec<PlacedEntity>, i32) {
-    const ROW_HEIGHT: i32 = 9;
+    let msz = machine_size as i32;
+    let pitch = msz;
+    let row_height = msz + 6;
     let mut entities = Vec::new();
 
     let (input1, input2, input3) = input_items;
@@ -514,10 +521,10 @@ pub fn triple_input_row(
     let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
-        let mx = x_offset + i as i32 * MACHINE_PITCH;
+        let mx = x_offset + i as i32 * pitch;
 
         // Input belt 1 -- far belt (long-handed range)
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt1.to_string(),
                 x: mx + dx,
@@ -530,7 +537,7 @@ pub fn triple_input_row(
         }
 
         // Input belt 2 -- close belt (regular inserter range)
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt2.to_string(),
                 x: mx + dx,
@@ -564,7 +571,7 @@ pub fn triple_input_row(
             ..Default::default()
         });
 
-        // Machine (3x3)
+        // Machine
         entities.push(PlacedEntity {
             name: machine_entity.to_string(),
             x: mx,
@@ -575,22 +582,23 @@ pub fn triple_input_row(
             ..Default::default()
         });
 
-        // Output inserter: picks from machine south face (y+5), drops to output belt (y+7)
+        // Output inserter: picks from machine south face, drops to output belt
+        let ins_y = y_offset + 3 + msz;
         entities.push(PlacedEntity {
             name: "inserter".to_string(),
             x: mx + 1,
-            y: y_offset + 6,
+            y: ins_y,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
             segment_id: inserter_out_seg.clone(),
             ..Default::default()
         });
 
-        // Input3 long-handed inserter: picks from y+8 (input belt 3), drops to machine south (y+5)
+        // Input3 long-handed inserter: picks from south belt, drops to machine south
         entities.push(PlacedEntity {
             name: "long-handed-inserter".to_string(),
             x: mx + 2,
-            y: y_offset + 6,
+            y: ins_y,
             direction: EntityDirection::North,
             carries: Some(input3.to_string()),
             segment_id: inserter_in3_seg.clone(),
@@ -598,12 +606,13 @@ pub fn triple_input_row(
         });
 
         // Output belt
+        let out_belt_y = y_offset + 3 + msz + 1;
         let out_dir = output_dir(output_east);
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: output_belt.to_string(),
                 x: mx + dx,
-                y: y_offset + 7,
+                y: out_belt_y,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
                 segment_id: belt_out_seg.clone(),
@@ -611,12 +620,13 @@ pub fn triple_input_row(
             });
         }
 
-        // Input belt 3 -- south-side belt (long-handed range from y+6)
-        for dx in 0..3_i32 {
+        // Input belt 3 -- south-side belt (long-handed range from ins_y)
+        let belt3_y = y_offset + 3 + msz + 2;
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt3.to_string(),
                 x: mx + dx,
-                y: y_offset + 8,
+                y: belt3_y,
                 direction: EntityDirection::East,
                 carries: Some(input3.to_string()),
                 segment_id: belt_in3_seg.clone(),
@@ -625,18 +635,18 @@ pub fn triple_input_row(
         }
     }
 
-    (entities, ROW_HEIGHT)
+    (entities, row_height)
 }
 
 /// Row for a recipe with 1 solid input + 1 fluid input.
 ///
-/// Layout per machine (3-tile pitch, no gaps):
+/// Layout per machine (`msz`-tile pitch, no gaps):
 /// ```text
 ///   y+0 : solid input belt (EAST)
 ///   y+1 : inserter (solid) + pipe (fluid port connection)
-///   y+2..y+4 : machine (3x3)
-///   y+5 : output inserter (SOUTH)
-///   y+6 : output belt (WEST -- toward bus)
+///   y+2..y+2+msz-1 : machine (msz×msz)
+///   y+2+msz : output inserter (SOUTH)
+///   y+2+msz+1 : output belt (WEST -- toward bus)
 /// ```
 ///
 /// Returns `(entities, row_height, fluid_port_pipes)` where
@@ -644,6 +654,7 @@ pub fn triple_input_row(
 pub fn fluid_input_row(
     recipe: &str,
     machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
@@ -654,7 +665,9 @@ pub fn fluid_input_row(
     output_belt: &str,
     output_east: bool,
 ) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>) {
-    const ROW_HEIGHT: i32 = 7;
+    let msz = machine_size as i32;
+    let pitch = msz;
+    let row_height = msz + 4;
     let mut entities = Vec::new();
     let port_dx = fluid_input_port_dx(machine_entity);
     let mut fluid_port_pipes = Vec::new();
@@ -666,10 +679,10 @@ pub fn fluid_input_row(
     let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
-        let mx = x_offset + i as i32 * MACHINE_PITCH;
+        let mx = x_offset + i as i32 * pitch;
 
-        // Solid input belt (3 tiles wide)
-        for dx in 0..3_i32 {
+        // Solid input belt (machine_size tiles wide)
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: input_belt.to_string(),
                 x: mx + dx,
@@ -732,7 +745,7 @@ pub fn fluid_input_row(
             fluid_port_pipes.push((mx, y_offset + 1));
         }
 
-        // Machine (3x3)
+        // Machine
         entities.push(PlacedEntity {
             name: machine_entity.to_string(),
             x: mx,
@@ -744,10 +757,11 @@ pub fn fluid_input_row(
         });
 
         // Output inserter
+        let out_ins_y = y_offset + 2 + msz;
         entities.push(PlacedEntity {
             name: "inserter".to_string(),
             x: mx + 1,
-            y: y_offset + 5,
+            y: out_ins_y,
             direction: EntityDirection::South,
             carries: Some(output_item.to_string()),
             segment_id: inserter_out_seg.clone(),
@@ -755,12 +769,13 @@ pub fn fluid_input_row(
         });
 
         // Output belt
+        let out_belt_y = y_offset + 2 + msz + 1;
         let out_dir = output_dir(output_east);
-        for dx in 0..3_i32 {
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: output_belt.to_string(),
                 x: mx + dx,
-                y: y_offset + 6,
+                y: out_belt_y,
                 direction: out_dir,
                 carries: Some(output_item.to_string()),
                 segment_id: belt_out_seg.clone(),
@@ -769,16 +784,16 @@ pub fn fluid_input_row(
         }
     }
 
-    (entities, ROW_HEIGHT, fluid_port_pipes)
+    (entities, row_height, fluid_port_pipes)
 }
 
 /// Row for a recipe with 2 solid inputs + 1 fluid input.
 ///
 /// Fluid is delivered via a horizontal pipe header ABOVE the machine row,
 /// with vertical pipe-to-ground tunnels per machine dropping fluid down to
-/// the machine's fluid input port. This frees y+4 for two inserters.
+/// the machine's fluid input port. This frees the inserter row for two inserters.
 ///
-/// Layout per machine (3-tile horizontal pitch, no gaps):
+/// Layout per machine (`msz`-tile horizontal pitch, no gaps):
 /// ```text
 ///   y+0 : horizontal fluid header (pipes carrying fluid_item)
 ///   y+1 : pipe-to-ground input at mx+port_dx (direction SOUTH)
@@ -786,15 +801,16 @@ pub fn fluid_input_row(
 ///   y+3 : solid input belt 2 (EAST) -- close belt
 ///   y+4 : long-handed-inserter at mx+1 + inserter at mx+2 +
 ///           pipe-to-ground output at mx+port_dx (direction SOUTH)
-///   y+5..y+7 : machine (3x3)
-///   y+8 : fluid output pipes (if output_is_fluid) OR output inserter
-///   y+9 : output belt (solid output only)
+///   y+5..y+5+msz-1 : machine (msz×msz)
+///   y+5+msz : fluid output pipes (if output_is_fluid) OR output inserter
+///   y+5+msz+1 : output belt (solid output only)
 /// ```
 ///
 /// Returns `(entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)`.
 pub fn fluid_dual_input_row(
     recipe: &str,
     machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
@@ -806,10 +822,12 @@ pub fn fluid_dual_input_row(
     output_belt: &str,
     output_east: bool,
 ) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>, Vec<(i32, i32)>) {
-    // Fluid output occupies y+8; add a trailing empty row so sub-row
+    let msz = machine_size as i32;
+    let pitch = msz;
+    // Fluid output occupies y+5+msz; add a trailing empty row so sub-row
     // stacking doesn't put output pipes adjacent to the next sub-row's
     // fluid header row (which would trip pipe-isolation).
-    const ROW_HEIGHT: i32 = 10;
+    let row_height = msz + 7;
     let mut entities = Vec::new();
 
     let (input1, input2) = solid_items;
@@ -830,11 +848,11 @@ pub fn fluid_dual_input_row(
     let belt2_y = y_offset + 3;
     let inserter_y = y_offset + 4;
     let machine_y = y_offset + 5;
-    let output_y = y_offset + 8;
+    let output_y = y_offset + 5 + msz;
 
-    // Horizontal fluid header chain: spans x_offset .. last machine's mx+2
-    let last_mx = x_offset + (machine_count as i32 - 1) * MACHINE_PITCH;
-    let header_end_x = last_mx + 2;
+    // Horizontal fluid header chain: spans x_offset .. last machine's mx+(msz-1)
+    let last_mx = x_offset + (machine_count as i32 - 1) * pitch;
+    let header_end_x = last_mx + msz - 1;
     for x in x_offset..=header_end_x {
         entities.push(PlacedEntity {
             name: "pipe".to_string(),
@@ -849,7 +867,7 @@ pub fn fluid_dual_input_row(
     let mut fluid_output_port_pipes = Vec::new();
 
     for i in 0..machine_count {
-        let mx = x_offset + i as i32 * MACHINE_PITCH;
+        let mx = x_offset + i as i32 * pitch;
 
         // Vertical PTG pair: input at y+1 tunnels SOUTH to output at y+4
         entities.push(PlacedEntity {
@@ -873,8 +891,8 @@ pub fn fluid_dual_input_row(
             ..Default::default()
         });
 
-        // Solid input belts (3 tiles wide each)
-        for dx in 0..3_i32 {
+        // Solid input belts (machine_size tiles wide each)
+        for dx in 0..msz {
             entities.push(PlacedEntity {
                 name: belt1.to_string(),
                 x: mx + dx,
@@ -924,7 +942,7 @@ pub fn fluid_dual_input_row(
             ..Default::default()
         });
 
-        // Machine (3x3)
+        // Machine
         entities.push(PlacedEntity {
             name: machine_entity.to_string(),
             x: mx,
@@ -937,8 +955,7 @@ pub fn fluid_dual_input_row(
 
         // Output row
         if output_is_fluid {
-            // Chemical-plant fluid output ports at (0,2) and (2,2) south ->
-            // pipes one tile south of the machine (y=output_y) at mx+0, mx+2.
+            // Fluid output pipes one tile south of the machine
             entities.push(PlacedEntity {
                 name: "pipe".to_string(),
                 x: mx,
@@ -958,7 +975,7 @@ pub fn fluid_dual_input_row(
             fluid_output_port_pipes.push((mx, output_y));
             fluid_output_port_pipes.push((mx + 2, output_y));
         } else {
-            // Solid output: inserter at y+8, belt at y+9
+            // Solid output: inserter at output_y, belt at output_y+1
             entities.push(PlacedEntity {
                 name: "inserter".to_string(),
                 x: mx + 1,
@@ -969,7 +986,7 @@ pub fn fluid_dual_input_row(
                 ..Default::default()
             });
             let out_dir = output_dir(output_east);
-            for dx in 0..3_i32 {
+            for dx in 0..msz {
                 entities.push(PlacedEntity {
                     name: output_belt.to_string(),
                     x: mx + dx,
@@ -985,31 +1002,35 @@ pub fn fluid_dual_input_row(
 
     let fluid_input_port_pipes = vec![(x_offset, header_y)];
 
-    (entities, ROW_HEIGHT, fluid_input_port_pipes, fluid_output_port_pipes)
+    (entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)
 }
 
-/// Row for basic-oil-processing (1 fluid in, 1 fluid out, 5×5 refinery).
+/// Row for fluid-only recipes on large machines (5×5: oil-refinery, cryogenic-plant, foundry).
 ///
-/// Refineries are placed at `direction=NORTH` with `mirror=true` so
-/// crude-oil inputs sit at the NORTH edge (matching the bus trunk-above
-/// pattern) and petroleum-gas outputs sit at the SOUTH edge.
+/// Machines are placed at `direction=NORTH` with `mirror=true` so
+/// fluid inputs sit at the NORTH edge (matching the bus trunk-above
+/// pattern) and fluid outputs sit at the SOUTH edge.
 ///
 /// ```text
-///   y+0 : crude-oil input pipe (at mx+1, one per refinery)
-///   y+1..y+5 : oil-refinery entity (5x5)
-///   y+6 : petroleum-gas output pipe (at mx+0, one per refinery)
+///   y+0 : fluid input pipe (at mx+1, one per machine)
+///   y+1..y+msz : machine entity (msz×msz, mirrored)
+///   y+msz+1 : fluid output pipe (at mx+0, one per machine)
 /// ```
 ///
 /// Returns `(entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)`.
-pub fn oil_refinery_row(
+pub fn fluid_only_row(
     recipe: &str,
+    machine_entity: &str,
+    machine_size: u32,
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
     fluid_input_item: &str,
     fluid_output_item: &str,
 ) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>, Vec<(i32, i32)>) {
-    const ROW_HEIGHT: i32 = 7;
+    let msz = machine_size as i32;
+    let pitch = msz;
+    let row_height = msz + 2;
     let mut entities = Vec::new();
     let mut fluid_input_port_pipes = Vec::new();
     let mut fluid_output_port_pipes = Vec::new();
@@ -1018,9 +1039,9 @@ pub fn oil_refinery_row(
     let fluid_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
-        let mx = x_offset + i as i32 * OIL_REFINERY_PITCH;
+        let mx = x_offset + i as i32 * pitch;
 
-        // Input port pipe (crude-oil), 1 tile north of the refinery footprint
+        // Input port pipe, 1 tile north of the machine footprint
         let input_x = mx + 1;
         let input_y = y_offset;
         entities.push(PlacedEntity {
@@ -1033,9 +1054,9 @@ pub fn oil_refinery_row(
         });
         fluid_input_port_pipes.push((input_x, input_y));
 
-        // Refinery (5x5), mirrored so inputs face north, outputs face south
+        // Machine, mirrored so inputs face north, outputs face south
         entities.push(PlacedEntity {
-            name: "oil-refinery".to_string(),
+            name: machine_entity.to_string(),
             x: mx,
             y: y_offset + 1,
             direction: EntityDirection::North,
@@ -1045,8 +1066,8 @@ pub fn oil_refinery_row(
             ..Default::default()
         });
 
-        // Output port pipe (petroleum-gas), 1 tile south of the refinery footprint
-        let output_y = y_offset + 6;
+        // Output port pipe, 1 tile south of the machine footprint
+        let output_y = y_offset + 1 + msz;
         entities.push(PlacedEntity {
             name: "pipe".to_string(),
             x: mx,
@@ -1058,7 +1079,7 @@ pub fn oil_refinery_row(
         fluid_output_port_pipes.push((mx, output_y));
     }
 
-    (entities, ROW_HEIGHT, fluid_input_port_pipes, fluid_output_port_pipes)
+    (entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)
 }
 
 #[cfg(test)]
@@ -1081,6 +1102,7 @@ mod tests {
         let (entities, height) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3, // machine_size
             2,
             0,
             0,
@@ -1101,6 +1123,7 @@ mod tests {
         let (entities, _) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             1,
             0, // y_offset
             0, // x_offset
@@ -1148,6 +1171,7 @@ mod tests {
         let (entities, _) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             1,
             10,
             6,
@@ -1166,6 +1190,7 @@ mod tests {
         let (entities, _) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             1,
             0,
             0,
@@ -1189,6 +1214,7 @@ mod tests {
         let (entities, height) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             2,
             0,
             0,
@@ -1238,6 +1264,7 @@ mod tests {
         let (entities_split, _) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             1,
             0,
             0,
@@ -1251,6 +1278,7 @@ mod tests {
         let (entities_no_split, _) = single_input_row(
             "iron-gear-wheel",
             "assembling-machine-3",
+            3,
             1,
             0,
             0,
@@ -1271,6 +1299,7 @@ mod tests {
         let (entities, height) = dual_input_row(
             "electronic-circuit",
             "assembling-machine-3",
+            3,
             1,
             0,
             0,
@@ -1328,6 +1357,7 @@ mod tests {
         let (entities, _) = dual_input_row(
             "electronic-circuit",
             "assembling-machine-3",
+            3,
             4,
             0,
             0,
@@ -1369,6 +1399,7 @@ mod tests {
         let (entities, height) = triple_input_row(
             "advanced-circuit",
             "assembling-machine-3",
+            3,
             1,
             0,
             0,
@@ -1424,6 +1455,7 @@ mod tests {
         let (entities, height, fluid_port_pipes) = fluid_input_row(
             "plastic-bar",
             "chemical-plant",
+            3,
             2,
             0,
             0,
@@ -1462,6 +1494,7 @@ mod tests {
         let (entities, _, fluid_port_pipes) = fluid_input_row(
             "some-recipe",
             "assembling-machine-2",
+            3,
             1,
             0,
             0,
@@ -1490,6 +1523,7 @@ mod tests {
         let (entities, height, fluid_in_ports, fluid_out_ports) = fluid_dual_input_row(
             "some-solid-recipe",
             "chemical-plant",
+            3,
             2,
             0,
             0,
@@ -1552,6 +1586,7 @@ mod tests {
         let (entities, height, fluid_in_ports, fluid_out_ports) = fluid_dual_input_row(
             "sulfuric-acid",
             "chemical-plant",
+            3,
             1,
             0,
             0,
@@ -1581,6 +1616,7 @@ mod tests {
         let (entities, _, _, _) = fluid_dual_input_row(
             "some-recipe",
             "assembling-machine-2",
+            3,
             1,
             0,
             0,
@@ -1599,12 +1635,14 @@ mod tests {
         assert_eq!(ri.direction, EntityDirection::South);
     }
 
-    // ---- oil_refinery_row ----
+    // ---- fluid_only_row ----
 
     #[test]
-    fn oil_refinery_row_one_refinery() {
-        let (entities, height, fluid_in, fluid_out) = oil_refinery_row(
+    fn fluid_only_row_one_refinery() {
+        let (entities, height, fluid_in, fluid_out) = fluid_only_row(
             "basic-oil-processing",
+            "oil-refinery",
+            5,
             1,
             0,
             0,
@@ -1633,9 +1671,11 @@ mod tests {
     }
 
     #[test]
-    fn oil_refinery_row_two_refineries() {
-        let (entities, _, fluid_in, fluid_out) = oil_refinery_row(
+    fn fluid_only_row_two_refineries() {
+        let (entities, _, fluid_in, fluid_out) = fluid_only_row(
             "basic-oil-processing",
+            "oil-refinery",
+            5,
             2,
             0,
             0,
@@ -1645,7 +1685,7 @@ mod tests {
         assert_eq!(fluid_in.len(), 2);
         assert_eq!(fluid_out.len(), 2);
 
-        // Second refinery at x=5 (OIL_REFINERY_PITCH=5)
+        // Second refinery at x=5 (pitch=5)
         assert_entity(&entities, 5, 1, "oil-refinery");
         // Its input pipe at (6, 0)
         assert_eq!(fluid_in[1], (6, 0));
@@ -1657,28 +1697,28 @@ mod tests {
 
     #[test]
     fn machine_xs_no_split() {
-        let xs = machine_xs(0, 3, false);
+        let xs = machine_xs(0, 3, 3, false);
         assert_eq!(xs, vec![0, 3, 6]);
     }
 
     #[test]
     fn machine_xs_split_four() {
         // 4 machines, lane_split: g1=2 at 0,3; g2=2 at 6+3=9, 12
-        let xs = machine_xs(0, 4, true);
+        let xs = machine_xs(0, 4, 3, true);
         assert_eq!(xs, vec![0, 3, 9, 12]);
     }
 
     #[test]
     fn machine_xs_split_two() {
         // 2 machines, lane_split: g1=1 at 0; g2=1 at 3+3=6
-        let xs = machine_xs(0, 2, true);
+        let xs = machine_xs(0, 2, 3, true);
         assert_eq!(xs, vec![0, 6]);
     }
 
     #[test]
     fn machine_xs_split_ignored_for_one() {
-        let xs_split = machine_xs(0, 1, true);
-        let xs_no_split = machine_xs(0, 1, false);
+        let xs_split = machine_xs(0, 1, 3, true);
+        let xs_no_split = machine_xs(0, 1, 3, false);
         assert_eq!(xs_split, xs_no_split);
     }
 }

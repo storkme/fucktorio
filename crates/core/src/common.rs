@@ -14,6 +14,10 @@ pub const MACHINE_ENTITY_NAMES: &[&str] = &[
     "chemical-plant",
     "electric-furnace",
     "oil-refinery",
+    "electromagnetic-plant",
+    "cryogenic-plant",
+    "foundry",
+    "biochamber",
 ];
 
 /// Return `true` if `entity` is a known crafting machine.
@@ -25,8 +29,9 @@ pub fn is_machine_entity(entity: &str) -> bool {
 pub fn machine_size(entity: &str) -> u32 {
     match entity {
         "assembling-machine-1" | "assembling-machine-2" | "assembling-machine-3"
-        | "chemical-plant" | "electric-furnace" => 3,
-        "oil-refinery" => 5,
+        | "chemical-plant" | "electric-furnace" | "biochamber" => 3,
+        "oil-refinery" | "cryogenic-plant" | "foundry" => 5,
+        "electromagnetic-plant" => 4,
         _ => DEFAULT_MACHINE_SIZE,
     }
 }
@@ -167,6 +172,22 @@ mod tests {
     #[test]
     fn machine_size_default() {
         assert_eq!(machine_size("unknown-machine"), DEFAULT_MACHINE_SIZE);
+    }
+
+    #[test]
+    fn machine_size_space_age() {
+        assert_eq!(machine_size("electromagnetic-plant"), 4);
+        assert_eq!(machine_size("cryogenic-plant"), 5);
+        assert_eq!(machine_size("foundry"), 5);
+        assert_eq!(machine_size("biochamber"), 3);
+    }
+
+    #[test]
+    fn space_age_machines_in_entity_list() {
+        for name in ["electromagnetic-plant", "cryogenic-plant", "foundry", "biochamber"] {
+            assert!(MACHINE_ENTITY_NAMES.contains(&name), "{name} missing from MACHINE_ENTITY_NAMES");
+            assert!(is_machine_entity(name), "{name} not recognized by is_machine_entity");
+        }
     }
 
     #[test]
