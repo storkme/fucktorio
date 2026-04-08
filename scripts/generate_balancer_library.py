@@ -387,6 +387,7 @@ def _load_existing() -> set[tuple[int, int]]:
         if spec is None or spec.loader is None:
             return set()
         mod = importlib.util.module_from_spec(spec)
+        sys.modules["_bal_lib"] = mod  # needed for dataclass on Python 3.13+
         spec.loader.exec_module(mod)
         return set(mod.BALANCER_TEMPLATES.keys())
     except Exception:
@@ -423,6 +424,7 @@ def main() -> None:
         if existing_keys:
             spec = importlib.util.spec_from_file_location("_bal_lib", OUT_PATH)
             mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            sys.modules["_bal_lib"] = mod  # needed for dataclass on Python 3.13+
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
             for key, tmpl in mod.BALANCER_TEMPLATES.items():
                 templates[key] = {
