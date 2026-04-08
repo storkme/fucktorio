@@ -783,9 +783,7 @@ mod tests {
                 eprintln!("{}: {} overlaps:", machine, overlaps.len());
                 for o in &overlaps { eprintln!("  {}", o); }
             }
-            if !overlaps.is_empty() {
-                eprintln!("{}: {} overlaps (not fatal — dedup handles)", machine, overlaps.len());
-            }
+            assert!(overlaps.is_empty(), "{}: {} overlaps", machine, overlaps.len());
 
             // Full validation
             let mut all_errors = Vec::new();

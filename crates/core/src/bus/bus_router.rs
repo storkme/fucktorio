@@ -1432,7 +1432,26 @@ fn route_belt_lane(
         belt_name
     };
 
-    let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, end_y);
+    let mut foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, end_y);
+    // Bridge where A* tap-offs claimed this column — but NOT at positions
+    // where output-return belts connect (producer_out_ys). Output returns
+    // need a surface belt receiver at the trunk.
+    let mut all_producer_out_ys: FxHashSet<i32> = FxHashSet::default();
+    {
+        let mut prod_rows: Vec<usize> = Vec::new();
+        if let Some(pr) = lane.producer_row { prod_rows.push(pr); }
+        prod_rows.extend(&lane.extra_producer_rows);
+        for &p in &prod_rows {
+            if p < row_spans.len() {
+                all_producer_out_ys.insert(row_spans[p].output_belt_y);
+            }
+        }
+    }
+    for &(tx, ty) in _tapoff_tiles {
+        if tx == x && start_y < ty && ty < end_y && !all_producer_out_ys.contains(&ty) {
+            foreign_skips.insert(ty);
+        }
+    }
     let mut skip_ys = tap_off_set.clone();
     skip_ys.extend(lane.balancer_y);
     // Skip the entire family balancer zone (not just one tile).
@@ -1669,7 +1688,15 @@ fn route_intermediate_lane(
     }
 
     // Vertical trunk
-    let foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1);
+    let mut foreign_skips = foreign_trunk_skip_ys(lane, all_lanes, row_spans, start_y, tap_y - 1);
+    // Bridge where A* tap-offs claimed this column, but not at producer
+    // output ys (output-return belts need a surface receiver there).
+    let producer_out_set: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
+    for &(tx, ty) in _tapoff_tiles {
+        if tx == x && start_y < ty && ty < tap_y && !producer_out_set.contains(&ty) {
+            foreign_skips.insert(ty);
+        }
+    }
     let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
     skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
     // Skip the family balancer zone (same as route_belt_lane).
