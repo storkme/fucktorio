@@ -956,6 +956,20 @@ pub(crate) fn render_family_input_paths(
     let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
     let fam_input_seg_id = Some(format!("family-input:{}", family.item));
 
+    // Build tap-off tile set from routed paths so descent columns can
+    // skip positions claimed by tap-offs (they have higher A* priority).
+    let tapoff_positions: FxHashSet<(i32, i32)> = {
+        let mut set = FxHashSet::default();
+        for (key, path) in paths {
+            if key.starts_with("tap:") {
+                for &(px, py) in path {
+                    set.insert((px, py));
+                }
+            }
+        }
+        set
+    };
+
     // Helper: render feeder paths for one sub-template with given producers,
     // lane_xs chunk, and sub-group balancer origin_y.
     let render_sub = |entities: &mut Vec<PlacedEntity>,
@@ -997,18 +1011,45 @@ pub(crate) fn render_family_input_paths(
                 continue; // N==1: input tile is the turn point
             }
 
-            // SOUTH descent column from feeder row to balancer input
-            entities.push(PlacedEntity {
-                name: belt_tier.to_string(),
-                x: input_x,
-                y: out_y,
-                direction: EntityDirection::South,
-                carries: Some(family.item.clone()),
-                segment_id: fam_input_seg_id.clone(),
-                rate: Some(per_producer_rate),
-                ..Default::default()
-            });
-            for y in (out_y + 1)..sub_origin_y {
+            // SOUTH descent column from feeder row to balancer input.
+            // Skip positions claimed by tap-offs (they win at higher priority).
+            // At skipped positions, place UG pairs to bridge the gap.
+            let ug_belt = underground_for_belt(belt_tier);
+            let mut skip_next = false;
+            for y in out_y..sub_origin_y {
+                if tapoff_positions.contains(&(input_x, y)) {
+                    // Tap-off claims this tile. Place UG input at y-1 if
+                    // we haven't already, and UG output at y+1.
+                    if y > out_y && !skip_next {
+                        // Replace previous surface belt with UG input
+                        if let Some(last) = entities.last_mut() {
+                            if last.x == input_x && last.y == y - 1
+                                && last.direction == EntityDirection::South
+                            {
+                                last.name = ug_belt.to_string();
+                                last.io_type = Some("input".to_string());
+                            }
+                        }
+                    }
+                    skip_next = true;
+                    continue;
+                }
+                if skip_next {
+                    // Place UG output after the gap
+                    entities.push(PlacedEntity {
+                        name: ug_belt.to_string(),
+                        x: input_x,
+                        y,
+                        direction: EntityDirection::South,
+                        io_type: Some("output".to_string()),
+                        carries: Some(family.item.clone()),
+                        segment_id: fam_input_seg_id.clone(),
+                        rate: Some(per_producer_rate),
+                        ..Default::default()
+                    });
+                    skip_next = false;
+                    continue;
+                }
                 entities.push(PlacedEntity {
                     name: belt_tier.to_string(),
                     x: input_x,
@@ -2423,6 +2464,13 @@ pub(crate) fn negotiate_and_route(
     }
 
     // Block balancer footprints + feeder descent columns; emit feeder specs.
+    // Collect all tap-off ys so descent columns don't block them as obstacles.
+    // Tap-offs have higher A* priority and should claim those tiles.
+    let all_tapoff_ys: FxHashSet<i32> = lanes.iter()
+        .filter(|l| !l.is_fluid)
+        .flat_map(|l| l.tap_off_ys.iter().copied())
+        .collect();
+
     // Both obstacle collection and spec generation iterate the same per-family
     // sorted producer/input pairs, so they're merged into one loop.
     let templates = balancer_templates();
@@ -2528,9 +2576,13 @@ pub(crate) fn negotiate_and_route(
                 let input_x = ox + input_dx;
 
                 // SOUTH descent column: block it so A* routes around it.
+                // Skip tap-off ys — tap-offs have higher priority and will
+                // claim those tiles. The descent column bridges around them.
                 if out_y != fam.balancer_y_start {
                     for y in (out_y + 1)..fam.balancer_y_start {
-                        obstacles.insert((input_x as i16, y as i16));
+                        if !all_tapoff_ys.contains(&y) {
+                            obstacles.insert((input_x as i16, y as i16));
+                        }
                     }
                 }
 
