@@ -807,6 +807,32 @@ mod tests {
         assert_eq!(max_machines_for_belt(&spec, "transport-belt", None), 1);
     }
 
+    #[test]
+    fn test_max_machines_red_belt() {
+        // rate=1.0/machine, lane_cap=15.0 → floor(15.0/1.0)=15 machines
+        let spec = iron_plate_spec();
+        assert_eq!(max_machines_for_belt(&spec, "fast-transport-belt", None), 15);
+    }
+
+    #[test]
+    fn test_max_machines_blue_belt() {
+        // rate=1.0/machine, lane_cap=22.5 → floor(22.5/1.0)=22 machines
+        let spec = iron_plate_spec();
+        assert_eq!(max_machines_for_belt(&spec, "express-transport-belt", None), 22);
+    }
+
+    #[test]
+    fn test_max_machines_both_lanes_red_belt() {
+        // Output (both lanes): floor(15.0 / 1.0) * 2 = 30
+        // Input (single lane, max_belt_tier=None → blue cap 22.5): floor(22.5 / 1.0) = 22
+        // Input is the bottleneck → 22
+        let spec = iron_plate_spec();
+        assert_eq!(
+            max_machines_for_belt_both_lanes(&spec, "fast-transport-belt", None),
+            22
+        );
+    }
+
     // ---- order_specs tests ----
 
     #[test]
