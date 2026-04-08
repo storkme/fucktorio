@@ -2334,6 +2334,15 @@ pub fn check_input_rate_delivery(
 
     let mut issues = Vec::new();
 
+    // First pass: collect input inserters and count how many feed each (machine, item) pair.
+    struct InputInserter {
+        pickup_pos: (i32, i32),
+        machine_pos: (i32, i32),
+        carried_item: String,
+    }
+    let mut inserters: Vec<InputInserter> = Vec::new();
+    let mut inserter_count: FxHashMap<((i32, i32), String), usize> = FxHashMap::default();
+
     for ins in &layout.entities {
         if !is_inserter(&ins.name) {
             continue;
@@ -2343,15 +2352,28 @@ pub fn check_input_rate_delivery(
         let drop_pos = (ins.x + dx * reach, ins.y + dy * reach);
         let pickup_pos = (ins.x - dx * reach, ins.y - dy * reach);
 
-        // Input inserter: picks from belt, drops into machine
-        if !machine_tiles_set.contains(&drop_pos) || !lane_rates.contains_key(&pickup_pos) {
+        if !machine_tiles_set.contains(&drop_pos) {
             continue;
         }
         let mpos = match machine_by_tile.get(&drop_pos) {
             Some(&p) => p,
             None => continue,
         };
-        let me = match machine_entity.get(&mpos) {
+        let carried_item = match belt_carries.get(&pickup_pos).and_then(|c| c.as_deref()) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        *inserter_count.entry((mpos, carried_item.clone())).or_insert(0) += 1;
+        inserters.push(InputInserter {
+            pickup_pos,
+            machine_pos: mpos,
+            carried_item,
+        });
+    }
+
+    // Second pass: check each inserter's available rate vs its share of the required rate.
+    for ins in &inserters {
+        let me = match machine_entity.get(&ins.machine_pos) {
             Some(e) => e,
             None => continue,
         };
@@ -2359,39 +2381,34 @@ pub fn check_input_rate_delivery(
             Some(s) => *s,
             None => continue,
         };
-        let carried_item = match belt_carries.get(&pickup_pos).and_then(|c| c.as_deref()) {
-            Some(i) => i,
-            None => continue,
-        };
         let required_rate = spec
             .inputs
             .iter()
-            .find(|i| i.item == carried_item)
+            .find(|i| i.item == ins.carried_item)
             .map(|i| i.rate)
             .unwrap_or(0.0);
         if required_rate <= 0.0 {
             continue;
         }
+        let count = inserter_count.get(&(ins.machine_pos, ins.carried_item.clone())).copied().unwrap_or(1);
+        let per_inserter_rate = required_rate / count as f64;
 
-        // Get the total available rate on both lanes at the pickup tile.
-        // An inserter picks from one lane, but the rate may have been deposited
-        // on either lane depending on how items were sideloaded or turned.
-        // Checking total rate is more robust than per-lane for this validation.
-        let available = match lane_rates.get(&pickup_pos) {
+        let available = match lane_rates.get(&ins.pickup_pos) {
             Some(&[left, right]) => left + right,
             None => 0.0,
         };
 
-        if available < required_rate - 0.01 {
+        if available < per_inserter_rate - 0.01 {
             issues.push(ValidationIssue::with_pos(
                 Severity::Warning,
                 "input-rate-delivery",
                 format!(
-                    "Input belt at ({},{}) delivers {:.1}/s but machine needs {:.1}/s of {}",
-                    pickup_pos.0, pickup_pos.1, available, required_rate, carried_item
+                    "Input belt at ({},{}) delivers {:.1}/s but machine needs {:.1}/s of {} (across {} inserter{})",
+                    ins.pickup_pos.0, ins.pickup_pos.1, available, required_rate, ins.carried_item,
+                    count, if count > 1 { "s" } else { "" }
                 ),
-                pickup_pos.0,
-                pickup_pos.1,
+                ins.pickup_pos.0,
+                ins.pickup_pos.1,
             ));
         }
     }
