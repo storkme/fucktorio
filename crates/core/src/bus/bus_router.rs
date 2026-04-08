@@ -1653,7 +1653,10 @@ fn route_belt_lane(
         let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
         if let Some(tap_path) = paths.get(&tap_key) {
             entities.extend(render_path(tap_path, &lane.item, horiz_belt, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
-        } else {
+        } else if !lane.family_balancer_range.is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be) {
+            // Fallback: place a single belt. Skip if tap_y is inside the
+            // balancer zone (the A* couldn't route from there — the balancer
+            // stamp already occupies that tile).
             entities.push(PlacedEntity {
                 name: horiz_belt.to_string(),
                 x,
@@ -1877,7 +1880,7 @@ fn route_intermediate_lane(
     let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
     if let Some(tap_path) = paths.get(&tap_key) {
         entities.extend(render_path(tap_path, &lane.item, belt_name, EntityDirection::East, tapoff_seg_id.clone(), Some(lane.rate)));
-    } else {
+    } else if !lane.family_balancer_range.is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be) {
         entities.push(PlacedEntity {
             name: belt_name.to_string(),
             x,
@@ -2548,15 +2551,13 @@ pub(crate) fn negotiate_and_route(
         for sg in &sub_groups {
             let ox = sg.lane_xs.iter().copied().min().unwrap_or(0);
 
-            // Balancer body tiles (obstacle)
-            for te in sg.template.entities {
-                obstacles.insert(((ox + te.x) as i16, (fam.balancer_y_start + te.y) as i16));
-                if te.name == "splitter" {
-                    if te.direction == 0 || te.direction == 4 {
-                        obstacles.insert(((ox + te.x + 1) as i16, (fam.balancer_y_start + te.y) as i16));
-                    } else {
-                        obstacles.insert(((ox + te.x) as i16, (fam.balancer_y_start + te.y + 1) as i16));
-                    }
+            // Balancer bounding box (obstacle): block the entire width×height
+            // footprint, not just entity positions. Sparse templates leave gaps
+            // that the A* tap-off would route through, causing overlaps with
+            // stamped balancer entities.
+            for dx in 0..sg.template.width as i32 {
+                for dy in 0..sg.template.height as i32 {
+                    obstacles.insert(((ox + dx) as i16, (fam.balancer_y_start + dy) as i16));
                 }
             }
 
