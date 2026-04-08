@@ -20,8 +20,8 @@ use power::check_power_coverage;
 use belt_flow::{
     check_belt_connectivity, check_belt_direction_continuity, check_belt_flow_path,
     check_belt_flow_reachability, check_belt_junctions, check_belt_network_topology,
-    check_underground_belt_entry_sideload, check_underground_belt_pairs,
-    check_underground_belt_sideloading,
+    check_input_rate_delivery, check_underground_belt_entry_sideload,
+    check_underground_belt_pairs, check_underground_belt_sideloading,
 };
 
 /// Layout style: affects which validation checks run and how.
@@ -149,6 +149,7 @@ pub fn validate(
     issues.extend(belt_structural::check_belt_inserter_conflict(layout_result));
     issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style));
     issues.extend(belt_structural::check_lane_throughput(layout_result, solver_result));
+    issues.extend(check_input_rate_delivery(layout_result, solver_result));
 
     let errors: Vec<ValidationIssue> = issues
         .iter()
