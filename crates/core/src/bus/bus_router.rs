@@ -32,6 +32,10 @@ pub(crate) const MACHINE_ENTITIES: &[&str] = &[
     "chemical-plant",
     "electric-furnace",
     "oil-refinery",
+    "electromagnetic-plant",
+    "cryogenic-plant",
+    "foundry",
+    "biochamber",
 ];
 
 /// A single vertical lane on the bus.

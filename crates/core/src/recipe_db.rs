@@ -152,6 +152,10 @@ pub fn machine_for_recipe(recipe: &Recipe, default: &str) -> String {
         "chemistry" | "chemistry-or-cryogenics" | "organic-or-chemistry" => "chemical-plant".to_string(),
         "oil-processing" => "oil-refinery".to_string(),
         "smelting" => "electric-furnace".to_string(),
+        "electromagnetics" => "electromagnetic-plant".to_string(),
+        "cryogenics" | "cryogenics-or-assembling" => "cryogenic-plant".to_string(),
+        "metallurgy" | "metallurgy-or-assembling" | "pressing" => "foundry".to_string(),
+        "organic" | "organic-or-assembling" => "biochamber".to_string(),
         _ => default.to_string(),
     }
 }
@@ -227,5 +231,50 @@ mod tests {
             default_machine_for_item("nonexistent-item-xyz", "assembling-machine-3"),
             "assembling-machine-3"
         );
+    }
+
+    #[test]
+    fn space_age_category_mappings() {
+        // electromagnetics → electromagnetic-plant
+        let recipe = Recipe {
+            name: "test-recipe".into(),
+            category: "electromagnetics".into(),
+            energy: 1.0,
+            ingredients: vec![],
+            products: vec![],
+        };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "electromagnetic-plant");
+
+        // cryogenics → cryogenic-plant
+        let recipe = Recipe { category: "cryogenics".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "cryogenic-plant");
+
+        // cryogenics-or-assembling → cryogenic-plant (prefer SA machine)
+        let recipe = Recipe { category: "cryogenics-or-assembling".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "cryogenic-plant");
+
+        // metallurgy → foundry
+        let recipe = Recipe { category: "metallurgy".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "foundry");
+
+        // metallurgy-or-assembling → foundry
+        let recipe = Recipe { category: "metallurgy-or-assembling".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "foundry");
+
+        // pressing → foundry
+        let recipe = Recipe { category: "pressing".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "foundry");
+
+        // organic → biochamber
+        let recipe = Recipe { category: "organic".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "biochamber");
+
+        // organic-or-assembling → biochamber
+        let recipe = Recipe { category: "organic-or-assembling".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "biochamber");
+
+        // chemistry-or-cryogenics still maps to chemical-plant
+        let recipe = Recipe { category: "chemistry-or-cryogenics".into(), ..recipe.clone() };
+        assert_eq!(machine_for_recipe(&recipe, "assembling-machine-3"), "chemical-plant");
     }
 }
