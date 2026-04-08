@@ -207,6 +207,20 @@ function dirVec(dir?: EntityDirection): [number, number] {
   }
 }
 
+/** Companion tile offset for a splitter's 2×1 footprint. */
+function splitterCompanionOffset(dir?: EntityDirection): [number, number] {
+  switch (dir) {
+    case "South":
+    case "North":
+      return [1, 0]; // 2 wide horizontally
+    case "East":
+    case "West":
+      return [0, 1]; // 2 tall vertically
+    default:
+      return [1, 0];
+  }
+}
+
 /** Belt turn info: the perpendicular feed direction relative to our flow. */
 interface BeltTurn {
   /** "cw" = feeder rotated clockwise from our direction (e.g. we go East, feeder comes from North). */
@@ -221,7 +235,9 @@ function detectBeltTurn(e: PlacedEntity, tileMap: Map<string, PlacedEntity>): Be
   let perpFeeder: BeltTurn | null = null;
 
   for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as [number, number][]) {
-    const nb = tileMap.get(`${(e.x ?? 0) + dx},${(e.y ?? 0) + dy}`);
+    const nx = (e.x ?? 0) + dx;
+    const ny = (e.y ?? 0) + dy;
+    const nb = tileMap.get(`${nx},${ny}`);
     if (!nb) continue;
     const feeds =
       BELT_ENTITIES.has(nb.name) ||
@@ -230,7 +246,11 @@ function detectBeltTurn(e: PlacedEntity, tileMap: Map<string, PlacedEntity>): Be
     if (!feeds) continue;
     const [ndx, ndy] = dirVec(nb.direction);
     // Does neighbour's flow point at us?
-    if ((nb.x ?? 0) + ndx !== (e.x ?? 0) || (nb.y ?? 0) + ndy !== (e.y ?? 0)) continue;
+    // For splitters registered at companion tiles, use the actual tile
+    // position (nx, ny) instead of the anchor position (nb.x, nb.y).
+    const nbFlowX = SPLITTER_ENTITIES.has(nb.name) ? nx : (nb.x ?? 0);
+    const nbFlowY = SPLITTER_ENTITIES.has(nb.name) ? ny : (nb.y ?? 0);
+    if (nbFlowX + ndx !== (e.x ?? 0) || nbFlowY + ndy !== (e.y ?? 0)) continue;
     if (nb.direction === d) {
       hasStraightFeeder = true;
     } else {
@@ -730,10 +750,15 @@ export function renderLayout(
 ): HighlightController {
   container.removeChildren();
 
-  // Build tile map for belt turn detection
+  // Build tile map for belt turn detection.
+  // Splitters occupy 2 tiles (perpendicular to facing), so register both.
   const tileMap = new Map<string, PlacedEntity>();
   for (const e of layout.entities) {
     tileMap.set(`${e.x ?? 0},${e.y ?? 0}`, e);
+    if (SPLITTER_ENTITIES.has(e.name)) {
+      const [dx, dy] = splitterCompanionOffset(e.direction);
+      tileMap.set(`${(e.x ?? 0) + dx},${(e.y ?? 0) + dy}`, e);
+    }
   }
 
   // Index: item name → list of Graphics in that chain

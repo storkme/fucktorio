@@ -258,7 +258,7 @@ fn route_bus(
     // SAT crossing zones: trunk-only approach. SAT determines how trunks
     // handle crossings (UG bridges). The A* routes tap-offs normally (underground).
     // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
-    let (solved_crossings, crossing_tiles, _sat_regions) =
+    let (solved_crossings, mut crossing_tiles, _sat_regions) =
         extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
     for sc in &solved_crossings {
         entities.extend(sc.solution.entities.clone());
@@ -303,6 +303,47 @@ fn route_bus(
             for &(px, py) in path {
                 tapoff_tiles.insert((px, py));
             }
+        }
+    }
+
+    // Collect splitter stamp right-half positions BEFORE routing, so we can
+    // remove conflicting SAT crossing zones and adjust crossing_tiles.
+    let mut splitter_stamp_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for lane in lanes {
+        if lane.is_fluid || lane.tap_off_ys.len() <= 1 {
+            continue;
+        }
+        let last_tap = lane.tap_off_ys.iter().copied().max();
+        for &ty in &lane.tap_off_ys {
+            if Some(ty) != last_tap {
+                splitter_stamp_tiles.insert((lane.x + 1, ty - 1));
+                splitter_stamp_tiles.insert((lane.x + 1, ty));
+            }
+        }
+    }
+
+    // Find SAT crossing zone segments that conflict with splitter stamps,
+    // remove their entities, and strip their tiles from crossing_tiles so
+    // the foreign_trunk_skip mechanism can bridge there instead.
+    if !splitter_stamp_tiles.is_empty() {
+        let conflicting_segs: FxHashSet<String> = entities.iter()
+            .filter(|e| splitter_stamp_tiles.contains(&(e.x, e.y)))
+            .filter_map(|e| e.segment_id.as_ref())
+            .filter(|sid| sid.starts_with("crossing:"))
+            .cloned()
+            .collect();
+        if !conflicting_segs.is_empty() {
+            // Remove conflicting crossing zone entities
+            entities.retain(|e| {
+                !matches!(&e.segment_id, Some(sid) if conflicting_segs.contains(sid))
+            });
+            // Rebuild crossing_tiles from remaining crossing entities so
+            // the foreign_trunk_skip mechanism can bridge the gap instead.
+            let remaining_tiles: FxHashSet<(i32, i32)> = entities.iter()
+                .filter(|e| matches!(&e.segment_id, Some(sid) if sid.starts_with("crossing:")))
+                .map(|e| (e.x, e.y))
+                .collect();
+            crossing_tiles = crate::bus::bus_router::CrossingTileSet::from_tiles(remaining_tiles);
         }
     }
 
@@ -849,11 +890,12 @@ mod tests {
             layout.warnings
         );
 
-        // Layout should have a reasonable number of entities (was ~1048 after fix,
-        // was ~897 when feeders were broken/skipped)
+        // Layout should have a reasonable number of entities.
+        // After lane consolidation (fewer external input lanes), ~886 entities.
+        // Was ~1048 with 1-lane-per-consumer; ~897 when feeders were broken.
         assert!(
-            layout.entities.len() > 950,
-            "Expected >950 entities (full layout with feeders), got {}",
+            layout.entities.len() > 800,
+            "Expected >800 entities (full layout with feeders), got {}",
             layout.entities.len()
         );
 
@@ -921,5 +963,64 @@ mod tests {
             for e in &errors { eprintln!("  {}", e.message); }
         }
         assert!(errors.is_empty(), "{} dead-end errors", errors.len());
+    }
+
+    #[test]
+    fn test_ecircuit_20s_from_plates_splitter_tapoffs() {
+        // 20/s e-circuit from plates — matches the web app's default
+        use crate::solver::solve;
+        use crate::validate::belt_flow::{check_belt_dead_ends, check_belt_item_isolation};
+        use crate::validate::underground::check_underground_belt_pairs;
+        use crate::validate::Severity;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 20.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Dump entities near y=39 and y=48 for debugging
+        eprintln!("{} entities, {} warnings", layout.entities.len(), layout.warnings.len());
+        for e in &layout.entities {
+            if (e.x <= 5 && e.y >= 36 && e.y <= 42)
+                || (e.x <= 5 && e.y >= 45 && e.y <= 50)
+            {
+                eprintln!("  ({},{}) {} {:?} carries={:?} io={:?} seg={:?}",
+                    e.x, e.y, e.name, e.direction, e.carries, e.io_type, e.segment_id);
+            }
+        }
+
+        // Check for orphaned UG outputs (no matching input)
+        let ug_errors: Vec<_> = check_underground_belt_pairs(&layout)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        if !ug_errors.is_empty() {
+            eprintln!("{} UG pair errors:", ug_errors.len());
+            for e in &ug_errors { eprintln!("  {}", e.message); }
+        }
+
+        let dead_end_errors: Vec<_> = check_belt_dead_ends(&layout)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        if !dead_end_errors.is_empty() {
+            eprintln!("{} dead-end errors:", dead_end_errors.len());
+            for e in &dead_end_errors { eprintln!("  {}", e.message); }
+        }
+
+        let isolation_errors: Vec<_> = check_belt_item_isolation(&layout)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        if !isolation_errors.is_empty() {
+            eprintln!("{} isolation errors:", isolation_errors.len());
+            for e in &isolation_errors { eprintln!("  {}", e.message); }
+        }
+
+        let total_errors = ug_errors.len() + dead_end_errors.len() + isolation_errors.len();
+        assert!(total_errors == 0, "{} validation errors", total_errors);
     }
 }

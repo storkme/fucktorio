@@ -69,6 +69,7 @@ Formal rules the layout engine must satisfy. Statements are numbered per section
 - **S6.** **Input priority** (left/right): preferentially pull from one input belt first.
 - **S7.** **Output priority** (left/right): preferentially send to one output belt first.
 - **S8.** **Filter mode**: route a specific item type to one output, everything else to the other.
+- **S9.** **Tap-off from a running trunk**: to branch items off a belt that must continue flowing, a splitter is required. A belt turn or sideload redirects or copies items but does NOT split the flow — the trunk belt would terminate or starve downstream. The standard bus tap-off pattern: place a South-facing splitter on the trunk; one output continues South (trunk), the other output feeds East (tap-off to consumer row). The splitter occupies the trunk column and one adjacent column.
 
 ---
 
