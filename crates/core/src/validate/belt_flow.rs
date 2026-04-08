@@ -2287,6 +2287,135 @@ fn do_propagate(
 }
 
 // ---------------------------------------------------------------------------
+/// Check that the belt rate arriving at each consumer's input inserter pickup
+/// point meets the machine's required input rate.
+///
+/// Uses the same lane rate propagation as `check_lane_throughput` (topological
+/// sort with splitter 50/50 handling) but instead of checking capacity, checks
+/// that the delivered rate matches what the machine needs.
+pub fn check_input_rate_delivery(
+    layout: &LayoutResult,
+    solver: Option<&SolverResult>,
+) -> Vec<ValidationIssue> {
+    let sr = match solver {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let lane_rates = compute_lane_rates_impl(layout, solver);
+    if lane_rates.is_empty() {
+        return Vec::new();
+    }
+
+    let machine_tiles_set = build_machine_tile_set(layout);
+    let machine_by_tile = build_machine_by_tile(layout);
+
+    let recipe_to_spec: FxHashMap<&str, &crate::models::MachineSpec> = sr
+        .machines
+        .iter()
+        .map(|s| (s.recipe.as_str(), s))
+        .collect();
+    let mut machine_entity: FxHashMap<(i32, i32), &PlacedEntity> = FxHashMap::default();
+    for e in &layout.entities {
+        if is_machine(&e.name) {
+            machine_entity.insert((e.x, e.y), e);
+        }
+    }
+
+    let mut belt_carries: FxHashMap<(i32, i32), Option<String>> = FxHashMap::default();
+    for e in &layout.entities {
+        if is_belt(&e.name) {
+            belt_carries.insert((e.x, e.y), e.carries.clone());
+            if is_splitter(&e.name) {
+                belt_carries.insert(splitter_second_tile(e), e.carries.clone());
+            }
+        }
+    }
+
+    let mut issues = Vec::new();
+
+    // First pass: collect input inserters and count how many feed each (machine, item) pair.
+    struct InputInserter {
+        pickup_pos: (i32, i32),
+        machine_pos: (i32, i32),
+        carried_item: String,
+    }
+    let mut inserters: Vec<InputInserter> = Vec::new();
+    let mut inserter_count: FxHashMap<((i32, i32), String), usize> = FxHashMap::default();
+
+    for ins in &layout.entities {
+        if !is_inserter(&ins.name) {
+            continue;
+        }
+        let (dx, dy) = dir_to_vec(ins.direction);
+        let reach = inserter_reach(&ins.name);
+        let drop_pos = (ins.x + dx * reach, ins.y + dy * reach);
+        let pickup_pos = (ins.x - dx * reach, ins.y - dy * reach);
+
+        if !machine_tiles_set.contains(&drop_pos) {
+            continue;
+        }
+        let mpos = match machine_by_tile.get(&drop_pos) {
+            Some(&p) => p,
+            None => continue,
+        };
+        let carried_item = match belt_carries.get(&pickup_pos).and_then(|c| c.as_deref()) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        *inserter_count.entry((mpos, carried_item.clone())).or_insert(0) += 1;
+        inserters.push(InputInserter {
+            pickup_pos,
+            machine_pos: mpos,
+            carried_item,
+        });
+    }
+
+    // Second pass: check each inserter's available rate vs its share of the required rate.
+    for ins in &inserters {
+        let me = match machine_entity.get(&ins.machine_pos) {
+            Some(e) => e,
+            None => continue,
+        };
+        let spec = match me.recipe.as_deref().and_then(|r| recipe_to_spec.get(r)) {
+            Some(s) => *s,
+            None => continue,
+        };
+        let required_rate = spec
+            .inputs
+            .iter()
+            .find(|i| i.item == ins.carried_item)
+            .map(|i| i.rate)
+            .unwrap_or(0.0);
+        if required_rate <= 0.0 {
+            continue;
+        }
+        let count = inserter_count.get(&(ins.machine_pos, ins.carried_item.clone())).copied().unwrap_or(1);
+        let per_inserter_rate = required_rate / count as f64;
+
+        let available = match lane_rates.get(&ins.pickup_pos) {
+            Some(&[left, right]) => left + right,
+            None => 0.0,
+        };
+
+        if available < per_inserter_rate - 0.01 {
+            issues.push(ValidationIssue::with_pos(
+                Severity::Warning,
+                "input-rate-delivery",
+                format!(
+                    "Input belt at ({},{}) delivers {:.1}/s but machine needs {:.1}/s of {} (across {} inserter{})",
+                    ins.pickup_pos.0, ins.pickup_pos.1, available, required_rate, ins.carried_item,
+                    count, if count > 1 { "s" } else { "" }
+                ),
+                ins.pickup_pos.0,
+                ins.pickup_pos.1,
+            ));
+        }
+    }
+
+    issues
+}
+
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -3290,5 +3419,291 @@ mod tests {
             ..Default::default()
         };
         assert!(check_lane_throughput(&lr, None).is_empty());
+    }
+
+    // --- check_input_rate_delivery ---
+
+    #[test]
+    fn input_rate_delivery_no_solver_returns_empty() {
+        let lr = LayoutResult {
+            entities: vec![],
+            width: 10,
+            height: 10,
+            ..Default::default()
+        };
+        assert!(check_input_rate_delivery(&lr, None).is_empty());
+    }
+
+    #[test]
+    fn input_rate_delivery_sufficient_rate_ok() {
+        // Two machines: producer (iron-plate) → belt chain → consumer (iron-gear-wheel).
+        // Producer outputs 5/s iron-plate via inserter onto belt.
+        // Consumer needs 5/s iron-plate — exactly matched.
+        let sr = SolverResult {
+            machines: vec![
+                MachineSpec {
+                    entity: "electric-furnace".to_string(),
+                    recipe: "iron-plate".to_string(),
+                    count: 1.0,
+                    inputs: vec![ItemFlow {
+                        item: "iron-ore".to_string(),
+                        rate: 5.0,
+                        is_fluid: false,
+                    }],
+                    outputs: vec![ItemFlow {
+                        item: "iron-plate".to_string(),
+                        rate: 5.0,
+                        is_fluid: false,
+                    }],
+                },
+                MachineSpec {
+                    entity: "assembling-machine-3".to_string(),
+                    recipe: "iron-gear-wheel".to_string(),
+                    count: 1.0,
+                    inputs: vec![ItemFlow {
+                        item: "iron-plate".to_string(),
+                        rate: 5.0,
+                        is_fluid: false,
+                    }],
+                    outputs: vec![ItemFlow {
+                        item: "iron-gear-wheel".to_string(),
+                        rate: 2.5,
+                        is_fluid: false,
+                    }],
+                },
+            ],
+            external_inputs: vec![ItemFlow {
+                item: "iron-ore".to_string(),
+                rate: 5.0,
+                is_fluid: false,
+            }],
+            external_outputs: vec![ItemFlow {
+                item: "iron-gear-wheel".to_string(),
+                rate: 2.5,
+                is_fluid: false,
+            }],
+            dependency_order: vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()],
+        };
+
+        // Layout:
+        //   Furnace at (0,0), output inserter at (1,3) South, drops onto belt at (1,4).
+        //   Belt chain: (1,4) East → (2,4) East → (3,4) East.
+        //   Assembler at (5,5), input inserter at (6,5) South picks from belt at (6,4) East.
+        //   Wait — need the belt to flow from producer output to consumer input.
+        //   Let's keep it simple: output inserter drops at (1,4), belt goes East to (3,4).
+        //   But consumer inserter needs to pick from a belt tile in the chain.
+        //
+        // Simpler: producer at (0,0). Output inserter (1,3) South drops iron-plate at (1,4) East.
+        // Belt (1,4)→(2,4)→(3,4) all East carrying iron-plate.
+        // Consumer at (5,0). Input inserter at (6,3) South picks from belt at (6,4).
+        // Hmm, the belt chain needs to reach (6,4).
+        //
+        // Even simpler: just one belt tile shared between output and input inserters.
+        // Producer output inserter drops at (1,4). Consumer input inserter picks from (1,4).
+        // But that's the same tile — inserter drops and picks from same belt.
+        //
+        // Simplest correct layout:
+        // Output inserter at (1,3) South → drops onto belt (1,4) East
+        // Belt chain (1,4) → (2,4) → (3,4) all East
+        // Input inserter at (2,3) South ← picks from belt (2,4) East
+        //   Wait, inserter at (2,3) South picks from (2,3-1)=(2,2) not (2,4).
+        //   Inserter at (2,3) South: picks from (2,2), drops to (2,4). That's wrong direction.
+        //   For input inserter: picks from belt, drops to machine.
+        //   Inserter at (2,5) North: picks from (2,6), drops to (2,4). Picks from belt at (2,6).
+        //
+        // Let me use the standard bus template pattern:
+        // Belt at y=0 East (input belt for assembler row).
+        // Inserter at (1,1) South picks from belt at (1,0) drops to machine at (1,2).
+        // Machine at (0,2) assembling-machine-3.
+        // For the rate to be seeded, we need a PRODUCER output inserter dropping onto (1,0).
+        // Producer machine at (0,-3), output inserter at (1,-1) South, drops at (1,0).
+        // But the belt at (1,0) is EAST. Output inserter at (1,-1) South drops to (1,0). OK.
+        // compute_lane_rates seeds 5/s at (1,0) left lane (inserter is inline with belt).
+        // Input inserter at (1,1) South picks from (1,0). Needs 5/s. Available 5/s. OK.
+        // Furnace at (0,-4), output inserter at (1,-1) South: drops to (1,0).
+        // Single belt at (1,0) East (no chain → in_degree=0, seeded by injection).
+        // Input inserter at (1,1) South: picks from (1,0), drops to (1,2).
+        // Assembler at (0,2).
+        let entities = vec![
+            PlacedEntity {
+                name: "electric-furnace".to_string(),
+                x: 0,
+                y: -4,
+                direction: EntityDirection::North,
+                recipe: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: -1,
+                direction: EntityDirection::South,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "transport-belt".to_string(),
+                x: 1,
+                y: 0,
+                direction: EntityDirection::East,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: 1,
+                direction: EntityDirection::South,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "assembling-machine-3".to_string(),
+                x: 0,
+                y: 2,
+                direction: EntityDirection::North,
+                recipe: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: 5,
+                direction: EntityDirection::South,
+                carries: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "transport-belt".to_string(),
+                x: 1,
+                y: 6,
+                direction: EntityDirection::East,
+                carries: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+        ];
+        let lr = LayoutResult {
+            entities,
+            width: 20,
+            height: 20,
+            ..Default::default()
+        };
+        let issues = check_input_rate_delivery(&lr, Some(&sr));
+        assert!(issues.is_empty(), "unexpected issues: {:?}", issues);
+    }
+
+    #[test]
+    fn input_rate_delivery_insufficient_rate_warns() {
+        // Same layout but producer outputs 5/s, consumer needs 20/s.
+        let sr = SolverResult {
+            machines: vec![
+                MachineSpec {
+                    entity: "electric-furnace".to_string(),
+                    recipe: "iron-plate".to_string(),
+                    count: 1.0,
+                    inputs: vec![ItemFlow {
+                        item: "iron-ore".to_string(),
+                        rate: 5.0,
+                        is_fluid: false,
+                    }],
+                    outputs: vec![ItemFlow {
+                        item: "iron-plate".to_string(),
+                        rate: 5.0,
+                        is_fluid: false,
+                    }],
+                },
+                MachineSpec {
+                    entity: "assembling-machine-3".to_string(),
+                    recipe: "iron-gear-wheel".to_string(),
+                    count: 1.0,
+                    inputs: vec![ItemFlow {
+                        item: "iron-plate".to_string(),
+                        rate: 20.0,
+                        is_fluid: false,
+                    }],
+                    outputs: vec![ItemFlow {
+                        item: "iron-gear-wheel".to_string(),
+                        rate: 10.0,
+                        is_fluid: false,
+                    }],
+                },
+            ],
+            external_inputs: vec![],
+            external_outputs: vec![ItemFlow {
+                item: "iron-gear-wheel".to_string(),
+                rate: 10.0,
+                is_fluid: false,
+            }],
+            dependency_order: vec!["iron-plate".to_string(), "iron-gear-wheel".to_string()],
+        };
+
+        let entities = vec![
+            PlacedEntity {
+                name: "electric-furnace".to_string(),
+                x: 0,
+                y: -4,
+                direction: EntityDirection::North,
+                recipe: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: -1,
+                direction: EntityDirection::South,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "transport-belt".to_string(),
+                x: 1,
+                y: 0,
+                direction: EntityDirection::East,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: 1,
+                direction: EntityDirection::South,
+                carries: Some("iron-plate".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "assembling-machine-3".to_string(),
+                x: 0,
+                y: 2,
+                direction: EntityDirection::North,
+                recipe: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "inserter".to_string(),
+                x: 1,
+                y: 5,
+                direction: EntityDirection::South,
+                carries: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+            PlacedEntity {
+                name: "transport-belt".to_string(),
+                x: 1,
+                y: 6,
+                direction: EntityDirection::East,
+                carries: Some("iron-gear-wheel".to_string()),
+                ..Default::default()
+            },
+        ];
+        let lr = LayoutResult {
+            entities,
+            width: 20,
+            height: 20,
+            ..Default::default()
+        };
+        let issues = check_input_rate_delivery(&lr, Some(&sr));
+        assert!(!issues.is_empty(), "expected warning for insufficient rate");
+        assert!(issues.iter().any(|i| i.category == "input-rate-delivery"),
+            "expected input-rate-delivery issue, got: {:?}", issues);
     }
 }

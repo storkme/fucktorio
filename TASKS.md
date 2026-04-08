@@ -137,10 +137,6 @@ Generating layouts with beacons is a significant layout engine change. Common co
 - [x] Module-aware throughput in analysis — per-machine effective speed and productivity, beacon bonuses at 50% distribution effectivity
 - [x] CLI output shows `[speed +X%, prod +Y%]` when modules are present
 
-## Research: Verifactory
+## Research: Verifactory — DONE
 
-[verifactory](https://github.com/alegnani/verifactory) is a Rust library for formal verification of Factorio blueprints using bounded model checking. Worth investigating what it validates that we don't — particularly around flow rate analysis.
-
-- [ ] Dig into verifactory's validation approach — what properties does it check? How does it model belt throughput, splitter ratios, and item flow rates?
-- [ ] Compare with our validation suite — identify gaps, especially around flow rate correctness (we check structural connectivity but not whether items arrive at the right rate)
-- [ ] Evaluate integration potential — could we use verifactory as a post-layout verification pass, or borrow its modeling approach for our own validators?
+Investigated 2026-04-08. Findings in `docs/verifactory-comparison.md`.
