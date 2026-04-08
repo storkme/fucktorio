@@ -52,16 +52,12 @@ struct BpEntityItem {
     count: u32,
 }
 
-/// Factorio has THREE formats for items within an entity:
-///   - 1.x array:  `[{"item": "speed-module-3", "count": 2}]`
-///   - 1.x map:    `{"speed-module-3": 2}`
-///   - 2.0 array:  `[{"id": {"name": "efficiency-module"}, "items": {...}}]`
-///                  (the nested "items" tells us slot inventory; we just want the id.name)
-
-/// Factorio uses two formats for entity items:
-///   - New (array): `[{"item": "speed-module-3", "count": 2}]`
-///   - Old (map):   `{"speed-module-3": 2}`
-/// This enum handles both via a custom deserializer.
+/// Factorio uses multiple formats for items within an entity:
+/// - 1.x array:  `[{"item": "speed-module-3", "count": 2}]`
+/// - 1.x map:    `{"speed-module-3": 2}`
+/// - 2.0 array:  `[{"id": {"name": "efficiency-module"}, "items": {...}}]`
+///
+/// This enum handles all of them via a custom deserializer.
 #[derive(Default)]
 struct BpEntityItems(Vec<BpEntityItem>);
 

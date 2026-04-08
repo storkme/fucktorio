@@ -15,10 +15,13 @@ The generated library ships in the repo.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import zlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,9 +34,8 @@ OUT_PATH = Path(__file__).parent.parent / "src" / "bus" / "balancer_library.py"
 FACTORIO_NORTH, FACTORIO_EAST, FACTORIO_SOUTH, FACTORIO_WEST = 0, 2, 4, 6
 
 # Shapes to generate: (N inputs, M outputs)
-# Cover all combinations up to 5×5 (except 1×1 identity and 5×5
-# which is too hard for the SAT solver in reasonable time).
-SHAPES: list[tuple[int, int]] = [(n, m) for n in range(1, 6) for m in range(1, 6) if (n, m) not in ((1, 1), (5, 5))]
+# Cover all combinations up to 8×8 (except 1×1 identity).
+SHAPES: list[tuple[int, int]] = [(n, m) for n in range(1, 9) for m in range(1, 9) if (n, m) != (1, 1)]
 
 
 @dataclass
@@ -93,28 +95,58 @@ def find_balancer(n: int, m: int) -> tuple[str, int, int] | None:
     """Search for a compact balancer by increasing width.
 
     Returns (blueprint_string, width, height) for the first solution found.
-    Tries --fast first across widths 3..20, then falls back to full solver
-    on widths where --fast failed (per-shape budget).
+
+    For small shapes (max(n,m) < 6), fast mode alone finds solutions
+    reliably. For larger shapes, the full solver is tried at each width
+    after fast mode times out, since CaDiCaL's heuristics sometimes
+    struggle where the plain solver succeeds.
     """
     base_h = max(n, m)
-    # Try incrementally larger heights — some shapes (e.g. 3x3) require
-    # extra perpendicular room to fit the splitter tree.
-    for height in (base_h, base_h + 1, base_h + 2):
-        # Phase 1: fast probe at each width.
-        for width in range(3, 21):
+    # Scale search space with shape complexity.
+    if base_h >= 7:
+        max_width = 40
+        extra_heights = 4
+        fast_timeout = 120
+        use_full_interleave = True
+    elif base_h >= 6:
+        max_width = 30
+        extra_heights = 3
+        fast_timeout = 120
+        use_full_interleave = True
+    elif base_h >= 5:
+        max_width = 25
+        extra_heights = 3
+        fast_timeout = 120
+        use_full_interleave = False
+    else:
+        max_width = 21
+        extra_heights = 2
+        fast_timeout = 120
+        use_full_interleave = False
+    heights = [base_h + i for i in range(extra_heights + 1)]
+    # Phase 1: fast probe, optionally interleaved with full solver.
+    for height in heights:
+        for width in range(3, max_width + 1):
             print(f"  probing {n}x{m} at {width}x{height} (fast)...", flush=True)
-            bp = run_sat(n, m, width, height, fast=True, timeout=120)
+            bp = run_sat(n, m, width, height, fast=True, timeout=fast_timeout)
             if bp is not None:
                 print(f"  -> solved at {width}x{height} (fast)")
                 return bp, width, height
-    # Phase 2: full solver as fallback at base height.
-    height = base_h
-    for width in range(3, 21):
-        print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
-        bp = run_sat(n, m, width, height, fast=False, timeout=300)
-        if bp is not None:
-            print(f"  -> solved at {width}x{height} (full)")
-            return bp, width, height
+            if use_full_interleave and width >= base_h:
+                print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+                bp = run_sat(n, m, width, height, fast=False, timeout=300)
+                if bp is not None:
+                    print(f"  -> solved at {width}x{height} (full)")
+                    return bp, width, height
+    # Phase 2: full solver sweep (only if not already interleaved).
+    if not use_full_interleave:
+        for height in heights:
+            for width in range(3, max_width + 1):
+                print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+                bp = run_sat(n, m, width, height, fast=False, timeout=300)
+                if bp is not None:
+                    print(f"  -> solved at {width}x{height} (full)")
+                    return bp, width, height
     return None
 
 
@@ -338,7 +370,40 @@ def emit_library(templates: dict[tuple[int, int], dict]) -> None:
     print(f"Wrote {OUT_PATH} ({len(templates)} templates)")
 
 
+def _build_shape(shape: tuple[int, int]) -> tuple[tuple[int, int], dict | None]:
+    """Worker function for parallel generation. Returns (shape, template_or_None)."""
+    return shape, build_template(*shape)
+
+
+def _load_existing() -> set[tuple[int, int]]:
+    """Load already-generated template keys from the library file."""
+    if not OUT_PATH.exists():
+        return set()
+    try:
+        # Import the existing library to get its keys.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_bal_lib", OUT_PATH)
+        if spec is None or spec.loader is None:
+            return set()
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return set(mod.BALANCER_TEMPLATES.keys())
+    except Exception:
+        return set()
+
+
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate balancer templates via Factorio-SAT")
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip shapes already present in the library (incremental generation)",
+    )
+    args = parser.parse_args()
+
     if not SAT_PY.exists():
         print(f"Factorio-SAT venv not found at {SAT_PY}", file=sys.stderr)
         print("Set it up with:", file=sys.stderr)
@@ -348,13 +413,65 @@ def main() -> None:
         print("  .venv/bin/python -m pip install --editable .", file=sys.stderr)
         sys.exit(1)
 
-    templates = {}
-    for shape in SHAPES:
-        t = build_template(*shape)
-        if t is not None:
-            templates[shape] = t
+    # When --skip-existing, seed `templates` from the library and only
+    # generate shapes that are missing.
+    existing_keys: set[tuple[int, int]] = set()
+    templates: dict[tuple[int, int], dict] = {}
+    if args.skip_existing:
+        existing_keys = _load_existing()
+        # Re-read the existing library to preserve its data for emit.
+        if existing_keys:
+            spec = importlib.util.spec_from_file_location("_bal_lib", OUT_PATH)
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            for key, tmpl in mod.BALANCER_TEMPLATES.items():
+                templates[key] = {
+                    "n_inputs": tmpl.n_inputs,
+                    "n_outputs": tmpl.n_outputs,
+                    "width": tmpl.width,
+                    "height": tmpl.height,
+                    "entities": [
+                        {"name": e.name, "x": e.x, "y": e.y, "direction": e.direction, "io_type": e.io_type}
+                        for e in tmpl.entities
+                    ],
+                    "input_tiles": list(tmpl.input_tiles),
+                    "output_tiles": list(tmpl.output_tiles),
+                    "source_blueprint": tmpl.source_blueprint,
+                }
+        print(f"Loaded {len(existing_keys)} existing templates, generating missing shapes", flush=True)
+
+    todo = [s for s in SHAPES if s not in existing_keys]
+    if not todo:
+        print("All shapes already generated!")
+        return
+
+    workers = int(os.environ.get("BALANCER_WORKERS", "0")) or min(os.cpu_count() or 1, len(todo))
+
+    if workers <= 1:
+        for shape in todo:
+            t = build_template(*shape)
+            if t is not None:
+                templates[shape] = t
+    else:
+        print(f"Parallel mode: {workers} workers for {len(todo)} shapes", flush=True)
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_build_shape, s): s for s in todo}
+            for future in as_completed(futures):
+                shape = futures[future]
+                try:
+                    _, t = future.result()
+                    if t is not None:
+                        templates[shape] = t
+                    else:
+                        print(f"  SKIPPED: no solution for {shape}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"  ERROR: {shape} raised {exc}", file=sys.stderr)
 
     emit_library(templates)
+    print(f"Generated {len(templates)}/{len(SHAPES)} templates")
+    missing = [s for s in SHAPES if s not in templates]
+    if missing:
+        print(f"Missing ({len(missing)}): {missing}")
 
 
 if __name__ == "__main__":

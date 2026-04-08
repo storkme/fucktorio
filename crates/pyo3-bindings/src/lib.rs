@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 //! PyO3 bindings for Fucktorio's native A* pathfinder.
 //!
 //! Thin adapter around `fucktorio_core::astar` — converts PyO3 arguments
