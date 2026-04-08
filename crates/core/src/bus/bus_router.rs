@@ -944,72 +944,123 @@ pub(crate) fn render_family_input_paths(
     use crate::bus::balancer_library::balancer_templates;
 
     let templates = balancer_templates();
-    let template_key = (family.shape.0 as u32, family.shape.1 as u32);
-    let template = match templates.get(&template_key) {
-        Some(t) => t,
-        None => return Ok(Vec::new()), // No template — skip feeder paths
-    };
+    let (n, m) = (family.shape.0 as u32, family.shape.1 as u32);
 
     if family.lane_xs.is_empty() {
         return Ok(Vec::new());
     }
 
-    let origin_x = *family.lane_xs.iter().min().unwrap();
-    let origin_y = family.balancer_y_start;
     let default_paths = FxHashMap::default();
     let paths = routed_paths.unwrap_or(&default_paths);
+    let origin_y = family.balancer_y_start;
+    let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
+    let fam_input_seg_id = Some(format!("family-input:{}", family.item));
 
-    // Sort producers top-to-bottom, input tiles left-to-right
-    let mut producers = family.producer_rows.clone();
-    producers.sort_by_key(|&p| row_spans[p].output_belt_y);
-
-    let mut inputs: Vec<(i32, i32)> = template.input_tiles.to_vec();
-    inputs.sort_by_key(|t| t.0);
-
-    let mut entities: Vec<PlacedEntity> = Vec::new();
-
-    for (producer_row_idx, input_tile) in producers.iter().zip(inputs.iter()) {
-        let out_y = row_spans[*producer_row_idx].output_belt_y;
-        let input_x = origin_x + input_tile.0;
-
-        // Horizontal WEST feeder: A*-routed by the negotiator
-        let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
-        if let Some(feeder_path) = paths.get(&feeder_key) {
-            let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
-            let feeder_entities = render_path(feeder_path, &family.item, belt_tier, EntityDirection::West, Some(format!("family-input:{}", family.item)), Some(per_producer_rate));
-            entities.extend(feeder_entities);
+    // Helper: render feeder paths for one sub-template with given producers,
+    // lane_xs chunk, and sub-group balancer origin_y.
+    let render_sub = |entities: &mut Vec<PlacedEntity>,
+                      sub_template: &crate::bus::balancer_library::BalancerTemplate,
+                      sub_producers: &[usize],
+                      sub_lane_xs: &[i32],
+                      sub_origin_y: i32| {
+        if sub_lane_xs.is_empty() || sub_producers.is_empty() {
+            return;
         }
+        let sub_origin_x = *sub_lane_xs.iter().min().unwrap();
 
-        if out_y == origin_y {
-            // N == 1 case: template's input tile is the turn point
-            continue;
-        }
-
-        // Turn: SOUTH belt at (input_x, out_y), then descend to (input_x, origin_y - 1)
-        let fam_input_seg_id = Some(format!("family-input:{}", family.item));
-        let per_producer_rate = family.total_rate / family.producer_rows.len().max(1) as f64;
-        entities.push(PlacedEntity {
-            name: belt_tier.to_string(),
-            x: input_x,
-            y: out_y,
-            direction: EntityDirection::South,
-            carries: Some(family.item.clone()),
-            segment_id: fam_input_seg_id.clone(),
-            rate: Some(per_producer_rate),
-            ..Default::default()
+        let mut producers_sorted: Vec<usize> = sub_producers.to_vec();
+        producers_sorted.sort_by_key(|&p| {
+            if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
         });
 
-        for y in (out_y + 1)..origin_y {
+        let mut inputs: Vec<(i32, i32)> = sub_template.input_tiles.to_vec();
+        inputs.sort_by_key(|t| t.0);
+
+        for (pri, input_tile) in producers_sorted.iter().zip(inputs.iter()) {
+            if *pri >= row_spans.len() {
+                continue;
+            }
+            let out_y = row_spans[*pri].output_belt_y;
+            let input_x = sub_origin_x + input_tile.0;
+
+            // Horizontal WEST feeder: A*-routed
+            let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
+            if let Some(feeder_path) = paths.get(&feeder_key) {
+                entities.extend(render_path(
+                    feeder_path, &family.item, belt_tier,
+                    EntityDirection::West, fam_input_seg_id.clone(),
+                    Some(per_producer_rate),
+                ));
+            }
+
+            if out_y == sub_origin_y {
+                continue; // N==1: input tile is the turn point
+            }
+
+            // SOUTH descent column from feeder row to balancer input
             entities.push(PlacedEntity {
                 name: belt_tier.to_string(),
                 x: input_x,
-                y,
+                y: out_y,
                 direction: EntityDirection::South,
                 carries: Some(family.item.clone()),
                 segment_id: fam_input_seg_id.clone(),
                 rate: Some(per_producer_rate),
                 ..Default::default()
             });
+            for y in (out_y + 1)..sub_origin_y {
+                entities.push(PlacedEntity {
+                    name: belt_tier.to_string(),
+                    x: input_x,
+                    y,
+                    direction: EntityDirection::South,
+                    carries: Some(family.item.clone()),
+                    segment_id: fam_input_seg_id.clone(),
+                    rate: Some(per_producer_rate),
+                    ..Default::default()
+                });
+            }
+        }
+    };
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+
+    if let Some(template) = templates.get(&(n, m)) {
+        // Direct template match
+        render_sub(&mut entities, template, &family.producer_rows, &family.lane_xs, origin_y);
+    } else {
+        // Decomposition: find divisor g where (n/g, m/g) has a template
+        for g in (1..=n).rev() {
+            if n % g != 0 || m % g != 0 {
+                continue;
+            }
+            let sub_n = n / g;
+            let sub_m = m / g;
+            if let Some(sub_template) = templates.get(&(sub_n, sub_m)) {
+                let producers_per_group = sub_n as usize;
+                let lanes_per_group = sub_m as usize;
+
+                // Sort producers top-to-bottom for assignment
+                let mut sorted_producers = family.producer_rows.clone();
+                sorted_producers.sort_by_key(|&p| {
+                    if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
+                });
+
+                for gi in 0..(g as usize) {
+                    let prod_start = gi * producers_per_group;
+                    let prod_end = (prod_start + producers_per_group).min(sorted_producers.len());
+                    let sub_producers = &sorted_producers[prod_start..prod_end];
+
+                    let lane_start = gi * lanes_per_group;
+                    let lane_end = (lane_start + lanes_per_group).min(family.lane_xs.len());
+                    let sub_lane_xs = &family.lane_xs[lane_start..lane_end];
+
+                    // Use global balancer_y_start — all sub-templates are
+                    // stamped at that y, so descent columns must reach it.
+                    render_sub(&mut entities, sub_template, sub_producers, sub_lane_xs, origin_y);
+                }
+                break;
+            }
         }
     }
 
@@ -2379,82 +2430,141 @@ pub(crate) fn negotiate_and_route(
         if fam.lane_xs.is_empty() {
             continue;
         }
-        let shape_key = (fam.shape.0 as u32, fam.shape.1 as u32);
-        let template = match templates.get(&shape_key) {
-            Some(t) => t,
-            None => continue,
-        };
-        let ox = fam.lane_xs.iter().copied().min().unwrap();
-        let oy = fam.balancer_y_start;
+        let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
 
-        // Balancer body tiles (obstacle)
-        for te in template.entities {
-            obstacles.insert(((ox + te.x) as i16, (oy + te.y) as i16));
-            if te.name == "splitter" {
-                if te.direction == 0 || te.direction == 4 {
-                    obstacles.insert(((ox + te.x + 1) as i16, (oy + te.y) as i16));
-                } else {
-                    obstacles.insert(((ox + te.x) as i16, (oy + te.y + 1) as i16));
+        // Build list of (sub_template, sub_producers, sub_lane_xs, sub_origin_y) groups.
+        // Direct template: one group. Decomposed: g groups.
+        #[allow(dead_code)]
+        struct SubGroup<'a> {
+            template: &'a crate::bus::balancer_library::BalancerTemplate,
+            producers: Vec<usize>,
+            lane_xs: Vec<i32>,
+            origin_y: i32,
+        }
+        let mut sub_groups: Vec<SubGroup> = Vec::new();
+
+        if let Some(template) = templates.get(&(n, m)) {
+            sub_groups.push(SubGroup {
+                template,
+                producers: fam.producer_rows.clone(),
+                lane_xs: fam.lane_xs.clone(),
+                origin_y: fam.balancer_y_start,
+            });
+        } else {
+            // Decomposition: find divisor g
+            for g in (1..=n).rev() {
+                if n % g != 0 || m % g != 0 { continue; }
+                if let Some(sub_tpl) = templates.get(&(n / g, m / g)) {
+                    let prods_per = (n / g) as usize;
+                    let lanes_per = (m / g) as usize;
+                    let mut sorted_prods = fam.producer_rows.clone();
+                    sorted_prods.sort_by_key(|&p| {
+                        if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
+                    });
+                    for gi in 0..(g as usize) {
+                        let ps = gi * prods_per;
+                        let pe = (ps + prods_per).min(sorted_prods.len());
+                        let ls = gi * lanes_per;
+                        let le = (ls + lanes_per).min(fam.lane_xs.len());
+                        let sub_prods = sorted_prods[ps..pe].to_vec();
+                        let sub_lxs = fam.lane_xs[ls..le].to_vec();
+                        let oy = if sub_prods.len() == 1 {
+                            if sub_prods[0] < row_spans.len() {
+                                row_spans[sub_prods[0]].output_belt_y
+                            } else { fam.balancer_y_start }
+                        } else {
+                            sub_prods.iter()
+                                .filter(|&&p| p < row_spans.len())
+                                .map(|&p| row_spans[p].y_end)
+                                .max()
+                                .unwrap_or(fam.balancer_y_start)
+                        };
+                        sub_groups.push(SubGroup {
+                            template: sub_tpl,
+                            producers: sub_prods,
+                            lane_xs: sub_lxs,
+                            origin_y: oy,
+                        });
+                    }
+                    break;
                 }
             }
         }
 
-        // Sort producers top-to-bottom, input tiles left-to-right (used for
-        // both obstacle descent columns and feeder LaneSpecs below).
-        let mut producers_sorted: Vec<usize> = fam.producer_rows.clone();
-        producers_sorted.sort_by_key(|&p| {
-            if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
-        });
-        let mut inputs_sorted: Vec<(i32, i32)> = template.input_tiles.to_vec();
-        inputs_sorted.sort_by_key(|t| t.0);
+        if sub_groups.is_empty() {
+            continue;
+        }
 
         let item_id = item_to_id.get(&fam.item).copied().unwrap_or(0);
-        for (&producer_row_idx, &(input_dx, _)) in producers_sorted.iter().zip(inputs_sorted.iter()) {
-            if producer_row_idx >= row_spans.len() {
-                continue;
-            }
-            let out_y = row_spans[producer_row_idx].output_belt_y;
-            let input_x = ox + input_dx;
 
-            // SOUTH descent column: block it so A* routes around it.
-            // (WEST feeder row is A*-routed via feeder: spec below — not blocked.)
-            if out_y != fam.balancer_y_start {
-                for y in (out_y + 1)..fam.balancer_y_start {
-                    obstacles.insert((input_x as i16, y as i16));
+        for sg in &sub_groups {
+            let ox = sg.lane_xs.iter().copied().min().unwrap_or(0);
+
+            // Balancer body tiles (obstacle)
+            for te in sg.template.entities {
+                obstacles.insert(((ox + te.x) as i16, (fam.balancer_y_start + te.y) as i16));
+                if te.name == "splitter" {
+                    if te.direction == 0 || te.direction == 4 {
+                        obstacles.insert(((ox + te.x + 1) as i16, (fam.balancer_y_start + te.y) as i16));
+                    } else {
+                        obstacles.insert(((ox + te.x) as i16, (fam.balancer_y_start + te.y + 1) as i16));
+                    }
                 }
             }
 
-            // If a foreign trunk occupies the feeder landing column (input_x+1),
-            // mark it as a static obstacle so the trunk is forced underground,
-            // leaving the surface free for the feeder to land.
-            let landing_x = input_x + 1;
-            let has_foreign_trunk_at_landing = lanes.iter().any(|l| {
-                !l.is_fluid && l.item != fam.item && l.x == landing_x
+            // Sort producers top-to-bottom, input tiles left-to-right
+            let mut producers_sorted = sg.producers.clone();
+            producers_sorted.sort_by_key(|&p| {
+                if p < row_spans.len() { row_spans[p].output_belt_y } else { 0 }
             });
-            if has_foreign_trunk_at_landing && landing_x < bw {
-                obstacles.insert((landing_x as i16, out_y as i16));
-            }
+            let mut inputs_sorted: Vec<(i32, i32)> = sg.template.input_tiles.to_vec();
+            inputs_sorted.sort_by_key(|t| t.0);
 
-            // Feeder spec: A* horizontal WEST, priority=4
-            if input_x < bw - 1 {
-                let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
-                id_to_key.insert(lane_id, feeder_key);
-                let wps = vec![(bw as i16 - 1, out_y as i16), (input_x as i16 + 1, out_y as i16)];
-                let fd = flow_dir(&wps);
-                specs.push(LaneSpec {
-                    id: lane_id,
-                    item_id,
-                    waypoints: wps,
-                    strategy: 2,
-                    priority: 4,
-                    y_constraint: Some(out_y as i16),
-                    x_constraint: None,
-                    flow_dir: fd,
+            for (&producer_row_idx, &(input_dx, _)) in producers_sorted.iter().zip(inputs_sorted.iter()) {
+                if producer_row_idx >= row_spans.len() {
+                    continue;
+                }
+                let out_y = row_spans[producer_row_idx].output_belt_y;
+                let input_x = ox + input_dx;
+
+                // SOUTH descent column: block it so A* routes around it.
+                if out_y != fam.balancer_y_start {
+                    for y in (out_y + 1)..fam.balancer_y_start {
+                        obstacles.insert((input_x as i16, y as i16));
+                    }
+                }
+
+                // If a foreign trunk occupies the feeder landing column,
+                // mark it as a static obstacle.
+                let landing_x = input_x + 1;
+                let has_foreign_trunk_at_landing = lanes.iter().any(|l| {
+                    !l.is_fluid && l.item != fam.item && l.x == landing_x
                 });
-                lane_id += 1;
-            }
-        }
-    }
+                if has_foreign_trunk_at_landing && landing_x < bw {
+                    obstacles.insert((landing_x as i16, out_y as i16));
+                }
+
+                // Feeder spec: A* horizontal WEST, priority=4
+                if input_x < bw - 1 {
+                    let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
+                    id_to_key.insert(lane_id, feeder_key);
+                    let wps = vec![(bw as i16 - 1, out_y as i16), (input_x as i16 + 1, out_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id,
+                        item_id,
+                        waypoints: wps,
+                        strategy: 2,
+                        priority: 4,
+                        y_constraint: Some(out_y as i16),
+                        x_constraint: None,
+                        flow_dir: fd,
+                    });
+                    lane_id += 1;
+                }
+            } // end for producer/input pairs
+        } // end for sub_groups
+    } // end for families
 
     // Block fluid-lane tiles (pipes + PTG): belt tap-offs must tunnel past them.
     for lane in lanes {
