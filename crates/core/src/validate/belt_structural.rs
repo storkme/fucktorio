@@ -13,7 +13,10 @@ use std::collections::VecDeque;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::common::{belt_throughput, dir_to_vec, inserter_target_lane, lane_capacity, machine_size};
+use crate::common::{
+    belt_throughput, dir_to_vec, inserter_target_lane, is_machine_entity, lane_capacity,
+    machine_size, machine_tiles,
+};
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 
 use super::{Severity, ValidationIssue};
@@ -1350,5 +1353,175 @@ mod tests {
         let lr = layout(entities);
         let issues = check_lane_throughput(&lr, Some(&sr));
         assert!(issues.iter().any(|i| i.category.contains("lane")));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// check_entity_overlaps
+// ---------------------------------------------------------------------------
+
+/// Collect all tiles occupied by an entity. Splitters occupy 2 tiles;
+/// machines occupy an N×N footprint; everything else occupies 1 tile.
+fn entity_tiles(e: &PlacedEntity) -> Vec<(i32, i32)> {
+    if is_splitter(&e.name) {
+        return vec![(e.x, e.y), splitter_second_tile(e)];
+    }
+    if is_machine_entity(&e.name) {
+        return machine_tiles(e.x, e.y, machine_size(&e.name));
+    }
+    vec![(e.x, e.y)]
+}
+
+/// Check for entities that physically overlap on the same tile.
+///
+/// Builds a tile → entity-index occupancy map, then reports any tile claimed
+/// by two or more entities.
+pub fn check_entity_overlaps(layout: &LayoutResult) -> Vec<ValidationIssue> {
+    let mut occupancy: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
+    for (idx, e) in layout.entities.iter().enumerate() {
+        for tile in entity_tiles(e) {
+            occupancy.entry(tile).or_default().push(idx);
+        }
+    }
+
+    let mut overlap_tiles: Vec<(i32, i32)> = occupancy
+        .iter()
+        .filter(|(_, idxs)| idxs.len() >= 2)
+        .map(|(&tile, _)| tile)
+        .collect();
+    overlap_tiles.sort_unstable();
+
+    overlap_tiles
+        .into_iter()
+        .map(|(tx, ty)| {
+            let idxs = &occupancy[&(tx, ty)];
+            let names: Vec<&str> =
+                idxs.iter().map(|&i| layout.entities[i].name.as_str()).collect();
+            ValidationIssue::with_pos(
+                Severity::Error,
+                "entity-overlap",
+                format!("Entities overlap at ({tx},{ty}): {}", names.join(", ")),
+                tx,
+                ty,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod overlap_tests {
+    use super::*;
+    use crate::models::{EntityDirection, LayoutResult, PlacedEntity};
+
+    fn make_layout(entities: Vec<PlacedEntity>) -> LayoutResult {
+        LayoutResult { entities, width: 20, height: 20, ..Default::default() }
+    }
+
+    fn belt(x: i32, y: i32, dir: EntityDirection) -> PlacedEntity {
+        PlacedEntity {
+            name: "transport-belt".to_string(),
+            x,
+            y,
+            direction: dir,
+            ..Default::default()
+        }
+    }
+
+    fn splitter_ent(x: i32, y: i32, dir: EntityDirection) -> PlacedEntity {
+        PlacedEntity {
+            name: "splitter".to_string(),
+            x,
+            y,
+            direction: dir,
+            ..Default::default()
+        }
+    }
+
+    fn machine_ent(name: &str, x: i32, y: i32) -> PlacedEntity {
+        PlacedEntity {
+            name: name.to_string(),
+            x,
+            y,
+            direction: EntityDirection::North,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_overlap_returns_empty() {
+        let lr = make_layout(vec![
+            belt(0, 0, EntityDirection::East),
+            belt(1, 0, EntityDirection::East),
+        ]);
+        assert!(check_entity_overlaps(&lr).is_empty());
+    }
+
+    #[test]
+    fn two_belts_same_tile_reports_error() {
+        let lr = make_layout(vec![
+            belt(3, 3, EntityDirection::East),
+            belt(3, 3, EntityDirection::North),
+        ]);
+        let issues = check_entity_overlaps(&lr);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert_eq!(issues[0].category, "entity-overlap");
+        assert_eq!(issues[0].x, Some(3));
+        assert_eq!(issues[0].y, Some(3));
+    }
+
+    #[test]
+    fn splitter_companion_tile_detected() {
+        // Splitter at (0,0) facing North/South occupies (0,0) and (1,0).
+        // A belt at (1,0) overlaps the companion tile.
+        let lr = make_layout(vec![
+            splitter_ent(0, 0, EntityDirection::North),
+            belt(1, 0, EntityDirection::East),
+        ]);
+        let issues = check_entity_overlaps(&lr);
+        assert_eq!(issues.len(), 1, "Expected 1 overlap at (1,0); got: {issues:?}");
+        assert_eq!(issues[0].x, Some(1));
+        assert_eq!(issues[0].y, Some(0));
+    }
+
+    #[test]
+    fn two_splitters_same_anchor_overlap() {
+        // Two splitters at the same anchor — both (0,0) and (1,0) are doubly claimed.
+        let lr = make_layout(vec![
+            splitter_ent(0, 0, EntityDirection::North),
+            splitter_ent(0, 0, EntityDirection::North),
+        ]);
+        let issues = check_entity_overlaps(&lr);
+        assert_eq!(issues.len(), 2);
+    }
+
+    #[test]
+    fn machine_footprint_overlap_with_belt() {
+        // assembling-machine-1 at (0,0) occupies tiles (0..2, 0..2).
+        // A belt at (2,2) sits on the last tile of the 3×3 footprint.
+        let lr = make_layout(vec![
+            machine_ent("assembling-machine-1", 0, 0),
+            belt(2, 2, EntityDirection::East),
+        ]);
+        let issues = check_entity_overlaps(&lr);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].x, Some(2));
+        assert_eq!(issues[0].y, Some(2));
+    }
+
+    #[test]
+    fn machine_no_overlap_when_adjacent() {
+        // Machine at (0,0) occupies (0..2, 0..2). Belt at (3,0) is just outside.
+        let lr = make_layout(vec![
+            machine_ent("assembling-machine-1", 0, 0),
+            belt(3, 0, EntityDirection::East),
+        ]);
+        assert!(check_entity_overlaps(&lr).is_empty());
+    }
+
+    #[test]
+    fn empty_layout_passes() {
+        let lr = make_layout(vec![]);
+        assert!(check_entity_overlaps(&lr).is_empty());
     }
 }
