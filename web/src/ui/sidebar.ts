@@ -224,11 +224,16 @@ export interface SidebarCallbacks {
   renderLayout: (layout: LayoutResult) => void;
 }
 
+export interface SidebarParams {
+  item: string;
+  rate: number;
+}
+
 export function renderSidebar(
   el: HTMLElement,
   engine: Engine,
   callbacks: SidebarCallbacks,
-): void {
+): { getParams(): SidebarParams | null } {
   el.innerHTML = "";
 
   if (!document.getElementById("fucktorio-sidebar-style")) {
@@ -435,6 +440,13 @@ export function renderSidebar(
           resultContainer.appendChild(wDiv);
         }
       }
+      if (currentLayout.regions?.length) {
+        const zoneDiv = document.createElement("div");
+        zoneDiv.style.cssText = "margin-top:8px;font-size:11px;color:#8af";
+        const total_us = currentLayout.regions.reduce((s, r) => s + (r.solve_time_us ?? 0), 0);
+        zoneDiv.textContent = `SAT: ${currentLayout.regions.length} crossing zone${currentLayout.regions.length > 1 ? "s" : ""} solved (${total_us}\u00B5s total)`;
+        resultContainer.appendChild(zoneDiv);
+      }
     } catch (err) {
       const errDiv = document.createElement("div");
       errDiv.className = "result-error";
@@ -457,6 +469,15 @@ export function renderSidebar(
   checkboxes.forEach((cb) => cb.addEventListener("change", scheduleAutoSolve));
 
   runSolve();
+
+  return {
+    getParams() {
+      const item = itemInput.value.trim();
+      const rate = parseFloat(rateInput.value);
+      if (!item || isNaN(rate) || rate <= 0) return null;
+      return { item, rate };
+    },
+  };
 }
 
 function renderResult(container: HTMLElement, result: SolverResult): void {

@@ -698,6 +698,26 @@ export function renderLayout(
   // Overlay Graphics for belt network highlight — created/destroyed on hover
   let overlayGraphics: Graphics | null = null;
 
+  // Draw crossing zone overlays
+  if (layout.regions?.length) {
+    for (const region of layout.regions) {
+      if (region.kind !== "crossing_zone") continue;
+      const zg = new Graphics();
+      const rx = region.x * TILE_PX;
+      const ry = region.y * TILE_PX;
+      const rw = region.width * TILE_PX;
+      const rh = region.height * TILE_PX;
+      zg.rect(rx, ry, rw, rh)
+        .stroke({ width: 1, color: 0x44aaff, alpha: 0.4 })
+        .fill({ color: 0x44aaff, alpha: 0.06 });
+      zg.eventMode = "static";
+      zg.hitArea = { contains: (x: number, y: number) =>
+        x >= rx && x < rx + rw && y >= ry && y < ry + rh };
+      zg.on("pointerenter", () => onHover?.(null));
+      container.addChild(zg);
+    }
+  }
+
   function clearHighlightInternal(): void {
     if (overlayGraphics) {
       container.removeChild(overlayGraphics);

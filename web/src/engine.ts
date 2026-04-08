@@ -14,6 +14,7 @@ export type {
   MachineSpec,
   ItemFlow,
   LayoutResult,
+  LayoutRegion,
   PlacedEntity,
   EntityDirection,
 } from "./wasm-pkg/fucktorio_wasm.js";
