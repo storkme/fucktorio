@@ -15,6 +15,7 @@ The generated library ships in the repo.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import subprocess
@@ -94,26 +95,36 @@ def find_balancer(n: int, m: int) -> tuple[str, int, int] | None:
     """Search for a compact balancer by increasing width.
 
     Returns (blueprint_string, width, height) for the first solution found.
-    Tries --fast first across widths, then falls back to full solver.
-    Larger shapes (max(n,m) >= 5) get wider search ranges and more
-    height attempts to account for deeper splitter trees.
+
+    For small shapes (max(n,m) < 6), fast mode alone finds solutions
+    reliably. For larger shapes, the full solver is tried at each width
+    after fast mode times out, since CaDiCaL's heuristics sometimes
+    struggle where the plain solver succeeds.
     """
     base_h = max(n, m)
     # Scale search space with shape complexity.
     if base_h >= 7:
         max_width = 40
         extra_heights = 4
-        fast_timeout = 180
-    elif base_h >= 5:
+        fast_timeout = 120
+        use_full_interleave = True
+    elif base_h >= 6:
         max_width = 30
         extra_heights = 3
-        fast_timeout = 150
+        fast_timeout = 120
+        use_full_interleave = True
+    elif base_h >= 5:
+        max_width = 25
+        extra_heights = 3
+        fast_timeout = 120
+        use_full_interleave = False
     else:
         max_width = 21
         extra_heights = 2
         fast_timeout = 120
+        use_full_interleave = False
     heights = [base_h + i for i in range(extra_heights + 1)]
-    # Phase 1: fast probe across heights and widths.
+    # Phase 1: fast probe, optionally interleaved with full solver.
     for height in heights:
         for width in range(3, max_width + 1):
             print(f"  probing {n}x{m} at {width}x{height} (fast)...", flush=True)
@@ -121,14 +132,21 @@ def find_balancer(n: int, m: int) -> tuple[str, int, int] | None:
             if bp is not None:
                 print(f"  -> solved at {width}x{height} (fast)")
                 return bp, width, height
-    # Phase 2: full solver as fallback across all heights.
-    for height in heights:
-        for width in range(3, max_width + 1):
-            print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
-            bp = run_sat(n, m, width, height, fast=False, timeout=300)
-            if bp is not None:
-                print(f"  -> solved at {width}x{height} (full)")
-                return bp, width, height
+            if use_full_interleave and width >= base_h:
+                print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+                bp = run_sat(n, m, width, height, fast=False, timeout=300)
+                if bp is not None:
+                    print(f"  -> solved at {width}x{height} (full)")
+                    return bp, width, height
+    # Phase 2: full solver sweep (only if not already interleaved).
+    if not use_full_interleave:
+        for height in heights:
+            for width in range(3, max_width + 1):
+                print(f"  probing {n}x{m} at {width}x{height} (full)...", flush=True)
+                bp = run_sat(n, m, width, height, fast=False, timeout=300)
+                if bp is not None:
+                    print(f"  -> solved at {width}x{height} (full)")
+                    return bp, width, height
     return None
 
 
@@ -357,7 +375,35 @@ def _build_shape(shape: tuple[int, int]) -> tuple[tuple[int, int], dict | None]:
     return shape, build_template(*shape)
 
 
+def _load_existing() -> set[tuple[int, int]]:
+    """Load already-generated template keys from the library file."""
+    if not OUT_PATH.exists():
+        return set()
+    try:
+        # Import the existing library to get its keys.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_bal_lib", OUT_PATH)
+        if spec is None or spec.loader is None:
+            return set()
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return set(mod.BALANCER_TEMPLATES.keys())
+    except Exception:
+        return set()
+
+
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate balancer templates via Factorio-SAT")
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip shapes already present in the library (incremental generation)",
+    )
+    args = parser.parse_args()
+
     if not SAT_PY.exists():
         print(f"Factorio-SAT venv not found at {SAT_PY}", file=sys.stderr)
         print("Set it up with:", file=sys.stderr)
@@ -367,19 +413,49 @@ def main() -> None:
         print("  .venv/bin/python -m pip install --editable .", file=sys.stderr)
         sys.exit(1)
 
-    workers = int(os.environ.get("BALANCER_WORKERS", "0")) or min(os.cpu_count() or 1, len(SHAPES))
-
+    # When --skip-existing, seed `templates` from the library and only
+    # generate shapes that are missing.
+    existing_keys: set[tuple[int, int]] = set()
     templates: dict[tuple[int, int], dict] = {}
+    if args.skip_existing:
+        existing_keys = _load_existing()
+        # Re-read the existing library to preserve its data for emit.
+        if existing_keys:
+            spec = importlib.util.spec_from_file_location("_bal_lib", OUT_PATH)
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            for key, tmpl in mod.BALANCER_TEMPLATES.items():
+                templates[key] = {
+                    "n_inputs": tmpl.n_inputs,
+                    "n_outputs": tmpl.n_outputs,
+                    "width": tmpl.width,
+                    "height": tmpl.height,
+                    "entities": [
+                        {"name": e.name, "x": e.x, "y": e.y, "direction": e.direction, "io_type": e.io_type}
+                        for e in tmpl.entities
+                    ],
+                    "input_tiles": list(tmpl.input_tiles),
+                    "output_tiles": list(tmpl.output_tiles),
+                    "source_blueprint": tmpl.source_blueprint,
+                }
+        print(f"Loaded {len(existing_keys)} existing templates, generating missing shapes", flush=True)
+
+    todo = [s for s in SHAPES if s not in existing_keys]
+    if not todo:
+        print("All shapes already generated!")
+        return
+
+    workers = int(os.environ.get("BALANCER_WORKERS", "0")) or min(os.cpu_count() or 1, len(todo))
+
     if workers <= 1:
-        # Sequential mode (legacy behavior).
-        for shape in SHAPES:
+        for shape in todo:
             t = build_template(*shape)
             if t is not None:
                 templates[shape] = t
     else:
-        print(f"Parallel mode: {workers} workers for {len(SHAPES)} shapes", flush=True)
+        print(f"Parallel mode: {workers} workers for {len(todo)} shapes", flush=True)
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_build_shape, s): s for s in SHAPES}
+            futures = {pool.submit(_build_shape, s): s for s in todo}
             for future in as_completed(futures):
                 shape = futures[future]
                 try:
@@ -393,6 +469,9 @@ def main() -> None:
 
     emit_library(templates)
     print(f"Generated {len(templates)}/{len(SHAPES)} templates")
+    missing = [s for s in SHAPES if s not in templates]
+    if missing:
+        print(f"Missing ({len(missing)}): {missing}")
 
 
 if __name__ == "__main__":
