@@ -205,10 +205,19 @@ fn compute_extra_gaps(families: &[LaneFamily]) -> FxHashMap<usize, i32> {
 
         let n_producers = fam.shape.0;
         // Get template height from balancer library
-        let shape_u32 = (fam.shape.0 as u32, fam.shape.1 as u32);
-        let template_height = crate::bus::balancer_library::balancer_templates()
-            .get(&shape_u32)
-            .map(|t| t.height as i32)
+        let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
+        let templates = crate::bus::balancer_library::balancer_templates();
+        let template_height = templates.get(&(n, m)).map(|t| t.height as i32)
+            .or_else(|| {
+                // Decomposition: find divisor g where (n/g, m/g) has a template.
+                (1..=n).rev().find_map(|g| {
+                    if n % g == 0 && m % g == 0 {
+                        templates.get(&(n / g, m / g)).map(|t| t.height as i32)
+                    } else {
+                        None
+                    }
+                })
+            })
             .unwrap_or(3);
 
         let needed = if n_producers == 1 {
@@ -847,5 +856,70 @@ mod tests {
             "Expected >950 entities (full layout with feeders), got {}",
             layout.entities.len()
         );
+
+        // Full validation — dead-ends, loops, isolation, etc.
+        use crate::validate::belt_flow::{
+            check_belt_dead_ends, check_belt_item_isolation, check_belt_loops,
+            check_belt_junctions, check_belt_direction_continuity,
+        };
+        use crate::validate::underground::check_underground_belt_pairs;
+        use crate::validate::Severity;
+        let mut all_errors = Vec::new();
+        for issue in check_underground_belt_pairs(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        for issue in check_belt_dead_ends(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        for issue in check_belt_item_isolation(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        for issue in check_belt_loops(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        for issue in check_belt_junctions(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        for issue in check_belt_direction_continuity(&layout) {
+            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
+        }
+        if !all_errors.is_empty() {
+            eprintln!("{} validation errors:", all_errors.len());
+            for e in &all_errors { eprintln!("  {}", e); }
+        }
+        assert!(all_errors.is_empty(), "{} validation errors", all_errors.len());
+    }
+
+    #[test]
+    fn test_ecircuit_10s_from_plates_only() {
+        // Matches web UI: electronic-circuit 10/s with just iron-plate + copper-plate inputs
+        use crate::solver::solve;
+        use crate::validate::belt_flow::check_belt_dead_ends;
+        use crate::validate::Severity;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+        eprintln!("{} entities, {} warnings", layout.entities.len(), layout.warnings.len());
+        // Dump entities at x=9 and x=10,11
+        for e in &layout.entities {
+            if e.x >= 9 && e.x <= 11 {
+                eprintln!("  ({},{}) {} {:?} carries={:?} io={:?} seg={:?}",
+                    e.x, e.y, e.name, e.direction, e.carries, e.io_type, e.segment_id);
+            }
+        }
+        let errors: Vec<_> = check_belt_dead_ends(&layout)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        if !errors.is_empty() {
+            eprintln!("{} dead-end errors:", errors.len());
+            for e in &errors { eprintln!("  {}", e.message); }
+        }
+        assert!(errors.is_empty(), "{} dead-end errors", errors.len());
     }
 }

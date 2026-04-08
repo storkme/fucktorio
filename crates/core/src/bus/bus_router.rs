@@ -1020,7 +1020,9 @@ pub(crate) fn render_family_input_paths(
                 if tapoff_positions.contains(&(input_x, y)) {
                     // Tap-off claims this tile. Place UG input at y-1 if
                     // we haven't already, and UG output at y+1.
-                    if y > out_y && !skip_next {
+                    // Never replace the producer output tile (out_y) with a
+                    // UG input — the output return belt sideloads there.
+                    if y > out_y && y - 1 > out_y && !skip_next {
                         // Replace previous surface belt with UG input
                         if let Some(last) = entities.last_mut() {
                             if last.x == input_x && last.y == y - 1
@@ -1544,6 +1546,16 @@ fn route_belt_lane(
             foreign_skips.insert(ty);
         }
     }
+    // Filter foreign_skips: remove entries where the UG bridge would conflict
+    // with the lane's own tap-off (fy+1 is a tap-off) or SAT owns it.
+    let bridgeable_skips: FxHashSet<i32> = foreign_skips.iter()
+        .filter(|&&fy| {
+            !crossing_tiles.contains(&(x, fy))
+                && !tap_off_set.contains(&(fy + 1))
+        })
+        .copied()
+        .collect();
+
     let mut skip_ys = tap_off_set.clone();
     skip_ys.extend(lane.balancer_y);
     // Skip the entire family balancer zone (not just one tile).
@@ -1552,7 +1564,7 @@ fn route_belt_lane(
             skip_ys.insert(y);
         }
     }
-    skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+    skip_ys.extend(foreign_skip_ug_tiles(&bridgeable_skips).iter().copied());
     // Also skip any y-rows that SAT crossing zones own at this x.
     for &(cx, cy) in crossing_tiles.iter() {
         if cx == x {
@@ -1560,14 +1572,10 @@ fn route_belt_lane(
         }
     }
 
-    // UG-pair bridges over foreign skip y's — skip if SAT solved this zone.
+    // UG-pair bridges over foreign skip y's.
     let trunk_seg_id = Some(format!("trunk:{}", lane.item));
     let ug_name = underground_for_belt(belt_name);
-    for &fy in &foreign_skips {
-        if crossing_tiles.contains(&(x, fy)) {
-            // SAT solver owns this crossing — skip the heuristic bridge.
-            continue;
-        }
+    for &fy in &bridgeable_skips {
         // Remove any previously placed entity at the bridge input position so the
         // UG input can replace it (e.g. a balancer-stamp surface belt at fy-1).
         entities.retain(|e| !(e.x == x && e.y == fy - 1 && !crossing_tiles.contains(&(e.x, e.y))));
@@ -1792,8 +1800,19 @@ fn route_intermediate_lane(
             foreign_skips.insert(ty);
         }
     }
+    // Filter: skip bridges where UG output would land on this lane's tap-off
+    // or SAT owns the zone.
+    let tap_off_set_intermediate: FxHashSet<i32> = [tap_y].into_iter().collect();
+    let bridgeable_skips: FxHashSet<i32> = foreign_skips.iter()
+        .filter(|&&fy| {
+            !crossing_tiles.contains(&(x, fy))
+                && !tap_off_set_intermediate.contains(&(fy + 1))
+        })
+        .copied()
+        .collect();
+
     let mut skip_ys: FxHashSet<i32> = producer_out_ys.iter().copied().collect();
-    skip_ys.extend(foreign_skip_ug_tiles(&foreign_skips).iter().copied());
+    skip_ys.extend(foreign_skip_ug_tiles(&bridgeable_skips).iter().copied());
     // Skip the family balancer zone (same as route_belt_lane).
     if let Some((by_start, by_end)) = lane.family_balancer_range {
         for y in by_start..=by_end {
@@ -1823,12 +1842,9 @@ fn route_intermediate_lane(
         }
     }
 
-    // UG-pair bridges over foreign skip y's — skip if SAT solved this zone.
+    // UG-pair bridges over foreign skip y's.
     let ug_name = underground_for_belt(belt_name);
-    for &fy in &foreign_skips {
-        if crossing_tiles.contains(&(x, fy)) {
-            continue;
-        }
+    for &fy in &bridgeable_skips {
         // Remove any previously placed entity at the bridge input position (e.g. a
         // balancer-stamp surface belt) so the UG input can take that tile.
         entities.retain(|e| !(e.x == x && e.y == fy - 1 && !crossing_tiles.contains(&(e.x, e.y))));
@@ -2100,7 +2116,17 @@ pub(crate) fn extract_and_solve_crossings(
                 }
                 let trunk_extends = trunk_lane.tap_off_ys.iter().any(|&y| y >= tap_y);
                 let trunk_skips_tap_y = trunk_lane.tap_off_ys.contains(&tap_y);
-                if !trunk_extends || trunk_skips_tap_y {
+                // Trunk doesn't physically exist above its source_y or inside
+                // its family balancer zone — no crossing to solve.
+                let trunk_above_source = tap_y < trunk_lane.source_y;
+                let trunk_in_balancer = trunk_lane.family_balancer_range
+                    .is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be);
+                // UG output at tap_y+1 would clobber the trunk's own tap-off —
+                // the tap-off needs a surface belt there to turn East.
+                let ug_output_on_tapoff = trunk_lane.tap_off_ys.contains(&(tap_y + 1));
+                if !trunk_extends || trunk_skips_tap_y || trunk_above_source
+                    || trunk_in_balancer || ug_output_on_tapoff
+                {
                     continue;
                 }
                 let all_clear = lanes.iter()
@@ -2579,9 +2605,12 @@ pub(crate) fn negotiate_and_route(
                 // SOUTH descent column: block it so A* routes around it.
                 // Skip tap-off ys — tap-offs have higher priority and will
                 // claim those tiles. The descent column bridges around them.
+                // Exception: always block out_y+1 (the tile right below the
+                // producer output) so the output return belt can merge into
+                // the descent without hitting a UG input.
                 if out_y != fam.balancer_y_start {
                     for y in (out_y + 1)..fam.balancer_y_start {
-                        if !all_tapoff_ys.contains(&y) {
+                        if y == out_y + 1 || !all_tapoff_ys.contains(&y) {
                             obstacles.insert((input_x as i16, y as i16));
                         }
                     }

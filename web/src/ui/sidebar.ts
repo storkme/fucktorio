@@ -1,6 +1,7 @@
 import type { Engine, SolverResult, LayoutResult, ItemFlow } from "../engine.js";
 import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
+import { niceName, setRecipeFlows } from "../renderer/entities.js";
 
 const STYLE = `
   .sidebar-inner {
@@ -185,7 +186,7 @@ function itemIcon(slug: string, size = 18): HTMLImageElement {
 function makeOption(value: string, defaultValue: string): HTMLOptionElement {
   const opt = document.createElement("option");
   opt.value = value;
-  opt.textContent = value;
+  opt.textContent = niceName(value);
   if (value === defaultValue) opt.selected = true;
   return opt;
 }
@@ -214,7 +215,7 @@ function appendFlows(container: HTMLElement, flows: ItemFlow[], className: strin
     rateSpan.style.color = rateColor;
     rateSpan.textContent = `${flow.rate.toFixed(2)}/s`;
     el.appendChild(rateSpan);
-    el.appendChild(document.createTextNode(` ${flow.item}`));
+    el.appendChild(document.createTextNode(` ${niceName(flow.item)}`));
     container.appendChild(el);
   });
 }
@@ -305,7 +306,7 @@ export function renderSidebar(
     checkboxes.set(inp, cb);
     lbl.appendChild(cb);
     lbl.appendChild(itemIcon(inp));
-    lbl.appendChild(document.createTextNode(inp));
+    lbl.appendChild(document.createTextNode(niceName(inp)));
     inputsSection.appendChild(lbl);
   });
   inner.appendChild(inputsSection);
@@ -430,6 +431,7 @@ export function renderSidebar(
     try {
       const maxTier = beltSelect.value || undefined;
       currentLayout = engine.buildLayout(currentResult, maxTier);
+      setRecipeFlows(currentResult.machines);
       callbacks.renderLayout(currentLayout);
       if (currentLayout.warnings?.length) {
         for (const w of currentLayout.warnings) {
@@ -493,12 +495,14 @@ function renderResult(container: HTMLElement, result: SolverResult): void {
     const title = document.createElement("div");
     title.className = "machine-title";
     title.appendChild(itemIcon(machine.entity, 20));
-    title.appendChild(document.createTextNode(`${machine.count.toFixed(2)} × ${machine.entity}`));
+    title.appendChild(document.createTextNode(`${machine.count.toFixed(2)} \u00d7 ${niceName(machine.entity)}`));
     entry.appendChild(title);
 
     const recipe = document.createElement("div");
     recipe.className = "machine-recipe";
-    recipe.textContent = `  → ${machine.recipe}`;
+    recipe.appendChild(document.createTextNode("  \u2192 "));
+    recipe.appendChild(itemIcon(machine.recipe, 16));
+    recipe.appendChild(document.createTextNode(niceName(machine.recipe)));
     entry.appendChild(recipe);
 
     const flows = document.createElement("div");

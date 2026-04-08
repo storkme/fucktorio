@@ -1,0 +1,43 @@
+#!/bin/sh
+# Pre-commit hook: lint + format + clippy
+# Activate with: git config core.hooksPath .githooks
+# Bypass with: git commit --no-verify
+
+set -e
+
+# --- Python: ruff check + format ---
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found — install it to enable pre-commit checks"
+  exit 1
+fi
+
+uv run ruff check src/ tests/ scripts/ || {
+  echo "ruff check failed — fix lint errors before committing"
+  exit 1
+}
+uv run ruff format --check src/ tests/ scripts/ || {
+  echo "ruff format check failed — run 'uv run ruff format .' before committing"
+  exit 1
+}
+
+# --- Rust: clippy (if any Rust files are staged) ---
+if git diff --cached --name-only | grep -qE '\.rs$|Cargo\.toml|Cargo\.lock'; then
+  if command -v cargo >/dev/null 2>&1; then
+    cargo clippy -p fucktorio_core -- -D warnings || {
+      echo "cargo clippy failed — fix warnings before committing"
+      exit 1
+    }
+  fi
+fi
+
+# --- TypeScript: tsc --noEmit (if web/ files are staged) ---
+if git diff --cached --name-only | grep -qE '^web/src/'; then
+  if [ -f web/node_modules/.bin/tsc ]; then
+    (cd web && npx tsc --noEmit) || {
+      echo "TypeScript check failed — fix type errors before committing"
+      exit 1
+    }
+  else
+    echo "warning: web/node_modules not installed — skipping TypeScript check"
+  fi
+fi

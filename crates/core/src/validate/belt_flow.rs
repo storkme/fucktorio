@@ -97,10 +97,21 @@ fn splitter_second_tile(e: &PlacedEntity) -> (i32, i32) {
 // ---------------------------------------------------------------------------
 
 fn belt_dir_map_from(entities: &[PlacedEntity]) -> FxHashMap<(i32, i32), EntityDirection> {
+    belt_dir_map_filtered(entities, false)
+}
+
+fn belt_dir_map_filtered(entities: &[PlacedEntity], skip_balancers: bool) -> FxHashMap<(i32, i32), EntityDirection> {
     let mut bdm = FxHashMap::default();
     for e in entities {
         if !is_belt(&e.name) {
             continue;
+        }
+        if skip_balancers {
+            if let Some(ref seg) = e.segment_id {
+                if seg.starts_with("balancer:") {
+                    continue;
+                }
+            }
         }
         bdm.insert((e.x, e.y), e.direction);
         if is_splitter(&e.name) {
@@ -1682,9 +1693,26 @@ pub fn check_belt_dead_ends(layout: &LayoutResult) -> Vec<ValidationIssue> {
     let w = layout.width;
     let h = layout.height;
 
+    // Also check UG belt outputs — they emit items on the surface at their
+    // output tile, so that tile must have a receiver.
+    let mut ug_outputs: Vec<&PlacedEntity> = Vec::new();
     for e in &layout.entities {
-        if !is_surface_belt(&e.name) {
+        if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output") {
+            ug_outputs.push(e);
+        }
+    }
+
+    for e in &layout.entities {
+        let is_surface = is_surface_belt(&e.name);
+        let is_ug_out = is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output");
+        if !is_surface && !is_ug_out {
             continue;
+        }
+        // Skip balancer internals — they have intentional dead-end patterns
+        if let Some(ref seg) = e.segment_id {
+            if seg.starts_with("balancer:") {
+                continue;
+            }
         }
         let (dx, dy) = dir_to_vec(e.direction);
         let out_x = e.x + dx;
@@ -1697,15 +1725,16 @@ pub fn check_belt_dead_ends(layout: &LayoutResult) -> Vec<ValidationIssue> {
             continue;
         }
         // Walk upstream: if chain has an inserter pickup, slack is OK
-        if chain_has_pickup((e.x, e.y), e.direction, &belt_at, &pickup_tiles) {
+        if is_surface && chain_has_pickup((e.x, e.y), e.direction, &belt_at, &pickup_tiles) {
             continue;
         }
+        let kind = if is_ug_out { "UG output" } else { "Belt" };
         issues.push(ValidationIssue::with_pos(
             Severity::Error,
             "belt-dead-end",
             format!(
-                "Belt at ({},{}) facing {:?} has no receiver at output tile ({},{}) — items accumulate with nowhere to go",
-                e.x, e.y, e.direction, out_x, out_y
+                "{} at ({},{}) facing {:?} has no receiver at output tile ({},{}) — items accumulate with nowhere to go",
+                kind, e.x, e.y, e.direction, out_x, out_y
             ),
             e.x,
             e.y,
@@ -1747,7 +1776,9 @@ fn chain_has_pickup(
 pub fn check_belt_loops(layout: &LayoutResult) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
 
-    let belt_dir_map = belt_dir_map_from(&layout.entities);
+    // Skip balancer entities — balancer templates use intentional feedback loops
+    // for even item distribution. These are pre-validated by the SAT generator.
+    let belt_dir_map = belt_dir_map_filtered(&layout.entities, true);
     let mut confirmed: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut reported_loops: FxHashSet<Vec<(i32, i32)>> = FxHashSet::default();
 
@@ -2821,6 +2852,46 @@ mod tests {
             .filter(|i| i.message.contains("can't leave output"))
             .collect();
         assert_eq!(errors.len(), 1);
+    }
+
+    // --- check_belt_dead_ends: UG output ---
+
+    #[test]
+    fn ug_output_dead_end_detected() {
+        // UG output facing South into empty space should be flagged
+        let lr = LayoutResult {
+            entities: vec![
+                belt(0, 0, EntityDirection::South),
+                ug_belt(0, 1, EntityDirection::South, "input"),
+                ug_belt(0, 3, EntityDirection::South, "output"),
+                // nothing at (0,4) — dead end
+            ],
+            width: 10,
+            height: 10,
+            ..Default::default()
+        };
+        let issues = check_belt_dead_ends(&lr);
+        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        assert_eq!(errors.len(), 1, "expected 1 dead-end for UG output into nothing");
+        assert!(errors[0].message.contains("UG output"));
+    }
+
+    #[test]
+    fn ug_output_with_receiver_ok() {
+        // UG output into a surface belt at layout edge — no dead end
+        let lr = LayoutResult {
+            entities: vec![
+                ug_belt(0, 0, EntityDirection::South, "input"),
+                ug_belt(0, 2, EntityDirection::South, "output"),
+                belt(0, 3, EntityDirection::South), // receives UG output, flows off edge
+            ],
+            width: 10,
+            height: 4, // belt at y=3 flows to y=4 which is off-edge — OK
+            ..Default::default()
+        };
+        let issues = check_belt_dead_ends(&lr);
+        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        assert!(errors.is_empty(), "UG output into belt should not be flagged");
     }
 
     // --- check_underground_belt_pairs ---

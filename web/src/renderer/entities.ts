@@ -104,6 +104,32 @@ export function setItemColoring(enabled: boolean): void { itemColoringEnabled = 
 let rateOverlayEnabled = false;
 export function setRateOverlay(enabled: boolean): void { rateOverlayEnabled = enabled; }
 
+/** Per-recipe input/output flows for machine overlays. */
+interface RecipeFlows {
+  inputs: { item: string; rate: number }[];
+  outputs: { item: string; rate: number }[];
+  machineCount: number;
+}
+let recipeFlowMap: Map<string, RecipeFlows> = new Map();
+
+/** Look up per-machine flows for a recipe (returns undefined if not set). */
+export function getRecipeFlows(recipe: string): RecipeFlows | undefined {
+  return recipeFlowMap.get(recipe);
+}
+
+/** Call before renderLayout to provide solver result data for machine overlays. */
+export function setRecipeFlows(machines: { recipe: string; count: number; inputs: { item: string; rate: number }[]; outputs: { item: string; rate: number }[] }[]): void {
+  recipeFlowMap = new Map();
+  for (const m of machines) {
+    // Solver rates are already per-machine — use as-is.
+    recipeFlowMap.set(m.recipe, {
+      inputs: m.inputs.map(f => ({ item: f.item, rate: f.rate })),
+      outputs: m.outputs.map(f => ({ item: f.item, rate: f.rate })),
+      machineCount: Math.ceil(m.count),
+    });
+  }
+}
+
 export function itemColor(item: string | undefined): number {
   if (!itemColoringEnabled) return 0x777777;
   if (!item) return 0x666666;
@@ -140,6 +166,14 @@ const MACHINE_SIZES: Record<string, [number, number]> = {
   substation: [2, 2],
   "electric-mining-drill": [3, 3],
 };
+
+/** Convert a kebab-case slug to a display name: "assembling-machine-3" → "Assembling Machine 3" */
+export function niceName(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 // Entity-type sets derived from the lookup tables where possible
 const MACHINE_ENTITIES = new Set(Object.keys(MACHINE_SIZES));
@@ -518,57 +552,131 @@ function drawMachine(entity: PlacedEntity): Graphics {
   const [tw, th] = MACHINE_SIZES[entity.name] ?? [1, 1];
   const pw = tw * TILE_PX - 1;
   const ph = th * TILE_PX - 1;
-  const color = MACHINE_COLORS[entity.name] ?? DEFAULT_MACHINE_COLOR;
-  const r = Math.min(TILE_PX * 0.3, 4);
 
-  g.roundRect(0, 0, pw, ph, r).fill(color);
+  // Dotted outline showing the tile footprint
+  g.setStrokeStyle({ width: 1, color: 0xaaaaaa, alpha: 0.4 });
+  // Pixi v8 doesn't support native dash — draw a dotted rect manually
+  const dash = 3;
+  const gap = 3;
+  for (const [x0, y0, x1, y1] of [
+    [0, 0, pw, 0], [pw, 0, pw, ph], [pw, ph, 0, ph], [0, ph, 0, 0],
+  ] as [number, number, number, number][]) {
+    const len = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+    const dx = (x1 - x0) / len;
+    const dy = (y1 - y0) / len;
+    let d = 0;
+    while (d < len) {
+      const end = Math.min(d + dash, len);
+      g.moveTo(x0 + dx * d, y0 + dy * d).lineTo(x0 + dx * end, y0 + dy * end).stroke();
+      d = end + gap;
+    }
+  }
 
-  const inset = Math.max(2, pw * 0.05);
-  g.setStrokeStyle({ width: 1, color: 0xffffff, alpha: 0.15 });
-  g.roundRect(inset, inset, pw - inset * 2, ph - inset * 2, r * 0.5).stroke();
-  g.setStrokeStyle({ width: 1, color: 0x000000, alpha: 0.5 });
-  g.roundRect(0, 0, pw, ph, r).stroke();
-
-  // Prefer full entity-frame sprite (body + shadow, sized to tile footprint).
-  // Fall back to centered icon if no frame available.
+  // Machine sprite — scaled 1.5x, centred on the tile footprint.
+  // Entity-frame sprites are designed so (0,0) = top-left of footprint at 1x.
+  // To scale 1.5x around the footprint centre, offset by -0.25 * footprint size.
+  const spriteScale = 1.5;
   const frameTexture = Assets.get<Texture>(`/entity-frames/${entity.name}.png`);
   if (frameTexture) {
     const sprite = new Sprite(frameTexture);
-    // entity-frames are generated at ENTITY_FRAME_TILE_PX; scale to our TILE_PX
-    sprite.scale.set(TILE_PX / ENTITY_FRAME_TILE_PX);
-    // origin (0,0) of the frame image = top-left of entity footprint
-    sprite.x = 0;
-    sprite.y = 0;
+    const baseScale = TILE_PX / ENTITY_FRAME_TILE_PX;
+    sprite.scale.set(baseScale * spriteScale);
+    // At 1x the sprite fills [0..pw, 0..ph]. At 1.5x it fills [0..pw*1.5, 0..ph*1.5].
+    // Shift so the centre stays at (pw/2, ph/2).
+    sprite.x = -pw * (spriteScale - 1) / 2;
+    sprite.y = -ph * (spriteScale - 1) / 2;
     g.addChild(sprite);
   } else {
     const iconTexture = Assets.get<Texture>(`/icons/${entity.name}.png`);
     if (iconTexture) {
       const sprite = new Sprite(iconTexture);
-      const iconSize = Math.min(pw, ph) * 0.55;
+      const iconSize = Math.min(pw, ph) * 0.8 * spriteScale;
       sprite.width = iconSize;
       sprite.height = iconSize;
-      sprite.x = pw / 2 - iconSize / 2;
-      sprite.y = ph / 2 - iconSize / 2;
-      sprite.alpha = 0.7;
+      sprite.x = (pw - iconSize) / 2;
+      sprite.y = (ph - iconSize) / 2;
       g.addChild(sprite);
+    } else {
+      const color = MACHINE_COLORS[entity.name] ?? DEFAULT_MACHINE_COLOR;
+      g.roundRect(2, 2, pw - 4, ph - 4, 3).fill({ color, alpha: 0.5 });
     }
   }
 
+  // Overlay panel: recipe name, rate, inputs/outputs
   if (entity.recipe) {
-    const label = entity.recipe.replace(/-/g, "\u2011");
-    const fontSize = Math.max(7, Math.min(11, (TILE_PX * Math.min(tw, th)) / 4));
-    const style = new TextStyle({
-      fontSize,
-      fill: 0xffffff,
-      wordWrap: true,
-      wordWrapWidth: pw - 6,
-      align: "center",
-      dropShadow: { color: 0x000000, alpha: 0.8, blur: 2, distance: 1 },
+    const panelW = pw - 2;
+    const flows = recipeFlowMap.get(entity.recipe);
+    const inputCount = flows ? flows.inputs.length : 0;
+    const outputCount = flows ? flows.outputs.length : 0;
+    const flowLines = inputCount + outputCount;
+    const lineH = 12;
+    const headerH = 16;
+    const panelH = headerH + flowLines * lineH + 6;
+    const panelX = 1;
+    const panelY = ph - panelH;
+
+    // Semi-transparent dark background
+    g.roundRect(panelX, panelY, panelW, panelH, 3)
+      .fill({ color: 0x000000, alpha: 0.75 });
+
+    let cy = panelY + 3;
+    const iconSz = 14;
+
+    const dropShadow = { color: 0x000000, alpha: 1, blur: 2, distance: 0 };
+
+    // Header: recipe icon + nice name + rate — centred
+    const recipeIcon = Assets.get<Texture>(`/icons/${entity.recipe}.png`);
+    const label = niceName(entity.recipe);
+    const rateStr = entity.rate != null ? ` ${entity.rate.toFixed(1)}/s` : "";
+    const headerStyle = new TextStyle({
+      fontSize: 9, fill: 0xffffff, fontWeight: "bold",
+      align: "center", dropShadow,
     });
-    const text = new Text({ text: label, style });
-    text.x = pw / 2 - text.width / 2;
-    text.y = ph / 2 - text.height / 2;
-    g.addChild(text);
+    const headerText = new Text({ text: label + rateStr, style: headerStyle });
+    const totalHeaderW = (recipeIcon ? iconSz + 2 : 0) + headerText.width;
+    const headerStartX = panelX + (panelW - totalHeaderW) / 2;
+
+    if (recipeIcon) {
+      const icoSprite = new Sprite(recipeIcon);
+      icoSprite.width = iconSz;
+      icoSprite.height = iconSz;
+      icoSprite.x = headerStartX;
+      icoSprite.y = cy;
+      g.addChild(icoSprite);
+      headerText.x = headerStartX + iconSz + 2;
+    } else {
+      headerText.x = headerStartX;
+    }
+    headerText.y = cy;
+    g.addChild(headerText);
+    cy += headerH;
+
+    // Flow rows: icon + item name + rate — centred
+    const flowStyle = new TextStyle({ fontSize: 8, fill: 0xcccccc, dropShadow });
+    const renderFlow = (item: string, rate: number, prefix: string) => {
+      const fIcon = Assets.get<Texture>(`/icons/${item}.png`);
+      const fText = new Text({ text: `${prefix}${niceName(item)} ${rate.toFixed(1)}/s`, style: flowStyle });
+      const fIconSz = 10;
+      const rowW = (fIcon ? fIconSz + 2 : 0) + fText.width;
+      const rx = panelX + (panelW - rowW) / 2;
+      if (fIcon) {
+        const fs = new Sprite(fIcon);
+        fs.width = fIconSz; fs.height = fIconSz;
+        fs.x = rx; fs.y = cy + 1;
+        g.addChild(fs);
+        fText.x = rx + fIconSz + 2;
+      } else {
+        fText.x = rx;
+      }
+      fText.y = cy;
+      g.addChild(fText);
+      cy += lineH;
+    };
+
+    if (flows) {
+      for (const inp of flows.inputs) renderFlow(inp.item, inp.rate, "\u25b6 ");
+      for (const out of flows.outputs) renderFlow(out.item, out.rate, "\u25c0 ");
+    }
   }
 
   return g;

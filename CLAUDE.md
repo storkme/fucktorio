@@ -55,6 +55,7 @@ WASM is loaded by `web/src/engine.ts`, which wraps the generated `fucktorio_wasm
 - **Python version**: Pinned in `.python-version`. Use `uv` to manage the venv and run commands.
 - **Running snippets**: Don't use inline `python -c` for multi-line exploratory code. Instead, write a script to `scripts/` (e.g. `scripts/debug_lanes.py`) and run it with `uv run python scripts/debug_lanes.py`. This makes it easier to iterate and review.
 - **Running tests**: `uv run pytest tests/`.
+- **Pre-commit hooks**: Committed in `.githooks/pre-commit`. Activate with `git config core.hooksPath .githooks`. Runs ruff check + format on Python, cargo clippy on Rust (if .rs files staged), and tsc on TypeScript (if web/src/ files staged). Bypass with `git commit --no-verify`.
 
 ## Architecture
 

@@ -2,7 +2,7 @@ import { Container } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
-import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, TILE_PX, type HighlightController } from "./renderer/entities";
+import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, niceName, getRecipeFlows, TILE_PX, type HighlightController } from "./renderer/entities";
 import { createSelectionController, type SelectionController } from "./renderer/selection";
 import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
@@ -45,16 +45,21 @@ async function main(): Promise<void> {
 
   let highlightCtrl: HighlightController | null = null;
 
+  /** Inline <img> tag for an item/entity icon */
+  function iconTag(slug: string, size = 16): string {
+    return `<img src="/icons/${slug}.png" width="${size}" height="${size}" style="vertical-align:middle;margin-right:3px;image-rendering:pixelated" onerror="this.style.display='none'">`;
+  }
+
   function onSelect(entity: PlacedEntity | null): void {
     if (!entity) {
       infoPanel.style.display = "none";
       return;
     }
     const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
-    let html = `<div style="display:flex;justify-content:space-between;align-items:start"><b>${entity.name}</b><span style="cursor:pointer;color:#888;margin-left:8px" id="info-close">\u00d7</span></div>`;
-    if (entity.recipe) html += `<div style="color:#dcdcaa">recipe: ${entity.recipe}</div>`;
+    let html = `<div style="display:flex;justify-content:space-between;align-items:start">${iconTag(entity.name)}<b>${niceName(entity.name)}</b><span style="cursor:pointer;color:#888;margin-left:8px" id="info-close">\u00d7</span></div>`;
+    if (entity.recipe) html += `<div style="color:#dcdcaa">${iconTag(entity.recipe)} ${niceName(entity.recipe)}</div>`;
     if (entity.rate != null) html += `<div style="color:#b5cea8">rate: ${entity.rate.toFixed(1)}/s</div>`;
-    if (entity.carries) html += `<div style="color:#9cdcfe">carries: ${entity.carries}</div>`;
+    if (entity.carries) html += `<div style="color:#9cdcfe">${iconTag(entity.carries)} ${niceName(entity.carries)}</div>`;
     if (entity.direction) html += `<div>${dirArrow[entity.direction] ?? ""} ${entity.direction}</div>`;
     html += `<div style="color:#888">pos: ${entity.x ?? 0}, ${entity.y ?? 0}</div>`;
     infoPanel.innerHTML = html;
@@ -66,12 +71,19 @@ async function main(): Promise<void> {
   function onHover(entity: PlacedEntity | null): void {
     if (entity) {
       const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
-      let html = `<b>${entity.name}</b>`;
+      let html = `${iconTag(entity.name)}<b>${niceName(entity.name)}</b>`;
       if (entity.direction) html += `<br>${dirArrow[entity.direction] ?? ""} ${entity.direction}`;
-      if (entity.carries) html += `<br>carries: ${entity.carries}`;
+      if (entity.carries) html += `<br>${iconTag(entity.carries)} ${niceName(entity.carries)}`;
       if (entity.rate != null) html += `<br><span style="color:#b5cea8">${entity.rate.toFixed(1)}/s</span>`;
       if (entity.io_type) html += `<br>io: ${entity.io_type}`;
-      if (entity.recipe) html += `<br>recipe: ${entity.recipe}`;
+      if (entity.recipe) {
+        html += `<br>${iconTag(entity.recipe)} ${niceName(entity.recipe)}`;
+        const flows = getRecipeFlows(entity.recipe);
+        if (flows) {
+          for (const inp of flows.inputs) html += `<br><span style="color:#aaa">\u25b6 ${iconTag(inp.item, 14)}${niceName(inp.item)} ${inp.rate.toFixed(1)}/s</span>`;
+          for (const out of flows.outputs) html += `<br><span style="color:#aaa">\u25c0 ${iconTag(out.item, 14)}${niceName(out.item)} ${out.rate.toFixed(1)}/s</span>`;
+        }
+      }
       if (entity.segment_id) html += `<br><span style="color:#9cdcfe">${entity.segment_id}</span>`;
       html += `<br>pos: ${entity.x ?? 0}, ${entity.y ?? 0}`;
       tooltip.innerHTML = html;

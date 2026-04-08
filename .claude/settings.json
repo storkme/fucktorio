@@ -1,22 +1,8 @@
 {
-	  "permissions": {
-		      "allow": [
-                              "Bash(uv run *)",
-                              "Bash(uv sync*)"
-					      ]
-					        },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "{ cmd=$(jq -r '.tool_input.command'); if echo \"$cmd\" | grep -q '^git commit'; then ruff format . ; ruff check --fix . ; ruff check . && ruff format --check . && cargo clippy -p fucktorio_core -- -D warnings && git add -u; fi; }",
-            "statusMessage": "Running ruff + clippy pre-commit..."
-          }
-        ]
-      }
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(uv sync*)"
     ]
   }
 }
