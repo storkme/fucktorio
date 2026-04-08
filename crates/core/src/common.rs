@@ -303,3 +303,53 @@ mod tests {
         assert_eq!(dir_from_vec(0, 0), None);
     }
 }
+
+// ---- Module and beacon data ----
+
+/// Speed and productivity bonuses for a module type.
+#[derive(Debug, Clone, Copy)]
+pub struct ModuleEffect {
+    pub speed: f64,
+    pub productivity: f64,
+}
+
+/// Look up module effects by entity name. Returns (0,0) for unknown modules.
+pub fn module_effect(name: &str) -> ModuleEffect {
+    match name {
+        "speed-module" => ModuleEffect { speed: 0.2, productivity: 0.0 },
+        "speed-module-2" => ModuleEffect { speed: 0.3, productivity: 0.0 },
+        "speed-module-3" => ModuleEffect { speed: 0.5, productivity: 0.0 },
+        "productivity-module" => ModuleEffect { speed: -0.05, productivity: 0.04 },
+        "productivity-module-2" => ModuleEffect { speed: -0.10, productivity: 0.06 },
+        "productivity-module-3" => ModuleEffect { speed: -0.15, productivity: 0.10 },
+        "quality-module" => ModuleEffect { speed: -0.05, productivity: 0.0 },
+        "quality-module-2" => ModuleEffect { speed: -0.05, productivity: 0.0 },
+        "quality-module-3" => ModuleEffect { speed: -0.05, productivity: 0.0 },
+        // Efficiency modules have no speed/productivity effect
+        _ => ModuleEffect { speed: 0.0, productivity: 0.0 },
+    }
+}
+
+/// Number of module slots for a machine entity.
+pub fn module_slots(entity: &str) -> u32 {
+    match entity {
+        "assembling-machine-1" | "stone-furnace" | "steel-furnace" => 0,
+        "assembling-machine-2" | "electric-furnace" | "centrifuge" | "crusher" | "lab" => 2,
+        "chemical-plant" | "oil-refinery" => 3,
+        "assembling-machine-3" | "rocket-silo" | "foundry" | "biochamber" | "biolab"
+        | "recycler" => 4,
+        "electromagnetic-plant" => 5,
+        "cryogenic-plant" => 8,
+        "beacon" => 2,
+        _ => 0,
+    }
+}
+
+/// Beacon supply area distance (tiles from edge of 3×3 beacon).
+pub const BEACON_SUPPLY_DISTANCE: i32 = 3;
+
+/// Beacon distribution effectivity in Factorio 2.0.
+/// In 2.0 this is distance-based, but for tile-distance=0 it's 1.5.
+/// For a simple model we use 0.5 (the Factorio 1.x value and a reasonable
+/// average across distances in 2.0 with the profile falloff).
+pub const BEACON_DISTRIBUTION_EFFECTIVITY: f64 = 0.5;

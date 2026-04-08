@@ -762,6 +762,7 @@ impl CrossingEncoder {
                     segment_id: Some(format!("crossing:{}:{}", zone.x, zone.y)),
                     rate: None,
                     mirror: false,
+                    items: Vec::new(),
                 });
             }
         }

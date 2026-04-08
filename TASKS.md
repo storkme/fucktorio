@@ -92,11 +92,50 @@ The web app currently renders entities as colored rectangles. Using actual Facto
 
 ## Blueprint Mining & Corpus Analysis
 
-The `src/analysis/` Python pipeline parses community blueprints into production graphs and extracts layout metrics. The `scripts/analysis/mine_corpus.py` CLI outputs `corpus.json` consumed by the web app corpus browser.
+Rust analysis pipeline (`crates/core/src/analysis.rs`) and CLI tool (`crates/mining-cli/`) parse community blueprints, detect production chains, and estimate module-aware throughput. The Python pipeline (`src/analysis/`, `scripts/analysis/mine_corpus.py`) does deeper network tracing (belt BFS, inserter resolution, item inference) and exports `corpus.json` for the web app corpus browser.
 
-- [ ] Port Python analysis pipeline to Rust (`crates/core/src/analysis/`) — `blueprint_parser.rs` already exists; the remaining work is network tracing (BFS over belt/pipe segments), inserter resolution, item inference, and stats extraction. Python uses `draftsman` for entity data; Rust already has entity sizes and recipes in `recipe_db.rs`. Once complete, the Python mining script becomes a thin wrapper or is replaced by a Rust binary.
-- [ ] Rust mining binary (`crates/mining-cli/`) — reads blueprint strings (stdin or dir), outputs `corpus.json`. Blocked on the analysis port above.
+- [ ] Port remaining Python analysis to Rust — network tracing (BFS over belt/pipe segments), inserter resolution, item inference, bus layout detection. Python uses `draftsman` for entity data; Rust already has entity sizes and recipes.
+- [ ] Merge Python `mine_corpus.py` output with Rust analysis — or replace entirely once the Rust analysis covers the same ground
 - [ ] UMAP/scatter explorer — optional `--umap` output for `mine_corpus.py` using `umap-learn` + `plotly`. Cheap way to visualize blueprint clusters without ML.
+
+### Done
+
+- [x] Rust blueprint parser (`blueprint_parser.rs`) — decodes all Factorio blueprint formats including books (recursive), handles 1.x and 2.0 entity formats, parses module items
+- [x] Rust analysis module (`analysis.rs`) — entity classification, recipe grouping, production chain DFS, final product detection, module+beacon-aware throughput, furnace recipe inference
+- [x] Rust CLI tool (`crates/mining-cli/`, binary `blueprint-analyze`) — single/batch/book modes, JSON output, reads from files or stdin, handles JSON-wrapped blueprint strings
+- [x] Python analysis pipeline with bus detection, row clustering, and 40+ extracted metrics
+- [x] Web app corpus browser tab with paste-to-render (WASM) and file-based corpus browsing
+
+## Modules & Beacons
+
+Blueprint analysis now parses modules from entities and calculates module+beacon-aware throughput. The remaining work is on the solver and layout generation side.
+
+### Solver — module-aware machine counts
+
+The solver (`crates/core/src/solver.rs`) calculates machine counts at base crafting speed. With modules, you need significantly fewer machines for the same throughput.
+
+- [ ] Add `ModuleConfig` parameter to `solve()` — specify internal modules (e.g. 4× productivity-module-3) and beacon setup (count per machine, module type in beacons)
+- [ ] Adjust machine count formula: `machines = target_rate / (effective_speed × recipe_output × effective_productivity / energy)` where `effective_speed = base_speed × (1 + internal_speed_bonus + beacon_count × beacon_module_speed × 0.5)` and `effective_productivity = 1 + internal_prod_bonus`
+- [ ] Wire through WASM bindings so the web app can use it
+- [ ] Web UI: module/beacon picker in sidebar (machine module dropdown, beacon count per machine, beacon module type)
+
+### Layout — beacon placement
+
+Generating layouts with beacons is a significant layout engine change. Common community patterns:
+
+- [ ] Research common beacon arrangements — 8-beacon (2 rows of 4 flanking machines), 12-beacon (fully surrounded), inline beacon rows between machine rows
+- [ ] Beacon row templates — extend `bus/templates.rs` with beacon-row variants that interleave beacon entities between machine rows
+- [ ] Row dimension changes — beaconed rows are much wider (beacons add 3+ tiles on each side) and taller (beacon rows between machine rows). Pitch calculations in `bus/placer.rs` need updating.
+- [ ] Power requirements — beaconed builds need far more power; pole placement (`bus/bus_router.rs`) may need substations instead of medium poles
+- [ ] Module assignment in export — when generating blueprints, populate the `items` field on machines and beacons with the configured modules
+
+### Done
+
+- [x] Parse module items from blueprint entities (three Factorio formats: 1.x array, 1.x map, 2.0 nested id)
+- [x] Module effect data in `common.rs` — speed/productivity bonuses for all 12 module types, module slot counts per machine
+- [x] Beacon proximity detection — AABB overlap between beacon 9×9 supply area and machine footprint
+- [x] Module-aware throughput in analysis — per-machine effective speed and productivity, beacon bonuses at 50% distribution effectivity
+- [x] CLI output shows `[speed +X%, prod +Y%]` when modules are present
 
 ## Research: Verifactory
 

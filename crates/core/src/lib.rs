@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
+pub mod analysis;
 pub mod astar;
 pub mod blueprint;
 pub mod blueprint_parser;

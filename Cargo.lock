@@ -100,6 +100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fucktorio_mining"
+version = "0.1.0"
+dependencies = [
+ "fucktorio_core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fucktorio_native"
 version = "0.1.0"
 dependencies = [

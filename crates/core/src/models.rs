@@ -48,6 +48,15 @@ pub enum EntityDirection {
 }
 
 
+/// A module/item inserted into an entity (e.g. speed-module-3 × 2 in a beacon).
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleItem {
+    pub item: String,
+    pub count: u32,
+}
+
 /// A single entity placed in the blueprint grid.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
@@ -73,6 +82,9 @@ pub struct PlacedEntity {
     /// Throughput rate (items/s or fluid units/s) flowing through this entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
+    /// Modules/items inserted into this entity (e.g. speed modules in a beacon).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ModuleItem>,
 }
 
 /// Metadata about a SAT-solved region in the layout.
