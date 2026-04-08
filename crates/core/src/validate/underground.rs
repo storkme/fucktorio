@@ -362,15 +362,23 @@ mod tests {
     use super::*;
     use crate::models::{EntityDirection, LayoutResult, PlacedEntity};
 
-    fn ug(x: i32, y: i32, dir: EntityDirection, io_type: &str) -> PlacedEntity {
+    fn make_ug(name: &str, x: i32, y: i32, dir: EntityDirection, io_type: &str) -> PlacedEntity {
         PlacedEntity {
-            name: "underground-belt".to_string(),
+            name: name.to_string(),
             x,
             y,
             direction: dir,
             io_type: Some(io_type.to_string()),
             ..Default::default()
         }
+    }
+
+    fn ug(x: i32, y: i32, dir: EntityDirection, io_type: &str) -> PlacedEntity {
+        make_ug("underground-belt", x, y, dir, io_type)
+    }
+
+    fn express_ug(x: i32, y: i32, dir: EntityDirection, io_type: &str) -> PlacedEntity {
+        make_ug("express-underground-belt", x, y, dir, io_type)
     }
 
     fn belt(x: i32, y: i32, dir: EntityDirection) -> PlacedEntity {
@@ -449,6 +457,30 @@ mod tests {
         let issues = check_underground_belt_pairs(&lr);
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn pairs_express_at_max_range() {
+        // express-underground-belt max_reach = 8; distance 9 = gap 8 = exactly max reach → OK.
+        let lr = layout(vec![
+            express_ug(0, 0, EntityDirection::East, "input"),
+            express_ug(9, 0, EntityDirection::East, "output"),
+        ]);
+        let issues = check_underground_belt_pairs(&lr);
+        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn pairs_express_over_range() {
+        // express-underground-belt max_reach = 8; distance 10 = gap 9 > max reach → Error.
+        let lr = layout(vec![
+            express_ug(0, 0, EntityDirection::East, "input"),
+            express_ug(10, 0, EntityDirection::East, "output"),
+        ]);
+        let issues = check_underground_belt_pairs(&lr);
+        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        assert!(errors.iter().any(|e| e.message.contains("exceeds max reach")));
     }
 
     #[test]
