@@ -34,13 +34,14 @@ Formal rules the layout engine must satisfy. Statements are numbered per section
   | WEST   | south         | north           |
 
 - **B4.** Both lanes move items in the facing direction at the belt's tier speed.
-- **B5.** Throughput per tier (total, both lanes): yellow 15/s, red 30/s, blue 45/s. Each lane carries exactly half.
+- **B5.** Throughput per tier (total, both lanes): yellow 15/s, red 30/s, blue 45/s. Each lane carries exactly half (7.5/s, 15/s, 22.5/s per lane).
 - **B6.** Two adjacent belts facing the same direction, placed end-to-end, connect automatically: items flow from the upstream belt to the downstream belt.
 - **B7.** **Straight merge**: a belt facing into the back of another same-direction belt feeds both lanes normally.
 - **B8.** **Sideload**: a belt feeding perpendicular into the side of another belt fills **only the near lane** (the lane of the target belt closest to the feeder). *(Critical for lane-specific routing.)*
 - **B9.** If the target lane (B8) is full, items back up on the feeder belt.
 - **B10.** To fill both lanes of a belt, use either a straight feed (B7) or two sideloads from opposite sides.
 - **B11.** A 90-degree **turn** (belt A facing into the side of belt B, where B continues in the perpendicular direction) preserves both lanes. Inner-lane items stay on the inner lane, outer on outer. No items are lost or merged.
+- **B12.** **Belt weaving / underground crossing**: to cross one belt line over another without mixing items, use an underground belt pair. Place a UG input before the crossing belt, and a UG output after it. Items travel underground past the crossing belt (U4). This is the standard technique for bus tap-offs crossing adjacent trunk belts.
 
 ---
 
@@ -79,11 +80,22 @@ Formal rules the layout engine must satisfy. Statements are numbered per section
 - **I2.** An inserter picks items from the tile **behind** it (opposite to facing direction) and drops them on the tile **ahead** (in the facing direction).
 - **I3.** **Regular inserter**: pickup and drop tiles are each 1 tile away from the inserter (reach = 1).
 - **I4.** **Long-handed inserter**: pickup and drop tiles are each 2 tiles away from the inserter (reach = 2). *(Allows feeding across a belt line or gap.)*
-- **I5.** Inserters interact with belt lanes: an inserter dropping onto a belt places items on the **near lane** (the lane closest to the inserter).
-- **I6.** Inserters can pick from / drop into machines, belts, chests, and other entities that have item slots.
-- **I7.** Inserter throughput varies by type and is generally lower than belt throughput. Multiple inserters may be needed to saturate a belt lane.
-- **I8.** **Stack inserter**: picks/drops multiple items per swing (stack size depends on research). Higher throughput than regular inserters. *(Relevant for high-throughput designs.)*
-- **I9.** An inserter dropping into a machine will only insert items that the machine's current recipe accepts. *(No explicit filter needed for recipe-locked machines.)*
+- **I5.** Inserters interact with belt lanes: an inserter dropping onto a belt places items on the **near lane** (the lane closest to the inserter). Geometrically, "near lane" is determined by the dot product of the inserter's approach vector and the belt's perpendicular: positive → right lane, negative → left lane.
+- **I6.** **Pickup from belts**: an inserter picking from a belt grabs items from **both lanes**, not just the near lane. It alternates between lanes based on item availability. The effective pickup rate is limited by the total belt throughput (both lanes combined), not a single lane. *(This means a fully loaded belt delivers its full throughput to the inserter, regardless of lane distribution.)*
+- **I7.** Inserters can pick from / drop into machines, belts, chests, and other entities that have item slots.
+- **I8.** Inserter throughput (approximate, chest-to-chest at default stack size):
+
+  | Type | Items/swing | Swings/s | Throughput |
+  |------|------------|----------|------------|
+  | Regular inserter | 1 | ~0.83 | ~0.83/s |
+  | Long-handed inserter | 1 | ~1.2 | ~1.2/s |
+  | Fast inserter | 1 | ~2.31 | ~2.31/s |
+  | Stack inserter (stack 12) | 12 | ~2.31 | ~27.7/s |
+
+  Actual throughput varies with pickup/drop distance and belt speed. Multiple inserters may be needed to saturate a belt lane (7.5/s yellow → need ~9 regular inserters or ~4 fast inserters per lane).
+
+- **I9.** **Stack inserter**: picks/drops multiple items per swing (stack size depends on research, max 12). Higher throughput than regular inserters. *(Relevant for high-throughput designs.)*
+- **I10.** An inserter dropping into a machine will only insert items that the machine's current recipe accepts. *(No explicit filter needed for recipe-locked machines.)*
 
 ---
 
@@ -94,11 +106,16 @@ Formal rules the layout engine must satisfy. Statements are numbered per section
 - **M3.** **Crafting speed** is a multiplier on recipe time. Assembling machine 1: 0.5, AM2: 0.75, AM3: 1.25. Chemical plant: 1.0. Oil refinery: 1.0.
 - **M4.** Solid ingredients are delivered by inserters (I1-I9); solid products are extracted by inserters.
 - **M5.** Fluid ingredients/products are transferred through **fluid ports** at specific tile positions on the machine's boundary. *(Port positions are fixed per entity type and direction -- must be queried from game data.)*
-- **M6.** Fluid ports connect to adjacent pipes; a pipe or pipe-to-ground must be placed on the adjacent tile to transfer fluid.
+- **M6.** Fluid ports connect to adjacent pipes; a pipe or pipe-to-ground must be placed on the adjacent tile to transfer fluid. Known fluid input port dx offsets from machine left edge (facing North): assembling-machine-2/3 = 1, others = 0. *(Full port positions should be queried from draftsman for non-standard machines.)*
 - **M7.** Machine sizes relevant to the generator:
   - Assembling machine (1/2/3): 3x3, 4 potential inserter sides
   - Chemical plant: 3x3, has fluid ports (positions depend on direction)
+  - Electric furnace: 3x3
   - Oil refinery: 5x5, has multiple fluid ports (3 inputs, 2 outputs in vanilla)
+  - Electromagnetic plant (Space Age): 4x4
+  - Cryogenic plant (Space Age): 5x5
+  - Foundry (Space Age): 5x5
+  - Biochamber (Space Age): 3x3
 
 ---
 
@@ -123,6 +140,43 @@ Formal rules the layout engine must satisfy. Statements are numbered per section
 - **P5.** An entity is powered if any tile of its footprint falls within at least one pole's supply area.
 - **P6.** Poles connect to each other via copper wire if within wire reach, forming the electric network. At least one pole must connect (directly or transitively) to a power source.
 - **P7.** For the generator, pole placement must ensure every machine and inserter is within a pole's supply area (P5), and all poles form a connected network (P6). *(Medium electric poles are the standard choice -- good coverage-to-footprint ratio.)*
+
+---
+
+## Modules & Beacons
+
+- **MB1.** **Modules** can be inserted into machine module slots to modify crafting speed, productivity, energy consumption, and quality (Space Age).
+- **MB2.** Module slot counts per machine:
+
+  | Machine | Slots |
+  |---------|-------|
+  | Assembling machine 1 | 0 |
+  | Assembling machine 2 | 2 |
+  | Assembling machine 3 | 4 |
+  | Chemical plant | 3 |
+  | Oil refinery | 3 |
+  | Electric furnace | 2 |
+  | Electromagnetic plant | 5 |
+  | Cryogenic plant | 8 |
+  | Foundry | 4 |
+  | Biochamber | 4 |
+
+- **MB3.** Module effects (speed bonus / productivity bonus per module):
+
+  | Module | Speed | Productivity |
+  |--------|-------|-------------|
+  | Speed module 1 | +20% | — |
+  | Speed module 2 | +30% | — |
+  | Speed module 3 | +50% | — |
+  | Productivity module 1 | -5% | +4% |
+  | Productivity module 2 | -10% | +6% |
+  | Productivity module 3 | -15% | +10% |
+
+  Effects are additive across all modules in the machine. Productivity modules can only be placed in machines that craft intermediate products (not raw resources).
+
+- **MB4.** **Beacons** broadcast module effects to nearby machines. A beacon occupies 3x3 tiles, has 2 module slots, and a supply distance of 3 tiles (measured from the beacon's edge to the machine's edge).
+- **MB5.** Beacon **distribution effectivity** is 50% — each module in a beacon applies half its effect to every machine in range. Multiple beacons stack additively.
+- **MB6.** For the layout generator, beacon placement affects machine throughput calculations: a machine surrounded by speed beacons crafts faster, requiring higher belt throughput for inputs/outputs.
 
 ---
 

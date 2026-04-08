@@ -1176,6 +1176,87 @@ mod tests {
     }
 
     #[test]
+    fn test_plastic_bar_layout() {
+        // plastic-bar has fluid input (petroleum-gas) — tests fluid lane routing
+        use crate::solver::solve;
+        use crate::validate::belt_flow::check_belt_dead_ends;
+        use crate::validate::Severity;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = [
+            "iron-plate", "copper-plate", "steel-plate", "stone", "coal",
+            "water", "crude-oil", "iron-ore", "copper-ore",
+        ].iter().map(|s| s.to_string()).collect();
+        let sr = solve("plastic-bar", 10.0, &inputs, "assembling-machine-2")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+        assert!(!layout.entities.is_empty(), "Layout should have entities");
+        let errors: Vec<_> = check_belt_dead_ends(&layout)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{} dead-end errors in plastic-bar layout", errors.len());
+    }
+
+    #[test]
+    fn test_iron_gear_wheel_20s() {
+        // Higher rate = more rows, tests row splitting at scale
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = [
+            "iron-plate", "copper-plate", "steel-plate", "stone", "coal",
+            "water", "crude-oil", "iron-ore", "copper-ore",
+        ].iter().map(|s| s.to_string()).collect();
+        let sr = solve("iron-gear-wheel", 20.0, &inputs, "assembling-machine-2")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+        assert!(!layout.entities.is_empty(), "Layout should have entities");
+    }
+
+    #[test]
+    fn test_single_machine_low_rate() {
+        // Edge case: very low rate → 1 machine
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = [
+            "iron-plate", "copper-plate", "steel-plate", "stone", "coal",
+            "water", "crude-oil", "iron-ore", "copper-ore",
+        ].iter().map(|s| s.to_string()).collect();
+        let sr = solve("iron-gear-wheel", 1.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+        let layout = build_bus_layout(&sr, Some("transport-belt"))
+            .expect("layout");
+        assert!(!layout.entities.is_empty(), "Layout should have entities");
+        // Should have very few machines
+        let machine_count = layout.entities.iter()
+            .filter(|e| e.name.starts_with("assembling-machine"))
+            .count();
+        assert!(machine_count <= 3, "Expected few machines at 1/s, got {}", machine_count);
+    }
+
+    #[test]
+    #[ignore = "slow: advanced-circuit layout takes 2+ min, run explicitly with --ignored"]
+    fn test_advanced_circuit_from_plates() {
+        // Deep chain: advanced-circuit needs electronic-circuit + copper-cable
+        // + plastic-bar as intermediates. May have validation warnings but
+        // should not panic.
+        use crate::solver::solve;
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("advanced-circuit", 5.0, &inputs, "assembling-machine-1");
+        if let Ok(sr) = sr {
+            // May fail to layout due to complexity — just verify no panic
+            let _ = build_bus_layout(&sr, Some("transport-belt"));
+        }
+    }
+
+    #[test]
     fn test_traced_layout_produces_events() {
         use crate::solver::solve;
         use crate::trace::TraceEvent;
