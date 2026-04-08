@@ -43,6 +43,12 @@ pub fn layout(solver_result: SolverResult, max_belt_tier: Option<String>) -> Res
 }
 
 #[wasm_bindgen]
+pub fn layout_traced(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
+    fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())
+        .map_err(|e| JsError::new(&e))
+}
+
+#[wasm_bindgen]
 pub fn export_blueprint(layout_result: LayoutResult, label: String) -> String {
     blueprint::export(&layout_result, &label)
 }

@@ -6,6 +6,7 @@ import wasmInit, {
   default_machine_for_item as wasmDefaultMachineForItem,
   export_blueprint as wasmExportBlueprint,
   layout as wasmLayout,
+  layout_traced as wasmLayoutTraced,
   parse_blueprint as wasmParseBlueprint,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
@@ -55,6 +56,10 @@ function buildLayout(result: SolverResult, maxBeltTier?: string): LayoutResult {
   return wasmLayout(result, maxBeltTier ?? null);
 }
 
+function buildLayoutTraced(result: SolverResult, maxBeltTier?: string): LayoutResult {
+  return wasmLayoutTraced(result, maxBeltTier ?? null);
+}
+
 function exportBlueprint(layout: LayoutResult, label: string): string {
   return wasmExportBlueprint(layout, label);
 }
@@ -72,6 +77,7 @@ export type Engine = {
   allProducibleItems: typeof allProducibleItems;
   allProducerMachines: typeof allProducerMachines;
   buildLayout: typeof buildLayout;
+  buildLayoutTraced: typeof buildLayoutTraced;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
 };
@@ -82,6 +88,7 @@ export function getEngine(): Engine {
     allProducibleItems,
     allProducerMachines,
     buildLayout,
+    buildLayoutTraced,
     exportBlueprint,
     defaultMachineForItem,
   };

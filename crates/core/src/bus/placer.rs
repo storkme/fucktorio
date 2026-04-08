@@ -571,6 +571,14 @@ pub fn place_rows(
 
         // Split into evenly-sized chunks
         let n_rows = ((total_count as f64) / (max_per_row as f64)).ceil() as usize;
+        if n_rows > 1 {
+            crate::trace::emit(crate::trace::TraceEvent::RowSplit {
+                recipe: spec.recipe.clone(),
+                original_count: total_count,
+                split_into: n_rows,
+                reason: format!("max_per_row={max_per_row}, output_rate={output_rate:.1}/s"),
+            });
+        }
         let mut remaining = total_count;
 
         for ri in 0..n_rows {
@@ -586,6 +594,18 @@ pub fn place_rows(
             remaining -= chunk;
         }
     }
+
+    crate::trace::emit(crate::trace::TraceEvent::RowsPlaced {
+        rows: row_spans.iter().enumerate().map(|(i, rs)| crate::trace::RowInfo {
+            index: i,
+            recipe: rs.spec.recipe.clone(),
+            machine: rs.spec.entity.clone(),
+            machine_count: rs.machine_count,
+            y_start: rs.y_start,
+            y_end: rs.y_end,
+            row_kind: format!("{:?}", row_kind(&rs.spec)),
+        }).collect(),
+    });
 
     (entities, row_spans, max_width, y_cursor)
 }

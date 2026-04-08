@@ -11,4 +11,5 @@ pub mod models;
 pub mod recipe_db;
 pub mod sat;
 pub mod solver;
+pub mod trace;
 pub mod validate;

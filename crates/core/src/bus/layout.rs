@@ -129,7 +129,12 @@ pub fn build_bus_layout(
     let width = row_width.max(actual_bw).max(merge_max_x);
 
     // Place power poles
+    let pole_strategy = if machine_centers.is_empty() { "grid" } else { "greedy" };
     let pole_entities = place_poles(width, max_y, Some(occupied), Some(machine_centers));
+    crate::trace::emit(crate::trace::TraceEvent::PolesPlaced {
+        count: pole_entities.len(),
+        strategy: pole_strategy.to_string(),
+    });
 
     // Check for missing balancer templates and collect warnings
     let mut warnings = Vec::new();
@@ -160,7 +165,22 @@ pub fn build_bus_layout(
         height: max_y,
         warnings,
         regions,
+        trace: None,
     })
+}
+
+/// Traced variant of [`build_bus_layout`].
+///
+/// Collects structured trace events through all pipeline phases and returns
+/// them in `LayoutResult.trace`. Zero overhead when using the non-traced entry point.
+pub fn build_bus_layout_traced(
+    solver_result: &SolverResult,
+    max_belt_tier: Option<&str>,
+) -> Result<LayoutResult, String> {
+    let _guard = crate::trace::start_trace();
+    let mut result = build_bus_layout(solver_result, max_belt_tier)?;
+    result.trace = Some(crate::trace::drain_events());
+    Ok(result)
 }
 
 /// Estimate bus width before full lane planning.
@@ -261,6 +281,13 @@ fn route_bus(
     let (solved_crossings, mut crossing_tiles, _sat_regions) =
         extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
     for sc in &solved_crossings {
+        crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSolved {
+            x: sc.zone.x,
+            y: sc.zone.y,
+            width: sc.zone.width,
+            height: sc.zone.height,
+            solve_time_us: sc.solution.stats.solve_time_us,
+        });
         entities.extend(sc.solution.entities.clone());
     }
 
@@ -283,6 +310,14 @@ fn route_bus(
     for fam in families {
         let balancer_ents = stamp_family_balancer(fam, max_belt_tier)
             .map_err(|e| format!("balancer stamp failed for family {:?}: {}", fam.shape, e))?;
+        let template_found = !balancer_ents.is_empty();
+        crate::trace::emit(crate::trace::TraceEvent::BalancerStamped {
+            item: fam.item.clone(),
+            shape: fam.shape,
+            y_start: fam.balancer_y_start,
+            y_end: fam.balancer_y_end,
+            template_found,
+        });
         entities.extend(balancer_ents);
 
         let path_ents = render_family_input_paths(
@@ -350,7 +385,17 @@ fn route_bus(
     // Route each lane, skipping tiles owned by SAT crossing zones
     // and tiles claimed by A* tap-offs.
     for lane in lanes {
+        let entity_count_before = entities.len();
         route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles);
+        let new_entities = entities.len() - entity_count_before;
+        let has_tapoffs = !lane.tap_off_ys.is_empty();
+        crate::trace::emit(crate::trace::TraceEvent::LaneRouted {
+            item: lane.item.clone(),
+            x: lane.x,
+            is_fluid: lane.is_fluid,
+            trunk_segments: new_entities,
+            tapoffs: if has_tapoffs { lane.tap_off_ys.len() } else { 0 },
+        });
     }
 
     // Remove non-SAT entities at SAT entity positions (SAT entities win).
@@ -385,6 +430,12 @@ fn route_bus(
         let group_lanes: Vec<BusLane> = group.iter().map(|&l| l.clone()).collect();
         let (merger_ents, merger_end_y) =
             place_merger_block(&group_lanes, row_spans, max_y, &entities, max_belt_tier);
+        crate::trace::emit(crate::trace::TraceEvent::MergerBlockPlaced {
+            item: group_lanes[0].item.clone(),
+            lanes: group_lanes.len(),
+            block_y: max_y,
+            block_height: merger_end_y - max_y,
+        });
         entities.extend(merger_ents);
         max_y = max_y.max(merger_end_y);
     }
@@ -408,6 +459,11 @@ fn route_bus(
         if !output_rows.is_empty() {
             let (merge_ents, merge_end_y, item_merge_x) =
                 merge_output_rows(&output_rows, &item, row_spans, max_y, max_belt_tier);
+            crate::trace::emit(crate::trace::TraceEvent::OutputMerged {
+                item: item.clone(),
+                rows: output_rows.clone(),
+                merge_y: max_y,
+            });
             entities.extend(merge_ents);
             max_y = max_y.max(merge_end_y);
             merge_max_x = merge_max_x.max(item_merge_x);
@@ -1022,5 +1078,51 @@ mod tests {
 
         let total_errors = ug_errors.len() + dead_end_errors.len() + isolation_errors.len();
         assert!(total_errors == 0, "{} validation errors", total_errors);
+    }
+
+    #[test]
+    fn test_traced_layout_produces_events() {
+        use crate::solver::solve;
+        use crate::trace::TraceEvent;
+        use rustc_hash::FxHashSet;
+
+        let solver_result = solve(
+            "iron-gear-wheel",
+            10.0,
+            &FxHashSet::default(),
+            "assembling-machine-3",
+        )
+        .expect("solver should succeed");
+
+        let layout = build_bus_layout_traced(&solver_result, None)
+            .expect("traced layout should succeed");
+
+        let events = layout.trace.expect("trace should be populated");
+
+        // Should have events from all major phases
+        let has_rows_placed = events.iter().any(|e| matches!(e, TraceEvent::RowsPlaced { .. }));
+        let has_lanes_planned = events.iter().any(|e| matches!(e, TraceEvent::LanesPlanned { .. }));
+        let has_lane_routed = events.iter().any(|e| matches!(e, TraceEvent::LaneRouted { .. }));
+        let has_poles_placed = events.iter().any(|e| matches!(e, TraceEvent::PolesPlaced { .. }));
+
+        assert!(has_rows_placed, "expected RowsPlaced event, got {} events: {:?}", events.len(), events.iter().map(|e| match e {
+            TraceEvent::RowsPlaced { .. } => "RowsPlaced",
+            TraceEvent::LanesPlanned { .. } => "LanesPlanned",
+            TraceEvent::LaneRouted { .. } => "LaneRouted",
+            TraceEvent::PolesPlaced { .. } => "PolesPlaced",
+            TraceEvent::BalancerStamped { .. } => "BalancerStamped",
+            TraceEvent::MergerBlockPlaced { .. } => "MergerBlockPlaced",
+            TraceEvent::OutputMerged { .. } => "OutputMerged",
+            TraceEvent::CrossingZoneSolved { .. } => "CrossingZoneSolved",
+            _ => "other",
+        }).collect::<Vec<_>>());
+        assert!(has_lanes_planned, "expected LanesPlanned event");
+        assert!(has_lane_routed, "expected LaneRouted event");
+        assert!(has_poles_placed, "expected PolesPlaced event");
+
+        // Non-traced layout should have no events
+        let plain_layout = build_bus_layout(&solver_result, None)
+            .expect("plain layout should succeed");
+        assert!(plain_layout.trace.is_none(), "non-traced layout should have no trace");
     }
 }
