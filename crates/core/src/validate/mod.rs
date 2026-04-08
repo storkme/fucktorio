@@ -15,7 +15,7 @@ pub mod belt_structural;
 use thiserror::Error;
 
 use crate::models::{LayoutResult, SolverResult};
-use power::check_power_coverage;
+use power::{check_pole_network_connectivity, check_power_coverage};
 
 use belt_flow::{
     check_belt_connectivity, check_belt_direction_continuity, check_belt_flow_path,
@@ -127,6 +127,7 @@ pub fn validate(
     let mut issues: Vec<ValidationIssue> = Vec::new();
 
     issues.extend(check_power_coverage(layout_result));
+    issues.extend(check_pole_network_connectivity(layout_result));
     issues.extend(inserters::check_inserter_chains(layout_result, solver_result));
     issues.extend(inserters::check_inserter_direction(layout_result));
     issues.extend(check_pipe_isolation(layout_result));
