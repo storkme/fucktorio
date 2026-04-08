@@ -801,13 +801,18 @@ pub fn solve_crossing_zone(
     let variables = encoder.total_vars;
     let clauses = cnf.count;
 
+    #[cfg(not(target_arch = "wasm32"))]
     let start = std::time::Instant::now();
 
     let mut solver = Solver::new();
     solver.add_formula(&cnf.formula);
 
     let sat = solver.solve().ok()?;
+
+    #[cfg(not(target_arch = "wasm32"))]
     let solve_time_us = start.elapsed().as_micros() as u64;
+    #[cfg(target_arch = "wasm32")]
+    let solve_time_us = 0u64;
 
     if !sat {
         return None;
