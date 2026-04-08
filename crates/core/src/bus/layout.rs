@@ -33,6 +33,19 @@ pub fn build_bus_layout(
 
     let bus_header = 1;
 
+    crate::trace::emit(crate::trace::TraceEvent::SolverCompleted {
+        recipe_count: solver_result.machines.len(),
+        machine_count: solver_result.machines.iter().map(|m| m.count.ceil() as usize).sum(),
+        external_input_count: solver_result.external_inputs.len(),
+        external_output_count: solver_result.external_outputs.len(),
+        machines: solver_result.machines.iter().map(|m| crate::trace::MachineTrace {
+            recipe: m.recipe.clone(),
+            machine: m.entity.clone(),
+            count: m.count,
+            rate: m.outputs.iter().map(|o| o.rate).sum::<f64>() * m.count,
+        }).collect(),
+    });
+
     // First pass: place rows with temp bus width
     let temp_bw = estimate_bus_width(solver_result);
     let t_place1 = std::time::Instant::now();
@@ -441,6 +454,19 @@ fn route_bus(
             .cloned()
             .collect();
         if !conflicting_segs.is_empty() {
+            // Emit a trace event for each conflict before removing
+            for e in entities.iter()
+                .filter(|e| splitter_stamp_tiles.contains(&(e.x, e.y)))
+                .filter(|e| matches!(&e.segment_id, Some(sid) if sid.starts_with("crossing:")))
+            {
+                if let Some(sid) = &e.segment_id {
+                    crate::trace::emit(crate::trace::TraceEvent::CrossingZoneConflict {
+                        segment_id: sid.clone(),
+                        conflict_x: e.x,
+                        conflict_y: e.y,
+                    });
+                }
+            }
             // Remove conflicting crossing zone entities
             entities.retain(|e| {
                 !matches!(&e.segment_id, Some(sid) if conflicting_segs.contains(sid))
@@ -1301,11 +1327,13 @@ mod tests {
         let events = layout.trace.expect("trace should be populated");
 
         // Should have events from all major phases
+        let has_solver_completed = events.iter().any(|e| matches!(e, TraceEvent::SolverCompleted { .. }));
         let has_rows_placed = events.iter().any(|e| matches!(e, TraceEvent::RowsPlaced { .. }));
         let has_lanes_planned = events.iter().any(|e| matches!(e, TraceEvent::LanesPlanned { .. }));
         let has_lane_routed = events.iter().any(|e| matches!(e, TraceEvent::LaneRouted { .. }));
         let has_poles_placed = events.iter().any(|e| matches!(e, TraceEvent::PolesPlaced { .. }));
 
+        assert!(has_solver_completed, "expected SolverCompleted event");
         assert!(has_rows_placed, "expected RowsPlaced event, got {} events: {:?}", events.len(), events.iter().map(|e| match e {
             TraceEvent::RowsPlaced { .. } => "RowsPlaced",
             TraceEvent::LanesPlanned { .. } => "LanesPlanned",

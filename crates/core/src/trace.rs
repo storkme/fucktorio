@@ -169,6 +169,54 @@ pub enum TraceEvent {
         iterations: u32,
         duration_ms: u64,
     },
+
+    // Solver output — emitted at the start of build_bus_layout
+    SolverCompleted {
+        recipe_count: usize,
+        machine_count: usize,
+        external_input_count: usize,
+        external_output_count: usize,
+        machines: Vec<MachineTrace>,
+    },
+
+    // A* route failure — a spec had no valid path after all iterations
+    RouteFailure {
+        /// The lane key (e.g. "tap:iron-plate:3:45" or "trunk:copper-wire:2")
+        spec_key: String,
+        item: String,
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+    },
+
+    // Validation results — emitted by validate() after all checks run
+    ValidationCompleted {
+        error_count: usize,
+        warning_count: usize,
+        issues: Vec<ValidationIssueTrace>,
+    },
+
+    // External input lane consolidation — N consumer rows served by M trunk lanes
+    LaneConsolidated {
+        item: String,
+        /// Total rate this item is consumed at
+        rate: f64,
+        /// Number of recipe rows that consume this item
+        consumer_count: usize,
+        /// Number of trunk lanes used (< consumer_count means sharing)
+        n_trunk_lanes: usize,
+        rate_per_lane: f64,
+    },
+
+    // SAT crossing zone removed because it conflicted with a splitter stamp tile
+    CrossingZoneConflict {
+        /// The crossing segment ID that was removed
+        segment_id: String,
+        /// Tile position of the conflict
+        conflict_x: i32,
+        conflict_y: i32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -214,4 +262,27 @@ pub struct FamilyInfo {
     pub balancer_y_end: i32,
     pub total_rate: f64,
     pub producer_rows: Vec<usize>,
+}
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineTrace {
+    pub recipe: String,
+    pub machine: String,
+    /// Fractional machine count (e.g. 2.4 → ceil to 3 in practice)
+    pub count: f64,
+    /// Total output rate of this machine group (items/s)
+    pub rate: f64,
+}
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationIssueTrace {
+    pub severity: String,
+    pub category: String,
+    pub message: String,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
 }

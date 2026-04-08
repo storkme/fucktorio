@@ -690,6 +690,17 @@ fn split_overflowing_lanes(
             n_splits.max(lane.consumer_rows.len())
         };
 
+        // External inputs serving multiple consumers via fewer trunks: consolidation
+        if is_external_input && lane.consumer_rows.len() > n_splits {
+            crate::trace::emit(crate::trace::TraceEvent::LaneConsolidated {
+                item: lane.item.clone(),
+                rate: lane.rate,
+                consumer_count: lane.consumer_rows.len(),
+                n_trunk_lanes: n_splits,
+                rate_per_lane: lane.rate / n_splits as f64,
+            });
+        }
+
         if n_splits <= 1 {
             result.push(lane.clone());
             continue;
@@ -3391,6 +3402,20 @@ pub(crate) fn negotiate_and_route(
             if !r.path.is_empty() {
                 let path: Vec<(i32, i32)> = r.path.iter().map(|&(x, y)| (x as i32, y as i32)).collect();
                 result.insert(key.clone(), path);
+            } else if let Some(spec) = specs.iter().find(|s| s.id == r.id) {
+                // Failed to route — emit a trace event so the UI can highlight it
+                let first = spec.waypoints.first().copied().unwrap_or((0, 0));
+                let last = spec.waypoints.last().copied().unwrap_or((0, 0));
+                // Derive item name from the key (format: "tap:item:x:y" or "trunk:item:x")
+                let item = key.split(':').nth(1).unwrap_or("unknown").to_string();
+                crate::trace::emit(crate::trace::TraceEvent::RouteFailure {
+                    spec_key: key.clone(),
+                    item,
+                    from_x: first.0 as i32,
+                    from_y: first.1 as i32,
+                    to_x: last.0 as i32,
+                    to_y: last.1 as i32,
+                });
             }
         }
     }

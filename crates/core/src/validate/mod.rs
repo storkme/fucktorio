@@ -160,6 +160,20 @@ pub fn validate(
     issues.extend(belt_structural::check_lane_throughput(layout_result, solver_result));
     issues.extend(check_input_rate_delivery(layout_result, solver_result));
 
+    let error_count = issues.iter().filter(|i| i.severity == Severity::Error).count();
+    let warning_count = issues.iter().filter(|i| i.severity == Severity::Warning).count();
+    crate::trace::emit(crate::trace::TraceEvent::ValidationCompleted {
+        error_count,
+        warning_count,
+        issues: issues.iter().map(|i| crate::trace::ValidationIssueTrace {
+            severity: i.severity.as_str().to_string(),
+            category: i.category.clone(),
+            message: i.message.clone(),
+            x: i.x,
+            y: i.y,
+        }).collect(),
+    });
+
     let errors: Vec<ValidationIssue> = issues
         .iter()
         .filter(|i| i.severity == Severity::Error)
