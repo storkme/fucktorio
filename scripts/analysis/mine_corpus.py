@@ -135,16 +135,12 @@ def _load_from_stdin() -> list[tuple[str, str]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Analyze a Factorio blueprint corpus and export corpus.json"
-    )
+    parser = argparse.ArgumentParser(description="Analyze a Factorio blueprint corpus and export corpus.json")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("corpus_dir", nargs="?", help="Path to corpus directory or file")
     source.add_argument("--stdin", action="store_true", help="Read blueprint strings from stdin")
     parser.add_argument("--out", default="corpus.json", help="Output path for corpus.json")
-    parser.add_argument(
-        "--filter-bus", action="store_true", help="Only include bus layout blueprints"
-    )
+    parser.add_argument("--filter-bus", action="store_true", help="Only include bus layout blueprints")
     parser.add_argument(
         "--product",
         action="append",
@@ -208,11 +204,13 @@ def main() -> None:
         if stats.machine_count < args.min_machines:
             continue
 
-        corpus_entries.append({
-            "name": name,
-            "stats": _stats_to_dict(stats),
-            "layout": layout,
-        })
+        corpus_entries.append(
+            {
+                "name": name,
+                "stats": _stats_to_dict(stats),
+                "layout": layout,
+            }
+        )
 
     logger.info(
         "%d blueprint(s) pass filters (of %d analyzed)",

@@ -7,6 +7,7 @@ Format: each file is a 120×64 mipmap chain (64+32+16+8=120). Crop (0,0,64,64).
 """
 
 from pathlib import Path
+
 from PIL import Image
 
 REPO = Path(__file__).parent.parent

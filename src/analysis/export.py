@@ -27,12 +27,10 @@ def to_layout_result(graph: BlueprintGraph) -> dict:
     entities: list[dict] = []
 
     # Build network-id → inferred_item lookup
-    net_item: dict[int, str | None] = {n.id: n.inferred_item for n in graph.networks}
+    _net_item: dict[int, str | None] = {n.id: n.inferred_item for n in graph.networks}
 
     # Inserter-position → inferred_item lookup (from inserter_links)
-    inserter_item: dict[tuple[int, int], str | None] = {
-        lk.position: lk.inferred_item for lk in graph.inserter_links
-    }
+    _inserter_item: dict[tuple[int, int], str | None] = {lk.position: lk.inferred_item for lk in graph.inserter_links}
 
     # Machines
     for m in graph.machines:

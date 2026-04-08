@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
+from typing import Any
 
 from .models import AnalyzedMachine, BlueprintGraph, TransportNetwork
 
@@ -46,9 +47,9 @@ def detect_bus_structure(graph: BlueprintGraph) -> BusStructure | None:
 
     # Trunk candidates: low turn density and long path length
     trunk_candidates = [
-        n for n in belt_nets
-        if n.path_length >= 10
-        and (n.turn_count / n.path_length if n.path_length > 0 else 1.0) < 0.1
+        n
+        for n in belt_nets
+        if n.path_length >= 10 and (n.turn_count / n.path_length if n.path_length > 0 else 1.0) < 0.1
     ]
 
     if not trunk_candidates:
@@ -95,10 +96,9 @@ def detect_bus_structure(graph: BlueprintGraph) -> BusStructure | None:
         return None
 
     # Check that trunks span enough of the bbox
-    primary_coverage = max(
-        sum(1 for s in n.segments for _ in [s]) / bbox_primary
-        for n in trunks
-    ) if bbox_primary > 0 else 0
+    primary_coverage = (
+        max(sum(1 for s in n.segments for _ in [s]) / bbox_primary for n in trunks) if bbox_primary > 0 else 0
+    )
     if primary_coverage < 0.3:
         return None
 
@@ -112,10 +112,7 @@ def detect_bus_structure(graph: BlueprintGraph) -> BusStructure | None:
         return None
 
     # Identify tap-off networks: short, perpendicular to trunks
-    tapoffs = [
-        n for n in belt_nets
-        if n not in trunks and n.path_length >= 2
-    ]
+    tapoffs = [n for n in belt_nets if n not in trunks and n.path_length >= 2]
 
     return BusStructure(
         orientation=orientation,
@@ -148,7 +145,7 @@ def cluster_machine_rows(machines: list[AnalyzedMachine]) -> list[list[AnalyzedM
     return rows
 
 
-def extract_bus_stats(graph: BlueprintGraph, stats: "BlueprintStats") -> None:  # type: ignore[name-defined]
+def extract_bus_stats(graph: BlueprintGraph, stats: Any) -> None:
     """Populate bus-specific fields on BlueprintStats (mutates in place)."""
     bus = detect_bus_structure(graph)
 
@@ -179,6 +176,7 @@ def extract_bus_stats(graph: BlueprintGraph, stats: "BlueprintStats") -> None:  
 
     # Row pitch: median gap between consecutive row centers
     if len(rows) >= 2:
+
         def _row_center(row: list[AnalyzedMachine]) -> float:
             return statistics.mean(m.position[1] + m.size / 2 for m in row)
 
@@ -188,12 +186,7 @@ def extract_bus_stats(graph: BlueprintGraph, stats: "BlueprintStats") -> None:  
             stats.row_pitch = statistics.median(pitches)
 
     # Fluid rows: rows that contain machines with fluid recipes (have pipe networks nearby)
-    pipe_ys = {
-        s.position[1]
-        for n in graph.networks
-        if n.type == "pipe"
-        for s in n.segments
-    }
+    pipe_ys = {s.position[1] for n in graph.networks if n.type == "pipe" for s in n.segments}
     fluid_rows = 0
     for row in rows:
         row_ys = set()
@@ -206,9 +199,9 @@ def extract_bus_stats(graph: BlueprintGraph, stats: "BlueprintStats") -> None:  
     # Pipe networks near belt trunk x-columns
     trunk_xs = set(bus.lane_positions)
     pipe_near_trunk = sum(
-        1 for n in graph.networks
-        if n.type == "pipe"
-        and any(abs(s.position[0] - x) <= 3 for s in n.segments for x in trunk_xs)
+        1
+        for n in graph.networks
+        if n.type == "pipe" and any(abs(s.position[0] - x) <= 3 for s in n.segments for x in trunk_xs)
     )
     stats.pipe_net_beside_belt = pipe_near_trunk
 

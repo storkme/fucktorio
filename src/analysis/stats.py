@@ -72,20 +72,20 @@ class BlueprintStats:
 
     # Bus layout detection
     is_bus_layout: bool = False
-    bus_orientation: str | None = None      # "horizontal" | "vertical"
+    bus_orientation: str | None = None  # "horizontal" | "vertical"
     bus_lane_count: int = 0
-    bus_pitch: float = 0.0                  # median tile spacing between adjacent trunk columns
-    bus_span_tiles: int = 0                 # total trunk width (max_x - min_x + 1)
+    bus_pitch: float = 0.0  # median tile spacing between adjacent trunk columns
+    bus_span_tiles: int = 0  # total trunk width (max_x - min_x + 1)
 
     # Row structure
-    row_pitch: float = 0.0                  # median gap between machine row Y centers
+    row_pitch: float = 0.0  # median gap between machine row Y centers
     row_count: int = 0
     machines_per_row: float = 0.0
     machines_per_row_list: list[float] = field(default_factory=list)
 
     # Fluid handling
     fluid_row_count: int = 0
-    pipe_net_beside_belt: int = 0           # pipe networks within 3 tiles of trunk belt lanes
+    pipe_net_beside_belt: int = 0  # pipe networks within 3 tiles of trunk belt lanes
 
     # Recipe grouping
     recipe_groups: int = 0
