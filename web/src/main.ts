@@ -8,7 +8,7 @@ import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
-import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent } from "./renderer/traceOverlay";
+import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
 import { renderValidationOverlay } from "./renderer/validationOverlay";
 
 const MACHINE_SLUGS = [
@@ -148,6 +148,22 @@ async function main(): Promise<void> {
 
   let traceOverlayLayer: Container | null = null;
   let tracePhaseIndex = -1; // -1 = show all phases
+  let snapshotActive = false; // true when entities are from a PhaseSnapshot
+
+  function getSnapshotForPhase(
+    events: TraceEvent[],
+    phaseIndex: number,
+  ): { entities: PlacedEntity[]; width: number; height: number } | null {
+    const phases = getTracePhases(events);
+    if (phaseIndex < 0 || phaseIndex >= phases.length) return null;
+    const phaseName = phases[phaseIndex].name;
+    for (const evt of events) {
+      if (evt.phase === "PhaseSnapshot" && (evt as PhaseSnapshot).data.phase === phaseName) {
+        return (evt as PhaseSnapshot).data;
+      }
+    }
+    return null;
+  }
 
   // --- Step-through controls ---
   const stepBar = document.createElement("div");
@@ -193,7 +209,31 @@ async function main(): Promise<void> {
       traceOverlayLayer.destroy();
       traceOverlayLayer = null;
     }
-    if (!debugCb.checked || !lastLayout?.trace?.length) return;
+
+    // Step-through: re-render entities from snapshot for the selected phase.
+    const wantSnapshot = debugCb.checked && tracePhaseIndex >= 0 && !!lastLayout?.trace;
+    const snapshot = wantSnapshot
+      ? getSnapshotForPhase(lastLayout!.trace as TraceEvent[], tracePhaseIndex)
+      : null;
+
+    if (snapshot) {
+      snapshotActive = true;
+      highlightCtrl = renderLayout(
+        { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
+        entityLayer, onHover, onSelect,
+      );
+    } else if (snapshotActive) {
+      // Was showing a snapshot — restore full entity rendering.
+      snapshotActive = false;
+      if (lastLayout) {
+        highlightCtrl = renderLayout(lastLayout, entityLayer, onHover, onSelect);
+      }
+    }
+
+    if (!debugCb.checked || !lastLayout?.trace?.length) {
+      updateStepControls();
+      return;
+    }
     const events = tracePhaseIndex < 0
       ? (lastLayout.trace as TraceEvent[])
       : eventsUpToPhase(lastLayout.trace as TraceEvent[], tracePhaseIndex);
@@ -381,6 +421,8 @@ async function main(): Promise<void> {
 
   function renderLayoutOnCanvas(layout: LayoutResult): void {
     lastLayout = layout;
+    tracePhaseIndex = -1;
+    snapshotActive = false;
     // Destroy previous selection controller (new layout = new tile map)
     if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
     annotationBar.style.display = "none";

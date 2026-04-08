@@ -1,5 +1,6 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX } from "./entities";
+import type { PlacedEntity } from "../engine";
 
 // --- Trace event types (mirrors Rust TraceEvent) ---
 // These must match the #[serde(tag = "phase", content = "data")] format.
@@ -60,12 +61,16 @@ export interface PhaseComplete {
   phase: "PhaseComplete";
   data: { phase: string; entity_count: number };
 }
+export interface PhaseSnapshot {
+  phase: "PhaseSnapshot";
+  data: { phase: string; entities: PlacedEntity[]; width: number; height: number };
+}
 
 export type TraceEvent =
   | RowsPlaced | RowSplit | LanesPlanned | LaneSplit | LaneOrderOptimized
   | CrossingZoneSolved | CrossingZoneSkipped | BalancerStamped
   | LaneRouted | TapoffRouted | OutputMerged | MergerBlockPlaced | PolesPlaced
-  | PhaseComplete;
+  | PhaseComplete | PhaseSnapshot;
 
 interface RowInfo { index: number; recipe: string; machine: string; machine_count: number; y_start: number; y_end: number; row_kind: string; }
 interface LaneInfo { item: string; x: number; rate: number; is_fluid: boolean; source_y: number; tap_off_ys: number[]; consumer_rows: number[]; producer_row: number | null; family_id: number | null; }

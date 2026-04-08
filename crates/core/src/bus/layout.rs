@@ -70,6 +70,14 @@ pub fn build_bus_layout(
         phase: "rows_placed".into(),
         entity_count: row_entities.len(),
     });
+    if crate::trace::is_active() {
+        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+            phase: "rows_placed".into(),
+            entities: row_entities.clone(),
+            width: row_width.max(actual_bw),
+            height: total_height,
+        });
+    }
 
     // Re-plan lanes with final row positions
     let (lanes, families) = if actual_bw != temp_bw || !extra_gaps.is_empty() {
@@ -81,6 +89,14 @@ pub fn build_bus_layout(
         phase: "lanes_planned".into(),
         entity_count: row_entities.len(),
     });
+    if crate::trace::is_active() {
+        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+            phase: "lanes_planned".into(),
+            entities: row_entities.clone(),
+            width: row_width.max(actual_bw),
+            height: total_height,
+        });
+    }
 
     // Route bus lanes
     let (bus_entities, max_y, merge_max_x, regions) = route_bus(
@@ -97,6 +113,16 @@ pub fn build_bus_layout(
         phase: "bus_routed".into(),
         entity_count: bus_entities.len(),
     });
+    if crate::trace::is_active() {
+        let mut snap_entities = row_entities.clone();
+        snap_entities.extend(bus_entities.clone());
+        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+            phase: "bus_routed".into(),
+            entities: snap_entities,
+            width: row_width.max(actual_bw).max(merge_max_x),
+            height: max_y,
+        });
+    }
 
     // Remove row entities that overlap with bus splitters
     let splitter_names: FxHashSet<&str> = ["splitter", "fast-splitter", "express-splitter"]
@@ -151,6 +177,17 @@ pub fn build_bus_layout(
         phase: "poles_placed".into(),
         entity_count: pole_entities.len(),
     });
+    if crate::trace::is_active() {
+        let mut snap_entities = row_entities.clone();
+        snap_entities.extend(bus_entities.clone());
+        snap_entities.extend(pole_entities.clone());
+        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+            phase: "poles_placed".into(),
+            entities: snap_entities,
+            width,
+            height: max_y,
+        });
+    }
 
     // Check for missing balancer templates and collect warnings
     let mut warnings = Vec::new();

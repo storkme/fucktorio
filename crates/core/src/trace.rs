@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
+use crate::models::PlacedEntity;
 
 // ---------------------------------------------------------------------------
 // Collector
@@ -147,6 +148,13 @@ pub enum TraceEvent {
     PhaseComplete {
         phase: String,
         entity_count: usize,
+    },
+    /// Full entity snapshot at a phase boundary (only emitted when tracing is active).
+    PhaseSnapshot {
+        phase: String,
+        entities: Vec<PlacedEntity>,
+        width: i32,
+        height: i32,
     },
 }
 
