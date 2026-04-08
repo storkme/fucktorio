@@ -43,8 +43,27 @@ pub struct RowSpan {
 
 /// Maximum machines in one row before output or input exceeds belt lane capacity.
 ///
-/// Checks output rate against the output belt (single-lane), and input rate
-/// against the best available belt tier (constrained or max).
+/// Used for **fluid rows** and **3+ solid-input rows** where the output belt is
+/// sideloaded from one side (filling only one lane), and no lane-split bridge is
+/// placed on the input side.
+///
+/// Mechanics rules relied on:
+/// - **B7** — straight feed into a belt loads both lanes normally.
+/// - **B8** — sideloading fills only the near lane.
+/// - **I5** — inserter drop targets the near lane of the receiving belt.
+/// - **I6** — inserter pickup reads from both lanes; effective rate = full belt throughput.
+///
+/// **Output limit** (`out_lane_cap / rate`):
+/// The row's output belt is sideloaded by an inserter (I5/B8), so only one lane
+/// is ever filled. The effective output capacity is therefore a single lane:
+/// 7.5/s (yellow), 15/s (red), or 22.5/s (blue).
+///
+/// **Input limit** (`in_lane_cap / rate * 2.0`):
+/// The input tap-off feeds the input belt **straight** from the trunk (B7), so
+/// both lanes carry items. Inserters picking from that belt consume from both
+/// lanes (I6), giving an effective input capacity equal to the full belt
+/// throughput. Because `in_lane_cap` is a per-lane figure, the factor of 2
+/// converts it to total throughput: `in_lane_cap * 2.0 == belt_throughput`.
 pub(crate) fn max_machines_for_belt(
     spec: &MachineSpec,
     belt_name: &str,
@@ -70,9 +89,29 @@ pub(crate) fn max_machines_for_belt(
 
 /// Maximum machines when using BOTH belt lanes (lane-split output).
 ///
-/// Output uses both lanes (via sideload bridge), so output limit is 2x per-lane.
-/// Input is sideloaded from the tap-off, which fills ONE lane only, so input
-/// limit is 1x per-lane capacity.
+/// Used for **standard 1- or 2-solid-input rows** where a sideload bridge is
+/// placed to fill both output lanes, effectively doubling output throughput.
+/// Input capacity is more conservative: the tap-off sideloads into the input
+/// belt, which (by B8) fills only one lane.
+///
+/// Mechanics rules relied on:
+/// - **B7** — straight feed into a belt loads both lanes normally.
+/// - **B8** — sideloading fills only the near lane.
+/// - **I5** — inserter drop targets the near lane of the receiving belt.
+/// - **I6** — inserter pickup reads from both lanes; effective rate = full belt throughput.
+///
+/// **Output limit** (`out_lane_cap / rate * 2.0`):
+/// The sideload bridge feeds the output belt from both sides, filling both lanes
+/// (B10). The usable output capacity is therefore the full belt throughput
+/// (2 × per-lane). Factor of 2 converts per-lane capacity to total belt capacity.
+///
+/// **Input limit** (`in_lane_cap / rate`, no multiplier — conservative):
+/// The trunk tap-off sideloads into the row's input belt (B8), filling only the
+/// near lane. Although inserters pick from both lanes (I6), only one lane has
+/// items, so the effective input capacity is a single lane's worth. This is
+/// conservative: a future improvement could feed the input belt straight (B7)
+/// to utilise both lanes and double the input limit, but that requires a
+/// different tap-off geometry.
 pub(crate) fn max_machines_for_belt_both_lanes(
     spec: &MachineSpec,
     belt_name: &str,
@@ -87,8 +126,6 @@ pub(crate) fn max_machines_for_belt_both_lanes(
             max_m = max_m.min((out_lane_cap / out.rate).floor() * 2.0);
         }
     }
-    // Input belts are fed by sideloading from the trunk tap-off, which fills
-    // only one lane (rule B8). So input capacity is single-lane, not double.
     for inp in &spec.inputs {
         if !inp.is_fluid && inp.rate > 0.0 {
             max_m = max_m.min((in_lane_cap / inp.rate).floor());
