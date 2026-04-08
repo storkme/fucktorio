@@ -180,6 +180,7 @@ fn smelting_recipes() -> Vec<&'static recipe_db::Recipe> {
 /// 2. If no other machines exist (pure smelting array), try all smelting recipes
 ///    and pick the most likely based on common patterns (steel-plate if many
 ///    furnaces, iron-plate as default).
+///
 /// Returns a list of (recipe_name, furnace_type, count) to merge into recipe_machines.
 fn infer_furnace_recipes(
     recipeless_furnaces: &FxHashMap<String, usize>,
@@ -374,8 +375,8 @@ pub fn analyze(layout: &LayoutResult) -> BlueprintAnalysis {
             // Beacon supply area: center ± (1 + supply_distance) on each axis.
             // Machine occupies [e.x .. e.x+size-1] × [e.y .. e.y+size-1].
             let reach = 1 + beacon_dist; // beacon half-size (1) + supply distance
-            let in_x = e.x <= b.cx + reach && e.x + machine_size - 1 >= b.cx - reach;
-            let in_y = e.y <= b.cy + reach && e.y + machine_size - 1 >= b.cy - reach;
+            let in_x = e.x <= b.cx + reach && e.x + machine_size >= b.cx - reach + 1;
+            let in_y = e.y <= b.cy + reach && e.y + machine_size >= b.cy - reach + 1;
             if in_x && in_y {
                 speed_bonus += b.speed_bonus * beacon_eff;
                 prod_bonus += b.productivity_bonus * beacon_eff;
