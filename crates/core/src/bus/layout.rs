@@ -75,7 +75,7 @@ pub fn build_bus_layout(
     };
 
     // Route bus lanes
-    let (bus_entities, max_y, merge_max_x) = route_bus(
+    let (bus_entities, max_y, merge_max_x, regions) = route_bus(
         &lanes,
         &row_spans,
         total_height,
@@ -155,6 +155,7 @@ pub fn build_bus_layout(
         width,
         height: max_y,
         warnings,
+        regions,
     })
 }
 
@@ -236,7 +237,7 @@ fn route_bus(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     row_entities: &[PlacedEntity],
-) -> Result<(Vec<PlacedEntity>, i32, i32), String> {
+) -> Result<(Vec<PlacedEntity>, i32, i32, Vec<crate::models::LayoutRegion>), String> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
     let mut max_y = total_height;
     let mut merge_max_x = 0;
@@ -347,7 +348,34 @@ fn route_bus(
         }
     }
 
-    Ok((entities, max_y, merge_max_x))
+    // Build LayoutRegion metadata from solved crossing zones.
+    let regions: Vec<crate::models::LayoutRegion> = solved_crossings
+        .iter()
+        .map(|sc| {
+            let inputs: Vec<String> = sc.zone.boundaries.iter()
+                .filter(|b| b.is_input)
+                .map(|b| b.item.clone())
+                .collect();
+            let outputs: Vec<String> = sc.zone.boundaries.iter()
+                .filter(|b| !b.is_input)
+                .map(|b| b.item.clone())
+                .collect();
+            crate::models::LayoutRegion {
+                kind: "crossing_zone".to_string(),
+                x: sc.zone.x,
+                y: sc.zone.y,
+                width: sc.zone.width as i32,
+                height: sc.zone.height as i32,
+                inputs,
+                outputs,
+                variables: sc.solution.stats.variables,
+                clauses: sc.solution.stats.clauses,
+                solve_time_us: sc.solution.stats.solve_time_us,
+            }
+        })
+        .collect();
+
+    Ok((entities, max_y, merge_max_x, regions))
 }
 
 /// Place medium electric poles for power coverage.

@@ -75,6 +75,23 @@ pub struct PlacedEntity {
     pub rate: Option<f64>,
 }
 
+/// Metadata about a SAT-solved region in the layout.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutRegion {
+    pub kind: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub variables: u32,
+    pub clauses: u32,
+    pub solve_time_us: u64,
+}
+
 /// Everything the layout engine produces — no rate data.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
@@ -87,4 +104,6 @@ pub struct LayoutResult {
     pub height: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<LayoutRegion>,
 }
