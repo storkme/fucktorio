@@ -1374,7 +1374,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=6, direction=4),
             BalancerTemplateEntity(name="transport-belt", x=0, y=7, direction=2),
         ),
-        input_tiles=((0, 0), (1, 0), (4, 0)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0)),
         output_tiles=((4, 8),),
         source_blueprint="0eNq1ldtugzAMhl+lynVX5USAvcpUTT1EVSQaUAjTKsS7z2NVt2muaUt2RWKMPwf/dnq2rTrbBOcje170zO1q38LqpWetO/hNNVrjqbGwYC7aI1sumN8cx33bVC5GG9gARuf39h2sYlgvz67g8h0ejG82tK72YJeF0Lkuc5MLbjID76yPLjp7ho+706vvjlsID0HBo6lb8Bg/79knia8yMJ++VsOPvGLY+LapQ3za2mok712wu/PHElz/EiRGEI8RNEpQGEGmJGiMoB4jGJSQYQR9IYgVHzB93BTbYLGzlNnnGMGkJBQYIU+p0xIjFCkJguNC5ZciZ7cUGZeoELRGxfwuEBIvwlT+eDBFTx55m+Kv/GlNDx35O9MOJmw4hBqeeDlhfxnVvunilSNleAk4Tr2zvoaeEDOOVHfx+pkmWluSssJDTvTyIyFLWkwqwTXG6VtG/Yuk5ERXq/ldLSUtLPU/wpKKvpXUnP6XmpaYul9iMqMlphNIzNBTS8/6JTmtpBT5F7SSUiBKWjUJEIrTEy8FQtDypBHDehg+ALNaxjk=",
     ),

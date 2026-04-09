@@ -1269,7 +1269,7 @@ static T_5_1_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 6, direction: 4, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 7, direction: 2, io_type: None },
 ];
-static T_5_1_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (4, 0)];
+static T_5_1_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)];
 static T_5_1_OUTPUT: &[(i32, i32)] = &[(4, 8)];
 
 static T_5_2_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -3754,10 +3754,6 @@ mod tests {
         for ((n, m), t) in templates {
             assert_eq!(t.n_inputs, *n, "n_inputs mismatch for ({n},{m})");
             assert_eq!(t.n_outputs, *m, "n_outputs mismatch for ({n},{m})");
-            // (5,1) SAT solution has non-standard port topology — skip tile count check
-            if (*n, *m) == (5, 1) {
-                continue;
-            }
             assert_eq!(
                 t.input_tiles.len() as u32, *n,
                 "input_tiles.len mismatch for ({n},{m})"
