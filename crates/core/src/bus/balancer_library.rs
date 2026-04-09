@@ -1725,7 +1725,7 @@ static T_6_1_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "splitter", x: 0, y: 3, direction: 4, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 4, direction: 2, io_type: None },
 ];
-static T_6_1_INPUT: &[(i32, i32)] = &[(0, 1)];
+static T_6_1_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
 static T_6_1_OUTPUT: &[(i32, i32)] = &[(2, 5)];
 
 static T_6_2_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -1759,7 +1759,7 @@ static T_6_2_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 3, direction: 2, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 4, direction: 0, io_type: None },
 ];
-static T_6_2_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0)];
+static T_6_2_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
 static T_6_2_OUTPUT: &[(i32, i32)] = &[(4, 6), (5, 6)];
 
 static T_6_3_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -1798,7 +1798,7 @@ static T_6_3_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 4, direction: 0, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 5, direction: 0, io_type: None },
 ];
-static T_6_3_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0)];
+static T_6_3_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
 static T_6_3_OUTPUT: &[(i32, i32)] = &[(3, 7), (4, 7), (5, 7)];
 
 static T_6_4_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -1844,7 +1844,7 @@ static T_6_4_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 1, direction: 4, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 2, direction: 2, io_type: None },
 ];
-static T_6_4_INPUT: &[(i32, i32)] = &[(0, 1), (2, 1), (5, 1)];
+static T_6_4_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
 static T_6_4_OUTPUT: &[(i32, i32)] = &[(2, 9), (3, 9), (4, 9), (5, 9)];
 
 static T_6_5_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -2274,7 +2274,7 @@ static T_7_2_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 4, direction: 2, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 5, direction: 0, io_type: None },
 ];
-static T_7_2_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)];
+static T_7_2_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)];
 static T_7_2_OUTPUT: &[(i32, i32)] = &[(5, 6), (6, 6)];
 
 static T_7_3_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -2341,7 +2341,7 @@ static T_7_3_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 5, direction: 0, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 6, direction: 0, io_type: None },
 ];
-static T_7_3_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
+static T_7_3_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)];
 static T_7_3_OUTPUT: &[(i32, i32)] = &[(1, 11), (2, 11), (3, 11)];
 
 static T_7_4_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -2398,7 +2398,7 @@ static T_7_4_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 6, direction: 4, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 7, direction: 2, io_type: None },
 ];
-static T_7_4_INPUT: &[(i32, i32)] = &[(6, 0)];
+static T_7_4_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)];
 static T_7_4_OUTPUT: &[(i32, i32)] = &[(2, 9), (3, 9), (4, 9), (5, 9)];
 
 static T_7_5_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -2885,7 +2885,7 @@ static T_8_3_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 4, direction: 4, io_type: None },
     BalancerTemplateEntity { name: "splitter", x: 0, y: 5, direction: 4, io_type: None },
 ];
-static T_8_3_INPUT: &[(i32, i32)] = &[(0, 2), (7, 2)];
+static T_8_3_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0)];
 static T_8_3_OUTPUT: &[(i32, i32)] = &[(3, 8), (4, 8), (5, 8)];
 
 static T_8_4_ENTITIES: &[BalancerTemplateEntity] = &[
@@ -3029,7 +3029,7 @@ static T_8_6_ENTITIES: &[BalancerTemplateEntity] = &[
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 10, direction: 0, io_type: None },
     BalancerTemplateEntity { name: "transport-belt", x: 0, y: 11, direction: 0, io_type: None },
 ];
-static T_8_6_INPUT: &[(i32, i32)] = &[(2, 2), (5, 2), (7, 2)];
+static T_8_6_INPUT: &[(i32, i32)] = &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0)];
 static T_8_6_OUTPUT: &[(i32, i32)] = &[(1, 14), (2, 14), (3, 14), (4, 14), (5, 14), (6, 14)];
 
 static T_8_7_ENTITIES: &[BalancerTemplateEntity] = &[

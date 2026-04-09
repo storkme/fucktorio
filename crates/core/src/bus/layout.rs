@@ -48,6 +48,7 @@ pub fn build_bus_layout(
 
     // First pass: place rows with temp bus width
     let temp_bw = estimate_bus_width(solver_result);
+    #[cfg(not(target_arch = "wasm32"))]
     let t_place1 = std::time::Instant::now();
     let (row_entities, row_spans, row_width, total_height) = place_rows(
         &solver_result.machines,
@@ -59,9 +60,12 @@ pub fn build_bus_layout(
         None,
     );
 
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_1".to_string(), duration_ms: t_place1.elapsed().as_millis() as u64 });
+    #[cfg(not(target_arch = "wasm32"))]
     let t_plan1 = std::time::Instant::now();
     let (lanes, families) = plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?;
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_1".to_string(), duration_ms: t_plan1.elapsed().as_millis() as u64 });
     let actual_bw = bus_width_for_lanes(&lanes);
 
@@ -69,6 +73,7 @@ pub fn build_bus_layout(
     let extra_gaps = compute_extra_gaps(&families);
 
     // Re-place rows if bus width changed or balancers need extra space
+    #[cfg(not(target_arch = "wasm32"))]
     let t_place2 = std::time::Instant::now();
     let (row_entities, row_spans, row_width, total_height) = if actual_bw != temp_bw || !extra_gaps.is_empty()
     {
@@ -97,14 +102,17 @@ pub fn build_bus_layout(
         });
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_2".to_string(), duration_ms: t_place2.elapsed().as_millis() as u64 });
     // Re-plan lanes with final row positions
+    #[cfg(not(target_arch = "wasm32"))]
     let t_plan2 = std::time::Instant::now();
     let (lanes, families) = if actual_bw != temp_bw || !extra_gaps.is_empty() {
         plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?
     } else {
         (lanes, families)
     };
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_2".to_string(), duration_ms: t_plan2.elapsed().as_millis() as u64 });
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "lanes_planned".into(),
@@ -120,6 +128,7 @@ pub fn build_bus_layout(
     }
 
     // Route bus lanes
+    #[cfg(not(target_arch = "wasm32"))]
     let t_route_bus = std::time::Instant::now();
     let (bus_entities, max_y, merge_max_x, regions) = route_bus(
         &lanes,
@@ -131,6 +140,7 @@ pub fn build_bus_layout(
         &families,
         &row_entities,
     )?;
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "route_bus_total".to_string(), duration_ms: t_route_bus.elapsed().as_millis() as u64 });
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "bus_routed".into(),
@@ -354,9 +364,11 @@ fn route_bus(
     // SAT crossing zones: trunk-only approach. SAT determines how trunks
     // handle crossings (UG bridges). The A* routes tap-offs normally (underground).
     // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
+    #[cfg(not(target_arch = "wasm32"))]
     let sat_start = std::time::Instant::now();
     let (solved_crossings, mut crossing_tiles, _sat_regions) =
         extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
         phase: "sat_crossing_zones".to_string(),
         duration_ms: sat_start.elapsed().as_millis() as u64,
@@ -374,6 +386,7 @@ fn route_bus(
 
     // No spec splitting needed — A* runs normally, SAT only affects trunk rendering.
     let empty_regions: Vec<SatCrossingRegion> = Vec::new();
+    #[cfg(not(target_arch = "wasm32"))]
     let negotiate_start = std::time::Instant::now();
     let routed_paths = negotiate_and_route(
         lanes,
@@ -387,6 +400,7 @@ fn route_bus(
         &empty_regions,
         &FxHashSet::default(),
     );
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
         phase: "negotiate_astar".to_string(),
         duration_ms: negotiate_start.elapsed().as_millis() as u64,
@@ -483,6 +497,7 @@ fn route_bus(
 
     // Route each lane, skipping tiles owned by SAT crossing zones
     // and tiles claimed by A* tap-offs.
+    #[cfg(not(target_arch = "wasm32"))]
     let route_lanes_start = std::time::Instant::now();
     for lane in lanes {
         let entity_count_before = entities.len();
@@ -497,6 +512,7 @@ fn route_bus(
             tapoffs: if has_tapoffs { lane.tap_off_ys.len() } else { 0 },
         });
     }
+    #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
         phase: "route_all_lanes".to_string(),
         duration_ms: route_lanes_start.elapsed().as_millis() as u64,
