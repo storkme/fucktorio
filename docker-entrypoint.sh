@@ -8,9 +8,8 @@ set -e
 # ---------------------------------------------------------------------------
 if [ -n "$GH_TOKEN" ]; then
     echo "gh: authenticated as $(gh api user --jq .login)"
-    git config --global --unset-all credential.https://github.com.helper 2>/dev/null || true
-    git config --global --unset-all credential.https://gist.github.com.helper 2>/dev/null || true
-    gh auth setup-git
+    git config --global credential.https://github.com.helper \
+        '!f() { echo "username=oauth2"; echo "password=$GH_TOKEN"; }; f'
 else
     echo "Warning: GH_TOKEN not set — gh will be unauthenticated"
 fi
