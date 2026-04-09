@@ -9,6 +9,34 @@ type RowsPlaced   = Extract<TraceEvent, { phase: "RowsPlaced" }>;
 type LanesPlanned = Extract<TraceEvent, { phase: "LanesPlanned" }>;
 export type PhaseSnapshot = Extract<TraceEvent, { phase: "PhaseSnapshot" }>;
 export type PhaseComplete = Extract<TraceEvent, { phase: "PhaseComplete" }>;
+type RouteFailureEvent = Extract<TraceEvent, { phase: "RouteFailure" }>;
+type CrossingZoneConflictEvent = Extract<TraceEvent, { phase: "CrossingZoneConflict" }>;
+type LaneConsolidatedEvent = Extract<TraceEvent, { phase: "LaneConsolidated" }>;
+type RowSplitEvent = Extract<TraceEvent, { phase: "RowSplit" }>;
+type LaneOrderOptimizedEvent = Extract<TraceEvent, { phase: "LaneOrderOptimized" }>;
+
+/** Draw a dashed line segment on a Graphics context. */
+function drawDashedLine(
+  g: Graphics,
+  x0: number, y0: number, x1: number, y1: number,
+  dashLen: number, gapLen: number,
+  opts: { width?: number; color?: number; alpha?: number },
+): void {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  let drawn = 0;
+  while (drawn < dist) {
+    const segEnd = Math.min(drawn + dashLen, dist);
+    g.moveTo(x0 + ux * drawn, y0 + uy * drawn)
+      .lineTo(x0 + ux * segEnd, y0 + uy * segEnd)
+      .stroke(opts);
+    drawn = segEnd + gapLen;
+  }
+}
 
 export function renderTraceOverlay(
   events: TraceEvent[],
@@ -122,11 +150,101 @@ export function renderTraceOverlay(
     layer.addChild(g);
   }
 
+  // --- Route failures (from RouteFailure) ---
+  for (const evt of events) {
+    if (evt.phase !== "RouteFailure") continue;
+    const d = (evt as RouteFailureEvent).data;
+    const cx = d.from_x * TILE_PX + TILE_PX / 2;
+    const cy = d.from_y * TILE_PX + TILE_PX / 2;
+    const halfSpan = 3;
+    const g = new Graphics();
+    g.label = "RouteFailure";
+    // Red ✕ cross at source tile
+    g.moveTo(cx - halfSpan, cy - halfSpan)
+      .lineTo(cx + halfSpan, cy + halfSpan)
+      .stroke({ width: 2, color: 0xff3333 });
+    g.moveTo(cx + halfSpan, cy - halfSpan)
+      .lineTo(cx - halfSpan, cy + halfSpan)
+      .stroke({ width: 2, color: 0xff3333 });
+    // Dashed red line from source to target
+    drawDashedLine(g, cx, cy, d.to_x * TILE_PX + TILE_PX / 2, d.to_y * TILE_PX + TILE_PX / 2,
+      6, 4, { width: 1, color: 0xff3333, alpha: 0.6 });
+    g.eventMode = "static";
+    g.on("pointerenter", () => onHover(`Route failed: ${d.item} (${d.from_x},${d.from_y})\u2192(${d.to_x},${d.to_y}) [${d.spec_key}]`));
+    g.on("pointerleave", () => onHover(null));
+    layer.addChild(g);
+  }
+
+  // --- Crossing zone conflicts (from CrossingZoneConflict) ---
+  const conflictTextStyle = new TextStyle({ fontSize: 14, fill: "#ff44ff", fontFamily: "monospace", fontWeight: "bold" });
+  for (const evt of events) {
+    if (evt.phase !== "CrossingZoneConflict") continue;
+    const d = (evt as CrossingZoneConflictEvent).data;
+    const tx = d.conflict_x * TILE_PX;
+    const ty = d.conflict_y * TILE_PX;
+    const g = new Graphics();
+    g.rect(tx, ty, TILE_PX, TILE_PX)
+      .stroke({ width: 1.5, color: 0xff44ff });
+    const excl = new Text({ text: "!", style: conflictTextStyle });
+    excl.x = tx + TILE_PX / 2 - excl.width / 2;
+    excl.y = ty + TILE_PX / 2 - excl.height / 2;
+    excl.eventMode = "none";
+    g.eventMode = "static";
+    g.on("pointerenter", () => onHover(`Crossing conflict: segment ${d.segment_id} at (${d.conflict_x},${d.conflict_y})`));
+    g.on("pointerleave", () => onHover(null));
+    layer.addChild(g);
+    layer.addChild(excl);
+  }
+
+  // --- Lane consolidation badges (from LaneConsolidated) ---
+  const badgeStyle = new TextStyle({ fontSize: 10, fill: "#ffaa44", fontFamily: "monospace", fontWeight: "bold" });
+  for (const evt of events) {
+    if (evt.phase !== "LaneConsolidated") continue;
+    const d = (evt as LaneConsolidatedEvent).data;
+    let laneX = -1;
+    if (lanesEvent) {
+      const match = lanesEvent.data.lanes.find(l => l.item === d.item);
+      if (match) laneX = match.x;
+    }
+    if (laneX < 0) continue;
+    const badge = new Text({ text: `\u00F7${d.n_trunk_lanes}`, style: badgeStyle });
+    badge.x = laneX * TILE_PX + TILE_PX / 2 - badge.width / 2;
+    badge.y = 2;
+    badge.eventMode = "static";
+    badge.on("pointerenter", () => onHover(`${d.item}: ${d.consumer_count} consumers share ${d.n_trunk_lanes} lane(s) @ ${d.rate_per_lane.toFixed(1)}/s each`));
+    badge.on("pointerleave", () => onHover(null));
+    layer.addChild(badge);
+  }
+
+  // --- Row split indicators (from RowSplit) ---
+  const splitStyle = new TextStyle({ fontSize: 10, fill: "#ffcc44", fontFamily: "monospace", fontWeight: "bold" });
+  for (const evt of events) {
+    if (evt.phase !== "RowSplit") continue;
+    const d = (evt as RowSplitEvent).data;
+    let splitY = -1;
+    if (rowsEvent) {
+      const matching = rowsEvent.data.rows.filter(r => r.recipe === d.recipe);
+      if (matching.length > 0) {
+        splitY = matching.reduce((a, b) => a.y_end > b.y_end ? a : b).y_end;
+      }
+    }
+    if (splitY < 0) continue;
+    const label = new Text({ text: `\u2295${d.split_into}`, style: splitStyle });
+    label.x = 4;
+    label.y = splitY * TILE_PX - label.height - 1;
+    label.eventMode = "static";
+    label.on("pointerenter", () => onHover(`${d.recipe}: split ${d.original_count}\u2192${d.split_into} rows \u2014 ${d.reason}`));
+    label.on("pointerleave", () => onHover(null));
+    layer.addChild(label);
+  }
+
   // --- Phase summary label (top-left, above layout) ---
   const phaseNames = events.map(e => e.phase);
   const uniquePhases = [...new Set(phaseNames)];
   const summaryStyle = new TextStyle({ fontSize: 10, fill: "#aaa", fontFamily: "monospace" });
-  const summaryText = new Text({ text: `Trace: ${uniquePhases.join(" → ")}`, style: summaryStyle });
+  const laneOrder = events.find((e): e is LaneOrderOptimizedEvent => e.phase === "LaneOrderOptimized");
+  const crossingSuffix = laneOrder ? ` | lane order: ${laneOrder.data.crossing_score} crossings` : "";
+  const summaryText = new Text({ text: `Trace: ${uniquePhases.join(" → ")}${crossingSuffix}`, style: summaryStyle });
   summaryText.x = 4;
   summaryText.y = -16;
   layer.addChild(summaryText);

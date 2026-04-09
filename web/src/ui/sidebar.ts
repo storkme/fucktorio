@@ -2,6 +2,7 @@ import type { Engine, SolverResult, LayoutResult, ItemFlow } from "../engine.js"
 import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 import { niceName, setRecipeFlows } from "../renderer/entities.js";
+import { renderDebugPanel } from "./debugPanel.js";
 
 const STYLE = `
   .sidebar-inner {
@@ -455,6 +456,10 @@ export function renderSidebar(
         const total_us = currentLayout.regions.reduce((s, r) => s + (r.solve_time_us ?? 0), 0);
         zoneDiv.textContent = `SAT: ${currentLayout.regions.length} crossing zone${currentLayout.regions.length > 1 ? "s" : ""} solved (${total_us}\u00B5s total)`;
         resultContainer.appendChild(zoneDiv);
+      }
+      // Debug stats panel (only when trace events are present)
+      if (currentLayout.trace?.length) {
+        resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
       }
     } catch (err) {
       const errDiv = document.createElement("div");

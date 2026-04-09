@@ -149,6 +149,11 @@ async function main(): Promise<void> {
   let traceOverlayLayer: Container | null = null;
   let tracePhaseIndex = -1; // -1 = show all phases
   let snapshotActive = false; // true when entities are from a PhaseSnapshot
+  let prevSnapshotEntities: Set<string> | null = null;
+
+  function entityKey(e: PlacedEntity): string {
+    return `${e.x},${e.y},${e.name},${e.recipe ?? ""}`;
+  }
 
   function getSnapshotForPhase(
     events: TraceEvent[],
@@ -178,29 +183,60 @@ async function main(): Promise<void> {
   const nextBtn = document.createElement("button");
   nextBtn.textContent = "\u25B6";
   nextBtn.style.cssText = "background:none;border:1px solid #555;color:#ccc;cursor:pointer;padding:0 4px;border-radius:2px;font-size:10px";
+  const failBtn = document.createElement("button");
+  failBtn.style.cssText = "background:#442;color:#f66;border:1px solid #833;cursor:pointer;padding:0 6px;border-radius:2px;font-size:10px;display:none";
   stepBar.appendChild(prevBtn);
   stepBar.appendChild(phaseLabel);
   stepBar.appendChild(nextBtn);
+  stepBar.appendChild(failBtn);
   container.appendChild(stepBar);
 
   function updateStepControls(): void {
     if (!debugCb.checked || !lastLayout?.trace?.length) {
       stepBar.style.display = "none";
+      failBtn.style.display = "none";
       return;
     }
-    const phases = getTracePhases(lastLayout.trace as TraceEvent[]);
+    const trace = lastLayout.trace as TraceEvent[];
+    const phases = getTracePhases(trace);
     if (phases.length === 0) {
       stepBar.style.display = "none";
+      failBtn.style.display = "none";
       return;
     }
     stepBar.style.display = "flex";
+
+    // Compute cumulative PhaseTime durations
+    const timeEvents = trace.filter(e => e.phase === "PhaseTime") as Extract<TraceEvent, { phase: "PhaseTime" }>[];
+    // PhaseComplete events carry entity_count
+    const completeEvents = trace.filter(e => e.phase === "PhaseComplete") as Extract<TraceEvent, { phase: "PhaseComplete" }>[];
+
     if (tracePhaseIndex < 0) {
-      phaseLabel.textContent = `all (${phases.length})`;
+      const totalMs = timeEvents.reduce((s, t) => s + t.data.duration_ms, 0);
+      const totalEntities = completeEvents.length > 0 ? completeEvents[completeEvents.length - 1].data.entity_count : 0;
+      phaseLabel.textContent = `all (${phases.length}) — ${totalEntities} entities, ${totalMs}ms`;
     } else {
-      phaseLabel.textContent = phases[tracePhaseIndex].name;
+      // Sum PhaseTime events up to and including the current phase's PhaseComplete index
+      const phaseEndIdx = phases[tracePhaseIndex].eventIndex;
+      let elapsedMs = 0;
+      for (const t of timeEvents) {
+        const tIdx = trace.indexOf(t as TraceEvent);
+        if (tIdx <= phaseEndIdx) elapsedMs += t.data.duration_ms;
+      }
+      const entityCount = completeEvents.find(c => c.data.phase === phases[tracePhaseIndex].name)?.data.entity_count ?? 0;
+      phaseLabel.textContent = `${phases[tracePhaseIndex].name} — ${entityCount} entities, ${elapsedMs}ms`;
     }
     prevBtn.disabled = tracePhaseIndex <= 0 && tracePhaseIndex !== -1;
     nextBtn.disabled = tracePhaseIndex >= phases.length - 1;
+
+    // Failure badge
+    const failCount = trace.filter(e => e.phase === "RouteFailure").length;
+    if (failCount > 0) {
+      failBtn.textContent = `\u26A0 ${failCount}`;
+      failBtn.style.display = "inline-block";
+    } else {
+      failBtn.style.display = "none";
+    }
   }
 
   function updateTraceOverlay(): void {
@@ -222,9 +258,32 @@ async function main(): Promise<void> {
         { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
         entityLayer, onHover, onSelect,
       );
+      // Entity delta highlight: tint newly added entities green for 1 second
+      const newKeys = new Set(snapshot.entities.map(entityKey));
+      const prev = prevSnapshotEntities;
+      if (prev) {
+        const added = snapshot.entities.filter(e => !prev.has(entityKey(e)));
+        const addedPositions = new Set(added.map(e => `${e.x},${e.y}`));
+        for (const child of entityLayer.children) {
+          if ("tint" in child && addedPositions.size > 0) {
+            // Check if this graphic corresponds to an added entity by position
+            const cx = (child as any).x;
+            const cy = (child as any).y;
+            // Match by tile center position
+            const tx = Math.floor((cx ?? -1) / TILE_PX);
+            const ty = Math.floor((cy ?? -1) / TILE_PX);
+            if (added.some(e => e.x === tx && e.y === ty)) {
+              (child as any).tint = 0x44ff88;
+              setTimeout(() => { if ("tint" in child) (child as any).tint = 0xffffff; }, 1000);
+            }
+          }
+        }
+      }
+      prevSnapshotEntities = newKeys;
     } else if (snapshotActive) {
       // Was showing a snapshot — restore full entity rendering.
       snapshotActive = false;
+      prevSnapshotEntities = null;
       if (lastLayout) {
         highlightCtrl = renderLayout(lastLayout, entityLayer, onHover, onSelect);
       }
@@ -271,7 +330,53 @@ async function main(): Promise<void> {
     updateTraceOverlay();
   });
 
-  debugCb.addEventListener("change", updateTraceOverlay);
+  // --- Jump to first route failure ---
+  function jumpToFirstFailure(): void {
+    if (!lastLayout?.trace) return;
+    const failures = (lastLayout.trace as TraceEvent[]).filter(e => e.phase === "RouteFailure") as Extract<TraceEvent, { phase: "RouteFailure" }>[];
+    if (failures.length === 0) return;
+    const first = failures[0].data;
+    const targetX = first.from_x * TILE_PX + TILE_PX / 2;
+    const targetY = first.from_y * TILE_PX + TILE_PX / 2;
+    viewport.moveCenter(targetX, targetY);
+    // Pulse the first RouteFailure marker in the overlay
+    if (traceOverlayLayer) {
+      const marker = traceOverlayLayer.children.find(c => c.label === "RouteFailure");
+      if (marker) {
+        let pulses = 0;
+        const interval = setInterval(() => {
+          marker.alpha = marker.alpha < 0.5 ? 1.0 : 0.3;
+          pulses++;
+          if (pulses >= 6) {
+            marker.alpha = 1.0;
+            clearInterval(interval);
+          }
+        }, 100);
+      }
+    }
+  }
+
+  failBtn.addEventListener("click", jumpToFirstFailure);
+
+  // --- Keyboard shortcuts for step-through ---
+  document.addEventListener("keydown", (e) => {
+    // Don't fire when typing in inputs
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // Only when step bar is visible
+    if (stepBar.style.display === "none") return;
+
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      prevBtn.click();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      nextBtn.click();
+    } else if (e.key === "f") {
+      e.preventDefault();
+      jumpToFirstFailure();
+    }
+  });
 
   // --- Validation overlay toggle ---
   const valToggle = document.createElement("label");
@@ -423,6 +528,7 @@ async function main(): Promise<void> {
     lastLayout = layout;
     tracePhaseIndex = -1;
     snapshotActive = false;
+    prevSnapshotEntities = null;
     // Destroy previous selection controller (new layout = new tile map)
     if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
     annotationBar.style.display = "none";
