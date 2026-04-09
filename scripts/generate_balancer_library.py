@@ -691,7 +691,7 @@ def _maybe_sync() -> None:
     """Run sync_balancer_to_rust.py if it exists."""
     if not SYNC_SCRIPT.exists():
         return
-    print(f"\nSyncing to Rust...", flush=True)
+    print("\nSyncing to Rust...", flush=True)
     result = subprocess.run(
         [sys.executable, str(SYNC_SCRIPT)],
         cwd=str(SYNC_SCRIPT.parent.parent),

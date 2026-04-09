@@ -6,6 +6,7 @@ DO NOT EDIT MANUALLY. Regenerate with:
 Shapes are oriented for vertical SOUTH flow: inputs at the top
 (facing SOUTH), outputs at the bottom (facing SOUTH).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -1865,7 +1866,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="splitter", x=0, y=3, direction=4),
             BalancerTemplateEntity(name="transport-belt", x=0, y=4, direction=2),
         ),
-        input_tiles=((0, 1),),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)),
         output_tiles=((2, 5),),
         source_blueprint="0eNqtlNFugyAUhl+l4bprRAF1r7I0i7akIVEggMuM4d13apxrOsa6yZVwOPwfnvPDhNpu4NoI6dDzbkLipKSF0cuErLjIppujbtQcBkg43qP9Dsmmn+dWd8I5bpCHoJBn/g5R7I/7JRVSvuQh+MaNFUpCPK8wKUldshJnjDJY49IJJ/gCn2fjqxz6FuRBFDK0spAxb5/QlZQdKITH6/Ih86FzQewsDD8t23JI+q6dh7TzG216q+1MI61Wxj21vHP3BBIkFCFCkZJAQgTyPwILEmiIgFdCvqUDLFyfbNWmj2iHK1PGK3OnPYCJzcUo+K61+XS/GpweHApSqrg/iy3VqeP+LLa7B2dxg/4JEf4JjON9SIEIXmSaFFHEe0ESIH65yuRxwwr5o18xjRuWbjEsZvG3giaoUhlvRApEFb8U20pUx7scP78/ev8BGB9bWQ==",
     ),
@@ -1905,7 +1906,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=3, direction=2),
             BalancerTemplateEntity(name="transport-belt", x=0, y=4, direction=0),
         ),
-        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)),
         output_tiles=((4, 6), (5, 6)),
         source_blueprint="0eNqtlltuwjAQRbeC/E2R3yFspUIVDwtZCk7kOFVR5L13GlFKVTMJjb9iT5x7hplrm57sq8403rpANoue2EPtWhi99qS1J7erhmi4NAYGxAZzJssFcbvzMG+byoZgPIkQtO5oPiDK4nZ5XQpLfuQh+G58a2sHcb5mspBloQtGtdLwzrhggzVX+DC7vLnuvAd5EIUVTd3CiuHznnyR+EpB+AIjulLxLq/gd65tah9e9qYayEfrzeH6MYelfwk8RRA5CSJFkDkJMkXQOQkqRaA3AlvRmPLHJG2d0mZ32r+y78Bu/uRreKbzh/nNt67pAklCC9xYE6DfkLoLDylr3FwzfhpGLVNUladZjOJeY/O9xhhuNp4BwfH250AIvPc5EBI/WfisRivcRU/lL9MIjTdaZChRgR8uYlaJ1riLxPRDBDmpWIkbKUOVOMWNJOb3mjPcTjkQHLeTzFCoB5uaphH3/5MSYjJdkjGxacUYubFVhmKMXNxqzt7iIxc0nn9acuQ2/o9kiW+cp6qs4zbGT55VibI=",
     ),
@@ -1950,7 +1951,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=4, direction=0),
             BalancerTemplateEntity(name="transport-belt", x=0, y=5, direction=0),
         ),
-        input_tiles=((0, 0), (1, 0)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)),
         output_tiles=((3, 7), (4, 7), (5, 7)),
         source_blueprint="0eNq1lm1rwjAQgP+K5LOTvFf3V4YMX4IEalrSdExK//tuRZxjt+u6xk8mZ3pPenmapGP7snV19CGx50XH/KEKDbReOtb4U9iVQzRdagcN5pM7s+WChd156Dd16VNykfUQ9OHo3iEq+u3yOhSGfKWH4JuLja8CxOVa6EJvClsIbo2F/1xIPnl3hQ+9y2toz3tID0lhRF01MGJ4vGOfJLkyEL5Ai69MfzevFHehqauYnvauHMhHH93h+rCEoT8JEiOonASFEXROgsYINifBYIQiJ8FiBH4jiBXvMQP/lLvAcou73N9m34LQ8RQr+MXnD/3blxHqNjEUuqbVFWTJ0IwbWtUZr1G16df3EBzDmjwrIwStrpgvlpC0uzkQihZMPkQwoWnD5HTDhKEVkw9SzNJbpJylWEErJjOs/5pWLAdiQ++Pak6JJKdNUtNNkoI2SWU4uSVtTQ6Eove+eVUfObYnzV/jCENbozOUyOILzXHE/dURSVbQ9dYZSrKmqz4JYXHEyLdqMtwpOX3imDliqpFbt5m+HaiRa/Z/Uo7cq838hVSa1nEiYtv3Hx9XHAY=",
     ),
@@ -2002,7 +2003,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=1, direction=4),
             BalancerTemplateEntity(name="transport-belt", x=0, y=2, direction=2),
         ),
-        input_tiles=((0, 1), (2, 1), (5, 1)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)),
         output_tiles=((2, 9), (3, 9), (4, 9), (5, 9)),
         source_blueprint="0eNq1lttqwzAMhl+l+HorPifZq4wyejDFkDohccZKyLtPhNJtTNXW2L2qozr6bPn/5YxsVw+u7XyI7GU1Mr9vQg+j15H1/hi29RyN59bBgPnoTuxpxcL2ND/3be1jdB2bIOjDwX1AVEybp8tUmPKVHoLvrut9EyAuS6ELXRW2ENwaC/+5EH307gKfn85vYTjtID0khRlt08OM+fWRzaS1gfAZRnxtpm/rit029G3Txeedq2fywXduf3lZwtTfBIkRZE6CwghqGUGjBI0RdE6CwQhmGcGiBIsRbM5zKDBCkZNQYoQqJ6HCCPxKEGs+YT79V27BaSuIn8sfwPfdsWvgF98APF8bSGiHyHCqwMXLceqtLeGyFZLWrSBPBE+paKEuSalpZSYUvhni7cqjpi4zicnSXhDpXhAFfTnIpPWXtBnkY8xQ0XeFzHDfcdoS8n79SkFbYklKSVtCPsYSUtGqzVF/TbdwlaJaaWhLqAzrt7QxciAK+nsmrUQlLVa1QKwVLdYMJVGc7tVJJVGCVn2O9UtamPoh7VQpWqs6w8Y03bF10sEY2gj6MV1QWfqKSNtTQfsvx5mUtB/1/RZXf3x4m5SSaE6bw6SXRAvaCTRi2kzTJzZe8Bs=",
     ),
@@ -2462,7 +2463,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=4, direction=2),
             BalancerTemplateEntity(name="transport-belt", x=0, y=5, direction=0),
         ),
-        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)),
         output_tiles=((5, 6), (6, 6)),
         source_blueprint="0eNqtlttugzAMhl+lyvVW5UBCu1eZqqmHqIpEAwphWoV493mo6zrNdejIFYkJ/xfsn5ie7arONsH5yF4WPXP72rcweu1Z645+W43ReG4sDJiL9sSeFsxvT+O8bSoXow1sgKDzB/sBUTFsni5LYcmPPATfbWhd7SEuV6Ioi3VpSsGNNnDP+uiisxf4ODu/+e60A3kQhRVN3cKK8fGefZHkUkP4DCO+1MPNvmLY+rapQ3ze2WokH1yw+8vDEpb+JUiMoHISFEYochIKjGByEjRG4FeCWPIB88ckbYNpixvtX7vvwG7hGGq44vuH+dW3vukiQ6ElbawJ0G9I3cW7lBVtrhmvRlHXGFXnKZbgtNfEfK8JQZtNZkBIuvw5EIqufQ5EQZ8sclahNe2ih/Zf4AhDF1plSFFJHy5qVopWtIvU9EOEOKnEmjZShixJThtJza+1FLSdciAkbaciQ6LufNQcR9z+JyFiBZ6SlNi0ZCQ6ts6QjETj1nO+LZlo0PT+cckV7nKOSyaKl2iyer6fFadLaDL8mgq6hDkQiVabA5FoteZxr6hEa/2PZKKhPpQIM2yG4RMgtTMM",
     ),
@@ -2535,7 +2536,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=5, direction=0),
             BalancerTemplateEntity(name="transport-belt", x=0, y=6, direction=0),
         ),
-        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)),
         output_tiles=((1, 11), (2, 11), (3, 11)),
         source_blueprint="0eNq1mN1u2zAMhV+l8HU7mPqzs1cZiiJphUJAIhu2PCwI/O5TvWALMIZ0IuYqtiLriJQ+HlunareffD+EmKrvT6cqvHdxzFc/TtUYPuN2v7SmY+/zRRWSP1TPT1XcHpb7sd+HlPxQzbkxxA//K7fC/Pp87pq7/Bs+N/70wxi6mNtVC6Yxm8Y1UDvr8n8+ppCCP4svd8e3OB12efg8aO7Rd2PusTx+qr6U6m82Nx//XM0X85ryVIbPocu/Lzu/X7Q/wuDfz4+rfP83pthP6SuA/0UVJqquiaZhG8e+GxIuiSpoTEHfp2BQBYMpWInEdVO6mjmLqTrJuBym0EgqNJhCe5+CQxVaTGEjqbDBFKCWlICaRhPKKQGgQQR+E6/ZtKBoGiUi0TSO8JA6BobG8UZVs1LV0ohCOaLgaEbhMdUNGgYrOjR8zJbGSAlsPrwaXEjUM2buqwZXNQ2PwPwVWgaM0PwVTabE/DWNoSoHQhmaOYkoLO1aZavgGLIkctTQpGmBHLW0YemiHG1o0gTmr2saBv0Qm9JA86HL114rmg/9GMPQmvapov2gDQ2kRNosg6XEnsPRB1ENBn0jINHSJmuKlnpD1xWz/kWY4NAwVi6QJcNYeVGWDGPlRuCrmrFyiRQxVi4hYemyJJEoRxcniSgapnBIaDBv51ZA4oqt17jE5dEbcv5S03y5dXzhX/wWaL5s+aGCVTRf9v4vVvLYivFpgWW2jFtLSHBubUuqq+V8WiICxqedgATj064oR4xPu9vPBxxjyvcMyXDsyjl2DMc3SrzO829+14fc",
     ),
@@ -2598,7 +2599,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=6, direction=4),
             BalancerTemplateEntity(name="transport-belt", x=0, y=7, direction=2),
         ),
-        input_tiles=((6, 0),),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)),
         output_tiles=((2, 9), (3, 9), (4, 9), (5, 9)),
         source_blueprint="0eNq1V9tu4yAQ/ZWK57YyMGB7f2VVVUmLKqQEWzZebRT535f1RnvR0hMnjJ+CCZ4zl3OG8VnsD5PrBx+i+PJwFv6tC2NafT2L0X+E3WHZjafepYXw0R3F44MIu+PyPPYHH6MbxJw2fXh339OunF8eL0fTkT/m0+Y3N4y+C2lfNZJqamtby8oam/5zIfro3QV8eTq9hum4T+aT0XSi78Z0Ynn9LH4iVc8mbZ9+rea//IrDLox9N8SnvTssyO9+cG+Xl1U6+j+CyiFITgSdQ1D3IVAWgXIIxBmDySEYzhhsDsFyxlDnEGrOGBrMJfkvwpSEM3wMXfrNR5Gefysw9FMUWdAW0+tGUFoHKqscquYItZvi57ASM13CGuZNKkxtWU4LqTG3VyRrVXIIE1yWS0hm+0DLCmFxy1fP1Zy7itYZr7FC1SYKlQ2WqGKgWIv1eBOEzV+UFdaeXleYT4xLrEIO/xVWodqmZams+BsePivCelQM85HBktGbSEZZLBnNEFiNKacZKNdgyumNKNfii0CXUE5XmHIMldFXpn4q8l9hZhGD/xo34zL/CdOWbh+BtME0pfXzCZC0tpiVHImvca8tS3yDic/hf4t7rSnxnypMfHP/hwJqRiSxGEx52kjhyaQsbVeGd3O73ujKoH6PSYNbpi1KgcW0tJuMAFRjvloG4jSYm/aOQrSYi3abK99U+FYoqr+RWAIMlTAKS+JKJV7m+Qf/hlp8",
     ),
@@ -3121,7 +3122,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=4, direction=4),
             BalancerTemplateEntity(name="splitter", x=0, y=5, direction=4),
         ),
-        input_tiles=((0, 2), (7, 2)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0)),
         output_tiles=((3, 8), (4, 8), (5, 8)),
         source_blueprint="0eNq1l29vwiAQxr+K4bUz/KfdV1nMohtZSJQ2LV1mmn733Rrjlg1PHecrKdL7Ac9zBx3Zdjf4tgsxscfFyMJLE3toPY2sD29xs5t706H10GAh+T1bLljc7Ofnvt2FlHzHJugM8dV/QK+Y1svjUBjyHR46333XhyZCv6yEdrp21glujYX/fEwhBX+Ez0+H5zjstxAegsKItulhxPz6yL5IcmWg+wAtvjLTj3mlbhP7tunSw9bvZvJr6PzL8WUJQ/8SZI6gKAkqRzCUBJ0j2P8RdJZgcgR+IogVn3L+uGr2FtdYoLPPRnS4pqJ8x6scQdPsR437RZSrKThuGApENnPFCSFLdkhI3DKSYP4K95C83ZVC46ZR122JzQc3uGtu2pIzCIu7RpanlchmbkWKqPBSpoqMWePGVOXGlBw3JgVC4F5S5V6SEveSIjjYsxnsaISWGjcqxfwN7iVNILTFvaQJVuHwovcLMcBlsnvrGvjNQ+D5dCuN7XCm1Moqby+ep/68z2aC1biRCpbQDOnsGhTHLUYgjhJ4LTQlKaIkfgMwd1FeKTxrTHnWKI1njbmTHy6c8Ob2G4m6cKL/J6TDVbf3Ub3CVbcEqte46vY+qmuO109bkqJa4Prb2/XXEi8prmi+F5LbEXxKX0huCoTBJaVAWLxWXK3Cepo+AVXWigg=",
     ),
@@ -3277,7 +3278,7 @@ BALANCER_TEMPLATES: dict[tuple[int, int], BalancerTemplate] = {
             BalancerTemplateEntity(name="transport-belt", x=0, y=10, direction=0),
             BalancerTemplateEntity(name="transport-belt", x=0, y=11, direction=0),
         ),
-        input_tiles=((2, 2), (5, 2), (7, 2)),
+        input_tiles=((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0)),
         output_tiles=((1, 14), (2, 14), (3, 14), (4, 14), (5, 14), (6, 14)),
         source_blueprint="0eNq1muFq2zAUhV+l+HdXLOnqSt6rjDKS1hRD6gTHGQsh7z4tlLUw5dw4uvoVW3F0JF2dr8eip2a9OfS7aRjn5vvDqRletuM+Xf04NfvhbVxtLq3zcdeni2aY+/fm8aEZV++X+/1uM8xzPzXn1DiMr/3v1GrOz48fj6ZHPrtPjb/6aT9sx9Ruo6FAXeBgWvacvuvHeZiH/kP8cnf8OR7e16n71Gl6YrfdpycuPz81F6Unn5qP6ap98ucv4zqkoUxv0zZ9flv3m4v26zD1Lx8/t+n+35zG3WH+O4H/RW1O1F4TnafVuN9tpzkvmVVwOQV3nwJlFSinQBoLtz3MV1fO51R95XJxTpQ1yxVyCkFTIeYUoqZCl1PoNLecabNmbWtvOpOHhFGdW5YJn1MzT+05B8ibSmMcBo6R1+2mdSJMHVO+yYzH2NGQEOyOJfJdCv7WGLVgcFOFjEYwvcLErGR6U24+Kxl84erRjTEg63ljNYqGfGqzODCqLrKEg5Ut4Zn1mGdWYfyMWaYhEXCYKVuiiClm6wTbDoPOLmenazHYFArhDKaYLSeMswLFNDScQDFbByeOBIxplCjreON0zOJYAKLGDAIOeK5oAhHT1lVxu+swht3tsRKoUItJ7OrsajI4aRbViyymc516kcujtM2rfj2EyXRGV4gm9Xbb6YIXWFar6ixwxpWTgIJAGw0NAQhUZ4MJQCCd90wvEIEqnT0ZnNeohAheIAKV5wPvcDij5eHMEw5n93TpcRhbtBCcl2AhjFG5AX0QQlHZbokCpjRm0AmYUtDgFociX7JIbDCNvML4LSaRhoTDOaRsiQgjzZdThz0Gm4YEY7D55RTigMHmyynEEYNOY+90AugUNEIrJLWiDRqMgFGNGVgBdBoaDucxLlokwqBjlfewIBy9c7mRA2MccbnrQsA4YoVaR4wjrpK9w5Wj+Davil/uomRqvv9AHEXsKNmd60T7aIU8VeTPKJ23K2y6SDhJhaIJeEyvUGVHR8ZYC8v/rMeA81ooB0yMGJMaEh1mWKhjkq7FXAsK/0NgcOy6o+SdxTHrni6dEKsUatyRQOCFGs/n8x8tcXTj",
     ),
