@@ -261,22 +261,29 @@ def entity_tile(e: RawEntity) -> tuple[int, int]:
 def identify_ports(
     entities: list[RawEntity],
 ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Find input (top-edge SOUTH belts) and output (bottom-edge SOUTH belts).
+    """Find input (top-edge SOUTH belts/splitters) and output (bottom-edge SOUTH belts).
 
     Post-rotation, the bus's flow convention is SOUTH:
-      - inputs are belts facing SOUTH at the topmost y (items enter here)
+      - inputs are belts/splitters facing SOUTH at the topmost y (items enter here)
       - outputs are belts facing SOUTH at the bottommost y (items exit here)
-    """
-    belts = [e for e in entities if e.name == "transport-belt"]
-    if not belts:
-        return [], []
-    belt_tiles = [(entity_tile(e), e) for e in belts]
-    min_y = min(ty for (_, ty), _ in belt_tiles)
-    max_y = max(ty for (_, ty), _ in belt_tiles)
 
-    inputs = sorted((tx, ty) for (tx, ty), e in belt_tiles if ty == min_y and e.direction == FACTORIO_SOUTH)
-    outputs = sorted((tx, ty) for (tx, ty), e in belt_tiles if ty == max_y and e.direction == FACTORIO_SOUTH)
-    return inputs, outputs
+    Splitters at the top row each accept 2 input lanes (x and x+1).
+    """
+    conveyors = [e for e in entities if e.name in ("transport-belt", "splitter")]
+    if not conveyors:
+        return [], []
+    conveyor_tiles = [(entity_tile(e), e) for e in conveyors]
+    min_y = min(ty for (_, ty), _ in conveyor_tiles)
+    max_y = max(ty for (_, ty), _ in conveyor_tiles)
+
+    inputs: list[tuple[int, int]] = []
+    for (tx, ty), e in conveyor_tiles:
+        if ty == min_y and e.direction == FACTORIO_SOUTH:
+            inputs.append((tx, ty))
+            if e.name == "splitter":
+                inputs.append((tx + 1, ty))
+    outputs = sorted((tx, ty) for (tx, ty), e in conveyor_tiles if ty == max_y and e.direction == FACTORIO_SOUTH)
+    return sorted(inputs), outputs
 
 
 def derive_reverse(n: int, m: int, template: dict) -> dict:
