@@ -265,17 +265,14 @@ async function main(): Promise<void> {
         const added = snapshot.entities.filter(e => !prev.has(entityKey(e)));
         const addedPositions = new Set(added.map(e => `${e.x},${e.y}`));
         for (const child of entityLayer.children) {
-          if ("tint" in child && addedPositions.size > 0) {
-            // Check if this graphic corresponds to an added entity by position
-            const cx = (child as any).x;
-            const cy = (child as any).y;
-            // Match by tile center position
-            const tx = Math.floor((cx ?? -1) / TILE_PX);
-            const ty = Math.floor((cy ?? -1) / TILE_PX);
-            if (added.some(e => e.x === tx && e.y === ty)) {
-              (child as any).tint = 0x44ff88;
-              setTimeout(() => { if ("tint" in child) (child as any).tint = 0xffffff; }, 1000);
-            }
+          // Skip overlay containers and non-graphics children
+          if (!("tint" in child) || addedPositions.size === 0) continue;
+          const g = child as { x: number; y: number; tint: number };
+          const tx = Math.round(g.x / TILE_PX);
+          const ty = Math.round(g.y / TILE_PX);
+          if (addedPositions.has(`${tx},${ty}`)) {
+            g.tint = 0x44ff88;
+            setTimeout(() => { g.tint = 0xffffff; }, 1000);
           }
         }
       }
@@ -341,7 +338,10 @@ async function main(): Promise<void> {
     viewport.moveCenter(targetX, targetY);
     // Pulse the first RouteFailure marker in the overlay
     if (traceOverlayLayer) {
-      const marker = traceOverlayLayer.children.find(c => c.label === "RouteFailure");
+      const marker = traceOverlayLayer.children.find(c =>
+        c.label === "RouteFailure" &&
+        Math.abs(c.x - targetX) < 1 && Math.abs(c.y - targetY) < 1,
+      );
       if (marker) {
         let pulses = 0;
         const interval = setInterval(() => {

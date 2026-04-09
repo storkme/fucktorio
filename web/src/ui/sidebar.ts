@@ -458,7 +458,7 @@ export function renderSidebar(
         resultContainer.appendChild(zoneDiv);
       }
       // Debug stats panel (only when trace events are present)
-      if (currentLayout.trace?.length) {
+      if (currentLayout.trace?.length && options?.getDebugMode?.()) {
         resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
       }
     } catch (err) {
