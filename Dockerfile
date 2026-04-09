@@ -1,4 +1,4 @@
-FROM node:20
+FROM node:24
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,5 +22,13 @@ ENV PATH="/home/node/.local/bin:$PATH"
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/home/node/.cargo/bin:$PATH"
 
+# wasm-pack (for WASM bundle)
+RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
 WORKDIR /workspace
-USER node
+
+COPY --chown=node:node docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["bash"]
