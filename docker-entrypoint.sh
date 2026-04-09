@@ -8,6 +8,7 @@ set -e
 # ---------------------------------------------------------------------------
 if [ -n "$GH_TOKEN" ]; then
     echo "gh: authenticated as $(gh api user --jq .login)"
+    gh auth setup-git
 else
     echo "Warning: GH_TOKEN not set — gh will be unauthenticated"
 fi
