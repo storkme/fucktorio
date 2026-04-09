@@ -72,13 +72,14 @@ Kovarex enrichment process (`kovarex-enrichment-process`) is a self-feeding reci
 
 ## Debugging / Tracing
 
-Layout bugs are hard to diagnose because the placement engine doesn't emit intermediate state.
+Full design spec: [`docs/trace-debug-ui.md`](docs/trace-debug-ui.md)
 
-- [ ] Trace events for bus router — emit structured events (JSON or log lines) for each phase: lane planning, balancer stamping, feeder routing, tap-off placement, trunk segments
-- [ ] A* path visualization — optionally dump explored nodes and final path for each A* call, renderable as an overlay in the web app
-- [ ] Negotiation round logging — `negotiate_lanes` runs multiple A* iterations with congestion updates; log per-round congestion maps and path changes
-- [ ] Validation issue overlay — render validation errors/warnings as positioned markers on the web app canvas (using `x`/`y` from `ValidationIssue`)
-- [ ] Export intermediate layout states — snapshot `LayoutResult` at each routing phase for step-through debugging
+The pipeline emits 22 structured trace events; 8 are already visualized. Phased plan to surface the rest:
+
+- [ ] **Phase 1 — Grid overlays** (`traceOverlay.ts`): RouteFailure (red ✕ + dashed line to dest), CrossingZoneConflict (magenta tile outline), LaneConsolidated (÷N badge on lane column), RowSplit (⊕N badge on row boundary), LaneOrderOptimized (crossing score in summary text)
+- [ ] **Phase 2 — Debug stats panel** (new `debugPanel.ts` + sidebar wiring): Performance timeline bar (PhaseTime), Solver summary (SolverCompleted), Layout stats (LanesPlanned/RowsPlaced/LaneSplit), Lane ordering score, A* routing stats + failure list (NegotiateComplete/RouteFailure), SAT zone summary, Lane consolidation table, Power poles, Validation summary (ValidationCompleted)
+- [ ] **Phase 3 — Enhanced step-through**: Phase stats (entity count + elapsed ms) in step label, entity delta highlight on step-forward, jump-to-failure shortcut (⚠ badge + `f` key), Arrow key navigation
+- [ ] **Phase 4 — Run history**: localStorage trace history (last 20 runs), comparison timeline view, hotspot annotation (>50% phase flagged), export trace JSON button
 
 ## Visual Polish: Game Icons & Entity Graphics
 
