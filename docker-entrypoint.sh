@@ -35,7 +35,7 @@ echo "--- uv sync ---"
 uv sync
 
 echo "--- maturin develop (PyO3 A* extension) ---"
-uv run maturin develop --manifest-path crates/pyo3-bindings/Cargo.toml
+uvx maturin develop --manifest-path crates/pyo3-bindings/Cargo.toml
 
 echo "--- wasm-pack (WASM bundle for web app) ---"
 wasm-pack build crates/wasm-bindings --target web \
