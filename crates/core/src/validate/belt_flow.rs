@@ -2163,7 +2163,7 @@ fn compute_lane_rates_impl(
         // input" surface tile being correctly seeded — for external inputs it's
         // simpler and safer to seed every graph source independently.
         let mut sources_by_item: FxHashMap<&str, Vec<(i32, i32)>> = FxHashMap::default();
-        for (&pos, _) in &belt_dir_map {
+        for &pos in belt_dir_map.keys() {
             if feeders.contains_key(&pos) {
                 continue; // has upstream feeders, not a source
             }
