@@ -1,4 +1,5 @@
 import { Container } from "pixi.js";
+import type { Graphics } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
@@ -16,7 +17,7 @@ import {
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
 import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
-import { renderValidationOverlay } from "./renderer/validationOverlay";
+import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -400,6 +401,7 @@ async function main(): Promise<void> {
   container.appendChild(valToggle);
 
   let valOverlayLayer: Container | null = null;
+  let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
   function updateValidationOverlay(): void {
@@ -407,8 +409,13 @@ async function main(): Promise<void> {
       entityLayer.removeChild(valOverlayLayer);
       valOverlayLayer.destroy();
       valOverlayLayer = null;
+      valCircleMap = new Map();
     }
-    if (!valCb.checked || !lastLayout) return;
+    clearPulse();
+    if (!valCb.checked || !lastLayout) {
+      populateIssuesPanel(cachedValidationIssues ?? []);
+      return;
+    }
     if (!cachedValidationIssues) {
       try {
         cachedValidationIssues = engine.validateLayout(lastLayout, null);
@@ -416,8 +423,11 @@ async function main(): Promise<void> {
         cachedValidationIssues = [];
       }
     }
-    if (cachedValidationIssues.length === 0) return;
-    valOverlayLayer = renderValidationOverlay(
+    if (cachedValidationIssues.length === 0) {
+      populateIssuesPanel([]);
+      return;
+    }
+    const result = renderValidationOverlay(
       cachedValidationIssues,
       entityLayer,
       (text) => {
@@ -429,6 +439,9 @@ async function main(): Promise<void> {
         }
       },
     );
+    valOverlayLayer = result.layer;
+    valCircleMap = result.circleMap;
+    populateIssuesPanel(cachedValidationIssues);
   }
 
   valCb.addEventListener("change", updateValidationOverlay);
@@ -437,6 +450,84 @@ async function main(): Promise<void> {
   const legendEl = document.createElement("div");
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
   container.appendChild(legendEl);
+
+  // --- Validation issues panel (right side, below toggles) ---
+  // top:112px = stacked toggle buttons (debug ~42px, trace ~44px, validation ~26px) + 8px gap.
+  // Update if the toggle stack height changes.
+  const issuesPanel = document.createElement("div");
+  issuesPanel.style.cssText = "position:absolute;top:112px;right:8px;background:rgba(0,0,0,0.85);color:#e0e0e0;font:11px monospace;padding:6px 8px;border-radius:4px;border:1px solid #555;z-index:10;display:none;max-width:360px;max-height:calc(100% - 130px);overflow-y:auto;line-height:1.4";
+  container.appendChild(issuesPanel);
+
+  // Pulse state: tracks the markers being pulsed and the Pixi ticker callback.
+  let activePulse: { markers: Graphics[]; tickerFn: () => void } | null = null;
+
+  function clearPulse(): void {
+    if (activePulse) {
+      for (const m of activePulse.markers) m.alpha = VALIDATION_CIRCLE_ALPHA;
+      app.ticker.remove(activePulse.tickerFn);
+      activePulse = null;
+    }
+  }
+
+  function pulseCircle(key: string): void {
+    clearPulse();
+    const markers = valCircleMap.get(key);
+    if (!markers || markers.length === 0) return;
+    // Toggle alpha every ~150ms using the Pixi ticker so the pulse is synced
+    // with the render loop rather than an independent setInterval.
+    let elapsed = 0;
+    let on = true;
+    const tickerFn = (): void => {
+      elapsed += app.ticker.deltaMS;
+      if (elapsed >= 150) {
+        elapsed -= 150;
+        on = !on;
+        const alpha = on ? 1.0 : 0.35;
+        for (const m of markers) m.alpha = alpha;
+      }
+    };
+    app.ticker.add(tickerFn);
+    activePulse = { markers, tickerFn };
+  }
+
+  function populateIssuesPanel(issues: ValidationIssue[]): void {
+    issuesPanel.innerHTML = "";
+    if (!valCb.checked || issues.length === 0) {
+      issuesPanel.style.display = "none";
+      return;
+    }
+    issuesPanel.style.display = "block";
+    for (const issue of issues) {
+      const row = document.createElement("div");
+      row.style.cssText = "padding:3px 0;border-bottom:1px solid #333;cursor:default;display:flex;align-items:baseline;gap:6px";
+      if (issue.x == null || issue.y == null) {
+        row.style.opacity = "0.6";
+      }
+      const dot = document.createElement("span");
+      dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${issue.severity === "Error" ? "#f44" : "#fa0"}`;
+      row.appendChild(dot);
+      const cat = document.createElement("span");
+      cat.style.cssText = `color:${issue.severity === "Error" ? "#f66" : "#fa0"};flex-shrink:0`;
+      cat.textContent = issue.category;
+      row.appendChild(cat);
+      const msg = document.createElement("span");
+      msg.style.cssText = "color:#ccc";
+      msg.textContent = issue.message;
+      row.appendChild(msg);
+      if (issue.x != null && issue.y != null) {
+        row.style.cursor = "pointer";
+        const key = `${issue.x},${issue.y}`;
+        row.addEventListener("mouseenter", () => {
+          viewport.moveCenter(issue.x! * TILE_PX + TILE_PX / 2, issue.y! * TILE_PX + TILE_PX / 2);
+          pulseCircle(key);
+        });
+        row.addEventListener("mouseleave", () => {
+          clearPulse();
+        });
+      }
+      issuesPanel.appendChild(row);
+    }
+  }
 
   // --- Machine info panel (click) ---
   const infoPanel = document.createElement("div");
@@ -512,6 +603,8 @@ async function main(): Promise<void> {
         viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
         legendEl.style.display = "none";
         infoPanel.style.display = "none";
+        issuesPanel.style.display = "none";
+        populateIssuesPanel([]);
       },
     };
     const sidebarEl = document.getElementById("sidebar");
