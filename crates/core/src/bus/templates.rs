@@ -678,12 +678,12 @@ pub fn fluid_input_row(
     input_belt: &str,
     output_belt: &str,
     output_east: bool,
-) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>) {
+) -> (Vec<PlacedEntity>, i32, Vec<(String, i32, i32)>) {
     let msz = machine_size as i32;
     let pitch = msz;
     let port_dx = fluid_input_port_dx(machine_entity);
     let mut entities = Vec::new();
-    let mut fluid_port_pipes = Vec::new();
+    let mut fluid_port_pipes: Vec<(String, i32, i32)> = Vec::new();
     let belt_in_seg = Some(format!("row:{recipe}:belt-in:{solid_item}"));
     let inserter_in_seg = Some(format!("row:{recipe}:inserter-in:{solid_item}"));
     let fluid_in_seg = Some(format!("row:{recipe}:belt-in:{fluid_item}"));
@@ -818,7 +818,7 @@ pub fn fluid_input_row(
             // y+0) as the T-junction and chains horizontal PTG pairs from the
             // trunk column to that tile. The UG south IN at (port_x, y+1)
             // connects downward from that T-junction pipe.
-            fluid_port_pipes.push((mx + port_dx, y_offset));
+            fluid_port_pipes.push((fluid_item.to_string(), mx + port_dx, y_offset));
         }
 
         (entities, row_height, fluid_port_pipes)
@@ -871,7 +871,7 @@ pub fn fluid_input_row(
             });
 
             if i == 0 {
-                fluid_port_pipes.push((mx + port_dx, y_offset + 1));
+                fluid_port_pipes.push((fluid_item.to_string(), mx + port_dx, y_offset + 1));
             }
 
             // Machine
@@ -950,7 +950,7 @@ pub fn fluid_dual_input_row(
     input_belts: (&str, &str),
     output_belt: &str,
     output_east: bool,
-) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>, Vec<(i32, i32)>) {
+) -> (Vec<PlacedEntity>, i32, Vec<(String, i32, i32)>, Vec<(String, i32, i32)>) {
     let msz = machine_size as i32;
     let pitch = msz;
     // Fluid output occupies y+5+msz; add a trailing empty row so sub-row
@@ -993,7 +993,7 @@ pub fn fluid_dual_input_row(
         });
     }
 
-    let mut fluid_output_port_pipes = Vec::new();
+    let mut fluid_output_port_pipes: Vec<(String, i32, i32)> = Vec::new();
 
     for i in 0..machine_count {
         let mx = x_offset + i as i32 * pitch;
@@ -1101,8 +1101,8 @@ pub fn fluid_dual_input_row(
                 segment_id: belt_out_seg.clone(),
                 ..Default::default()
             });
-            fluid_output_port_pipes.push((mx, output_y));
-            fluid_output_port_pipes.push((mx + 2, output_y));
+            fluid_output_port_pipes.push((output_item.to_string(), mx, output_y));
+            fluid_output_port_pipes.push((output_item.to_string(), mx + 2, output_y));
         } else {
             // Solid output: inserter at output_y, belt at output_y+1
             entities.push(PlacedEntity {
@@ -1129,7 +1129,7 @@ pub fn fluid_dual_input_row(
         }
     }
 
-    let fluid_input_port_pipes = vec![(x_offset, header_y)];
+    let fluid_input_port_pipes = vec![(fluid_item.to_string(), x_offset, header_y)];
 
     (entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)
 }
@@ -1140,13 +1140,19 @@ pub fn fluid_dual_input_row(
 /// fluid inputs sit at the NORTH edge (matching the bus trunk-above
 /// pattern) and fluid outputs sit at the SOUTH edge.
 ///
+/// `fluid_inputs` and `fluid_outputs` specify the port assignments as
+/// `(dx_from_machine_left_edge, item_name)` pairs.  For oil-refinery (mirrored):
+/// - Input ports are at dx=1 (box 1) and dx=3 (box 2).
+/// - Output ports are at dx=0 (box 3), dx=2 (box 4), and dx=4 (box 5).
+///
 /// ```text
-///   y+0 : fluid input pipe (at mx+1, one per machine)
+///   y+0 : fluid input pipes (at mx+dx for each assigned input port)
 ///   y+1..y+msz : machine entity (msz×msz, mirrored)
-///   y+msz+1 : fluid output pipe (at mx+0, one per machine)
+///   y+msz+1 : fluid output pipes (at mx+dx for each assigned output port)
 /// ```
 ///
 /// Returns `(entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)`.
+/// Port pipe lists have the form `(item, x, y)`.
 pub fn fluid_only_row(
     recipe: &str,
     machine_entity: &str,
@@ -1154,34 +1160,35 @@ pub fn fluid_only_row(
     machine_count: usize,
     y_offset: i32,
     x_offset: i32,
-    fluid_input_item: &str,
-    fluid_output_item: &str,
-) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>, Vec<(i32, i32)>) {
+    fluid_inputs: &[(i32, &str)],   // (dx_from_machine_left, item_name) per input port
+    fluid_outputs: &[(i32, &str)],  // (dx_from_machine_left, item_name) per output port
+) -> (Vec<PlacedEntity>, i32, Vec<(String, i32, i32)>, Vec<(String, i32, i32)>) {
     let msz = machine_size as i32;
     let pitch = msz;
     let row_height = msz + 2;
     let mut entities = Vec::new();
-    let mut fluid_input_port_pipes = Vec::new();
-    let mut fluid_output_port_pipes = Vec::new();
-    let fluid_in_seg = Some(format!("row:{recipe}:belt-in:{fluid_input_item}"));
+    let mut fluid_input_port_pipes: Vec<(String, i32, i32)> = Vec::new();
+    let mut fluid_output_port_pipes: Vec<(String, i32, i32)> = Vec::new();
     let machine_seg = Some(format!("row:{recipe}:machine"));
-    let fluid_out_seg = Some(format!("row:{recipe}:belt-out"));
 
     for i in 0..machine_count {
         let mx = x_offset + i as i32 * pitch;
 
-        // Input port pipe, 1 tile north of the machine footprint
-        let input_x = mx + 1;
-        let input_y = y_offset;
-        entities.push(PlacedEntity {
-            name: "pipe".to_string(),
-            x: input_x,
-            y: input_y,
-            carries: Some(fluid_input_item.to_string()),
-            segment_id: fluid_in_seg.clone(),
-            ..Default::default()
-        });
-        fluid_input_port_pipes.push((input_x, input_y));
+        // Input port pipes, 1 tile north of the machine footprint
+        for &(dx, item) in fluid_inputs {
+            let input_x = mx + dx;
+            let input_y = y_offset;
+            let seg = Some(format!("row:{recipe}:belt-in:{item}"));
+            entities.push(PlacedEntity {
+                name: "pipe".to_string(),
+                x: input_x,
+                y: input_y,
+                carries: Some(item.to_string()),
+                segment_id: seg,
+                ..Default::default()
+            });
+            fluid_input_port_pipes.push((item.to_string(), input_x, input_y));
+        }
 
         // Machine, mirrored so inputs face north, outputs face south
         entities.push(PlacedEntity {
@@ -1195,17 +1202,21 @@ pub fn fluid_only_row(
             ..Default::default()
         });
 
-        // Output port pipe, 1 tile south of the machine footprint
+        // Output port pipes, 1 tile south of the machine footprint
         let output_y = y_offset + 1 + msz;
-        entities.push(PlacedEntity {
-            name: "pipe".to_string(),
-            x: mx,
-            y: output_y,
-            carries: Some(fluid_output_item.to_string()),
-            segment_id: fluid_out_seg.clone(),
-            ..Default::default()
-        });
-        fluid_output_port_pipes.push((mx, output_y));
+        for &(dx, item) in fluid_outputs {
+            let output_x = mx + dx;
+            let seg = Some(format!("row:{recipe}:belt-out:{item}"));
+            entities.push(PlacedEntity {
+                name: "pipe".to_string(),
+                x: output_x,
+                y: output_y,
+                carries: Some(item.to_string()),
+                segment_id: seg,
+                ..Default::default()
+            });
+            fluid_output_port_pipes.push((item.to_string(), output_x, output_y));
+        }
     }
 
     (entities, row_height, fluid_input_port_pipes, fluid_output_port_pipes)
@@ -1607,7 +1618,10 @@ mod tests {
 
         // fluid_port_pipes reports the TRUNK ROW position for ALL machines
         // (bus router chains horizontal PTG pairs to these T-junction pipe tiles)
-        assert_eq!(fluid_port_pipes, vec![(0, 0), (3, 0)]);
+        assert_eq!(fluid_port_pipes, vec![
+            ("petroleum-gas".to_string(), 0, 0),
+            ("petroleum-gas".to_string(), 3, 0),
+        ]);
 
         // Machine 1: T-junction pipe at (0, 0) — trunk row
         let tj = assert_entity(&entities, 0, 0, "pipe");
@@ -1743,7 +1757,7 @@ mod tests {
         // Non-T-shape path uses old 7-tile height (msz+4)
         assert_eq!(height, 7);
         // fluid_port_pipes reports the pipe tile at y+1
-        assert_eq!(fluid_port_pipes, vec![(1, 1)]);
+        assert_eq!(fluid_port_pipes, vec![("fluid-item".to_string(), 1, 1)]);
 
         // Pipe at (0+1, 1) = (1, 1)
         let pipes: Vec<_> = entities
@@ -1774,7 +1788,7 @@ mod tests {
             false,
         );
         assert_eq!(height, 10);
-        assert_eq!(fluid_in_ports, vec![(0, 0)]);
+        assert_eq!(fluid_in_ports, vec![("fluid".to_string(), 0, 0)]);
         assert!(fluid_out_ports.is_empty());
 
         // Fluid header at y=0, x=0..=last_mx+2 = 0..=3+2=5
@@ -1837,11 +1851,11 @@ mod tests {
             false,
         );
         assert_eq!(height, 10);
-        assert_eq!(fluid_in_ports, vec![(0, 0)]);
+        assert_eq!(fluid_in_ports, vec![("water".to_string(), 0, 0)]);
         // 2 output port pipes per machine
         assert_eq!(fluid_out_ports.len(), 2);
-        assert!(fluid_out_ports.contains(&(0, 8)));
-        assert!(fluid_out_ports.contains(&(2, 8)));
+        assert!(fluid_out_ports.contains(&("sulfuric-acid".to_string(), 0, 8)));
+        assert!(fluid_out_ports.contains(&("sulfuric-acid".to_string(), 2, 8)));
 
         // Output pipes at y=8, x=0 and x=2
         assert_entity(&entities, 0, 8, "pipe");
@@ -1875,8 +1889,10 @@ mod tests {
 
     // ---- fluid_only_row ----
 
+    // basic-oil-processing: 1 fluid input (crude-oil → input box 2, dx=3),
+    // 1 fluid output (petroleum-gas → output box 3, dx=0).
     #[test]
-    fn fluid_only_row_one_refinery() {
+    fn fluid_only_row_one_refinery_basic() {
         let (entities, height, fluid_in, fluid_out) = fluid_only_row(
             "basic-oil-processing",
             "oil-refinery",
@@ -1884,17 +1900,20 @@ mod tests {
             1,
             0,
             0,
-            "crude-oil",
-            "petroleum-gas",
+            &[(3, "crude-oil")],
+            &[(0, "petroleum-gas")],
         );
         assert_eq!(height, 7);
+        // 1 input pipe + 1 machine + 1 output pipe
         assert_eq!(fluid_in.len(), 1);
         assert_eq!(fluid_out.len(), 1);
-        assert_eq!(fluid_in[0], (1, 0));
-        assert_eq!(fluid_out[0], (0, 6));
+        // Input pipe at dx=3 → (3, 0)
+        assert_eq!(fluid_in[0], ("crude-oil".to_string(), 3, 0));
+        // Output pipe at dx=0 → (0, 6)
+        assert_eq!(fluid_out[0], ("petroleum-gas".to_string(), 0, 6));
 
-        // Input pipe at (1, 0)
-        let in_pipe = assert_entity(&entities, 1, 0, "pipe");
+        // Input pipe at (3, 0)
+        let in_pipe = assert_entity(&entities, 3, 0, "pipe");
         assert_eq!(in_pipe.carries.as_deref(), Some("crude-oil"));
 
         // Refinery at (0, 1) NORTH mirrored
@@ -1908,8 +1927,9 @@ mod tests {
         assert_eq!(out_pipe.carries.as_deref(), Some("petroleum-gas"));
     }
 
+    // basic-oil-processing with two machines
     #[test]
-    fn fluid_only_row_two_refineries() {
+    fn fluid_only_row_two_refineries_basic() {
         let (entities, _, fluid_in, fluid_out) = fluid_only_row(
             "basic-oil-processing",
             "oil-refinery",
@@ -1917,18 +1937,64 @@ mod tests {
             2,
             0,
             0,
-            "crude-oil",
-            "petroleum-gas",
+            &[(3, "crude-oil")],
+            &[(0, "petroleum-gas")],
         );
+        // 2 machines × 1 input pipe + 2 machines × 1 output pipe
         assert_eq!(fluid_in.len(), 2);
         assert_eq!(fluid_out.len(), 2);
 
         // Second refinery at x=5 (pitch=5)
         assert_entity(&entities, 5, 1, "oil-refinery");
-        // Its input pipe at (6, 0)
-        assert_eq!(fluid_in[1], (6, 0));
-        // Its output pipe at (5, 6)
-        assert_eq!(fluid_out[1], (5, 6));
+        // Second machine: input pipe at mx=5, dx=3 → (8, 0)
+        assert_eq!(fluid_in[1], ("crude-oil".to_string(), 8, 0));
+        // Second machine: output pipe at mx=5, dx=0 → (5, 6)
+        assert_eq!(fluid_out[1], ("petroleum-gas".to_string(), 5, 6));
+    }
+
+    // advanced-oil-processing: 2 fluid inputs (water→dx=1, crude-oil→dx=3),
+    // 3 fluid outputs (heavy-oil→dx=0, light-oil→dx=2, petroleum-gas→dx=4).
+    #[test]
+    fn fluid_only_row_one_refinery_advanced() {
+        let (entities, height, fluid_in, fluid_out) = fluid_only_row(
+            "advanced-oil-processing",
+            "oil-refinery",
+            5,
+            1,
+            0,
+            0,
+            &[(1, "water"), (3, "crude-oil")],
+            &[(0, "heavy-oil"), (2, "light-oil"), (4, "petroleum-gas")],
+        );
+        assert_eq!(height, 7);
+        // 2 input pipes + 1 machine + 3 output pipes
+        assert_eq!(fluid_in.len(), 2);
+        assert_eq!(fluid_out.len(), 3);
+
+        // Input pipes
+        assert_eq!(fluid_in[0], ("water".to_string(), 1, 0));
+        assert_eq!(fluid_in[1], ("crude-oil".to_string(), 3, 0));
+        let water_pipe = assert_entity(&entities, 1, 0, "pipe");
+        assert_eq!(water_pipe.carries.as_deref(), Some("water"));
+        let crude_pipe = assert_entity(&entities, 3, 0, "pipe");
+        assert_eq!(crude_pipe.carries.as_deref(), Some("crude-oil"));
+
+        // Output pipes
+        assert_eq!(fluid_out[0], ("heavy-oil".to_string(), 0, 6));
+        assert_eq!(fluid_out[1], ("light-oil".to_string(), 2, 6));
+        assert_eq!(fluid_out[2], ("petroleum-gas".to_string(), 4, 6));
+        let heavy_pipe = assert_entity(&entities, 0, 6, "pipe");
+        assert_eq!(heavy_pipe.carries.as_deref(), Some("heavy-oil"));
+        let light_pipe = assert_entity(&entities, 2, 6, "pipe");
+        assert_eq!(light_pipe.carries.as_deref(), Some("light-oil"));
+        let pg_pipe = assert_entity(&entities, 4, 6, "pipe");
+        assert_eq!(pg_pipe.carries.as_deref(), Some("petroleum-gas"));
+
+        // Refinery at (0, 1)
+        let refinery = assert_entity(&entities, 0, 1, "oil-refinery");
+        assert_eq!(refinery.direction, EntityDirection::North);
+        assert!(refinery.mirror);
+        assert_eq!(refinery.recipe.as_deref(), Some("advanced-oil-processing"));
     }
 
     // ---- machine_xs ----
