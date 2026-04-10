@@ -57,8 +57,50 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo test -p fucktorio_core
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run -p fucktorio_core --profile ci
       - run: cargo clippy -p fucktorio_core -- -D warnings
+      - name: Generate test summary
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import xml.etree.ElementTree as ET, os
+          path = "target/nextest/ci/junit.xml"
+          if not os.path.exists(path):
+              print("No JUnit XML found"); exit(0)
+          tree = ET.parse(path)
+          root = tree.getroot()
+          total = int(root.get("tests", 0))
+          failures = int(root.get("failures", 0))
+          errors = int(root.get("errors", 0))
+          time = root.get("time", "?")
+
+          f = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          f.write("### Rust Test Results\n\n")
+          f.write(f"**{total}** tests | **{total - failures - errors}** passed | **{failures}** failed | **{time}s**\n\n")
+          f.write("| Test | Status | Duration |\n|------|--------|----------|\n")
+          for ts in root.iter("testsuite"):
+              for tc in ts.iter("testcase"):
+                  name = tc.get("name", "?")
+                  t = tc.get("time", "0")
+                  fail = tc.find("failure")
+                  if fail is not None:
+                      f.write(f"| {name} | :x: FAIL | {t}s |\n")
+                  else:
+                      skip = tc.find("skipped")
+                      if skip is not None:
+                          f.write(f"| {name} | :zzz: SKIP | {t}s |\n")
+                      else:
+                          f.write(f"| {name} | :white_check_mark: | {t}s |\n")
+          f.close()
+          PYEOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-test-results
+          path: target/nextest/ci/junit.xml
 
   web:
     runs-on: ubuntu-latest

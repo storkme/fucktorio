@@ -55,14 +55,18 @@ Pipeline stages:
 
 ## Recipe complexity ladder
 
-| Tier | Recipe | Bus status |
-|------|--------|------------|
-| 1 | `iron-gear-wheel` | Solved |
-| 2 | `electronic-circuit` (incl. from ores) | Solved |
-| 3 | `plastic-bar` | Solved |
-| 4 | `advanced-circuit` | Partial (lane-throughput warnings) |
-| 5 | `processing-unit` | Not attempted |
-| 6 | `rocket-control-unit` | Not attempted |
+| Tier | Recipe | Inputs | Machine | Belt | E2E test | Status |
+|------|--------|--------|---------|------|----------|--------|
+| 1 | iron-gear-wheel | iron-plate | AM1 | yellow | `tier1_iron_gear_wheel` | :white_check_mark: |
+| 1 | iron-gear-wheel | iron-ore | AM2 | yellow | `tier1_iron_gear_wheel_from_ore` | :white_check_mark: |
+| 2 | electronic-circuit | iron/copper-plate | AM2 | yellow | `tier2_electronic_circuit` | :x: lane-throughput |
+| 2 | electronic-circuit | iron/copper-ore | AM1 | yellow | `tier2_electronic_circuit_from_ore` | :white_check_mark: |
+| 3 | plastic-bar | petroleum-gas, coal | chem-plant | yellow | `tier3_plastic_bar` | :white_check_mark: |
+| 4 | advanced-circuit | iron/copper-plate, plastic-bar | AM2 | yellow | `tier4_advanced_circuit_from_plates` | :x: lane-throughput |
+| 5 | processing-unit | — | — | — | — | Not attempted |
+| 6 | rocket-control-unit | — | — | — | — | Not attempted |
+
+Each row corresponds to an e2e test in `crates/core/tests/e2e.rs` that runs the full pipeline (solve, layout, export, round-trip parse, validate). Status reflects zero-error validation on the generated blueprint.
 
 ## Test visualizations
 
