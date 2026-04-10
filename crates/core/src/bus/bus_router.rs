@@ -1087,6 +1087,7 @@ pub(crate) fn render_family_input_paths(
     row_spans: &[RowSpan],
     belt_tier: &str,
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
+    bw: i32,
 ) -> Result<Vec<PlacedEntity>, String> {
     use crate::bus::balancer_library::balancer_templates;
 
@@ -1146,24 +1147,75 @@ pub(crate) fn render_family_input_paths(
 
             // Horizontal WEST feeder: A*-routed
             let feeder_key = format!("feeder:{}:{}:{}", family.item, input_x, out_y);
+            let has_feeder_path = paths.contains_key(&feeder_key);
+            let mut feeder_reached_input = false;
             if let Some(feeder_path) = paths.get(&feeder_key) {
-                entities.extend(render_path(
+                let mut feeder_entities = render_path(
                     feeder_path, &family.item, belt_tier,
                     EntityDirection::West, fam_input_seg_id.clone(),
                     Some(per_producer_rate),
-                ));
+                );
+                // If the feeder path ends at (input_x, out_y), change its
+                // direction to South so it connects to the descent column.
+                if let Some(last) = feeder_entities.last_mut() {
+                    if last.x == input_x && last.y == out_y {
+                        last.direction = EntityDirection::South;
+                        feeder_reached_input = true;
+                    }
+                }
+                entities.extend(feeder_entities);
+            } else if (input_x as i32 + 1) >= bw - 1 {
+                // Degenerate feeder: input_x+1 >= bw-1 means the feeder
+                // would be zero-length (producer output is already at the
+                // landing column). Place a WEST belt from (bw-1, out_y)
+                // to (input_x+1, out_y) as a direct connection. If
+                // input_x+1 == bw-1, just place one belt turning into
+                // the descent column.
+                for fx in (input_x + 1..bw).rev() {
+                    entities.push(PlacedEntity {
+                        name: belt_tier.to_string(),
+                        x: fx,
+                        y: out_y,
+                        direction: EntityDirection::West,
+                        carries: Some(family.item.clone()),
+                        segment_id: fam_input_seg_id.clone(),
+                        rate: Some(per_producer_rate),
+                        ..Default::default()
+                    });
+                }
             }
 
             if out_y == sub_origin_y {
                 continue; // N==1: input tile is the turn point
             }
 
+            // Bridge from feeder to descent column: the feeder A* path ends
+            // at (input_x+1, out_y) facing West, but the descent column at
+            // input_x starts at out_y+1. Place a South belt at (input_x, out_y)
+            // to connect them (items sideload from the West feeder onto this
+            // South belt, then flow into the descent).
+            if has_feeder_path && !feeder_reached_input {
+                entities.push(PlacedEntity {
+                    name: belt_tier.to_string(),
+                    x: input_x,
+                    y: out_y,
+                    direction: EntityDirection::South,
+                    carries: Some(family.item.clone()),
+                    segment_id: fam_input_seg_id.clone(),
+                    rate: Some(per_producer_rate),
+                    ..Default::default()
+                });
+            }
+
             // SOUTH descent column from feeder row to balancer input.
             // Skip positions claimed by tap-offs (they win at higher priority).
             // At skipped positions, place UG pairs to bridge the gap.
+            // Also skip out_y when a feeder path exists — the feeder or bridge
+            // belt already placed a South belt there, so we start below it.
             let ug_belt = underground_for_belt(belt_tier);
+            let descent_start = if has_feeder_path { out_y + 1 } else { out_y };
             let mut skip_next = false;
-            for y in out_y..sub_origin_y {
+            for y in descent_start..sub_origin_y {
                 if tapoff_positions.contains(&(input_x, y)) {
                     // Tap-off claims this tile. Place UG input at y-1 if
                     // we haven't already, and UG output at y+1.
@@ -2902,7 +2954,17 @@ pub(crate) fn negotiate_and_route(
                 // Exception: always block out_y+1 (the tile right below the
                 // producer output) so the output return belt can merge into
                 // the descent without hitting a UG input.
+                //
+                // Family lanes' trunks start below the balancer zone
+                // (source_y ≥ balancer_y_start+1) and skip the entire
+                // balancer range, so blocking descent tiles at trunk lane
+                // x-positions is safe — those y-rows are outside the trunk's
+                // routed range.
                 if out_y != fam.balancer_y_start {
+                    // Always block the surface belt at (input_x, out_y) —
+                    // render_family_input_paths places a South belt there
+                    // (or the feeder A* ends there with a South turn).
+                    obstacles.insert((input_x as i16, out_y as i16));
                     for y in (out_y + 1)..fam.balancer_y_start {
                         if y == out_y + 1 || !all_tapoff_ys.contains(&y) {
                             obstacles.insert((input_x as i16, y as i16));
@@ -2920,8 +2982,17 @@ pub(crate) fn negotiate_and_route(
                     obstacles.insert((landing_x as i16, out_y as i16));
                 }
 
-                // Feeder spec: A* horizontal WEST, priority=4
-                if input_x < bw - 1 {
+                // Feeder spec: A* horizontal WEST, priority=4.
+                // No y_constraint: the feeder may need to detour vertically
+                // around wide trunk groups (e.g. 5-column copper-cable trunks
+                // that span 50+ rows). Without y_constraint the A* naturally
+                // prefers the shortest path (straight WEST) and only detours
+                // when obstacles force it.
+                // Only emit a feeder spec when there's actual horizontal
+                // distance to cover (bw-1 > input_x+1). When input_x+1 == bw-1
+                // the feeder would be zero-length (start == goal), producing a
+                // degenerate single-tile path that can overlap with other feeders.
+                if (input_x as i16 + 1) < bw as i16 - 1 {
                     let feeder_key = format!("feeder:{}:{}:{}", fam.item, input_x, out_y);
                     id_to_key.insert(lane_id, feeder_key);
                     let wps = vec![(bw as i16 - 1, out_y as i16), (input_x as i16 + 1, out_y as i16)];
@@ -2932,11 +3003,21 @@ pub(crate) fn negotiate_and_route(
                         waypoints: wps,
                         strategy: 2,
                         priority: 4,
-                        y_constraint: Some(out_y as i16),
+                        y_constraint: None,
                         x_constraint: None,
                         flow_dir: fd,
+                        goal_on_obstacle: true,
+                        y_tolerance: 0,
                     });
                     lane_id += 1;
+                } else {
+                    // Degenerate feeder (no A* spec): register the horizontal
+                    // belt tiles as obstacles so other feeders don't route
+                    // through them. render_family_input_paths places WEST belts
+                    // from (input_x+1, out_y) to (bw-1, out_y).
+                    for fx in (input_x + 1)..bw {
+                        obstacles.insert((fx as i16, out_y as i16));
+                    }
                 }
             } // end for producer/input pairs
         } // end for sub_groups
@@ -3025,6 +3106,8 @@ pub(crate) fn negotiate_and_route(
                     x_constraint: Some(x as i16),
                     y_constraint: None,
                     flow_dir: fd,
+                    goal_on_obstacle: false,
+                    y_tolerance: 0,
                 });
                 lane_id += 1;
             }
@@ -3050,6 +3133,8 @@ pub(crate) fn negotiate_and_route(
                         y_constraint: Some(out_y as i16),
                         x_constraint: None,
                         flow_dir: fd,
+                        goal_on_obstacle: true,
+                        y_tolerance: 3,
                     });
                     lane_id += 1;
                 }
@@ -3075,6 +3160,8 @@ pub(crate) fn negotiate_and_route(
                             y_constraint: None,
                             x_constraint: None,
                             flow_dir: None,
+                            goal_on_obstacle: true,
+                            y_tolerance: 0,
                         });
                         lane_id += 1;
                     }
@@ -3109,6 +3196,8 @@ pub(crate) fn negotiate_and_route(
                             y_constraint: Some(tap_y as i16),
                             x_constraint: None,
                             flow_dir: fd,
+                            goal_on_obstacle: false,
+                            y_tolerance: 0,
                         });
                         lane_id += 1;
                     }
@@ -3127,6 +3216,8 @@ pub(crate) fn negotiate_and_route(
                             y_constraint: Some(tap_y as i16),
                             x_constraint: None,
                             flow_dir: fd,
+                            goal_on_obstacle: false,
+                            y_tolerance: 0,
                         });
                         lane_id += 1;
                     }
@@ -3145,6 +3236,8 @@ pub(crate) fn negotiate_and_route(
                         y_constraint: Some(tap_y as i16),
                         x_constraint: None,
                         flow_dir: fd,
+                        goal_on_obstacle: false,
+                        y_tolerance: 0,
                     });
                     lane_id += 1;
                 }
@@ -3196,6 +3289,8 @@ pub(crate) fn negotiate_and_route(
                     x_constraint: Some(x as i16),
                     y_constraint: None,
                     flow_dir: fd,
+                    goal_on_obstacle: false,
+                    y_tolerance: 0,
                 });
                 lane_id += 1;
             }
@@ -3231,6 +3326,8 @@ pub(crate) fn negotiate_and_route(
                                 id: lane_id, item_id, waypoints: wps, strategy: 2,
                                 priority: 6, y_constraint: Some(spec_y as i16),
                                 x_constraint: None, flow_dir: fd,
+                                goal_on_obstacle: false,
+                                y_tolerance: 0,
                             });
                             lane_id += 1;
                         }
@@ -3243,6 +3340,8 @@ pub(crate) fn negotiate_and_route(
                                 id: lane_id, item_id, waypoints: wps, strategy: 2,
                                 priority: 6, y_constraint: Some(spec_y as i16),
                                 x_constraint: None, flow_dir: fd,
+                                goal_on_obstacle: false,
+                                y_tolerance: 0,
                             });
                             lane_id += 1;
                         }
@@ -3255,6 +3354,8 @@ pub(crate) fn negotiate_and_route(
                             id: lane_id, item_id, waypoints: wps, strategy: 2,
                             priority: 6, y_constraint: Some(spec_y as i16),
                             x_constraint: None, flow_dir: fd,
+                            goal_on_obstacle: false,
+                            y_tolerance: 0,
                         });
                         lane_id += 1;
                     }
@@ -3294,6 +3395,8 @@ pub(crate) fn negotiate_and_route(
                     x_constraint: Some(x as i16),
                     y_constraint: None,
                     flow_dir: fd,
+                    goal_on_obstacle: false,
+                    y_tolerance: 0,
                 });
                 lane_id += 1;
             }
@@ -3319,6 +3422,8 @@ pub(crate) fn negotiate_and_route(
                         y_constraint: Some(out_y as i16),
                         x_constraint: None,
                         flow_dir: fd,
+                        goal_on_obstacle: true,
+                        y_tolerance: 3,
                     });
                     lane_id += 1;
                 }
@@ -3353,6 +3458,8 @@ pub(crate) fn negotiate_and_route(
                 x_constraint: None,
                 y_constraint: None,
                 flow_dir: None,
+                goal_on_obstacle: false,
+                y_tolerance: 0,
             });
             lane_id += 1;
         }
@@ -3371,6 +3478,8 @@ pub(crate) fn negotiate_and_route(
                 x_constraint: None,
                 y_constraint: None,
                 flow_dir: None,
+                goal_on_obstacle: false,
+                y_tolerance: 0,
             });
             lane_id += 1;
             i += 2;
@@ -3392,7 +3501,7 @@ pub(crate) fn negotiate_and_route(
         /* allow_underground */ true,
         reach,
         /* history_factor */ 0.5,
-        /* present_factor */ 1.0,
+        /* present_factor */ 3.0,
     );
 
     // Build result map: string key → path (cast i16 coords back to i32)
@@ -3692,7 +3801,7 @@ mod tests {
             vec![],
         );
 
-        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None, 10);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 0);
     }
@@ -3723,7 +3832,7 @@ mod tests {
         let mut row_span = row_span;
         row_span.output_belt_y = 10;
 
-        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span], "transport-belt", None, 10);
         assert!(result.is_ok());
 
         // For N=1 with out_y == origin_y, no descent column is needed
@@ -3764,7 +3873,7 @@ mod tests {
             vec![],
         );
 
-        let result = render_family_input_paths(&family, &[row_span1, row_span2], "transport-belt", None);
+        let result = render_family_input_paths(&family, &[row_span1, row_span2], "transport-belt", None, 10);
         assert!(result.is_ok());
 
         let entities = result.unwrap();

@@ -228,6 +228,8 @@ pub fn astar_inner(
     y_constraint: Option<i16>,
     x_constraint: Option<i16>,
     flow_dir: Option<(i8, i8)>,
+    goal_on_obstacle: bool,
+    y_tolerance: i16,
 ) -> Option<Vec<(i16, i16)>> {
     if start_set.is_empty() || goals.is_empty() {
         return None;
@@ -352,9 +354,9 @@ pub fn astar_inner(
             if nx < -10 || ny < -10 || nx > max_extent || ny > max_extent {
                 continue;
             }
-            // y_constraint: only explore tiles on the constrained row
+            // y_constraint: only explore tiles on the constrained row (±tolerance)
             if let Some(yc) = y_constraint {
-                if ny != yc {
+                if (ny - yc).unsigned_abs() > y_tolerance as u16 {
                     continue;
                 }
             }
@@ -367,8 +369,10 @@ pub fn astar_inner(
             // Allow reaching goal tiles on obstacles for constrained specs:
             // x_constrained (trunks) need to reach goals promoted by tap-offs,
             // y_constrained (feeders) need to reach goals on trunk tiles.
+            // Also allowed when goal_on_obstacle flag is explicitly set (feeders
+            // that are unconstrained but still need to reach trunk tile goals).
             // Unconstrained specs (mergers) must not place on obstacle tiles.
-            let goal_on_obstacle_ok = (x_constraint.is_some() || y_constraint.is_some()) && goals.contains(&(nx, ny));
+            let goal_on_obstacle_ok = (x_constraint.is_some() || y_constraint.is_some() || goal_on_obstacle) && goals.contains(&(nx, ny));
             if obstacles.contains(&(nx, ny)) && !goal_on_obstacle_ok {
                 continue;
             }
@@ -432,9 +436,9 @@ pub fn astar_inner(
                     if ex < -10 || ey < -10 || ex > max_extent || ey > max_extent {
                         break;
                     }
-                    // y_constraint: UG exit must land on the constrained row
+                    // y_constraint: UG exit must land within tolerance of constrained row
                     if let Some(yc) = y_constraint {
-                        if ey != yc {
+                        if (ey - yc).unsigned_abs() > y_tolerance as u16 {
                             continue;
                         }
                     }
@@ -574,6 +578,8 @@ pub fn astar_path(
         None,  // no y constraint
         None,  // no x constraint
         None,  // no flow direction
+        false, // no goal_on_obstacle
+        0,     // no y tolerance
     )
 }
 
@@ -596,14 +602,23 @@ pub struct LaneSpec {
     pub priority: u8,
     /// If set, constrain A* routing to only explore tiles at this y-coordinate.
     /// Used for bus horizontal demands (Phase 1) to prevent vertical detours.
+    /// When y_tolerance > 0, the constraint is relaxed to allow ±y_tolerance deviation.
     pub y_constraint: Option<i16>,
     /// If set, constrain A* routing to only explore tiles at this x-coordinate.
     /// Used for bus vertical trunk demands to prevent horizontal detours.
     pub x_constraint: Option<i16>,
+    /// When y_constraint is set, allows the A* to deviate ±y_tolerance rows from
+    /// the constraint. This lets horizontal feeders route around wide trunk groups
+    /// by making short vertical detours. Without tolerance, a y-constrained feeder
+    /// can't cross a trunk group wider than the UG reach. Default: 0.
+    pub y_tolerance: i16,
     /// Flow direction (dx, dy) of the lane. When set, underground jumps
     /// aligned with this direction get a cost discount so routing prefers
     /// straight tunnels over detours. Derived from waypoints in Python.
     pub flow_dir: Option<(i8, i8)>,
+    /// If true, the A* is allowed to reach goal tiles that sit on obstacles.
+    /// Used by feeders whose goal is on a trunk tile claimed by a higher-priority spec.
+    pub goal_on_obstacle: bool,
 }
 
 /// A routed lane: the resolved path through the grid.
@@ -827,6 +842,8 @@ fn route_astar(
         spec.y_constraint,
         spec.x_constraint,
         spec.flow_dir,
+        spec.goal_on_obstacle,
+        spec.y_tolerance,
     )?;
 
     // Compute directions from path
@@ -1042,6 +1059,8 @@ mod tests {
             y_constraint: None,
             x_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         }
     }
 
@@ -1283,6 +1302,8 @@ mod tests {
             y_constraint: None,
             x_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         };
         let spec_b = LaneSpec {
             id: 2,
@@ -1293,6 +1314,8 @@ mod tests {
             x_constraint: None,
             y_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         };
         let obstacles = set(&[]);
         let result =
@@ -1322,6 +1345,8 @@ mod tests {
             y_constraint: None,
             x_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         };
         let spec_b = LaneSpec {
             id: 2,
@@ -1332,6 +1357,8 @@ mod tests {
             y_constraint: None,
             x_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         };
         let obstacles = set(&[]);
         let result =
@@ -1362,6 +1389,8 @@ mod tests {
             y_constraint: None,
             x_constraint: None,
             flow_dir: None,
+            goal_on_obstacle: false,
+            y_tolerance: 0,
         };
         let obstacles = set(&[(2, -1), (2, 0), (2, 1)]);
         let result =

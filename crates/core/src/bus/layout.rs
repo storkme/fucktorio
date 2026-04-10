@@ -425,6 +425,7 @@ fn route_bus(
             row_spans,
             crate::common::belt_entity_for_rate(fam.total_rate, max_belt_tier),
             Some(&routed_paths),
+            bw,
         )
         .map_err(|e| format!("render family input paths failed for family {:?}: {}", fam.shape, e))?;
         entities.extend(path_ents);
@@ -883,6 +884,156 @@ mod tests {
             .collect();
         assert!(errors.is_empty(), "Expected 0 errors, got {}: {}", errors.len(),
             errors.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("; "));
+    }
+
+    #[test]
+    fn test_ecircuit_10s_from_ore_am1_yellow() {
+        // Regression: 10/s e-circuit from ore with AM1 + yellow belt.
+        // This is the case where copper-cable trunk columns (x=13-17) block
+        // the iron-plate feeder that needs to cross them to reach the descent
+        // column at x=6. With y_constraint: None + goal_on_obstacle: true,
+        // the feeder should route around the trunks.
+        use crate::solver::solve;
+        use crate::trace::TraceEvent;
+        use crate::validate::{Severity, belt_structural, belt_flow};
+        use rustc_hash::FxHashSet;
+
+        let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+            .iter().map(|s| s.to_string()).collect();
+        let sr = solve("electronic-circuit", 10.0, &inputs, "assembling-machine-1")
+            .expect("solve");
+
+        let layout = build_bus_layout_traced(&sr, Some("transport-belt"))
+            .expect("layout");
+
+        // Check for route failures
+        let events = layout.trace.clone().expect("trace");
+
+        // Print lane layout for debugging
+        for e in &events {
+            match e {
+                TraceEvent::LanesPlanned { lanes, bus_width, .. } => {
+                    eprintln!("Bus width: {}", bus_width);
+                    for l in lanes {
+                        eprintln!("  Lane: {:30} x={:2} src_y={:3} taps={:?} prod={:?} family={:?} fluid={}",
+                            l.item, l.x, l.source_y, l.tap_off_ys, l.producer_row, l.family_id, l.is_fluid);
+                    }
+                }
+                TraceEvent::BalancerStamped { item, shape, y_start, y_end, template_found } => {
+                    eprintln!("  Balancer: {} {:?} y={}-{} found={}", item, shape, y_start, y_end, template_found);
+                }
+                _ => {}
+            }
+        }
+
+        let failures: Vec<_> = events.iter()
+            .filter_map(|e| match e {
+                TraceEvent::RouteFailure { spec_key, item, from_x, from_y, to_x, to_y } => {
+                    eprintln!("  RouteFailure: {} {} ({},{}) -> ({},{})", spec_key, item, from_x, from_y, to_x, to_y);
+                    Some(format!("{}: {}", spec_key, item))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(failures.is_empty(), "Route failures: {}", failures.join("; "));
+
+        // No overlaps — but first diagnose
+        let mut positions: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+        let mut overlaps = Vec::new();
+        for e in &layout.entities {
+            if !positions.insert((e.x, e.y)) {
+                overlaps.push((e.x, e.y, e.name.clone()));
+            }
+        }
+        if !overlaps.is_empty() {
+            eprintln!("=== Overlap entities ===");
+            for &(ox, oy, _) in &overlaps {
+                for e in &layout.entities {
+                    if e.x == ox && e.y == oy {
+                        eprintln!("  ({},{}) {:40} dir={:?} carries={:?} seg={:?}",
+                            e.x, e.y, e.name, e.direction, e.carries, e.segment_id);
+                    }
+                }
+            }
+            eprintln!("\n=== Nearby entities (±3) ===");
+            for &(ox, oy, _) in &overlaps {
+                for e in &layout.entities {
+                    if (e.x - ox).abs() <= 3 && (e.y - oy).abs() <= 3 {
+                        eprintln!("  ({},{}) {:40} dir={:?} carries={:?}", e.x, e.y, e.name, e.direction, e.carries);
+                    }
+                }
+                eprintln!();
+            }
+            // Show route failures and balancer stamps
+            for e in &events {
+                match e {
+                    TraceEvent::RouteFailure { spec_key, item, from_x, from_y, to_x, to_y } => {
+                        eprintln!("  RouteFailure: {} {} ({},{}) -> ({},{})", spec_key, item, from_x, from_y, to_x, to_y);
+                    }
+                    TraceEvent::BalancerStamped { item, shape, y_start, y_end, template_found } => {
+                        eprintln!("  BalancerStamped: {} {:?} y={}-{} found={}", item, shape, y_start, y_end, template_found);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(overlaps.is_empty(), "Entity overlaps at: {}",
+            overlaps.iter().map(|(x,y,n)| format!("({},{}) {}", x, y, n)).collect::<Vec<_>>().join("; "));
+
+        // Full belt validation
+        let mut all_issues = Vec::new();
+        all_issues.extend(belt_structural::check_belt_dead_ends(&layout));
+        all_issues.extend(belt_structural::check_belt_item_isolation(&layout));
+        all_issues.extend(belt_structural::check_belt_loops(&layout));
+        all_issues.extend(belt_flow::check_underground_belt_pairs(&layout));
+        all_issues.extend(belt_flow::check_belt_connectivity(&layout, Some(&sr)));
+        all_issues.extend(belt_flow::check_belt_flow_path(&layout, Some(&sr), crate::validate::LayoutStyle::Bus));
+
+        let errors: Vec<_> = all_issues.iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+
+        // Diagnose dead-end belts
+        if !errors.is_empty() {
+            for err in &errors {
+                if err.message.contains("no receiver") {
+                    // Extract the belt position from the error message
+                    eprintln!("\n=== Diagnosing: {} ===", err.message);
+                    if let (Some(bx), Some(by)) = (err.x, err.y) {
+                        // Find the belt entity
+                        for e in &layout.entities {
+                            if e.x == bx && e.y == by {
+                                eprintln!("  Belt: ({},{}) {:40} dir={:?} carries={:?} seg={:?}", e.x, e.y, e.name, e.direction, e.carries, e.segment_id);
+                            }
+                        }
+                        // Check receiver position
+                        let rx = bx - 1;
+                        let ry = by;
+                        eprintln!("  Receiver position ({},{}):", rx, ry);
+                        let mut found = false;
+                        for e in &layout.entities {
+                            if e.x == rx && e.y == ry {
+                                eprintln!("    ({},{}) {:40} dir={:?} carries={:?} seg={:?}", e.x, e.y, e.name, e.direction, e.carries, e.segment_id);
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            eprintln!("    NOTHING at ({},{})", rx, ry);
+                        }
+                        // Show ±2 context
+                        eprintln!("  Context (±2):");
+                        for e in &layout.entities {
+                            if (e.x - bx).abs() <= 2 && (e.y - by).abs() <= 2 {
+                                eprintln!("    ({},{}) {:40} dir={:?} carries={:?}", e.x, e.y, e.name, e.direction, e.carries);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(errors.is_empty(), "Expected 0 errors, got {}: {}",
+            errors.len(), errors.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("; "));
     }
 
     #[test]
