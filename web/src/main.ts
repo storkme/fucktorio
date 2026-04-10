@@ -1,4 +1,5 @@
 import { Container } from "pixi.js";
+import type { Graphics } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
@@ -16,7 +17,7 @@ import {
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
 import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
-import { renderValidationOverlay } from "./renderer/validationOverlay";
+import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -400,7 +401,7 @@ async function main(): Promise<void> {
   container.appendChild(valToggle);
 
   let valOverlayLayer: Container | null = null;
-  let valCircleMap: Map<string, import("pixi.js").Graphics> = new Map();
+  let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
   function updateValidationOverlay(): void {
@@ -451,30 +452,42 @@ async function main(): Promise<void> {
   container.appendChild(legendEl);
 
   // --- Validation issues panel (right side, below toggles) ---
+  // top:112px = stacked toggle buttons (debug ~42px, trace ~44px, validation ~26px) + 8px gap.
+  // Update if the toggle stack height changes.
   const issuesPanel = document.createElement("div");
   issuesPanel.style.cssText = "position:absolute;top:112px;right:8px;background:rgba(0,0,0,0.85);color:#e0e0e0;font:11px monospace;padding:6px 8px;border-radius:4px;border:1px solid #555;z-index:10;display:none;max-width:360px;max-height:calc(100% - 130px);overflow-y:auto;line-height:1.4";
   container.appendChild(issuesPanel);
 
-  let activePulse: { marker: import("pixi.js").Graphics; interval: ReturnType<typeof setInterval> } | null = null;
+  // Pulse state: tracks the markers being pulsed and the Pixi ticker callback.
+  let activePulse: { markers: Graphics[]; tickerFn: () => void } | null = null;
 
   function clearPulse(): void {
     if (activePulse) {
-      activePulse.marker.alpha = 0.35;
-      clearInterval(activePulse.interval);
+      for (const m of activePulse.markers) m.alpha = VALIDATION_CIRCLE_ALPHA;
+      app.ticker.remove(activePulse.tickerFn);
       activePulse = null;
     }
   }
 
   function pulseCircle(key: string): void {
     clearPulse();
-    const marker = valCircleMap.get(key);
-    if (!marker) return;
+    const markers = valCircleMap.get(key);
+    if (!markers || markers.length === 0) return;
+    // Toggle alpha every ~150ms using the Pixi ticker so the pulse is synced
+    // with the render loop rather than an independent setInterval.
+    let elapsed = 0;
     let on = true;
-    const interval = setInterval(() => {
-      marker.alpha = on ? 1.0 : 0.3;
-      on = !on;
-    }, 150);
-    activePulse = { marker, interval };
+    const tickerFn = (): void => {
+      elapsed += app.ticker.deltaMS;
+      if (elapsed >= 150) {
+        elapsed -= 150;
+        on = !on;
+        const alpha = on ? 1.0 : 0.35;
+        for (const m of markers) m.alpha = alpha;
+      }
+    };
+    app.ticker.add(tickerFn);
+    activePulse = { markers, tickerFn };
   }
 
   function populateIssuesPanel(issues: ValidationIssue[]): void {
@@ -590,6 +603,8 @@ async function main(): Promise<void> {
         viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
         legendEl.style.display = "none";
         infoPanel.style.display = "none";
+        issuesPanel.style.display = "none";
+        populateIssuesPanel([]);
       },
     };
     const sidebarEl = document.getElementById("sidebar");
