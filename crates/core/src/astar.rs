@@ -913,7 +913,6 @@ pub fn negotiate_lanes(
 
     let mut best_lanes: Vec<RoutedLane> = Vec::new();
     let mut best_conflicts = u32::MAX;
-    let mut stall_count: u32 = 0;
 
     // Track tiles promoted to obstacles at priority boundaries (cleared each iteration)
     let mut promoted: Vec<(i16, i16)> = Vec::new();
@@ -1028,24 +1027,10 @@ pub fn negotiate_lanes(
         if conflicts < best_conflicts {
             best_conflicts = conflicts;
             best_lanes = lanes.clone();
-            stall_count = 0;
-        } else {
-            stall_count += 1;
         }
 
         if conflicts == 0 {
             break; // converged — no same-tile conflicts
-        }
-
-        // Early exit: if conflicts haven't decreased for several consecutive iterations,
-        // further iterations are unlikely to help (routing has reached a local minimum).
-        // Allow 3 consecutive stalls before giving up — 1 was too aggressive (caused
-        // belt-throughput regressions) and 2 was still non-deterministically too tight
-        // on CI (electronic-circuit tests failed when history escalation happened to
-        // plateau for 2 iterations before converging on a 3rd).
-        let stall_limit = 3_u32;
-        if stall_count >= stall_limit {
-            break;
         }
 
         grid.escalate();
