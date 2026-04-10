@@ -7,6 +7,7 @@ import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemCol
 import { createSelectionController, type SelectionController } from "./renderer/selection";
 import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
+import { renderLanding } from "./ui/landing";
 import {
   setupSnapshotDropZone,
   showSnapshotBanner,
@@ -32,8 +33,41 @@ async function main(): Promise<void> {
   const engine = getEngine();
   await initEntityIcons(MACHINE_SLUGS);
 
+  // Show landing page first. The generator UI is hidden until the user
+  // clicks "Open Generator" (or if the URL has ?generator=true).
+  const appRoot = document.getElementById("app")!;
+  const skipLanding = new URLSearchParams(window.location.search).has("generator");
+
+  if (!skipLanding) {
+    const landingHost = document.createElement("div");
+    appRoot.appendChild(landingHost);
+
+    renderLanding(landingHost, engine, {
+      onOpenGenerator: () => {
+        landingHost.remove();
+        initGenerator(engine);
+        // Persist generator mode in URL so refresh stays
+        const url = new URL(window.location.href);
+        url.searchParams.set("generator", "true");
+        window.history.replaceState({}, "", url.toString());
+      },
+    });
+    return;
+  }
+
+  initGenerator(engine);
+}
+
+async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void> {
   const container = document.getElementById("canvas-container");
   if (!container) throw new Error("Missing #canvas-container element");
+
+  // Show sidebar + canvas (may be hidden behind landing page)
+  const appRoot = document.getElementById("app")!;
+  appRoot.style.display = "flex";
+  const sidebar = document.getElementById("sidebar");
+  if (sidebar) sidebar.style.display = "";
+  container.style.display = "";
 
   const { app, viewport } = await createApp(container);
   drawGrid(viewport);
