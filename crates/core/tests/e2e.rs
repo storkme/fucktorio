@@ -7,16 +7,25 @@
 //! Run with:  cargo test --test e2e
 //! Filter:    cargo test --test e2e -- tier1
 //! All (incl. known-failing): cargo test --test e2e -- --ignored
+//!
+//! Snapshot dumping:
+//!   FUCKTORIO_DUMP_SNAPSHOTS=1  — dump .fls files for ALL tests (passing too)
+//!   Automatic on failure — any test with validation errors dumps a snapshot.
 
 use fucktorio_core::analysis::{self, BlueprintAnalysis};
 use fucktorio_core::blueprint;
 use fucktorio_core::blueprint_parser;
 use fucktorio_core::bus::layout;
 use fucktorio_core::models::{LayoutResult, SolverResult};
+use fucktorio_core::snapshot::{
+    LayoutSnapshot, SnapshotContext, SnapshotParams, SnapshotSource,
+};
 use fucktorio_core::solver;
+use fucktorio_core::trace;
 use fucktorio_core::validate::{self, LayoutStyle, Severity, ValidationIssue};
 use fucktorio_core::validate::{belt_flow, belt_structural, power, inserters};
 use rustc_hash::FxHashSet;
+use std::path::PathBuf;
 use std::time::Instant;
 
 struct E2EResult {
@@ -30,18 +39,148 @@ struct E2EResult {
     analysis: BlueprintAnalysis,
 }
 
+/// Whether to dump snapshots for all tests or only failing ones.
+fn should_dump_snapshots() -> bool {
+    std::env::var("FUCKTORIO_DUMP_SNAPSHOTS").is_ok()
+}
+
+/// Dump a snapshot file for a test. Called on failure or when env var is set.
+fn dump_snapshot(
+    test_name: &str,
+    params: &RunParams,
+    result: &E2EResult,
+) {
+    let dir = snapshot_dir();
+    std::fs::create_dir_all(&dir).ok();
+
+    let snapshot = LayoutSnapshot::from_run(
+        SnapshotSource::Test,
+        SnapshotParams {
+            item: params.item.to_string(),
+            rate: params.rate,
+            machine: params.machine.to_string(),
+            belt_tier: params.belt_tier.map(|s| s.to_string()),
+            inputs: params.available_inputs.iter().cloned().collect(),
+        },
+        SnapshotContext {
+            test_name: Some(test_name.to_string()),
+            label: None,
+            git_sha: git_sha(),
+        },
+        result.layout.clone(),
+        result.issues.clone(),
+        false, // not truncated
+        trace::drain_events(),
+        true, // trace complete
+        Some(result.solver_result.clone()),
+    );
+
+    let path = dir.join(format!("snapshot-{test_name}.fls"));
+    match snapshot.write_to_file(&path) {
+        Ok(()) => eprintln!("  snapshot: {}", path.display()),
+        Err(e) => eprintln!("  snapshot write failed: {e}"),
+    }
+}
+
+/// Dump a partial snapshot when the pipeline fails early (solver/layout error).
+/// Uses whatever data is available — may have no layout entities.
+fn dump_partial_snapshot(
+    test_name: &str,
+    params: &RunParams,
+    solver_result: Option<&SolverResult>,
+    error_msg: &str,
+) {
+    let dir = snapshot_dir();
+    std::fs::create_dir_all(&dir).ok();
+
+    let error_issue = ValidationIssue {
+        severity: Severity::Error,
+        category: "pipeline".into(),
+        message: error_msg.into(),
+        x: None,
+        y: None,
+    };
+
+    let snapshot = LayoutSnapshot::from_run(
+        SnapshotSource::Test,
+        SnapshotParams {
+            item: params.item.to_string(),
+            rate: params.rate,
+            machine: params.machine.to_string(),
+            belt_tier: params.belt_tier.map(|s| s.to_string()),
+            inputs: params.available_inputs.iter().cloned().collect(),
+        },
+        SnapshotContext {
+            test_name: Some(test_name.to_string()),
+            label: None,
+            git_sha: git_sha(),
+        },
+        LayoutResult::default(),
+        vec![error_issue],
+        true, // truncated — pipeline didn't finish
+        trace::drain_events(),
+        false, // trace incomplete
+        solver_result.cloned(),
+    );
+
+    let path = dir.join(format!("snapshot-{test_name}-partial.fls"));
+    match snapshot.write_to_file(&path) {
+        Ok(()) => eprintln!("  partial snapshot: {}", path.display()),
+        Err(e) => eprintln!("  partial snapshot write failed: {e}"),
+    }
+}
+
+/// Directory for snapshot files. Uses `CARGO_TARGET_TMPDIR` if available,
+/// otherwise `target/tmp/`.
+fn snapshot_dir() -> PathBuf {
+    std::env::var("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("target/tmp"))
+}
+
+/// Best-effort git SHA.
+fn git_sha() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Parameters for a test run (borrowed from the test function's arguments).
+struct RunParams<'a> {
+    item: &'a str,
+    rate: f64,
+    machine: &'a str,
+    belt_tier: Option<&'a str>,
+    available_inputs: &'a FxHashSet<String>,
+}
+
 fn run_e2e(
+    test_name: &str,
     item: &str,
     rate: f64,
     machine: &str,
     belt_tier: Option<&str>,
     available_inputs: &FxHashSet<String>,
 ) -> Result<E2EResult, String> {
+    let _guard = trace::start_trace();
+    let run_params = RunParams { item, rate, machine, belt_tier, available_inputs };
+
     let solver_result = solver::solve(item, rate, available_inputs, machine)
-        .map_err(|e| format!("solver: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("solver: {e}");
+            dump_partial_snapshot(test_name, &run_params, None, &msg);
+            msg
+        })?;
 
     let layout = layout::build_bus_layout(&solver_result, belt_tier)
-        .map_err(|e| format!("layout: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("layout: {e}");
+            dump_partial_snapshot(test_name, &run_params, Some(&solver_result), &msg);
+            msg
+        })?;
 
     // Validate the original layout (correct top-left positions).
     let issues = match validate::validate(&layout, Some(&solver_result), LayoutStyle::Bus) {
@@ -54,16 +193,28 @@ fn run_e2e(
     // Round-trip through blueprint export → parse as a smoke test.
     let bp_string = blueprint::export(&layout, item);
     let parsed = blueprint_parser::parse_blueprint_string(&bp_string)
-        .map_err(|e| format!("parse: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("parse: {e}");
+            dump_partial_snapshot(test_name, &run_params, Some(&solver_result), &msg);
+            msg
+        })?;
 
-    Ok(E2EResult {
+    let result = E2EResult {
         solver_result,
         layout,
         bp_string,
         parsed,
         issues,
         analysis,
-    })
+    };
+
+    // Dump snapshot if there are errors or if env var is set.
+    let has_errors = result.issues.iter().any(|i| i.severity == Severity::Error);
+    if has_errors || should_dump_snapshots() {
+        dump_snapshot(test_name, &run_params, &result);
+    }
+
+    Ok(result)
 }
 
 fn assert_no_errors(result: &E2EResult) {
@@ -141,7 +292,7 @@ fn assert_round_trip(result: &E2EResult) {
 #[ntest::timeout(10000)]
 fn tier1_iron_gear_wheel() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
-    let result = run_e2e("iron-gear-wheel", 10.0, "assembling-machine-1", None, &inputs)
+    let result = run_e2e("tier1_iron_gear_wheel", "iron-gear-wheel", 10.0, "assembling-machine-1", None, &inputs)
         .expect("e2e pipeline");
 
     assert_no_errors(&result);
@@ -154,6 +305,7 @@ fn tier1_iron_gear_wheel() {
 fn tier1_iron_gear_wheel_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore"].iter().map(|s| s.to_string()).collect();
     let result = run_e2e(
+        "tier1_iron_gear_wheel_from_ore",
         "iron-gear-wheel",
         10.0,
         "assembling-machine-2",
@@ -171,7 +323,7 @@ fn tier1_iron_gear_wheel_from_ore() {
 #[ntest::timeout(10000)]
 fn tier1_iron_gear_wheel_20s() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
-    let result = run_e2e("iron-gear-wheel", 20.0, "assembling-machine-2", None, &inputs)
+    let result = run_e2e("tier1_iron_gear_wheel_20s", "iron-gear-wheel", 20.0, "assembling-machine-2", None, &inputs)
         .expect("e2e pipeline");
 
     assert_no_errors(&result);
@@ -192,6 +344,7 @@ fn tier2_electronic_circuit() {
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
+        "tier2_electronic_circuit",
         "electronic-circuit",
         10.0,
         "assembling-machine-2",
@@ -214,6 +367,7 @@ fn tier2_electronic_circuit_from_ore() {
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
+        "tier2_electronic_circuit_from_ore",
         "electronic-circuit",
         10.0,
         "assembling-machine-1",
@@ -236,6 +390,7 @@ fn tier2_electronic_circuit_20s_from_ore() {
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
+        "tier2_electronic_circuit_20s_from_ore",
         "electronic-circuit",
         20.0,
         "assembling-machine-2",
@@ -261,7 +416,7 @@ fn tier3_plastic_bar() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_plastic_bar", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
     assert_produces(&result, "plastic-bar", 10.0);
@@ -276,7 +431,7 @@ fn tier3_plastic_bar_from_crude() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_plastic_bar_from_crude", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
     assert_produces(&result, "plastic-bar", 10.0);
@@ -291,7 +446,7 @@ fn tier3_sulfuric_acid() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("sulfuric-acid", 5.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_sulfuric_acid", "sulfuric-acid", 5.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
     assert_produces(&result, "sulfuric-acid", 5.0);
@@ -312,6 +467,7 @@ fn tier4_advanced_circuit_from_plates() {
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
+        "tier4_advanced_circuit_from_plates",
         "advanced-circuit",
         10.0,
         "assembling-machine-2",
