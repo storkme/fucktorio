@@ -44,8 +44,6 @@ fn run_e2e(
         .map_err(|e| format!("layout: {e}"))?;
 
     // Validate the original layout (correct top-left positions).
-    // The blueprint export has a known offset bug for multi-tile entities,
-    // so validating the parsed layout would produce false overlap errors.
     let issues = match validate::validate(&layout, Some(&solver_result), LayoutStyle::Bus) {
         Ok(issues) => issues,
         Err(e) => e.issues,
@@ -167,12 +165,22 @@ fn tier1_iron_gear_wheel_from_ore() {
     assert_round_trip(&result);
 }
 
+#[test]
+fn tier1_iron_gear_wheel_20s() {
+    let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
+    let result = run_e2e("iron-gear-wheel", 20.0, "assembling-machine-2", None, &inputs)
+        .expect("e2e pipeline");
+
+    assert_no_errors(&result);
+    assert_produces(&result, "iron-gear-wheel", 20.0);
+    assert_round_trip(&result);
+}
+
 // ---------------------------------------------------------------------------
 // Tier 2: electronic-circuit (2 recipes, 2 solid inputs)
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Lane-throughput errors: both lanes at 15/s on yellow belt (7.5/s per-lane cap)
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
         .iter()
@@ -212,6 +220,27 @@ fn tier2_electronic_circuit_from_ore() {
     assert_round_trip(&result);
 }
 
+#[test]
+#[ignore] // Hangs at 20/s from ore (validator/layout loop on larger graph)
+fn tier2_electronic_circuit_20s_from_ore() {
+    let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let result = run_e2e(
+        "electronic-circuit",
+        20.0,
+        "assembling-machine-2",
+        None,
+        &inputs,
+    )
+    .expect("e2e pipeline");
+
+    assert_no_errors(&result);
+    assert_produces(&result, "electronic-circuit", 20.0);
+    assert_round_trip(&result);
+}
+
 // ---------------------------------------------------------------------------
 // Tier 3: plastic-bar (1 recipe, 1 fluid + 1 solid input)
 // ---------------------------------------------------------------------------
@@ -227,6 +256,34 @@ fn tier3_plastic_bar() {
 
     assert_no_errors(&result);
     assert_produces(&result, "plastic-bar", 10.0);
+    assert_round_trip(&result);
+}
+
+#[test]
+fn tier3_plastic_bar_from_crude() {
+    let inputs: FxHashSet<String> = ["crude-oil", "coal"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let result =
+        run_e2e("plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+
+    assert_no_errors(&result);
+    assert_produces(&result, "plastic-bar", 10.0);
+    assert_round_trip(&result);
+}
+
+#[test]
+fn tier3_sulfuric_acid() {
+    let inputs: FxHashSet<String> = ["iron-plate", "sulfur", "water"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let result =
+        run_e2e("sulfuric-acid", 5.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+
+    assert_no_errors(&result);
+    assert_produces(&result, "sulfuric-acid", 5.0);
     assert_round_trip(&result);
 }
 
