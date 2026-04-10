@@ -91,7 +91,7 @@ export function createSelectionController(
   }
 
   const onDown = (e: PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.shiftKey) return;
     dragStart = { sx: e.clientX, sy: e.clientY };
     isDragging = false;
   };
