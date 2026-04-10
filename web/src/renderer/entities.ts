@@ -519,7 +519,10 @@ function drawInserter(entity: PlacedEntity): Graphics {
   return g;
 }
 
-function drawPipe(entity: PlacedEntity): Graphics {
+// Pipe connection bitmask: N=1, E=2, S=4, W=8
+const CONN_N = 1, CONN_E = 2, CONN_S = 4, CONN_W = 8;
+
+function drawPipe(entity: PlacedEntity, connections: number): Graphics {
   const g = new Graphics();
   const s = TILE_PX - 1;
   const isGround = entity.name === "pipe-to-ground";
@@ -531,19 +534,61 @@ function drawPipe(entity: PlacedEntity): Graphics {
   const cy = s / 2;
   const pipeWidth = Math.max(2, s * 0.4);
 
-  g.setStrokeStyle({ width: pipeWidth, color: pipeColor, cap: "round" });
   if (isGround) {
-    // Single stub toward the underground entry/exit direction
+    // pipe-to-ground: single stub in flow direction
+    g.setStrokeStyle({ width: pipeWidth, color: pipeColor, cap: "round" });
     const [dx, dy] = dirVec(entity.direction);
     g.moveTo(cx, cy).lineTo(cx + dx * s / 2, cy + dy * s / 2).stroke();
     g.circle(cx, cy, pipeWidth * 0.4).fill(pipeColor);
     g.circle(cx, cy, pipeWidth * 0.25).fill(0x0a1520);
-  } else {
-    // Four stubs so adjacent pipes visually connect without neighbor lookup
-    for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as [number, number][]) {
-      g.moveTo(cx, cy).lineTo(cx + dx * s / 2, cy + dy * s / 2).stroke();
-    }
+  } else if (connections === 0) {
+    // Isolated pipe: just a center dot
     g.circle(cx, cy, pipeWidth * 0.4).fill(pipeColor);
+  } else {
+    const halfS = s / 2;
+    const hasN = !!(connections & CONN_N);
+    const hasE = !!(connections & CONN_E);
+    const hasS = !!(connections & CONN_S);
+    const hasW = !!(connections & CONN_W);
+    const count = (hasN ? 1 : 0) + (hasE ? 1 : 0) + (hasS ? 1 : 0) + (hasW ? 1 : 0);
+
+    g.setStrokeStyle({ width: pipeWidth, color: pipeColor, cap: "round" });
+
+    if (count === 1) {
+      // Dead-end stub
+      if (hasN) g.moveTo(cx, cy).lineTo(cx, 0).stroke();
+      else if (hasE) g.moveTo(cx, cy).lineTo(s, cy).stroke();
+      else if (hasS) g.moveTo(cx, cy).lineTo(cx, s).stroke();
+      else g.moveTo(cx, cy).lineTo(0, cy).stroke();
+      g.circle(cx, cy, pipeWidth * 0.4).fill(pipeColor);
+    } else if (hasN && hasS && !hasE && !hasW) {
+      // Straight N-S
+      g.moveTo(cx, 0).lineTo(cx, s).stroke();
+    } else if (hasE && hasW && !hasN && !hasS) {
+      // Straight E-W
+      g.moveTo(0, cy).lineTo(s, cy).stroke();
+    } else if (count === 2) {
+      // Corner arc — smooth quarter-circle centred on the tile corner
+      if (hasN && hasE) {
+        g.arc(s, 0, halfS, Math.PI, Math.PI / 2, true).stroke();
+      } else if (hasE && hasS) {
+        g.arc(s, s, halfS, 3 * Math.PI / 2, Math.PI, true).stroke();
+      } else if (hasS && hasW) {
+        g.arc(0, s, halfS, 0, 3 * Math.PI / 2, true).stroke();
+      } else { // W+N
+        g.arc(0, 0, halfS, Math.PI / 2, 0, true).stroke();
+      }
+    } else if (count === 3) {
+      // T-junction: straight through the two opposite + stub for the third
+      if (!hasW) { g.moveTo(cx, 0).lineTo(cx, s).stroke(); g.moveTo(cx, cy).lineTo(s, cy).stroke(); }
+      else if (!hasS) { g.moveTo(0, cy).lineTo(s, cy).stroke(); g.moveTo(cx, cy).lineTo(cx, 0).stroke(); }
+      else if (!hasE) { g.moveTo(cx, 0).lineTo(cx, s).stroke(); g.moveTo(cx, cy).lineTo(0, cy).stroke(); }
+      else { g.moveTo(0, cy).lineTo(s, cy).stroke(); g.moveTo(cx, cy).lineTo(cx, s).stroke(); }
+    } else {
+      // Cross (4 connections)
+      g.moveTo(cx, 0).lineTo(cx, s).stroke();
+      g.moveTo(0, cy).lineTo(s, cy).stroke();
+    }
   }
 
   return g;
@@ -762,6 +807,21 @@ export function renderLayout(
     }
   }
 
+  // Build set of machine-occupied tiles for pipe connection detection.
+  const machineTileSet = new Set<string>();
+  for (const e of layout.entities) {
+    if (MACHINE_ENTITIES.has(e.name)) {
+      const [w, h] = MACHINE_SIZES[e.name] ?? [1, 1];
+      const ex = e.x ?? 0;
+      const ey = e.y ?? 0;
+      for (let dy = 0; dy < h; dy++) {
+        for (let dx = 0; dx < w; dx++) {
+          machineTileSet.add(`${ex + dx},${ey + dy}`);
+        }
+      }
+    }
+  }
+
   // Index: item name → list of Graphics in that chain
   const itemIndex = new Map<string, Graphics[]>();
   const allGraphics: Graphics[] = [];
@@ -780,7 +840,18 @@ export function renderLayout(
     } else if (INSERTER_ENTITIES.has(entity.name)) {
       g = drawInserter(entity);
     } else if (PIPE_ENTITIES.has(entity.name)) {
-      g = drawPipe(entity);
+      // Compute connections for regular pipes
+      let pipeConn = 0;
+      if (entity.name === "pipe") {
+        const ex = entity.x ?? 0;
+        const ey = entity.y ?? 0;
+        for (const [dx, dy, bit] of [[0, -1, CONN_N], [1, 0, CONN_E], [0, 1, CONN_S], [-1, 0, CONN_W]] as [number, number, number][]) {
+          const key = `${ex + dx},${ey + dy}`;
+          const nb = tileMap.get(key);
+          if ((nb && PIPE_ENTITIES.has(nb.name)) || machineTileSet.has(key)) pipeConn |= bit;
+        }
+      }
+      g = drawPipe(entity, pipeConn);
     } else if (POLE_ENTITIES.has(entity.name)) {
       g = drawPole();
     } else if (MACHINE_ENTITIES.has(entity.name)) {
