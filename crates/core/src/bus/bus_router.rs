@@ -192,14 +192,18 @@ pub fn plan_bus_lanes(
     for lane in &mut lanes {
         lane.tap_off_ys = find_tap_off_ys(lane, row_spans);
         if lane.is_fluid {
-            // Collect fluid port pipe positions for tap-off routing
+            // Collect fluid port pipe positions for tap-off routing.
+            // Filter by lane.item so rows with multiple fluid ports (e.g. oil-refinery)
+            // only contribute the port(s) for this specific fluid.
             for &ri in &lane.consumer_rows {
                 let rs = &row_spans[ri];
-                for &(px, py) in &rs.fluid_port_pipes {
-                    lane.fluid_port_positions.push((ri, px, py));
+                for (ref item, px, py) in &rs.fluid_port_pipes {
+                    if *item == lane.item {
+                        lane.fluid_port_positions.push((ri, *px, *py));
+                    }
                 }
             }
-            // Collect producer-side output port pipes
+            // Collect producer-side output port pipes (also filtered by item).
             let mut producer_rows = Vec::new();
             if let Some(pr) = lane.producer_row {
                 producer_rows.push(pr);
@@ -207,8 +211,10 @@ pub fn plan_bus_lanes(
             producer_rows.extend(&lane.extra_producer_rows);
             for ri in producer_rows {
                 let rs = &row_spans[ri];
-                for &(px, py) in &rs.fluid_output_port_pipes {
-                    lane.fluid_output_port_positions.push((ri, px, py));
+                for (ref item, px, py) in &rs.fluid_output_port_pipes {
+                    if *item == lane.item {
+                        lane.fluid_output_port_positions.push((ri, *px, *py));
+                    }
                 }
             }
         }

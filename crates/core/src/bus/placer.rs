@@ -37,8 +37,10 @@ pub struct RowSpan {
     pub output_belt_y: i32,
     pub row_width: i32,
     pub fluid_port_ys: Vec<i32>,
-    pub fluid_port_pipes: Vec<(i32, i32)>,
-    pub fluid_output_port_pipes: Vec<(i32, i32)>,
+    /// Per-fluid-item input port pipe positions (item, x, y).
+    pub fluid_port_pipes: Vec<(String, i32, i32)>,
+    /// Per-fluid-item output port pipe positions (item, x, y).
+    pub fluid_output_port_pipes: Vec<(String, i32, i32)>,
 }
 
 /// Maximum machines in one row before output or input exceeds belt lane capacity.
@@ -328,14 +330,48 @@ pub(crate) fn build_one_row(
     );
 
     let mut fluid_port_ys: Vec<i32> = vec![];
-    let mut fluid_port_pipes: Vec<(i32, i32)> = vec![];
-    let mut fluid_output_port_pipes: Vec<(i32, i32)> = vec![];
+    let mut fluid_port_pipes: Vec<(String, i32, i32)> = vec![];
+    let mut fluid_output_port_pipes: Vec<(String, i32, i32)> = vec![];
 
     let (row_ents, row_h, input_belt_ys, output_belt_y) = match &kind {
         RowKind::OilRefinery => {
-            let fluid_input = fluid_inputs.first().map(|f| f.item.as_str()).unwrap_or("");
-            let fluid_output = fluid_outputs.first().map(|f| f.item.as_str()).unwrap_or("");
             let msz = machine_size(&spec.entity);
+            // Oil-refinery (mirrored, direction=NORTH) has fixed port dx positions:
+            //   Input box 1 at dx=1, input box 2 at dx=3.
+            //   Output box 3 at dx=0, output box 4 at dx=2, output box 5 at dx=4.
+            //
+            // basic-oil-processing uses fluidbox_index=2 for crude-oil (box 2, dx=3)
+            // and index=3 for petroleum-gas (box 3, dx=0).
+            // advanced-oil-processing uses boxes sequentially: inputs→[dx=1,dx=3],
+            // outputs→[dx=0,dx=2,dx=4].
+            //
+            // Assignment rules:
+            //   1 fluid input  → dx=3 (box 2)
+            //   2 fluid inputs → dx=1 (first), dx=3 (second)
+            //   1 fluid output → dx=0 (box 3)
+            //   2 fluid outputs→ dx=0 (first), dx=2 (second)
+            //   3 fluid outputs→ dx=0, dx=2, dx=4
+            let input_dxs: &[i32] = match fluid_inputs.len() {
+                0 => &[],
+                1 => &[3],
+                _ => &[1, 3],
+            };
+            let output_dxs: &[i32] = match fluid_outputs.len() {
+                0 => &[],
+                1 => &[0],
+                2 => &[0, 2],
+                _ => &[0, 2, 4],
+            };
+            let in_port_assignments: Vec<(i32, &str)> = input_dxs
+                .iter()
+                .zip(fluid_inputs.iter())
+                .map(|(&dx, f)| (dx, f.item.as_str()))
+                .collect();
+            let out_port_assignments: Vec<(i32, &str)> = output_dxs
+                .iter()
+                .zip(fluid_outputs.iter())
+                .map(|(&dx, f)| (dx, f.item.as_str()))
+                .collect();
             let (ents, rh, in_port_pipes, out_port_pipes) = templates::fluid_only_row(
                 &spec.recipe,
                 &spec.entity,
@@ -343,10 +379,10 @@ pub(crate) fn build_one_row(
                 count,
                 y_cursor,
                 bus_width,
-                fluid_input,
-                fluid_output,
+                &in_port_assignments,
+                &out_port_assignments,
             );
-            fluid_port_ys = in_port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_ys = in_port_pipes.first().map(|&(_, _, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = in_port_pipes;
             fluid_output_port_pipes = out_port_pipes;
             let input_ys = vec![];
@@ -383,7 +419,7 @@ pub(crate) fn build_one_row(
             );
             let machine_y = y_cursor + 5;
             let output_y = machine_y + msz as i32;
-            fluid_port_ys = in_port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_ys = in_port_pipes.first().map(|&(_, _, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = in_port_pipes;
             fluid_output_port_pipes = out_port_pipes;
             let input_ys = vec![y_cursor + 2, y_cursor + 3];
@@ -410,7 +446,7 @@ pub(crate) fn build_one_row(
                 out_belt,
                 output_east,
             );
-            fluid_port_ys = port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
+            fluid_port_ys = port_pipes.first().map(|&(_, _, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = port_pipes;
             // T-shape layout: trunk at y+0, belt at y+2, machine at y+4, output belt at y+8
             let input_ys = vec![y_cursor + 2];
