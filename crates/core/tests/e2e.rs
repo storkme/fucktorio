@@ -359,7 +359,6 @@ fn tier2_electronic_circuit() {
 }
 
 #[test]
-#[ignore] // Times out: validator/layout loop on ore chain
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
@@ -382,7 +381,7 @@ fn tier2_electronic_circuit_from_ore() {
 }
 
 #[test]
-#[ignore] // Hangs at 20/s from ore (validator/layout loop on larger graph)
+#[ignore] // Validation errors: entity-overlap, belt-dead-end, belt-item-isolation, lane-throughput — layout quality issue, not a performance hang
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_20s_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]

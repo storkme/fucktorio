@@ -958,10 +958,26 @@ pub fn negotiate_lanes(
             }
             current_priority = Some(spec.priority);
 
+            // Compute a tight per-spec max_extent from the spec's waypoints plus a
+            // generous detour buffer.  Unconstrained specs (feeders, bal Z-wraps) only
+            // need to explore within their own waypoint bounding box ± detour room, not
+            // the full global layout extent. Constrained specs (x_constraint /
+            // y_constraint) limit their own search to one axis anyway, so this
+            // tightening is most impactful for unconstrained A* calls.
+            let spec_max_extent = if spec.x_constraint.is_some() || spec.y_constraint.is_some() {
+                // Constrained: the other axis is already unlimited within max_extent; keep it
+                max_extent
+            } else {
+                let wp_max_x = spec.waypoints.iter().map(|&(x, _)| x).max().unwrap_or(0);
+                let wp_max_y = spec.waypoints.iter().map(|&(_, y)| y).max().unwrap_or(0);
+                // Allow a ±20-tile detour window beyond the waypoint bounding box
+                (wp_max_x + 20).max(wp_max_y + 20).min(max_extent)
+            };
+
             let result = match spec.strategy {
                 0 => route_axis_aligned(spec, &grid, obstacles),
-                1 => route_astar(spec, &grid, obstacles, max_extent, allow_underground, ug_max_reach, false),
-                2 => route_astar(spec, &grid, obstacles, max_extent, true, ug_max_reach, true),
+                1 => route_astar(spec, &grid, obstacles, spec_max_extent, allow_underground, ug_max_reach, false),
+                2 => route_astar(spec, &grid, obstacles, spec_max_extent, true, ug_max_reach, true),
                 _ => None,
             };
 
