@@ -249,35 +249,6 @@ function renderRouting(body: HTMLDivElement, events: TraceEvent[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Section: SAT Zones
-// ---------------------------------------------------------------------------
-
-function renderSatZones(body: HTMLDivElement, events: TraceEvent[]): void {
-  const solved = filterEvents(events, "CrossingZoneSolved");
-  const skipped = filterEvents(events, "CrossingZoneSkipped");
-  const conflicts = filterEvents(events, "CrossingZoneConflict");
-
-  if (solved.length === 0 && skipped.length === 0 && conflicts.length === 0) {
-    body.textContent = "No SAT zone data";
-    return;
-  }
-
-  const totalUs = solved.reduce((s, z) => s + z.data.solve_time_us, 0);
-
-  body.appendChild(statRow("Zones solved", String(solved.length)));
-  body.appendChild(statRow("Zones skipped", String(skipped.length)));
-  body.appendChild(statRow("Conflicts", String(conflicts.length)));
-  body.appendChild(statRow("Total solve time", `${totalUs.toLocaleString()}\u00B5s`));
-
-  for (const s of skipped) {
-    const d = s.data;
-    const line = el("div", "skip-item");
-    line.textContent = `${d.tap_item} @ (${d.tap_x},${d.tap_y}): ${d.reason}`;
-    body.appendChild(line);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Section: Lane Consolidation
 // ---------------------------------------------------------------------------
 
@@ -377,11 +348,6 @@ export function renderDebugPanel(events: TraceEvent[]): HTMLElement {
   const routing = section("A* Routing", true);
   renderRouting(routing.body, events);
   root.appendChild(routing.details);
-
-  // SAT Zones
-  const satZones = section("SAT Zones");
-  renderSatZones(satZones.body, events);
-  root.appendChild(satZones.details);
 
   // Lane Consolidation (only if events exist)
   const consolidation = section("Lane Consolidation");
