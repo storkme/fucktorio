@@ -249,7 +249,7 @@ impl RowKind {
             RowKind::SingleInput => 7,
             RowKind::DualInput => 8,
             RowKind::FluidDualInput => 9,
-            RowKind::FluidInput => 8,
+            RowKind::FluidInput => 9,
             RowKind::TripleInput => 9,
             RowKind::OilRefinery => 7,
         }
@@ -412,9 +412,9 @@ pub(crate) fn build_one_row(
             );
             fluid_port_ys = port_pipes.first().map(|&(_, py)| vec![py]).unwrap_or_default();
             fluid_port_pipes = port_pipes;
-            // T-shape layout: belt at y+1, machine at y+3, output belt at y+7
-            let input_ys = vec![y_cursor + 1];
-            let out_y = y_cursor + 3 + msz as i32 + 1;
+            // T-shape layout: trunk at y+0, belt at y+2, machine at y+4, output belt at y+8
+            let input_ys = vec![y_cursor + 2];
+            let out_y = y_cursor + 4 + msz as i32 + 1;
             (ents, rh, input_ys, out_y)
         }
         RowKind::SingleInput => {
