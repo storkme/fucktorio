@@ -47,7 +47,7 @@ const SHOWCASE: ShowcaseEntry[] = [
     desc: "2 recipes, 2 solid inputs",
   },
   {
-    label: "Electronic Circuit",
+    label: "Electronic Circuit (ores)",
     item: "electronic-circuit",
     rate: 10,
     inputs: ["iron-ore", "copper-ore"],
@@ -626,17 +626,20 @@ async function showModal(
   backdrop.className = "fucktorio-preview-backdrop";
   document.body.appendChild(backdrop);
 
+  const handleKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") closeModal();
+  };
+
+  let closed = false;
+  let pixiApp: Application | null = null;
   function closeModal(): void {
-    pixiApp.destroy(true);
+    if (closed) return;
+    closed = true;
+    document.removeEventListener("keydown", handleKey);
+    if (pixiApp) pixiApp.destroy(true);
     backdrop.remove();
   }
 
-  const handleKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      closeModal();
-      document.removeEventListener("keydown", handleKey);
-    }
-  };
   document.addEventListener("keydown", handleKey);
   backdrop.addEventListener("click", (e) => {
     if (e.target === backdrop) closeModal();
@@ -686,7 +689,7 @@ async function showModal(
   canvasWrap.appendChild(badge);
 
   // Init PixiJS
-  const pixiApp = new Application();
+  pixiApp = new Application();
   await pixiApp.init({
     resizeTo: canvasWrap,
     background: 0x111111,

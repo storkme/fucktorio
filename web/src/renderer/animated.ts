@@ -37,7 +37,6 @@ export function renderLayoutAnimated(
     child.alpha = 0;
   }
 
-  const total = children.length;
   const entityTotal = layout.entities.length;
 
   // Batch size: aim for ~1.5s total animation
@@ -59,14 +58,16 @@ export function renderLayoutAnimated(
   let idx = 0;
 
   function revealBatch(): void {
-    const end = Math.min(idx + batchSize, total);
+    const end = Math.min(idx + batchSize, children.length);
     for (let i = idx; i < end; i++) {
       children[i].alpha = 1;
     }
     idx = end;
-    badge.textContent = `${Math.min(idx, entityTotal)} / ${entityTotal}`;
+    // Show progress based on entity count, not raw child count
+    const shown = Math.min(idx, entityTotal);
+    badge.textContent = `${shown} / ${entityTotal}`;
 
-    if (idx < total) {
+    if (idx < children.length) {
       setTimeout(revealBatch, batchDelay);
     } else {
       badge.textContent = `${entityTotal} entities`;
