@@ -1,12 +1,6 @@
 //! LayoutResult → Factorio blueprint string.
 //!
 //! Format: `"0" + base64(zlib(JSON))`. The `"0"` is Factorio's version byte.
-//!
-//! NOTE: position is emitted as `{x: ent.x + 0.5, y: ent.y + 0.5}` for every
-//! entity. This is correct for 1x1 entities (belts, pipes, inserters). For
-//! multi-tile entities (3x3 assemblers, chemical plants, etc.) the center
-//! should instead be `{x: ent.x + w/2, y: ent.y + h/2}`. Fixing this requires
-//! an entity footprint lookup which is a follow-up.
 
 use std::io::Write;
 
@@ -15,6 +9,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use serde::Serialize;
 
+use crate::common::{is_machine_entity, machine_size};
 use crate::models::LayoutResult;
 
 #[derive(Serialize)]
@@ -60,9 +55,16 @@ pub fn export(layout: &LayoutResult, label: &str) -> String {
         .map(|(i, ent)| BlueprintEntity {
             entity_number: i + 1,
             name: &ent.name,
-            position: Position {
-                x: ent.x as f64 + 0.5,
-                y: ent.y as f64 + 0.5,
+            position: {
+                let size = if is_machine_entity(&ent.name) {
+                    machine_size(&ent.name) as f64
+                } else {
+                    1.0
+                };
+                Position {
+                    x: ent.x as f64 + size / 2.0,
+                    y: ent.y as f64 + size / 2.0,
+                }
             },
             direction: ent.direction as u8,
             recipe: ent.recipe.as_deref(),
@@ -151,6 +153,10 @@ mod tests {
         assert_eq!(ents[0]["direction"], 0);
         assert_eq!(ents[1]["entity_number"], 2);
         assert_eq!(ents[1]["direction"], 4);
+        // 3x3 assembler at (0,0) → center at (1.5, 1.5)
+        assert_eq!(ents[0]["position"]["x"], 1.5);
+        assert_eq!(ents[0]["position"]["y"], 1.5);
+        // 1x1 belt at (3,0) → center at (3.5, 0.5)
         assert_eq!(ents[1]["position"]["x"], 3.5);
         // mirror should be absent when false
         assert!(ents[0].get("mirror").is_none());
