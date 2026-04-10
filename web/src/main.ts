@@ -638,6 +638,9 @@ async function main(): Promise<void> {
 
     renderLayoutOnCanvas(layout);
 
+    // Pre-fill sidebar form with snapshot params
+    sidebarCtrl?.setParams(snapshot.params);
+
     // Show banner
     clearSnapshotBanner();
     const bannerCallbacks: BannerCallbacks = {

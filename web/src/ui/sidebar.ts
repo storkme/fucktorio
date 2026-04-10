@@ -229,6 +229,9 @@ export interface SidebarCallbacks {
 export interface SidebarParams {
   item: string;
   rate: number;
+  machine?: string;
+  inputs?: string[];
+  belt?: string | null;
 }
 
 export function renderSidebar(
@@ -236,7 +239,7 @@ export function renderSidebar(
   engine: Engine,
   callbacks: SidebarCallbacks,
   options?: { getDebugMode?: () => boolean },
-): { getParams(): SidebarParams | null } {
+): { getParams(): SidebarParams | null; setParams(params: SidebarParams): void } {
   el.innerHTML = "";
 
   if (!document.getElementById("fucktorio-sidebar-style")) {
@@ -490,6 +493,28 @@ export function renderSidebar(
       const rate = parseFloat(rateInput.value);
       if (!item || isNaN(rate) || rate <= 0) return null;
       return { item, rate };
+    },
+    setParams(params) {
+      itemInput.value = params.item;
+      rateInput.value = String(params.rate);
+      if (params.machine) {
+        machineSelect.value = params.machine;
+      } else {
+        machineSelect.value = engine.defaultMachineForItem(params.item, "assembling-machine-3");
+      }
+      if (params.inputs) {
+        checkboxes.forEach((cb, name) => {
+          cb.checked = params.inputs!.includes(name);
+        });
+      }
+      if (params.belt) {
+        beltSelect.value = params.belt;
+      } else {
+        beltSelect.value = "";
+      }
+      // Update internal state and re-solve
+      previousItem = params.item;
+      scheduleAutoSolve();
     },
   };
 }
