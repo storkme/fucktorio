@@ -159,6 +159,7 @@ impl LayoutSnapshot {
     }
 
     /// Write the encoded snapshot to a file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_to_file(&self, path: &Path) -> std::io::Result<()> {
         let encoded = self
             .encode()
@@ -167,6 +168,7 @@ impl LayoutSnapshot {
     }
 
     /// Read and decode a snapshot from a file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_from_file(path: &Path) -> Result<Self, SnapshotError> {
         let contents = std::fs::read_to_string(path).map_err(SnapshotError::Io)?;
         Self::decode(&contents)

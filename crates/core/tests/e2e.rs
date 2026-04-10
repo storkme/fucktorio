@@ -82,6 +82,54 @@ fn dump_snapshot(
     }
 }
 
+/// Dump a partial snapshot when the pipeline fails early (solver/layout error).
+/// Uses whatever data is available — may have no layout entities.
+fn dump_partial_snapshot(
+    test_name: &str,
+    params: &RunParams,
+    solver_result: Option<&SolverResult>,
+    error_msg: &str,
+) {
+    let dir = snapshot_dir();
+    std::fs::create_dir_all(&dir).ok();
+
+    let error_issue = ValidationIssue {
+        severity: Severity::Error,
+        category: "pipeline".into(),
+        message: error_msg.into(),
+        x: None,
+        y: None,
+    };
+
+    let snapshot = LayoutSnapshot::from_run(
+        SnapshotSource::Test,
+        SnapshotParams {
+            item: params.item.to_string(),
+            rate: params.rate,
+            machine: params.machine.to_string(),
+            belt_tier: params.belt_tier.map(|s| s.to_string()),
+            inputs: params.available_inputs.iter().cloned().collect(),
+        },
+        SnapshotContext {
+            test_name: Some(test_name.to_string()),
+            label: None,
+            git_sha: git_sha(),
+        },
+        LayoutResult::default(),
+        vec![error_issue],
+        true, // truncated — pipeline didn't finish
+        trace::drain_events(),
+        false, // trace incomplete
+        solver_result.cloned(),
+    );
+
+    let path = dir.join(format!("snapshot-{test_name}-partial.fls"));
+    match snapshot.write_to_file(&path) {
+        Ok(()) => eprintln!("  partial snapshot: {}", path.display()),
+        Err(e) => eprintln!("  partial snapshot write failed: {e}"),
+    }
+}
+
 /// Directory for snapshot files. Uses `CARGO_TARGET_TMPDIR` if available,
 /// otherwise `target/tmp/`.
 fn snapshot_dir() -> PathBuf {
@@ -118,12 +166,21 @@ fn run_e2e(
     available_inputs: &FxHashSet<String>,
 ) -> Result<E2EResult, String> {
     let _guard = trace::start_trace();
+    let run_params = RunParams { item, rate, machine, belt_tier, available_inputs };
 
     let solver_result = solver::solve(item, rate, available_inputs, machine)
-        .map_err(|e| format!("solver: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("solver: {e}");
+            dump_partial_snapshot(test_name, &run_params, None, &msg);
+            msg
+        })?;
 
     let layout = layout::build_bus_layout(&solver_result, belt_tier)
-        .map_err(|e| format!("layout: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("layout: {e}");
+            dump_partial_snapshot(test_name, &run_params, Some(&solver_result), &msg);
+            msg
+        })?;
 
     // Validate the original layout (correct top-left positions).
     let issues = match validate::validate(&layout, Some(&solver_result), LayoutStyle::Bus) {
@@ -136,7 +193,11 @@ fn run_e2e(
     // Round-trip through blueprint export → parse as a smoke test.
     let bp_string = blueprint::export(&layout, item);
     let parsed = blueprint_parser::parse_blueprint_string(&bp_string)
-        .map_err(|e| format!("parse: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("parse: {e}");
+            dump_partial_snapshot(test_name, &run_params, Some(&solver_result), &msg);
+            msg
+        })?;
 
     let result = E2EResult {
         solver_result,
@@ -150,8 +211,7 @@ fn run_e2e(
     // Dump snapshot if there are errors or if env var is set.
     let has_errors = result.issues.iter().any(|i| i.severity == Severity::Error);
     if has_errors || should_dump_snapshots() {
-        let params = RunParams { item, rate, machine, belt_tier, available_inputs };
-        dump_snapshot(test_name, &params, &result);
+        dump_snapshot(test_name, &run_params, &result);
     }
 
     Ok(result)

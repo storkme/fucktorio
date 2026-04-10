@@ -136,7 +136,6 @@ export function setupSnapshotDropZone(
 // ---------------------------------------------------------------------------
 
 export interface BannerCallbacks {
-  onReSolve: (params: SnapshotParams) => void;
   onClear: () => void;
 }
 
@@ -201,9 +200,10 @@ export function showSnapshotBanner(
 
   const reSolveBtn = document.createElement("button");
   reSolveBtn.textContent = "Re-solve";
+  reSolveBtn.title = "Not yet implemented";
+  reSolveBtn.disabled = true;
   reSolveBtn.style.cssText =
-    "background:#335;border:1px solid #569cd6;color:#e0e0e0;padding:2px 8px;border-radius:3px;cursor:pointer;font:11px monospace";
-  reSolveBtn.addEventListener("click", () => callbacks.onReSolve(params));
+    "background:#222;border:1px solid #444;color:#666;padding:2px 8px;border-radius:3px;font:11px monospace;cursor:not-allowed";
   banner.appendChild(reSolveBtn);
 
   const clearBtn = document.createElement("button");

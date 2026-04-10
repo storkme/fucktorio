@@ -504,15 +504,6 @@ async function main(): Promise<void> {
     // Show banner
     clearSnapshotBanner();
     const bannerCallbacks: BannerCallbacks = {
-      onReSolve: (params) => {
-        // Switch to generate tab and re-solve
-        const sidebarEl = document.getElementById("sidebar");
-        const genBtn = sidebarEl?.querySelector("button") as HTMLButtonElement | null;
-        genBtn?.click();
-        clearSnapshotBanner();
-        // TODO: populate sidebar from params and trigger solve
-        console.log("Re-solve requested with params:", params);
-      },
       onClear: () => {
         clearSnapshotBanner();
         entityLayer.removeChildren();
