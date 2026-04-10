@@ -1056,8 +1056,10 @@ pub fn negotiate_lanes(
         // Early exit: if conflicts haven't decreased for several consecutive iterations,
         // further iterations are unlikely to help (routing has reached a local minimum).
         // We allow a longer patience before any improvement (to let history build up),
-        // but once we've seen at least one improvement, a single stall is enough to stop.
-        let stall_limit = if had_improvement { 1 } else { 3 };
+        // but after convergence has begun, 2 consecutive stalls are enough to stop.
+        // (1 stall was too aggressive and caused belt-throughput regressions in
+        //  the electronic-circuit Python tests on CI.)
+        let stall_limit = if had_improvement { 2 } else { 3 };
         if stall_count >= stall_limit {
             break;
         }
