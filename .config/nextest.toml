@@ -1,6 +1,8 @@
 [profile.ci]
 failure-output = "immediate"
 fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 3 }
+test-threads = 1
 
 [profile.ci.junit]
 path = "junit.xml"

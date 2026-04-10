@@ -100,8 +100,10 @@ fn assert_produces(result: &E2EResult, item: &str, min_rate: f64) {
 }
 
 fn assert_round_trip(result: &E2EResult) {
-    // Blueprint export loses some metadata (carries, segment_id, etc.)
-    // so we only assert entity count is preserved.
+    // Intentionally weak check: entity count only. A dropped entity + duplicated
+    // entity would not be caught. This is acceptable because the blueprint export
+    // has a known offset bug for multi-tile entities that prevents a stronger
+    // positional comparison. See follow-up issue for the offset bug.
     assert_eq!(
         result.layout.entities.len(),
         result.parsed.entities.len(),
@@ -240,16 +242,16 @@ fn tier4_advanced_circuit_from_plates() {
 #[ignore] // Diagnostic only — run with --ignored --nocapture
 fn diag_validator_timing_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore"].iter().map(|s| s.to_string()).collect();
-    let sr = solver::solve("iron-gear-wheel", 10.0, &inputs, "assembling-machine-2").unwrap();
-    let lr = layout::build_bus_layout(&sr, None).unwrap();
+    let sr = solver::solve("iron-gear-wheel", 10.0, &inputs, "assembling-machine-2").expect("solver failed");
+    let lr = layout::build_bus_layout(&sr, None).expect("layout failed");
     eprintln!("=== iron-gear-wheel from ore ===");
     eprintln!("Layout: {} entities, {}x{}", lr.entities.len(), lr.width, lr.height);
     run_timed_validators(&lr, &sr);
 
     // The layout that was hanging
     let inputs2: FxHashSet<String> = ["iron-ore", "copper-ore"].iter().map(|s| s.to_string()).collect();
-    let sr2 = solver::solve("electronic-circuit", 10.0, &inputs2, "assembling-machine-1").unwrap();
-    let lr2 = layout::build_bus_layout(&sr2, Some("transport-belt")).unwrap();
+    let sr2 = solver::solve("electronic-circuit", 10.0, &inputs2, "assembling-machine-1").expect("solver failed");
+    let lr2 = layout::build_bus_layout(&sr2, Some("transport-belt")).expect("layout failed");
     eprintln!("\n=== electronic-circuit from ore ===");
     eprintln!("Layout: {} entities, {}x{}", lr2.entities.len(), lr2.width, lr2.height);
     run_timed_validators(&lr2, &sr2);

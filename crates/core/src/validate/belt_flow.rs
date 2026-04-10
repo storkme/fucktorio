@@ -2161,7 +2161,10 @@ fn compute_lane_rates_impl(
 
     // Guard against infinite re-enqueue: if a tile's upstream is part of a
     // cycle or otherwise unresolvable, give up after 3 retries.
-    let mut retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    // Separate counters for UG-pair waits and splitter-sibling waits so one
+    // doesn't consume the other's budget.
+    let mut ug_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    let mut splitter_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
     const MAX_RETRIES: u32 = 3;
 
     while let Some(pos) = queue.pop_front() {
@@ -2176,7 +2179,7 @@ fn compute_lane_rates_impl(
                     let (idx, idy) = dir_to_vec(inp_d);
                     let behind = (paired_input.0 - idx, paired_input.1 - idy);
                     if belt_dir_map.contains_key(&behind) && !processed.contains(&behind) {
-                        let retry = retries.entry(pos).or_insert(0);
+                        let retry = ug_retries.entry(pos).or_insert(0);
                         if *retry < MAX_RETRIES {
                             *retry += 1;
                             queue.push_back(pos);
@@ -2198,16 +2201,22 @@ fn compute_lane_rates_impl(
             if !processed.contains(&sib) {
                 splitter_input_ready.insert(pos);
                 if !splitter_input_ready.contains(&sib) {
-                    let retry = retries.entry(pos).or_insert(0);
+                    let retry = splitter_retries.entry(pos).or_insert(0);
                     if *retry < MAX_RETRIES {
                         *retry += 1;
                         queue.push_back(pos);
                         continue;
                     }
-                    // Gave up — fall through without sibling rates.
+                    // Gave up waiting for sibling — mark processed with current
+                    // rates and skip averaging to avoid silently wrong numbers.
+                    processed.insert(pos);
+                    do_propagate(pos, &belt_dir_map, &feeders, &mut in_degree, &mut queue, &mut lane_rates);
+                    continue;
                 } else {
-                    let total_l = lane_rates[&pos][0] + lane_rates[&sib][0];
-                    let total_r = lane_rates[&pos][1] + lane_rates[&sib][1];
+                    let pos_rates = lane_rates.get(&pos).copied().unwrap_or([0.0, 0.0]);
+                    let sib_rates = lane_rates.get(&sib).copied().unwrap_or([0.0, 0.0]);
+                    let total_l = pos_rates[0] + sib_rates[0];
+                    let total_r = pos_rates[1] + sib_rates[1];
                     for &tile in &[pos, sib] {
                         let r = lane_rates.entry(tile).or_insert([0.0, 0.0]);
                         r[0] = total_l / 2.0;

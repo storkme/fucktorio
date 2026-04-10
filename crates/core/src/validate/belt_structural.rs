@@ -795,7 +795,10 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
     let mut splitter_input_ready: FxHashSet<(i32, i32)> = FxHashSet::default();
     // Guard against infinite re-enqueue: if a tile's upstream is part of a
     // cycle or otherwise unresolvable, give up after 3 retries.
-    let mut retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    // Separate counters for UG-pair waits and splitter-sibling waits so one
+    // doesn't consume the other's budget.
+    let mut ug_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    let mut splitter_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
     const MAX_RETRIES: u32 = 3;
 
     while let Some(pos) = queue.pop_front() {
@@ -810,7 +813,7 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
                     let (idx, idy) = dir_to_vec(inp_d);
                     let behind = (paired_input.0 - idx, paired_input.1 - idy);
                     if belt_dir_map.contains_key(&behind) && !processed.contains(&behind) {
-                        let retry = retries.entry(pos).or_insert(0);
+                        let retry = ug_retries.entry(pos).or_insert(0);
                         if *retry < MAX_RETRIES {
                             *retry += 1;
                             queue.push_back(pos);
@@ -832,13 +835,17 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
             if !processed.contains(&sib) {
                 splitter_input_ready.insert(pos);
                 if !splitter_input_ready.contains(&sib) {
-                    let retry = retries.entry(pos).or_insert(0);
+                    let retry = splitter_retries.entry(pos).or_insert(0);
                     if *retry < MAX_RETRIES {
                         *retry += 1;
                         queue.push_back(pos);
                         continue;
                     }
-                    // Gave up — fall through without sibling rates.
+                    // Gave up waiting for sibling — mark processed with current
+                    // rates and skip averaging to avoid silently wrong numbers.
+                    processed.insert(pos);
+                    do_propagate(pos, &belt_dir_map, &mut lane_rates, &mut in_degree, &mut queue, &feeders);
+                    continue;
                 } else {
                     let pos_rates = lane_rates.get(&pos).copied().unwrap_or((0.0, 0.0));
                     let sib_rates = lane_rates.get(&sib).copied().unwrap_or((0.0, 0.0));

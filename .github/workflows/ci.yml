@@ -77,24 +77,23 @@ jobs:
           errors = int(root.get("errors", 0))
           time = root.get("time", "?")
 
-          f = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
-          f.write("### Rust Test Results\n\n")
-          f.write(f"**{total}** tests | **{total - failures - errors}** passed | **{failures}** failed | **{time}s**\n\n")
-          f.write("| Test | Status | Duration |\n|------|--------|----------|\n")
-          for ts in root.iter("testsuite"):
-              for tc in ts.iter("testcase"):
-                  name = tc.get("name", "?")
-                  t = tc.get("time", "0")
-                  fail = tc.find("failure")
-                  if fail is not None:
-                      f.write(f"| {name} | :x: FAIL | {t}s |\n")
-                  else:
-                      skip = tc.find("skipped")
-                      if skip is not None:
-                          f.write(f"| {name} | :zzz: SKIP | {t}s |\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Rust Test Results\n\n")
+              f.write(f"**{total}** tests | **{total - failures - errors}** passed | **{failures}** failed | **{time}s**\n\n")
+              f.write("| Test | Status | Duration |\n|------|--------|----------|\n")
+              for ts in root.iter("testsuite"):
+                  for tc in ts.iter("testcase"):
+                      name = tc.get("name", "?")
+                      t = tc.get("time", "0")
+                      fail = tc.find("failure")
+                      if fail is not None:
+                          f.write(f"| {name} | :x: FAIL | {t}s |\n")
                       else:
-                          f.write(f"| {name} | :white_check_mark: | {t}s |\n")
-          f.close()
+                          skip = tc.find("skipped")
+                          if skip is not None:
+                              f.write(f"| {name} | :zzz: SKIP | {t}s |\n")
+                          else:
+                              f.write(f"| {name} | :white_check_mark: | {t}s |\n")
           PYEOF
       - uses: actions/upload-artifact@v4
         if: always()
