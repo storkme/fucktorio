@@ -14,12 +14,19 @@ const COLORS: Record<string, number> = {
   Warning: 0xffaa00,
 };
 
+export interface ValidationOverlayResult {
+  layer: Container;
+  /** Map from "x,y" to the Graphics circle for that issue position. */
+  circleMap: Map<string, Graphics>;
+}
+
 export function renderValidationOverlay(
   issues: ValidationIssue[],
   container: Container,
   onHover: (text: string | null) => void,
-): Container {
+): ValidationOverlayResult {
   const layer = new Container();
+  const circleMap = new Map<string, Graphics>();
   for (const issue of issues) {
     if (issue.x == null || issue.y == null) continue;
     const color = COLORS[issue.severity] ?? 0x44aaff;
@@ -31,7 +38,8 @@ export function renderValidationOverlay(
     g.on("pointerenter", () => onHover(`[${issue.severity}] ${issue.category}: ${issue.message}`));
     g.on("pointerleave", () => onHover(null));
     layer.addChild(g);
+    circleMap.set(`${issue.x},${issue.y}`, g);
   }
   container.addChild(layer);
-  return layer;
+  return { layer, circleMap };
 }
