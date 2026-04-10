@@ -6,6 +6,13 @@ import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemCol
 import { createSelectionController, type SelectionController } from "./renderer/selection";
 import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
+import {
+  setupSnapshotDropZone,
+  showSnapshotBanner,
+  decodeSnapshot,
+  type LayoutSnapshot,
+  type BannerCallbacks,
+} from "./ui/snapshotLoader";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
 import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
@@ -30,6 +37,9 @@ async function main(): Promise<void> {
   const { app, viewport } = await createApp(container);
   drawGrid(viewport);
   drawGraph(viewport, null);
+
+  // --- Snapshot drag-drop ---
+  setupSnapshotDropZone(container, (snap) => loadSnapshot(snap));
 
   const entityLayer = new Container();
   viewport.addChild(entityLayer);
@@ -455,6 +465,74 @@ async function main(): Promise<void> {
 
   let lastLayout: LayoutResult | null = null;
   let selectionCtrl: SelectionController | null = null;
+  let activeBanner: HTMLDivElement | null = null;
+
+  function clearSnapshotBanner(): void {
+    if (activeBanner) {
+      activeBanner.remove();
+      activeBanner = null;
+    }
+    // Re-enable sidebar
+    const sidebarEl = document.getElementById("sidebar");
+    if (sidebarEl) sidebarEl.style.opacity = "1";
+    sidebarEl?.querySelectorAll("input,select,button").forEach((el) => {
+      (el as HTMLInputElement).disabled = false;
+    });
+  }
+
+  function loadSnapshot(snapshot: LayoutSnapshot): void {
+    cachedValidationIssues = snapshot.validation.issues.length > 0
+      ? snapshot.validation.issues as unknown as ValidationIssue[]
+      : null;
+
+    // Build a LayoutResult from snapshot data (inject trace events)
+    const layout: LayoutResult = {
+      ...snapshot.layout,
+      trace: snapshot.trace.events as LayoutResult["trace"],
+    } as LayoutResult;
+
+    // Auto-enable debug + validation if there are issues or trace events
+    if (snapshot.trace.events.length > 0) {
+      debugCb.checked = true;
+    }
+    if (snapshot.validation.issues.length > 0) {
+      valCb.checked = true;
+    }
+
+    renderLayoutOnCanvas(layout);
+
+    // Show banner
+    clearSnapshotBanner();
+    const bannerCallbacks: BannerCallbacks = {
+      onReSolve: (params) => {
+        // Switch to generate tab and re-solve
+        const sidebarEl = document.getElementById("sidebar");
+        const genBtn = sidebarEl?.querySelector("button") as HTMLButtonElement | null;
+        genBtn?.click();
+        clearSnapshotBanner();
+        // TODO: populate sidebar from params and trigger solve
+        console.log("Re-solve requested with params:", params);
+      },
+      onClear: () => {
+        clearSnapshotBanner();
+        entityLayer.removeChildren();
+        lastLayout = null;
+        drawGraph(viewport, null);
+        viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
+        legendEl.style.display = "none";
+        infoPanel.style.display = "none";
+      },
+    };
+    const sidebarEl = document.getElementById("sidebar");
+    if (sidebarEl) {
+      activeBanner = showSnapshotBanner(sidebarEl, snapshot, bannerCallbacks);
+      // Dim sidebar to indicate snapshot mode
+      sidebarEl.style.opacity = "0.5";
+      sidebarEl.querySelectorAll("input,select,button").forEach((el) => {
+        (el as HTMLInputElement).disabled = true;
+      });
+    }
+  }
 
   function onSelectionChange(entities: PlacedEntity[]): void {
     if (entities.length === 0) {
@@ -554,14 +632,34 @@ async function main(): Promise<void> {
 
   // Ctrl+C: copy selection JSON when entities are selected
   document.addEventListener("keydown", (e) => {
-    if (!e.ctrlKey || e.key !== "c") return;
-    if (!selectionCtrl || selectionCtrl.getSelected().length === 0) return;
-    e.preventDefault();
-    const params = sidebarCtrl?.getParams() ?? null;
-    const json = selectionCtrl.buildJson(params, annotationNote.value.trim());
-    navigator.clipboard.writeText(json).catch(() => undefined);
-    annotationHint.textContent = "Copied!";
-    setTimeout(() => { annotationHint.textContent = "Ctrl+C to copy JSON"; }, 2000);
+    if (!e.ctrlKey) return;
+    if (e.key === "c") {
+      if (!selectionCtrl || selectionCtrl.getSelected().length === 0) return;
+      e.preventDefault();
+      const params = sidebarCtrl?.getParams() ?? null;
+      const json = selectionCtrl.buildJson(params, annotationNote.value.trim());
+      navigator.clipboard.writeText(json).catch(() => undefined);
+      annotationHint.textContent = "Copied!";
+      setTimeout(() => { annotationHint.textContent = "Ctrl+C to copy JSON"; }, 2000);
+    } else if (e.key === "o") {
+      // Ctrl+O: open snapshot file picker
+      e.preventDefault();
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".fls";
+      input.addEventListener("change", async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const snapshot = await decodeSnapshot(text);
+          loadSnapshot(snapshot);
+        } catch (err) {
+          alert(`Failed to load snapshot: ${err}`);
+        }
+      });
+      input.click();
+    }
   });
 
   const sidebarEl = document.getElementById("sidebar");

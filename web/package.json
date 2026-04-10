@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "pixi.js": "^8.6.0",
-    "pixi-viewport": "^6.0.3"
+    "fflate": "^0.8.2",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
