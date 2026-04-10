@@ -468,7 +468,6 @@ fn tier3_plastic_bar() {
 }
 
 #[test]
-#[ignore] // Layout warning: power — 4 electric poles not connected to the main pole network
 #[ntest::timeout(10000)]
 fn tier3_plastic_bar_from_crude() {
     let inputs: FxHashSet<String> = ["crude-oil", "coal"]
