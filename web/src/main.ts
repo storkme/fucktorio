@@ -451,6 +451,16 @@ async function main(): Promise<void> {
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
   container.appendChild(legendEl);
 
+  let pinnedRow: HTMLDivElement | null = null;
+
+  function unpinRow(): void {
+    if (pinnedRow) {
+      pinnedRow.style.background = "";
+      pinnedRow = null;
+    }
+    clearPulse();
+  }
+
   // --- Validation issues panel (right side, below toggles) ---
   // top:112px = stacked toggle buttons (debug ~42px, trace ~44px, validation ~26px) + 8px gap.
   // Update if the toggle stack height changes.
@@ -492,6 +502,8 @@ async function main(): Promise<void> {
 
   function populateIssuesPanel(issues: ValidationIssue[]): void {
     issuesPanel.innerHTML = "";
+    pinnedRow = null;
+    clearPulse();
     if (!valCb.checked || issues.length === 0) {
       issuesPanel.style.display = "none";
       return;
@@ -499,7 +511,7 @@ async function main(): Promise<void> {
     issuesPanel.style.display = "block";
     for (const issue of issues) {
       const row = document.createElement("div");
-      row.style.cssText = "padding:3px 0;border-bottom:1px solid #333;cursor:default;display:flex;align-items:baseline;gap:6px";
+      row.style.cssText = "padding:3px 0;border-bottom:1px solid #333;cursor:default;display:flex;align-items:baseline;gap:6px;user-select:text";
       if (issue.x == null || issue.y == null) {
         row.style.opacity = "0.6";
       }
@@ -518,11 +530,25 @@ async function main(): Promise<void> {
         row.style.cursor = "pointer";
         const key = `${issue.x},${issue.y}`;
         row.addEventListener("mouseenter", () => {
+          if (pinnedRow === row) return;
           viewport.moveCenter(issue.x! * TILE_PX + TILE_PX / 2, issue.y! * TILE_PX + TILE_PX / 2);
           pulseCircle(key);
         });
         row.addEventListener("mouseleave", () => {
+          if (pinnedRow === row) return;
           clearPulse();
+        });
+        row.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (pinnedRow === row) {
+            unpinRow();
+          } else {
+            unpinRow();
+            pinnedRow = row;
+            row.style.background = "rgba(255,255,255,0.08)";
+            viewport.moveCenter(issue.x! * TILE_PX + TILE_PX / 2, issue.y! * TILE_PX + TILE_PX / 2);
+            pulseCircle(key);
+          }
         });
       }
       issuesPanel.appendChild(row);
