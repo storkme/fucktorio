@@ -640,17 +640,31 @@ pub fn triple_input_row(
 
 /// Row for a recipe with 1 solid input + 1 fluid input.
 ///
-/// Layout per machine (`msz`-tile pitch, no gaps):
+/// For chemical-plant, uses the T-shape vertical fluid column pattern
+/// (see `docs/fluid-row-pattern.md`):
 /// ```text
-///   y+0 : solid input belt (EAST)
-///   y+1 : inserter (solid) + pipe (fluid port connection)
+///   y+0 : UG pipe IN at (mx+port_dx) facing SOUTH  ← fluid bus tap connects here
+///   y+1 : solid input belt (EAST, msz wide)
+///   y+2 : UG pipe OUT at (mx+port_dx) facing SOUTH + inserter at (mx+1)
+///   y+3..y+3+msz-1 : machine (msz×msz)
+///   y+3+msz : output inserter (SOUTH)
+///   y+3+msz+1 : output belt (WEST or EAST)
+/// ```
+///
+/// For other machines (assembling-machine-2/3 with fluid): uses a regular pipe
+/// at the port position:
+/// ```text
+///   y+0 : solid input belt (EAST, msz wide)
+///   y+1 : inserter (solid) + pipe at (mx+port_dx)
 ///   y+2..y+2+msz-1 : machine (msz×msz)
 ///   y+2+msz : output inserter (SOUTH)
-///   y+2+msz+1 : output belt (WEST -- toward bus)
+///   y+2+msz+1 : output belt (WEST or EAST)
 /// ```
 ///
 /// Returns `(entities, row_height, fluid_port_pipes)` where
-/// `fluid_port_pipes` is a list of `(x, y)` for each machine's fluid port pipe.
+/// `fluid_port_pipes` is a list of `(x, y)` giving the bus tap-point for each
+/// machine's fluid connection (the UG pipe IN row for chemical-plant, the
+/// pipe tile for other machines).
 pub fn fluid_input_row(
     recipe: &str,
     machine_entity: &str,
@@ -667,9 +681,8 @@ pub fn fluid_input_row(
 ) -> (Vec<PlacedEntity>, i32, Vec<(i32, i32)>) {
     let msz = machine_size as i32;
     let pitch = msz;
-    let row_height = msz + 4;
-    let mut entities = Vec::new();
     let port_dx = fluid_input_port_dx(machine_entity);
+    let mut entities = Vec::new();
     let mut fluid_port_pipes = Vec::new();
     let belt_in_seg = Some(format!("row:{recipe}:belt-in:{solid_item}"));
     let inserter_in_seg = Some(format!("row:{recipe}:inserter-in:{solid_item}"));
@@ -678,59 +691,157 @@ pub fn fluid_input_row(
     let inserter_out_seg = Some(format!("row:{recipe}:inserter-out"));
     let belt_out_seg = Some(format!("row:{recipe}:belt-out"));
 
-    for i in 0..machine_count {
-        let mx = x_offset + i as i32 * pitch;
+    if machine_entity == "chemical-plant" {
+        // T-shape vertical fluid column: fluid enters from above via a
+        // UG pipe pair that tunnels under the solid belt.
+        //   y+0: UG pipe IN  (bus tap-point)
+        //   y+1: solid belt
+        //   y+2: UG pipe OUT + inserter
+        //   y+3..y+5: machine
+        //   y+6: output inserter
+        //   y+7: output belt
+        let row_height = msz + 5;
+        let belt_y = y_offset + 1;
+        let interface_y = y_offset + 2; // UG pipe OUT + inserter row
+        let machine_y = y_offset + 3;
+        let out_ins_y = machine_y + msz;
+        let out_belt_y = machine_y + msz + 1;
+        let out_dir = output_dir(output_east);
 
-        // Solid input belt (machine_size tiles wide)
-        for dx in 0..msz {
-            entities.push(PlacedEntity {
-                name: input_belt.to_string(),
-                x: mx + dx,
-                y: y_offset,
-                direction: EntityDirection::East,
-                carries: Some(solid_item.to_string()),
-                segment_id: belt_in_seg.clone(),
-                ..Default::default()
-            });
-        }
+        for i in 0..machine_count {
+            let mx = x_offset + i as i32 * pitch;
 
-        // y+1: inserter for solid
-        entities.push(PlacedEntity {
-            name: "inserter".to_string(),
-            x: mx + 1,
-            y: y_offset + 1,
-            direction: EntityDirection::South,
-            carries: Some(solid_item.to_string()),
-            segment_id: inserter_in_seg.clone(),
-            ..Default::default()
-        });
-
-        if machine_entity == "chemical-plant" {
-            // Chemical-plant: pipe-to-ground bridges port (mx) past inserter
-            // to port (mx+2). The ptg_exit at mx+2 connects to next machine's
-            // ptg_entry at mx+3 (adjacent), forming a chain across all machines.
+            // y+0: UG pipe IN facing south — bus router connects horizontal
+            // tap from the fluid trunk column to this tile.
             entities.push(PlacedEntity {
                 name: "pipe-to-ground".to_string(),
-                x: mx,
-                y: y_offset + 1,
-                direction: EntityDirection::East,
+                x: mx + port_dx,
+                y: y_offset,
+                direction: EntityDirection::South,
                 io_type: Some("input".to_string()),
                 carries: Some(fluid_item.to_string()),
                 segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
+
+            // y+1: solid input belt (msz tiles wide)
+            for dx in 0..msz {
+                entities.push(PlacedEntity {
+                    name: input_belt.to_string(),
+                    x: mx + dx,
+                    y: belt_y,
+                    direction: EntityDirection::East,
+                    carries: Some(solid_item.to_string()),
+                    segment_id: belt_in_seg.clone(),
+                    ..Default::default()
+                });
+            }
+
+            // y+2: UG pipe OUT adjacent to machine fluid port + inserter for solid
             entities.push(PlacedEntity {
                 name: "pipe-to-ground".to_string(),
-                x: mx + 2,
-                y: y_offset + 1,
-                direction: EntityDirection::East,
+                x: mx + port_dx,
+                y: interface_y,
+                direction: EntityDirection::South,
                 io_type: Some("output".to_string()),
                 carries: Some(fluid_item.to_string()),
                 segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
-        } else {
-            // Other machines: regular pipe at the port position
+            // Inserter column: not at the UG pipe column (port_dx=0 for chemical-plant)
+            // so place at mx+1 (center of machine).
+            entities.push(PlacedEntity {
+                name: "inserter".to_string(),
+                x: mx + 1,
+                y: interface_y,
+                direction: EntityDirection::South,
+                carries: Some(solid_item.to_string()),
+                segment_id: inserter_in_seg.clone(),
+                ..Default::default()
+            });
+
+            // Machine
+            entities.push(PlacedEntity {
+                name: machine_entity.to_string(),
+                x: mx,
+                y: machine_y,
+                direction: EntityDirection::North,
+                recipe: Some(recipe.to_string()),
+                segment_id: machine_seg.clone(),
+                ..Default::default()
+            });
+
+            // Output inserter
+            entities.push(PlacedEntity {
+                name: "inserter".to_string(),
+                x: mx + 1,
+                y: out_ins_y,
+                direction: EntityDirection::South,
+                carries: Some(output_item.to_string()),
+                segment_id: inserter_out_seg.clone(),
+                ..Default::default()
+            });
+
+            // Output belt
+            for dx in 0..msz {
+                entities.push(PlacedEntity {
+                    name: output_belt.to_string(),
+                    x: mx + dx,
+                    y: out_belt_y,
+                    direction: out_dir,
+                    carries: Some(output_item.to_string()),
+                    segment_id: belt_out_seg.clone(),
+                    ..Default::default()
+                });
+            }
+
+            // Report every machine's UG pipe IN as a bus tap-point.
+            // The bus router chains horizontal PTG pairs between consecutive
+            // port_x positions at port_y = y_offset, connecting the trunk to
+            // each machine's vertical column.
+            fluid_port_pipes.push((mx + port_dx, y_offset));
+        }
+
+        (entities, row_height, fluid_port_pipes)
+    } else {
+        // Non-chemical-plant machines (assembling-machine-2/3 with a fluid
+        // ingredient): use a regular pipe adjacent to the machine's fluid port.
+        //   y+0: solid belt
+        //   y+1: inserter + pipe at (mx+port_dx)
+        //   y+2..y+2+msz-1: machine
+        //   y+2+msz: output inserter
+        //   y+2+msz+1: output belt
+        let row_height = msz + 4;
+        let out_dir = output_dir(output_east);
+
+        for i in 0..machine_count {
+            let mx = x_offset + i as i32 * pitch;
+
+            // Solid input belt (machine_size tiles wide)
+            for dx in 0..msz {
+                entities.push(PlacedEntity {
+                    name: input_belt.to_string(),
+                    x: mx + dx,
+                    y: y_offset,
+                    direction: EntityDirection::East,
+                    carries: Some(solid_item.to_string()),
+                    segment_id: belt_in_seg.clone(),
+                    ..Default::default()
+                });
+            }
+
+            // y+1: inserter for solid
+            entities.push(PlacedEntity {
+                name: "inserter".to_string(),
+                x: mx + 1,
+                y: y_offset + 1,
+                direction: EntityDirection::South,
+                carries: Some(solid_item.to_string()),
+                segment_id: inserter_in_seg.clone(),
+                ..Default::default()
+            });
+
+            // Regular pipe at the fluid port position
             entities.push(PlacedEntity {
                 name: "pipe".to_string(),
                 x: mx + port_dx,
@@ -739,52 +850,51 @@ pub fn fluid_input_row(
                 segment_id: fluid_in_seg.clone(),
                 ..Default::default()
             });
-        }
 
-        if i == 0 {
-            fluid_port_pipes.push((mx, y_offset + 1));
-        }
+            if i == 0 {
+                fluid_port_pipes.push((mx + port_dx, y_offset + 1));
+            }
 
-        // Machine
-        entities.push(PlacedEntity {
-            name: machine_entity.to_string(),
-            x: mx,
-            y: y_offset + 2,
-            direction: EntityDirection::North,
-            recipe: Some(recipe.to_string()),
-            segment_id: machine_seg.clone(),
-            ..Default::default()
-        });
-
-        // Output inserter
-        let out_ins_y = y_offset + 2 + msz;
-        entities.push(PlacedEntity {
-            name: "inserter".to_string(),
-            x: mx + 1,
-            y: out_ins_y,
-            direction: EntityDirection::South,
-            carries: Some(output_item.to_string()),
-            segment_id: inserter_out_seg.clone(),
-            ..Default::default()
-        });
-
-        // Output belt
-        let out_belt_y = y_offset + 2 + msz + 1;
-        let out_dir = output_dir(output_east);
-        for dx in 0..msz {
+            // Machine
             entities.push(PlacedEntity {
-                name: output_belt.to_string(),
-                x: mx + dx,
-                y: out_belt_y,
-                direction: out_dir,
-                carries: Some(output_item.to_string()),
-                segment_id: belt_out_seg.clone(),
+                name: machine_entity.to_string(),
+                x: mx,
+                y: y_offset + 2,
+                direction: EntityDirection::North,
+                recipe: Some(recipe.to_string()),
+                segment_id: machine_seg.clone(),
                 ..Default::default()
             });
-        }
-    }
 
-    (entities, row_height, fluid_port_pipes)
+            // Output inserter
+            let out_ins_y = y_offset + 2 + msz;
+            entities.push(PlacedEntity {
+                name: "inserter".to_string(),
+                x: mx + 1,
+                y: out_ins_y,
+                direction: EntityDirection::South,
+                carries: Some(output_item.to_string()),
+                segment_id: inserter_out_seg.clone(),
+                ..Default::default()
+            });
+
+            // Output belt
+            let out_belt_y = y_offset + 2 + msz + 1;
+            for dx in 0..msz {
+                entities.push(PlacedEntity {
+                    name: output_belt.to_string(),
+                    x: mx + dx,
+                    y: out_belt_y,
+                    direction: out_dir,
+                    carries: Some(output_item.to_string()),
+                    segment_id: belt_out_seg.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+
+        (entities, row_height, fluid_port_pipes)
+    }
 }
 
 /// Row for a recipe with 2 solid inputs + 1 fluid input.
@@ -1452,6 +1562,13 @@ mod tests {
 
     #[test]
     fn fluid_input_row_chemical_plant() {
+        // T-shape layout: 2 chemical plants, y_offset=0
+        //   y+0: UG pipe IN at x=0 (port_dx=0 for chemical-plant) — bus tap-point
+        //   y+1: solid belt
+        //   y+2: UG pipe OUT at x=0 + inserter at x=1
+        //   y+3..y+5: machine
+        //   y+6: output inserter
+        //   y+7: output belt
         let (entities, height, fluid_port_pipes) = fluid_input_row(
             "plastic-bar",
             "chemical-plant",
@@ -1466,32 +1583,120 @@ mod tests {
             "transport-belt",
             false,
         );
-        assert_eq!(height, 7);
-        assert_eq!(fluid_port_pipes, vec![(0, 1)]);
+        assert_eq!(height, 8); // msz + 5 = 3 + 5
 
-        // chemical-plant uses pipe-to-ground at x=0 and x=2 for first machine
-        let ptg_in = assert_entity(&entities, 0, 1, "pipe-to-ground");
-        assert_eq!(ptg_in.direction, EntityDirection::East);
+        // fluid_port_pipes reports the UG pipe IN position for ALL machines
+        assert_eq!(fluid_port_pipes, vec![(0, 0), (3, 0)]);
+
+        // Machine 1: UG pipe IN at (0, 0) facing South, io=input
+        let ptg_in = assert_entity(&entities, 0, 0, "pipe-to-ground");
+        assert_eq!(ptg_in.direction, EntityDirection::South);
         assert_eq!(ptg_in.io_type.as_deref(), Some("input"));
-        let ptg_out = assert_entity(&entities, 2, 1, "pipe-to-ground");
-        assert_eq!(ptg_out.direction, EntityDirection::East);
-        assert_eq!(ptg_out.io_type.as_deref(), Some("output"));
+        assert_eq!(ptg_in.carries.as_deref(), Some("petroleum-gas"));
 
-        // Second machine: pipe-to-ground at x=3 (input) and x=5 (output)
-        let ptg2_in = assert_entity(&entities, 3, 1, "pipe-to-ground");
+        // Machine 1: solid belt at y=1
+        for dx in 0..3_i32 {
+            let b = assert_entity(&entities, dx, 1, "transport-belt");
+            assert_eq!(b.carries.as_deref(), Some("coal"));
+        }
+
+        // Machine 1: UG pipe OUT at (0, 2) facing South, io=output
+        let ptg_out = assert_entity(&entities, 0, 2, "pipe-to-ground");
+        assert_eq!(ptg_out.direction, EntityDirection::South);
+        assert_eq!(ptg_out.io_type.as_deref(), Some("output"));
+        assert_eq!(ptg_out.carries.as_deref(), Some("petroleum-gas"));
+
+        // Machine 1: inserter at (1, 2) — different column from UG pipe
+        let ins = assert_entity(&entities, 1, 2, "inserter");
+        assert_eq!(ins.direction, EntityDirection::South);
+        assert_eq!(ins.carries.as_deref(), Some("coal"));
+
+        // Machine 1 at (0, 3) NORTH
+        let mach = assert_entity(&entities, 0, 3, "chemical-plant");
+        assert_eq!(mach.direction, EntityDirection::North);
+
+        // Machine 2: UG pipe IN at (3, 0) facing South
+        let ptg2_in = assert_entity(&entities, 3, 0, "pipe-to-ground");
+        assert_eq!(ptg2_in.direction, EntityDirection::South);
         assert_eq!(ptg2_in.io_type.as_deref(), Some("input"));
-        let ptg2_out = assert_entity(&entities, 5, 1, "pipe-to-ground");
+
+        // Machine 2: UG pipe OUT at (3, 2) facing South
+        let ptg2_out = assert_entity(&entities, 3, 2, "pipe-to-ground");
+        assert_eq!(ptg2_out.direction, EntityDirection::South);
         assert_eq!(ptg2_out.io_type.as_deref(), Some("output"));
 
-        // Machines at y=2
-        assert_entity(&entities, 0, 2, "chemical-plant");
-        assert_entity(&entities, 3, 2, "chemical-plant");
+        // Machine 2 at (3, 3)
+        assert_entity(&entities, 3, 3, "chemical-plant");
+
+        // Output inserter at y=6
+        assert_entity(&entities, 1, 6, "inserter");
+        // Output belt at y=7
+        for dx in 0..3_i32 {
+            let b = assert_entity(&entities, dx, 7, "transport-belt");
+            assert_eq!(b.direction, EntityDirection::West);
+        }
+    }
+
+    #[test]
+    fn fluid_input_row_chemical_plant_row_height_matches_row_kind() {
+        // Verify that the row_height returned by fluid_input_row matches
+        // RowKind::FluidInput::row_height() for a 3x3 machine.
+        let (_, height, _) = fluid_input_row(
+            "plastic-bar",
+            "chemical-plant",
+            3,
+            1,
+            0,
+            0,
+            "coal",
+            "petroleum-gas",
+            "plastic-bar",
+            "transport-belt",
+            "transport-belt",
+            false,
+        );
+        use crate::bus::placer::RowKind;
+        assert_eq!(height, RowKind::FluidInput.row_height());
+    }
+
+    #[test]
+    fn fluid_input_row_chemical_plant_ug_pair_alignment() {
+        // UG pipe IN and UG pipe OUT must be in the same x column (port_dx=0),
+        // and the inserter must be in a DIFFERENT column (x=1).
+        let (entities, _, _) = fluid_input_row(
+            "plastic-bar",
+            "chemical-plant",
+            3,
+            1,
+            5, // y_offset=5
+            10, // x_offset=10
+            "coal",
+            "petroleum-gas",
+            "plastic-bar",
+            "transport-belt",
+            "transport-belt",
+            false,
+        );
+        // UG pipe IN at x=10+0=10, y=5
+        let ptg_in = assert_entity(&entities, 10, 5, "pipe-to-ground");
+        assert_eq!(ptg_in.io_type.as_deref(), Some("input"));
+        // UG pipe OUT at x=10+0=10, y=7
+        let ptg_out = assert_entity(&entities, 10, 7, "pipe-to-ground");
+        assert_eq!(ptg_out.io_type.as_deref(), Some("output"));
+        // Same column
+        assert_eq!(ptg_in.x, ptg_out.x, "UG pair must share the same x column");
+        // Inserter at x=11 (different from UG column x=10)
+        let ins = assert_entity(&entities, 11, 7, "inserter");
+        assert_ne!(ins.x, ptg_in.x, "inserter must be in a different column from UG pipe");
+        // Machine at (10, 8)
+        assert_entity(&entities, 10, 8, "chemical-plant");
     }
 
     #[test]
     fn fluid_input_row_assembling_machine() {
-        // assembling-machine-2 has port_dx=1, so pipe at mx+1 (same x as inserter)
-        let (entities, _, fluid_port_pipes) = fluid_input_row(
+        // assembling-machine-2 uses the non-T-shape path: regular pipe at port position
+        // port_dx=1 for assembling-machine-2
+        let (entities, height, fluid_port_pipes) = fluid_input_row(
             "some-recipe",
             "assembling-machine-2",
             3,
@@ -1505,9 +1710,12 @@ mod tests {
             "transport-belt",
             false,
         );
-        assert_eq!(fluid_port_pipes, vec![(0, 1)]);
+        // Non-T-shape path uses old 7-tile height (msz+4)
+        assert_eq!(height, 7);
+        // fluid_port_pipes reports the pipe tile at y+1
+        assert_eq!(fluid_port_pipes, vec![(1, 1)]);
 
-        // Pipe at (0+1, 1) = (1, 1) — note: inserter is also at (1, 1)
+        // Pipe at (0+1, 1) = (1, 1)
         let pipes: Vec<_> = entities
             .iter()
             .filter(|e| e.x == 1 && e.y == 1 && e.name == "pipe")
