@@ -1164,7 +1164,7 @@ pub(crate) fn render_family_input_paths(
                     }
                 }
                 entities.extend(feeder_entities);
-            } else if (input_x as i32 + 1) >= bw - 1 {
+            } else if (input_x + 1) >= bw - 1 {
                 // Degenerate feeder: input_x+1 >= bw-1 means the feeder
                 // would be zero-length (producer output is already at the
                 // landing column). Place a WEST belt from (bw-1, out_y)
