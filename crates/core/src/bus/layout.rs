@@ -632,11 +632,153 @@ fn place_poles(
 
     if let Some(centers) = machine_centers {
         if !centers.is_empty() {
-            return place_poles_greedy(&occupied, &centers);
+            let mut entities = place_poles_greedy(&occupied, &centers);
+            bridge_disconnected_poles(&mut entities, &occupied, width);
+            return entities;
         }
     }
 
     place_poles_grid(width, height, &occupied)
+}
+
+/// Medium electric pole wire reach in tiles (center-to-center).
+const WIRE_REACH: f64 = 9.0;
+
+/// After greedy pole placement, detect isolated clusters and insert bridge poles
+/// to connect them.  A cluster is a connected component under the 9-tile wire-reach
+/// rule.  We iteratively bridge the two closest cluster centroids until only one
+/// component remains (or until no valid bridge position can be found to prevent
+/// an infinite loop).
+fn bridge_disconnected_poles(
+    entities: &mut Vec<PlacedEntity>,
+    occupied: &FxHashSet<(i32, i32)>,
+    width: i32,
+) {
+    // Keep an up-to-date set of all occupied positions including poles we add.
+    let mut all_occupied = occupied.clone();
+    for e in entities.iter() {
+        all_occupied.insert((e.x, e.y));
+    }
+
+    // Retry until fully connected or no bridge can be placed.
+    for _ in 0..20 {
+        let positions: Vec<(i32, i32)> = entities.iter().map(|e| (e.x, e.y)).collect();
+        if positions.is_empty() {
+            break;
+        }
+
+        // BFS to find connected components under wire-reach.
+        let n = positions.len();
+        let mut component: Vec<usize> = (0..n).collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let ci = component[i];
+                    let cj = component[j];
+                    if ci != cj {
+                        let dx = (positions[i].0 - positions[j].0) as f64;
+                        let dy = (positions[i].1 - positions[j].1) as f64;
+                        if (dx * dx + dy * dy).sqrt() <= WIRE_REACH {
+                            // Merge the smaller component id into the larger
+                            let (from, to) = if ci > cj { (ci, cj) } else { (cj, ci) };
+                            for c in component.iter_mut() {
+                                if *c == from {
+                                    *c = to;
+                                }
+                            }
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect distinct component ids
+        let mut comp_ids: Vec<usize> = component.clone();
+        comp_ids.sort_unstable();
+        comp_ids.dedup();
+
+        if comp_ids.len() <= 1 {
+            // Fully connected — we're done.
+            break;
+        }
+
+        // Group poles by component
+        let mut comp_poles: std::collections::HashMap<usize, Vec<(i32, i32)>> =
+            std::collections::HashMap::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            comp_poles.entry(component[i]).or_default().push(pos);
+        }
+
+        // Find the two components whose centroids are closest (most likely to bridge cheaply)
+        let comp_list: Vec<(usize, Vec<(i32, i32)>)> = comp_poles.into_iter().collect();
+        let centroid = |poles: &[(i32, i32)]| -> (f64, f64) {
+            let sum_x: i32 = poles.iter().map(|p| p.0).sum();
+            let sum_y: i32 = poles.iter().map(|p| p.1).sum();
+            (sum_x as f64 / poles.len() as f64, sum_y as f64 / poles.len() as f64)
+        };
+
+        let mut best_pair: Option<(usize, usize)> = None;
+        let mut best_dist = f64::MAX;
+        for (a, (_, pa)) in comp_list.iter().enumerate() {
+            let ca = centroid(pa);
+            for (b, (_, pb)) in comp_list.iter().enumerate().skip(a + 1) {
+                let cb = centroid(pb);
+                let d = ((ca.0 - cb.0).powi(2) + (ca.1 - cb.1).powi(2)).sqrt();
+                if d < best_dist {
+                    best_dist = d;
+                    best_pair = Some((a, b));
+                }
+            }
+        }
+
+        let Some((ai, bi)) = best_pair else { break };
+        let (_, ref pa) = comp_list[ai];
+        let (_, ref pb) = comp_list[bi];
+
+        // Find the Y midpoint between the two clusters.
+        let max_ya = pa.iter().map(|p| p.1).max().unwrap_or(0);
+        let min_yb = pb.iter().map(|p| p.1).min().unwrap_or(0);
+        let (cluster_top_y, cluster_bot_y) = if max_ya < min_yb {
+            (max_ya, min_yb)
+        } else {
+            let max_yb = pb.iter().map(|p| p.1).max().unwrap_or(0);
+            let min_ya = pa.iter().map(|p| p.1).min().unwrap_or(0);
+            (max_yb, min_ya)
+        };
+        let bridge_y = (cluster_top_y + cluster_bot_y) / 2;
+
+        // Scan across the width to find a free tile at bridge_y.
+        // Prefer positions near the centroid X of either cluster.
+        let cx_a = centroid(pa).0 as i32;
+        let cx_b = centroid(pb).0 as i32;
+        let target_x = (cx_a + cx_b) / 2;
+
+        let mut bridge_pos: Option<(i32, i32)> = None;
+        'outer: for r in 0..=(width.max(60)) {
+            for &dx in &[0i32, r, -r] {
+                let bx = target_x + dx;
+                if bx < 0 { continue; }
+                for &dy in &[0i32, 1, -1, 2, -2] {
+                    let by = bridge_y + dy;
+                    if !all_occupied.contains(&(bx, by)) {
+                        bridge_pos = Some((bx, by));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        match bridge_pos {
+            Some((bx, by)) => {
+                entities.push(make_pole(bx, by));
+                all_occupied.insert((bx, by));
+            }
+            None => break, // No valid position found; stop to avoid infinite loop
+        }
+    }
 }
 
 /// Create a pole entity at the given position.
