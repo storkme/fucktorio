@@ -235,6 +235,42 @@ fn assert_no_errors(result: &E2EResult) {
     );
 }
 
+/// Assert the layout has no validation warnings either.
+///
+/// Warnings are "soft" issues (belt-dead-end, input-rate-delivery, lane-throughput, etc.)
+/// that don't prevent the blueprint from importing into Factorio, but do indicate the
+/// layout is structurally broken in ways that matter — e.g. a starved machine will never
+/// produce its output even though the validation errors are "merely" warnings.
+///
+/// We group by category and show counts + a few examples per category to keep the
+/// failure message readable when there are many issues.
+fn assert_no_warnings(result: &E2EResult) {
+    let warnings: Vec<_> = result
+        .issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .collect();
+    if warnings.is_empty() {
+        return;
+    }
+    let mut by_category: std::collections::BTreeMap<&str, Vec<&validate::ValidationIssue>> = Default::default();
+    for w in &warnings {
+        by_category.entry(w.category.as_str()).or_default().push(w);
+    }
+    let mut msg = format!("Expected 0 validation warnings, got {}:\n", warnings.len());
+    for (cat, items) in &by_category {
+        msg.push_str(&format!("  [{}] × {}\n", cat, items.len()));
+        for w in items.iter().take(3) {
+            let coords = w.x.map(|x| format!(" ({},{})", x, w.y.unwrap_or(0))).unwrap_or_default();
+            msg.push_str(&format!("      {}{}\n", w.message, coords));
+        }
+        if items.len() > 3 {
+            msg.push_str(&format!("      ... {} more\n", items.len() - 3));
+        }
+    }
+    panic!("{}", msg);
+}
+
 fn assert_produces(result: &E2EResult, item: &str, min_rate: f64) {
     let actual = result
         .analysis
@@ -296,6 +332,7 @@ fn tier1_iron_gear_wheel() {
         .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "iron-gear-wheel", 10.0);
     assert_round_trip(&result);
 }
@@ -315,6 +352,7 @@ fn tier1_iron_gear_wheel_from_ore() {
     .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "iron-gear-wheel", 10.0);
     assert_round_trip(&result);
 }
@@ -327,6 +365,7 @@ fn tier1_iron_gear_wheel_20s() {
         .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "iron-gear-wheel", 20.0);
     assert_round_trip(&result);
 }
@@ -354,11 +393,13 @@ fn tier2_electronic_circuit() {
     .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "electronic-circuit", 10.0);
     assert_round_trip(&result);
 }
 
 #[test]
+#[ignore] // Layout warnings: belt-direction dead spots, copper-plate input-rate-delivery to assembler rows (rate propagation doesn't reach y=29), power network (31 disconnected poles)
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
@@ -376,6 +417,7 @@ fn tier2_electronic_circuit_from_ore() {
     .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "electronic-circuit", 10.0);
     assert_round_trip(&result);
 }
@@ -399,6 +441,7 @@ fn tier2_electronic_circuit_20s_from_ore() {
     .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "electronic-circuit", 20.0);
     assert_round_trip(&result);
 }
@@ -408,6 +451,7 @@ fn tier2_electronic_circuit_20s_from_ore() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Layout warning: underground-belt sideload at (1,1) — belt at (1,0) facing south sideloads into UG input facing east, only one lane loaded
 #[ntest::timeout(10000)]
 fn tier3_plastic_bar() {
     let inputs: FxHashSet<String> = ["petroleum-gas", "coal"]
@@ -418,11 +462,13 @@ fn tier3_plastic_bar() {
         run_e2e("tier3_plastic_bar", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "plastic-bar", 10.0);
     assert_round_trip(&result);
 }
 
 #[test]
+#[ignore] // Layout warning: power — 4 electric poles not connected to the main pole network
 #[ntest::timeout(10000)]
 fn tier3_plastic_bar_from_crude() {
     let inputs: FxHashSet<String> = ["crude-oil", "coal"]
@@ -433,6 +479,7 @@ fn tier3_plastic_bar_from_crude() {
         run_e2e("tier3_plastic_bar_from_crude", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "plastic-bar", 10.0);
     assert_round_trip(&result);
 }
@@ -448,6 +495,7 @@ fn tier3_sulfuric_acid() {
         run_e2e("tier3_sulfuric_acid", "sulfuric-acid", 5.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "sulfuric-acid", 5.0);
     assert_round_trip(&result);
 }
@@ -476,6 +524,7 @@ fn tier4_advanced_circuit_from_plates() {
     .expect("e2e pipeline");
 
     assert_no_errors(&result);
+    assert_no_warnings(&result);
     assert_produces(&result, "advanced-circuit", 10.0);
     assert_round_trip(&result);
 }

@@ -2142,6 +2142,53 @@ fn compute_lane_rates_impl(
         .map(|&p| (p, lane_injections.get(&p).copied().unwrap_or([0.0, 0.0])))
         .collect();
 
+    // Seed graph-source belts that carry external input items. External inputs
+    // come from outside the layout and have no upstream producer in the belt
+    // graph — without this seeding, rate propagation starts at 0 and every
+    // downstream consumer of an external input is incorrectly flagged as
+    // starved. We distribute each item's total external rate across its source
+    // tiles so the validator sees the actual per-belt flow the layout engine
+    // intended.
+    let external_rates: FxHashMap<&str, f64> = sr
+        .external_inputs
+        .iter()
+        .filter(|f| !f.is_fluid)
+        .map(|f| (f.item.as_str(), f.rate))
+        .collect();
+    if !external_rates.is_empty() {
+        // First pass: group source tiles by the item they carry. A "source" is a
+        // belt tile that has no upstream feeder in the surface belt graph. We
+        // include UG outputs here too: although they inherit rate via the topo
+        // sort's UG special case, that inheritance relies on the "behind the UG
+        // input" surface tile being correctly seeded — for external inputs it's
+        // simpler and safer to seed every graph source independently.
+        let mut sources_by_item: FxHashMap<&str, Vec<(i32, i32)>> = FxHashMap::default();
+        for (&pos, _) in &belt_dir_map {
+            if feeders.contains_key(&pos) {
+                continue; // has upstream feeders, not a source
+            }
+            if let Some(Some(item)) = belt_carries.get(&pos) {
+                if external_rates.contains_key(item.as_str()) {
+                    sources_by_item
+                        .entry(external_rates.get_key_value(item.as_str()).unwrap().0)
+                        .or_default()
+                        .push(pos);
+                }
+            }
+        }
+        // Second pass: seed each source tile with its share of the total rate,
+        // split evenly across the belt's two lanes.
+        for (item, sources) in &sources_by_item {
+            let total = external_rates[item];
+            let per_tile = total / sources.len() as f64;
+            for &pos in sources {
+                let entry = lane_rates.entry(pos).or_insert([0.0, 0.0]);
+                entry[0] += per_tile / 2.0;
+                entry[1] += per_tile / 2.0;
+            }
+        }
+    }
+
     let mut splitter_sibling: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
     for e in &layout.entities {
         if is_splitter(&e.name) {
@@ -2407,11 +2454,19 @@ pub fn check_input_rate_delivery(
             Some(s) => *s,
             None => continue,
         };
+        // spec.inputs[].rate is the per-machine input rate at full utilization.
+        // The layout places ceil(spec.count) physical machines, each running at
+        // spec.count / ceil(spec.count) utilization — scale the required rate
+        // accordingly or the check is too strict by up to 10× when the solver
+        // needs a fractional machine (e.g. sulfuric-acid at 5/s wants only 0.1
+        // machines but the physical machine runs at 10% speed).
+        let effective_count = spec.count.ceil().max(1.0);
+        let utilization = (spec.count / effective_count).min(1.0);
         let required_rate = spec
             .inputs
             .iter()
             .find(|i| i.item == ins.carried_item)
-            .map(|i| i.rate)
+            .map(|i| i.rate * utilization)
             .unwrap_or(0.0);
         if required_rate <= 0.0 {
             continue;
