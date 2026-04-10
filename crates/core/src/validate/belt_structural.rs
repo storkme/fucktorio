@@ -793,6 +793,10 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
 
     let mut processed: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut splitter_input_ready: FxHashSet<(i32, i32)> = FxHashSet::default();
+    // Guard against infinite re-enqueue: if a tile's upstream is part of a
+    // cycle or otherwise unresolvable, give up after 3 retries.
+    let mut retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    const MAX_RETRIES: u32 = 3;
 
     while let Some(pos) = queue.pop_front() {
         if processed.contains(&pos) {
@@ -806,8 +810,13 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
                     let (idx, idy) = dir_to_vec(inp_d);
                     let behind = (paired_input.0 - idx, paired_input.1 - idy);
                     if belt_dir_map.contains_key(&behind) && !processed.contains(&behind) {
-                        queue.push_back(pos);
-                        continue;
+                        let retry = retries.entry(pos).or_insert(0);
+                        if *retry < MAX_RETRIES {
+                            *retry += 1;
+                            queue.push_back(pos);
+                            continue;
+                        }
+                        // Gave up — fall through with rate 0 for the UG tunnel.
                     }
                     if let Some(&behind_rates) = lane_rates.get(&behind) {
                         let entry = lane_rates.entry(pos).or_insert((0.0, 0.0));
@@ -823,19 +832,26 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
             if !processed.contains(&sib) {
                 splitter_input_ready.insert(pos);
                 if !splitter_input_ready.contains(&sib) {
+                    let retry = retries.entry(pos).or_insert(0);
+                    if *retry < MAX_RETRIES {
+                        *retry += 1;
+                        queue.push_back(pos);
+                        continue;
+                    }
+                    // Gave up — fall through without sibling rates.
+                } else {
+                    let pos_rates = lane_rates.get(&pos).copied().unwrap_or((0.0, 0.0));
+                    let sib_rates = lane_rates.get(&sib).copied().unwrap_or((0.0, 0.0));
+                    let half_left = (pos_rates.0 + sib_rates.0) / 2.0;
+                    let half_right = (pos_rates.1 + sib_rates.1) / 2.0;
+                    lane_rates.insert(pos, (half_left, half_right));
+                    lane_rates.insert(sib, (half_left, half_right));
+                    for &tile in &[sib, pos] {
+                        processed.insert(tile);
+                        do_propagate(tile, &belt_dir_map, &mut lane_rates, &mut in_degree, &mut queue, &feeders);
+                    }
                     continue;
                 }
-                let pos_rates = lane_rates.get(&pos).copied().unwrap_or((0.0, 0.0));
-                let sib_rates = lane_rates.get(&sib).copied().unwrap_or((0.0, 0.0));
-                let half_left = (pos_rates.0 + sib_rates.0) / 2.0;
-                let half_right = (pos_rates.1 + sib_rates.1) / 2.0;
-                lane_rates.insert(pos, (half_left, half_right));
-                lane_rates.insert(sib, (half_left, half_right));
-                for &tile in &[sib, pos] {
-                    processed.insert(tile);
-                    do_propagate(tile, &belt_dir_map, &mut lane_rates, &mut in_degree, &mut queue, &feeders);
-                }
-                continue;
             }
         }
 
