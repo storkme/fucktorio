@@ -60,7 +60,7 @@ async function main(): Promise<void> {
 
   /** Inline <img> tag for an item/entity icon */
   function iconTag(slug: string, size = 16): string {
-    return `<img src="/icons/${slug}.png" width="${size}" height="${size}" style="vertical-align:middle;margin-right:3px;image-rendering:pixelated" onerror="this.style.display='none'">`;
+    return `<img src="${import.meta.env.BASE_URL}icons/${slug}.png" width="${size}" height="${size}" style="vertical-align:middle;margin-right:3px;image-rendering:pixelated" onerror="this.style.display='none'">`;
   }
 
   function onSelect(entity: PlacedEntity | null): void {

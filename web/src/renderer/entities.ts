@@ -596,7 +596,7 @@ function drawMachine(entity: PlacedEntity): Graphics {
   // Entity-frame sprites are designed so (0,0) = top-left of footprint at 1x.
   // To scale 1.5x around the footprint centre, offset by -0.25 * footprint size.
   const spriteScale = 1.5;
-  const frameTexture = Assets.get<Texture>(`/entity-frames/${entity.name}.png`);
+  const frameTexture = Assets.get<Texture>(`${import.meta.env.BASE_URL}entity-frames/${entity.name}.png`);
   if (frameTexture) {
     const sprite = new Sprite(frameTexture);
     const baseScale = TILE_PX / ENTITY_FRAME_TILE_PX;
@@ -607,7 +607,7 @@ function drawMachine(entity: PlacedEntity): Graphics {
     sprite.y = -ph * (spriteScale - 1) / 2;
     g.addChild(sprite);
   } else {
-    const iconTexture = Assets.get<Texture>(`/icons/${entity.name}.png`);
+    const iconTexture = Assets.get<Texture>(`${import.meta.env.BASE_URL}icons/${entity.name}.png`);
     if (iconTexture) {
       const sprite = new Sprite(iconTexture);
       const iconSize = Math.min(pw, ph) * 0.8 * spriteScale;
@@ -645,7 +645,7 @@ function drawMachine(entity: PlacedEntity): Graphics {
     const dropShadow = { color: 0x000000, alpha: 1, blur: 2, distance: 0 };
 
     // Header: recipe icon + nice name + rate — centred
-    const recipeIcon = Assets.get<Texture>(`/icons/${entity.recipe}.png`);
+    const recipeIcon = Assets.get<Texture>(`${import.meta.env.BASE_URL}icons/${entity.recipe}.png`);
     const label = niceName(entity.recipe);
     const rateStr = entity.rate != null ? ` ${entity.rate.toFixed(1)}/s` : "";
     const headerStyle = new TextStyle({
@@ -674,7 +674,7 @@ function drawMachine(entity: PlacedEntity): Graphics {
     // Flow rows: icon + item name + rate — centred
     const flowStyle = new TextStyle({ fontSize: 8, fill: 0xcccccc, dropShadow });
     const renderFlow = (item: string, rate: number, prefix: string) => {
-      const fIcon = Assets.get<Texture>(`/icons/${item}.png`);
+      const fIcon = Assets.get<Texture>(`${import.meta.env.BASE_URL}icons/${item}.png`);
       const fText = new Text({ text: `${prefix}${niceName(item)} ${rate.toFixed(1)}/s`, style: flowStyle });
       const fIconSz = 10;
       const rowW = (fIcon ? fIconSz + 2 : 0) + fText.width;
@@ -719,9 +719,10 @@ export function isBeltEntity(name: string): boolean {
 const ENTITY_FRAME_TILE_PX = 64;
 
 export async function initEntityIcons(slugs: string[]): Promise<void> {
+  const base = import.meta.env.BASE_URL;
   const urls = [
-    ...slugs.map((s) => `/icons/${s}.png`),
-    ...slugs.map((s) => `/entity-frames/${s}.png`),
+    ...slugs.map((s) => `${base}icons/${s}.png`),
+    ...slugs.map((s) => `${base}entity-frames/${s}.png`),
   ];
   // Load individually and ignore 404s — not all slugs have sprites yet
   await Promise.allSettled(urls.map((url) => Assets.load(url)));
