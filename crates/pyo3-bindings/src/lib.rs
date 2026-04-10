@@ -79,12 +79,16 @@ struct PyLaneSpec {
     x_constraint: Option<i16>,
     #[pyo3(get, set)]
     flow_dir: Option<(i8, i8)>,
+    #[pyo3(get, set)]
+    goal_on_obstacle: bool,
+    #[pyo3(get, set)]
+    y_tolerance: i16,
 }
 
 #[pymethods]
 impl PyLaneSpec {
     #[new]
-    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None, x_constraint = None, flow_dir = None))]
+    #[pyo3(signature = (id, item_id, waypoints, strategy = 0, priority = 0, y_constraint = None, x_constraint = None, flow_dir = None, goal_on_obstacle = false, y_tolerance = 0))]
     fn new(
         id: u32,
         item_id: u16,
@@ -94,8 +98,10 @@ impl PyLaneSpec {
         y_constraint: Option<i16>,
         x_constraint: Option<i16>,
         flow_dir: Option<(i8, i8)>,
+        goal_on_obstacle: bool,
+        y_tolerance: i16,
     ) -> Self {
-        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint, x_constraint, flow_dir }
+        PyLaneSpec { id, item_id, waypoints, strategy, priority, y_constraint, x_constraint, flow_dir, goal_on_obstacle, y_tolerance }
     }
 }
 
@@ -145,6 +151,8 @@ fn negotiate_lanes(
         y_constraint: ps.y_constraint,
         x_constraint: ps.x_constraint,
         flow_dir: ps.flow_dir,
+        goal_on_obstacle: ps.goal_on_obstacle,
+        y_tolerance: ps.y_tolerance,
     }).collect();
 
     let obs: FxHashSet<(i16, i16)> = obstacles.into_iter().collect();
