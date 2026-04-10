@@ -914,10 +914,6 @@ pub fn negotiate_lanes(
     let mut best_lanes: Vec<RoutedLane> = Vec::new();
     let mut best_conflicts = u32::MAX;
     let mut stall_count: u32 = 0;
-    // True once we've seen conflicts decrease from their initial post-first-iteration value.
-    // Used to tighten the stall patience after convergence has begun.
-    let mut initial_conflicts: Option<u32> = None;
-    let mut had_improvement = false;
 
     // Track tiles promoted to obstacles at priority boundaries (cleared each iteration)
     let mut promoted: Vec<(i16, i16)> = Vec::new();
@@ -1033,18 +1029,6 @@ pub fn negotiate_lanes(
             best_conflicts = conflicts;
             best_lanes = lanes.clone();
             stall_count = 0;
-            // Track whether we've improved below the initial conflict count
-            // (the first iteration always improves from u32::MAX, so we record
-            // the initial level on that iteration and only set had_improvement once
-            // a subsequent iteration beats it).
-            if let Some(init) = initial_conflicts {
-                if conflicts < init {
-                    had_improvement = true;
-                }
-            } else {
-                // First iteration — record initial conflict level
-                initial_conflicts = Some(conflicts);
-            }
         } else {
             stall_count += 1;
         }
@@ -1055,11 +1039,11 @@ pub fn negotiate_lanes(
 
         // Early exit: if conflicts haven't decreased for several consecutive iterations,
         // further iterations are unlikely to help (routing has reached a local minimum).
-        // We allow a longer patience before any improvement (to let history build up),
-        // but after convergence has begun, 2 consecutive stalls are enough to stop.
-        // (1 stall was too aggressive and caused belt-throughput regressions in
-        //  the electronic-circuit Python tests on CI.)
-        let stall_limit = if had_improvement { 2 } else { 3 };
+        // Allow 3 consecutive stalls before giving up — 1 was too aggressive (caused
+        // belt-throughput regressions) and 2 was still non-deterministically too tight
+        // on CI (electronic-circuit tests failed when history escalation happened to
+        // plateau for 2 iterations before converging on a 3rd).
+        let stall_limit = 3_u32;
         if stall_count >= stall_limit {
             break;
         }
