@@ -73,7 +73,9 @@ async function main(): Promise<void> {
     if (entity.recipe) html += `<div style="color:#dcdcaa">${iconTag(entity.recipe)} ${niceName(entity.recipe)}</div>`;
     if (entity.rate != null) html += `<div style="color:#b5cea8">rate: ${entity.rate.toFixed(1)}/s</div>`;
     if (entity.carries) html += `<div style="color:#9cdcfe">${iconTag(entity.carries)} ${niceName(entity.carries)}</div>`;
-    if (entity.direction) html += `<div>${dirArrow[entity.direction] ?? ""} ${entity.direction}</div>`;
+    // Regular pipes are directionless (connect to all 4 neighbours) — the direction
+    // field on them is meaningless data. Skip showing it to avoid confusion.
+    if (entity.direction && entity.name !== "pipe") html += `<div>${dirArrow[entity.direction] ?? ""} ${entity.direction}</div>`;
     html += `<div style="color:#888">pos: ${entity.x ?? 0}, ${entity.y ?? 0}</div>`;
     infoPanel.innerHTML = html;
     infoPanel.style.display = "block";
@@ -85,7 +87,7 @@ async function main(): Promise<void> {
     if (entity) {
       const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
       let html = `${iconTag(entity.name)}<b>${niceName(entity.name)}</b>`;
-      if (entity.direction) html += `<br>${dirArrow[entity.direction] ?? ""} ${entity.direction}`;
+      if (entity.direction && entity.name !== "pipe") html += `<br>${dirArrow[entity.direction] ?? ""} ${entity.direction}`;
       if (entity.carries) html += `<br>${iconTag(entity.carries)} ${niceName(entity.carries)}`;
       if (entity.rate != null) html += `<br><span style="color:#b5cea8">${entity.rate.toFixed(1)}/s</span>`;
       if (entity.io_type) html += `<br>io: ${entity.io_type}`;
