@@ -28,7 +28,7 @@ export async function createApp(container: HTMLElement): Promise<AppContext> {
     events: app.renderer.events,
   });
 
-  viewport.drag({ mouseButtons: "middle-right" }).pinch().wheel().decelerate();
+  viewport.drag({ mouseButtons: "left" }).pinch().wheel().decelerate();
 
   app.stage.addChild(viewport);
 
