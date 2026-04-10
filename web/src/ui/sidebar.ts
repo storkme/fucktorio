@@ -176,7 +176,7 @@ const STYLE = `
 
 function itemIcon(slug: string, size = 18): HTMLImageElement {
   const img = document.createElement("img");
-  img.src = `/icons/${slug}.png`;
+  img.src = `${import.meta.env.BASE_URL}icons/${slug}.png`;
   img.width = size;
   img.height = size;
   img.style.cssText = "vertical-align:middle;margin-right:4px;image-rendering:pixelated";
