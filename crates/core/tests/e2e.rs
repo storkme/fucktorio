@@ -100,10 +100,9 @@ fn assert_produces(result: &E2EResult, item: &str, min_rate: f64) {
 }
 
 fn assert_round_trip(result: &E2EResult) {
-    // Intentionally weak check: entity count only. A dropped entity + duplicated
-    // entity would not be caught. This is acceptable because the blueprint export
-    // has a known offset bug for multi-tile entities that prevents a stronger
-    // positional comparison. See follow-up issue for the offset bug.
+    // Check entity count and per-entity position/direction/name.
+    // Metadata like carries, segment_id, and rate are lost in the blueprint
+    // format, so we only compare structural fields.
     assert_eq!(
         result.layout.entities.len(),
         result.parsed.entities.len(),
@@ -111,6 +110,29 @@ fn assert_round_trip(result: &E2EResult) {
         result.layout.entities.len(),
         result.parsed.entities.len(),
     );
+
+    // Normalize both to (0,0) origin before comparing — the parser always
+    // normalizes but the layout engine may use a different origin.
+    let l_min_x = result.layout.entities.iter().map(|e| e.x).min().unwrap_or(0);
+    let l_min_y = result.layout.entities.iter().map(|e| e.y).min().unwrap_or(0);
+    let p_min_x = result.parsed.entities.iter().map(|e| e.x).min().unwrap_or(0);
+    let p_min_y = result.parsed.entities.iter().map(|e| e.y).min().unwrap_or(0);
+
+    // Sort both lists by (name, x-lmin, y-lmin, direction) and compare pairwise.
+    let mut layout_sorted: Vec<_> = result.layout.entities.iter().collect();
+    layout_sorted.sort_by_key(|e| (e.name.clone(), e.x - l_min_x, e.y - l_min_y, e.direction as u8));
+    let mut parsed_sorted: Vec<_> = result.parsed.entities.iter().collect();
+    parsed_sorted.sort_by_key(|e| (e.name.clone(), e.x - p_min_x, e.y - p_min_y, e.direction as u8));
+
+    for (i, (orig, parsed)) in layout_sorted.iter().zip(parsed_sorted.iter()).enumerate() {
+        assert_eq!(
+            (orig.name.clone(), orig.x - l_min_x, orig.y - l_min_y, orig.direction as u8),
+            (parsed.name.clone(), parsed.x - p_min_x, parsed.y - p_min_y, parsed.direction as u8),
+            "Entity {i} mismatch: layout has {} at ({},{}) dir {:?}, parsed has {} at ({},{}) dir {:?}",
+            orig.name, orig.x, orig.y, orig.direction,
+            parsed.name, parsed.x, parsed.y, parsed.direction
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
