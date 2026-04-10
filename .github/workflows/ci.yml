@@ -16,6 +16,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - '.python-version'
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            web:
+              - 'web/**'
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -28,6 +52,8 @@ jobs:
           args: format --check
 
   test:
+    needs: changes
+    if: always() && (needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +61,7 @@ jobs:
         with:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: pip install factorio-draftsman pytest pytest-timeout maturin
       - run: maturin build --release
       - run: pip install target/wheels/*.whl --no-deps
@@ -51,12 +78,15 @@ jobs:
           path: test-results.xml
 
   rust:
+    needs: changes
+    if: always() && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -102,12 +132,15 @@ jobs:
           path: target/nextest/ci/junit.xml
 
   web:
+    needs: changes
+    if: always() && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build WASM
