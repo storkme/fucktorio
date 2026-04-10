@@ -461,6 +461,24 @@ async function main(): Promise<void> {
     clearPulse();
   }
 
+  // Escape unpins; clicking outside the issues panel unpins.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") unpinRow();
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (pinnedRow && !issuesPanel.contains(e.target as Node)) unpinRow();
+  });
+
+  // Shift held → pause viewport drag so selection box works.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") viewport.plugins.pause("drag");
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") viewport.plugins.resume("drag");
+  });
+  // Also handle shift release when window loses focus.
+  window.addEventListener("blur", () => viewport.plugins.resume("drag"));
+
   // --- Validation issues panel (right side, below toggles) ---
   // top:112px = stacked toggle buttons (debug ~42px, trace ~44px, validation ~26px) + 8px gap.
   // Update if the toggle stack height changes.
