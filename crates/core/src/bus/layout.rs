@@ -544,7 +544,9 @@ fn route_bus(
         entities.extend(sc.solution.entities.clone());
     }
 
-    // No spec splitting needed — A* runs normally, SAT only affects trunk rendering.
+    // No spec splitting — A* runs normally, SAT only affects trunk rendering.
+    // (Activating sat_regions here causes entity overlaps in negotiate_and_route's
+    // spec-splitting branch; needs deeper work before it can be turned on.)
     let empty_regions: Vec<SatCrossingRegion> = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
     let negotiate_start = std::time::Instant::now();
