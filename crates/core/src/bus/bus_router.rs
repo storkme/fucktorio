@@ -83,6 +83,16 @@ impl BusLane {
             family_balancer_range: None,
         }
     }
+
+    /// Collect all producer row indices for this lane.
+    pub(crate) fn all_producers(&self) -> Vec<usize> {
+        let mut rows = Vec::new();
+        if let Some(pr) = self.producer_row {
+            rows.push(pr);
+        }
+        rows.extend(&self.extra_producer_rows);
+        rows
+    }
 }
 
 /// An N-to-M balancer block that feeds M sibling trunk lanes for one item.
@@ -296,7 +306,7 @@ pub fn plan_bus_lanes(
         if !lane.consumer_rows.is_empty() {
             continue;
         }
-        let all_producers = lane_all_producers(lane);
+        let all_producers = lane.all_producers();
 
         if all_producers.len() <= 1 {
             continue;
@@ -314,7 +324,7 @@ pub fn plan_bus_lanes(
     }
 
     // Optimize lane left-to-right ordering
-    lanes = optimize_lane_order(&lanes, row_spans);
+    lanes = crate::bus::plan::optimize_lane_order(&lanes, row_spans);
 
     // Assign x-columns with 1-tile spacing
     for (i, lane) in lanes.iter_mut().enumerate() {
@@ -455,260 +465,6 @@ fn underground_for_belt(belt: &str) -> &'static str {
         .unwrap_or("underground-belt")
 }
 
-/// Collect all producer row indices for a lane.
-fn lane_all_producers(lane: &BusLane) -> Vec<usize> {
-    let mut rows = Vec::new();
-    if let Some(pr) = lane.producer_row {
-        rows.push(pr);
-    }
-    rows.extend(&lane.extra_producer_rows);
-    rows
-}
-
-/// Count total underground crossings for a given lane ordering.
-fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
-    let mut score = 0;
-
-    fn active_range(lane: &BusLane, row_spans: &[RowSpan]) -> (i32, i32) {
-        let all_p = lane_all_producers(lane);
-
-        if !all_p.is_empty() && !lane.consumer_rows.is_empty() {
-            let start = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .min()
-                .unwrap();
-            let end = if !lane.tap_off_ys.is_empty() {
-                lane.tap_off_ys.iter().copied().max().unwrap()
-            } else {
-                start
-            };
-            (start, end)
-        } else if !lane.tap_off_ys.is_empty() {
-            let end = lane.tap_off_ys.iter().copied().max().unwrap();
-            (lane.source_y, end)
-        } else {
-            let end = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .max()
-                .unwrap_or(lane.source_y);
-            (lane.source_y, end)
-        }
-    }
-
-    let ranges: Vec<(i32, i32)> = ordered.iter().map(|ln| active_range(ln, row_spans)).collect();
-
-    for (pos, lane) in ordered.iter().enumerate() {
-        // EAST tap-off crossings
-        for &tap_y in &lane.tap_off_ys {
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= tap_y && tap_y <= re {
-                    score += 1;
-                }
-            }
-        }
-
-        // WEST output return crossings
-        let all_producers = lane_all_producers(lane);
-        for &pri in &all_producers {
-            let ret_y = row_spans[pri].output_belt_y;
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= ret_y && ret_y <= re {
-                    score += 1;
-                }
-            }
-        }
-    }
-
-    // Family feeder landing conflict: penalise when a family lane's template
-    // input landing column (input_x + 1) overlaps with a lane to the RIGHT
-    // of the family block.  This ensures the optimizer places family blocks
-    // rightmost so feeders don't collide with other trunks.
-    let templates = crate::bus::balancer_library::balancer_templates();
-    // Assign tentative x positions (lanes at x = pos + 1, bus_width = n + 2).
-    let n = ordered.len();
-    for (pos, lane) in ordered.iter().enumerate() {
-        if let Some(fid) = lane.family_id {
-            // Only check the first lane in a family block
-            if pos > 0 && ordered[pos - 1].family_id == Some(fid) {
-                continue;
-            }
-            // Count contiguous family lanes
-            let fam_count = ordered[pos..].iter()
-                .take_while(|l| l.family_id == Some(fid))
-                .count();
-            let ox = pos + 1; // tentative x of leftmost family lane
-            let (fn_, fm) = {
-                // Find family shape by counting producers across the block
-                let all_p = lane_all_producers(lane);
-                (all_p.len().max(1), fam_count)
-            };
-            if let Some(tpl) = templates.get(&(fn_ as u32, fm as u32)) {
-                for &(dx, _) in tpl.input_tiles {
-                    let landing_x = (ox as i32) + dx + 1;
-                    // Check if any lane to the right of the family block occupies landing_x
-                    for rpos in (pos + fam_count)..n {
-                        let rx = (rpos + 1) as i32;
-                        if rx == landing_x {
-                            // Heavy penalty: feeder would be blocked
-                            score += 100;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    score
-}
-
-/// Optimize lane left-to-right ordering to minimize underground crossings.
-fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if lanes.len() <= 1 {
-        return lanes.to_vec();
-    }
-
-    let solid: Vec<BusLane> = lanes.iter().filter(|ln| !ln.is_fluid).cloned().collect();
-    let fluid: Vec<BusLane> = lanes.iter().filter(|ln| ln.is_fluid).cloned().collect();
-
-    // Exact search for tiny sets (≤7 lanes: 7! = 5040 permutations).
-    // Hill-climbing for larger sets: start from heuristic, try all pairwise
-    // swaps repeatedly until no improvement (O(k·n²) where k ≈ n typically).
-    let best_solid = if solid.len() <= 7 {
-        find_best_permutation(&solid, row_spans)
-    } else {
-        hill_climb_lane_order(&solid, row_spans)
-    };
-
-    let mut result = best_solid;
-    result.extend(fluid);
-
-    let crossing_score = score_lane_ordering(&result, row_spans);
-    crate::trace::emit(crate::trace::TraceEvent::LaneOrderOptimized {
-        ordering: result.iter().map(|ln| ln.item.clone()).collect(),
-        crossing_score,
-    });
-
-    result
-}
-
-/// Find best permutation of solid lanes that respects family contiguity.
-fn find_best_permutation(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if solid.is_empty() {
-        return Vec::new();
-    }
-
-    fn family_contiguous(ordered: &[BusLane]) -> bool {
-        let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
-        for (i, ln) in ordered.iter().enumerate() {
-            if let Some(fid) = ln.family_id {
-                let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
-                seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
-            }
-        }
-
-        let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
-        for ln in ordered {
-            if let Some(fid) = ln.family_id {
-                *counts.entry(fid).or_insert(0) += 1;
-            }
-        }
-
-        seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
-    }
-
-    // Use iterative approach instead of recursive permutations for small sets
-    let n = solid.len();
-    let mut indices: Vec<usize> = (0..n).collect();
-    let mut best_order: Vec<usize> = indices.clone();
-    let mut best_score = score_lane_ordering(
-        &indices.iter().map(|&i| solid[i].clone()).collect::<Vec<_>>(),
-        row_spans,
-    );
-
-    // Heap's algorithm for permutation generation
-    let mut c = vec![0; n];
-    let mut i = 0;
-    while i < n {
-        if c[i] < i {
-            if i % 2 == 0 {
-                indices.swap(0, i);
-            } else {
-                indices.swap(c[i], i);
-            }
-            let ordered: Vec<BusLane> = indices.iter().map(|&idx| solid[idx].clone()).collect();
-            if family_contiguous(&ordered) {
-                let score = score_lane_ordering(&ordered, row_spans);
-                if score < best_score {
-                    best_score = score;
-                    best_order = indices.clone();
-                }
-            }
-            c[i] += 1;
-            i = 0;
-        } else {
-            c[i] = 0;
-            i += 1;
-        }
-    }
-
-    best_order.iter().map(|&i| solid[i].clone()).collect()
-}
-
-/// Hill-climbing lane order optimizer for larger sets (>7 lanes).
-///
-/// Starts from a heuristic seed (family-grouped, then sorted by earliest tap-off),
-/// then repeatedly tries all pairwise swaps, keeping improvements. Stops when no
-/// swap reduces the crossing score. Runs in O(k·n²) where k ≈ n in practice.
-/// Family-contiguity is checked after every accepted swap.
-fn hill_climb_lane_order(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    fn family_contiguous(ordered: &[BusLane]) -> bool {
-        let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
-        for (i, ln) in ordered.iter().enumerate() {
-            if let Some(fid) = ln.family_id {
-                let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
-                seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
-            }
-        }
-        let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
-        for ln in ordered {
-            if let Some(fid) = ln.family_id { *counts.entry(fid).or_insert(0) += 1; }
-        }
-        seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
-    }
-
-    // Seed: group by family, then sort by earliest tap-off within each group
-    let mut order = solid.to_vec();
-    order.sort_by_key(|ln| {
-        let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
-        let y = ln.tap_off_ys.iter().min().copied().map(|y| -y).unwrap_or(9999);
-        (fid, y)
-    });
-
-    let n = order.len();
-    let mut best_score = score_lane_ordering(&order, row_spans);
-
-    loop {
-        let mut improved = false;
-        'outer: for i in 0..n {
-            for j in (i + 1)..n {
-                order.swap(i, j);
-                if family_contiguous(&order) {
-                    let score = score_lane_ordering(&order, row_spans);
-                    if score < best_score {
-                        best_score = score;
-                        improved = true;
-                        continue 'outer; // keep swap, try next i
-                    }
-                }
-                order.swap(i, j); // undo
-            }
-        }
-        if !improved { break; }
-    }
-
-    order
-}
-
 /// Split lanes whose rate exceeds the available belt's per-lane capacity.
 fn split_overflowing_lanes(
     lanes: &[BusLane],
@@ -780,7 +536,7 @@ fn split_overflowing_lanes(
         }
 
         // Distribute producer rows by rate
-        let all_producer_rows = lane_all_producers(lane);
+        let all_producer_rows = lane.all_producers();
 
         let mut producers_per_split: Vec<Vec<usize>> = vec![Vec::new(); n_splits];
         let mut split_prod_rate: Vec<f64> = vec![0.0; n_splits];
@@ -3662,7 +3418,7 @@ mod tests {
             ),
         ];
 
-        let score = score_lane_ordering(&lanes, &row_spans);
+        let score = crate::bus::plan::score_lane_ordering(&lanes, &row_spans);
         // Iron-ore taps at y=1, copper-ore is active from y=0 to y=5, so 1 crossing
         assert_eq!(score, 1);
     }
@@ -3707,7 +3463,7 @@ mod tests {
             ),
         ];
 
-        let score = score_lane_ordering(&lanes, &row_spans);
+        let score = crate::bus::plan::score_lane_ordering(&lanes, &row_spans);
         // Iron-ore taps at y=10, copper-ore is only active from y=0 to y=5, no crossing
         assert_eq!(score, 0);
     }
