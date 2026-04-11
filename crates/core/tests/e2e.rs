@@ -29,11 +29,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 struct E2EResult {
-    #[allow(dead_code)]
     solver_result: SolverResult,
     layout: LayoutResult,
-    #[allow(dead_code)]
-    bp_string: String,
     parsed: LayoutResult,
     issues: Vec<ValidationIssue>,
     analysis: BlueprintAnalysis,
@@ -202,7 +199,6 @@ fn run_e2e(
     let result = E2EResult {
         solver_result,
         layout,
-        bp_string,
         parsed,
         issues,
         analysis,
@@ -329,7 +325,7 @@ fn assert_round_trip(result: &E2EResult) {
 fn tier1_iron_gear_wheel() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
     let result = run_e2e("tier1_iron_gear_wheel", "iron-gear-wheel", 10.0, "assembling-machine-1", None, &inputs)
-        .expect("e2e pipeline");
+        .unwrap_or_else(|e| panic!("tier1_iron_gear_wheel: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -349,7 +345,7 @@ fn tier1_iron_gear_wheel_from_ore() {
         None,
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier1_iron_gear_wheel_from_ore: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -362,7 +358,7 @@ fn tier1_iron_gear_wheel_from_ore() {
 fn tier1_iron_gear_wheel_20s() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
     let result = run_e2e("tier1_iron_gear_wheel_20s", "iron-gear-wheel", 20.0, "assembling-machine-2", None, &inputs)
-        .expect("e2e pipeline");
+        .unwrap_or_else(|e| panic!("tier1_iron_gear_wheel_20s: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -389,7 +385,7 @@ fn tier2_electronic_circuit() {
         None,
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier2_electronic_circuit: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -413,7 +409,7 @@ fn tier2_electronic_circuit_from_ore() {
         Some("transport-belt"),
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier2_electronic_circuit_from_ore: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -439,7 +435,7 @@ fn tier2_electronic_circuit_20s_from_ore() {
         None,
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier2_electronic_circuit_20s_from_ore: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -476,7 +472,7 @@ fn tier2_electronic_circuit_splitter_stamp_regression() {
         Some("fast-transport-belt"),
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier2_electronic_circuit_splitter_stamp_regression: {e}"));
 
     // Specifically assert there's no sideload-into-UG-input warning, which
     // is the precise bug class the retry loop addresses.
@@ -509,7 +505,8 @@ fn tier3_plastic_bar() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("tier3_plastic_bar", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_plastic_bar", "plastic-bar", 10.0, "chemical-plant", None, &inputs)
+            .unwrap_or_else(|e| panic!("tier3_plastic_bar: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -525,7 +522,8 @@ fn tier3_plastic_bar_from_crude() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("tier3_plastic_bar_from_crude", "plastic-bar", 10.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_plastic_bar_from_crude", "plastic-bar", 10.0, "chemical-plant", None, &inputs)
+            .unwrap_or_else(|e| panic!("tier3_plastic_bar_from_crude: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -541,7 +539,8 @@ fn tier3_sulfuric_acid() {
         .map(|s| s.to_string())
         .collect();
     let result =
-        run_e2e("tier3_sulfuric_acid", "sulfuric-acid", 5.0, "chemical-plant", None, &inputs).expect("e2e pipeline");
+        run_e2e("tier3_sulfuric_acid", "sulfuric-acid", 5.0, "chemical-plant", None, &inputs)
+            .unwrap_or_else(|e| panic!("tier3_sulfuric_acid: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -572,7 +571,7 @@ fn tier4_advanced_circuit_from_plates() {
         None,
         &inputs,
     )
-    .expect("e2e pipeline");
+    .unwrap_or_else(|e| panic!("tier4_advanced_circuit_from_plates: {e}"));
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
@@ -588,16 +587,20 @@ fn tier4_advanced_circuit_from_plates() {
 #[ignore] // Diagnostic only — run with --ignored --nocapture
 fn diag_validator_timing_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore"].iter().map(|s| s.to_string()).collect();
-    let sr = solver::solve("iron-gear-wheel", 10.0, &inputs, "assembling-machine-2").expect("solver failed");
-    let lr = layout::build_bus_layout(&sr, None).expect("layout failed");
+    let sr = solver::solve("iron-gear-wheel", 10.0, &inputs, "assembling-machine-2")
+        .unwrap_or_else(|e| panic!("solver (iron-gear-wheel from ore): {e}"));
+    let lr = layout::build_bus_layout(&sr, None)
+        .unwrap_or_else(|e| panic!("layout (iron-gear-wheel from ore): {e}"));
     eprintln!("=== iron-gear-wheel from ore ===");
     eprintln!("Layout: {} entities, {}x{}", lr.entities.len(), lr.width, lr.height);
     run_timed_validators(&lr, &sr);
 
     // The layout that was hanging
     let inputs2: FxHashSet<String> = ["iron-ore", "copper-ore"].iter().map(|s| s.to_string()).collect();
-    let sr2 = solver::solve("electronic-circuit", 10.0, &inputs2, "assembling-machine-1").expect("solver failed");
-    let lr2 = layout::build_bus_layout(&sr2, Some("transport-belt")).expect("layout failed");
+    let sr2 = solver::solve("electronic-circuit", 10.0, &inputs2, "assembling-machine-1")
+        .unwrap_or_else(|e| panic!("solver (electronic-circuit from ore): {e}"));
+    let lr2 = layout::build_bus_layout(&sr2, Some("transport-belt"))
+        .unwrap_or_else(|e| panic!("layout (electronic-circuit from ore): {e}"));
     eprintln!("\n=== electronic-circuit from ore ===");
     eprintln!("Layout: {} entities, {}x{}", lr2.entities.len(), lr2.width, lr2.height);
     run_timed_validators(&lr2, &sr2);

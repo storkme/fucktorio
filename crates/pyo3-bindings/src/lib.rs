@@ -59,28 +59,49 @@ fn astar_path(
 // Lane negotiation wrappers
 // ---------------------------------------------------------------------------
 
-/// Python-facing lane specification.
+/// Python-facing lane specification for the A* multi-lane negotiator.
+///
+/// Each `PyLaneSpec` describes one lane that needs routing: a unique ID, the
+/// item it carries, waypoint sequence, and routing constraints. Passed from
+/// Python into the Rust A* solver via [`crate::astar::negotiate_lanes`].
 #[pyclass]
 #[derive(Clone)]
 struct PyLaneSpec {
+    /// Unique lane identifier.
     #[pyo3(get, set)]
     id: u32,
+    /// Item type index — distinguishes lanes carrying different items so the
+    /// negotiator can enforce item separation.
     #[pyo3(get, set)]
     item_id: u16,
+    /// Ordered waypoints the lane path must visit. The A* solver routes
+    /// sequentially between consecutive waypoint pairs.
     #[pyo3(get, set)]
     waypoints: Vec<(i16, i16)>,
+    /// Routing strategy selector (reserved for future use; always 0 currently).
     #[pyo3(get, set)]
     strategy: u8,
+    /// Lane priority — higher values are routed first, giving them preferential
+    /// access to shared corridor space.
     #[pyo3(get, set)]
     priority: u8,
+    /// If set, constrains the lane's path to stay near this Y-coordinate
+    /// (useful for keeping lanes horizontally aligned).
     #[pyo3(get, set)]
     y_constraint: Option<i16>,
+    /// If set, constrains the lane's path to stay near this X-coordinate.
     #[pyo3(get, set)]
     x_constraint: Option<i16>,
+    /// Preferred flow direction as `(dx, dy)` unit vector (e.g. `(0, 1)` for
+    /// southbound). Guides the A* heuristic.
     #[pyo3(get, set)]
     flow_dir: Option<(i8, i8)>,
+    /// When `true`, allows the lane's goal tile to overlap an obstacle tile.
+    /// Used for edge cases where the destination is occupied but reachable.
     #[pyo3(get, set)]
     goal_on_obstacle: bool,
+    /// Allowed vertical deviation from `y_constraint` (0 = exact, larger =
+    /// more slack).
     #[pyo3(get, set)]
     y_tolerance: i16,
 }

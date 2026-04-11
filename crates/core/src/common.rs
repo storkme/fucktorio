@@ -2,7 +2,9 @@
 //!
 //! Port of `src/routing/common.py`.
 
-use crate::models::EntityDirection;
+use rustc_hash::FxHashSet;
+
+use crate::models::{EntityDirection, PlacedEntity, SolverResult};
 
 const DEFAULT_MACHINE_SIZE: u32 = 3;
 
@@ -79,6 +81,113 @@ pub fn belt_throughput(belt: &str) -> f64 {
 /// Per-lane capacity (half of total belt throughput).
 pub fn lane_capacity(belt: &str) -> f64 {
     belt_throughput(belt) / 2.0
+}
+
+// ---------------------------------------------------------------------------
+// Entity classification helpers (shared across validation modules)
+// ---------------------------------------------------------------------------
+
+/// Surface (above-ground) belt entity names.
+pub const SURFACE_BELT_ENTITIES: &[&str] =
+    &["transport-belt", "fast-transport-belt", "express-transport-belt"];
+
+/// Underground belt entity names.
+pub const UG_BELT_ENTITIES: &[&str] = &[
+    "underground-belt",
+    "fast-underground-belt",
+    "express-underground-belt",
+];
+
+/// Splitter entity names.
+pub const SPLITTER_ENTITIES: &[&str] =
+    &["splitter", "fast-splitter", "express-splitter"];
+
+/// Inserter entity names.
+pub const INSERTER_ENTITIES: &[&str] =
+    &["inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"];
+
+/// Return `true` if `name` is a surface (above-ground) belt.
+pub fn is_surface_belt(name: &str) -> bool {
+    SURFACE_BELT_ENTITIES.contains(&name)
+}
+
+/// Return `true` if `name` is an underground belt.
+pub fn is_ug_belt(name: &str) -> bool {
+    UG_BELT_ENTITIES.contains(&name)
+}
+
+/// Return `true` if `name` is a splitter.
+pub fn is_splitter(name: &str) -> bool {
+    SPLITTER_ENTITIES.contains(&name)
+}
+
+/// Return `true` if `name` is any belt-type entity (surface, underground, or splitter).
+pub fn is_belt_entity(name: &str) -> bool {
+    is_surface_belt(name) || is_ug_belt(name) || is_splitter(name)
+}
+
+/// Return `true` if `name` is an inserter.
+pub fn is_inserter(name: &str) -> bool {
+    INSERTER_ENTITIES.contains(&name)
+}
+
+/// Inserter reach: how many tiles away the pick-up / drop position is.
+pub fn inserter_reach(name: &str) -> i32 {
+    if name == "long-handed-inserter" {
+        2
+    } else {
+        1
+    }
+}
+
+/// Map underground-belt entity name to its corresponding surface belt tier.
+pub fn ug_to_surface_tier(ug_name: &str) -> &'static str {
+    match ug_name {
+        "underground-belt" => "transport-belt",
+        "fast-underground-belt" => "fast-transport-belt",
+        "express-underground-belt" => "express-transport-belt",
+        _ => "transport-belt",
+    }
+}
+
+/// Map splitter entity name to its corresponding surface belt tier.
+pub fn splitter_to_surface_tier(splitter: &str) -> &'static str {
+    match splitter {
+        "splitter" => "transport-belt",
+        "fast-splitter" => "fast-transport-belt",
+        "express-splitter" => "express-transport-belt",
+        _ => "transport-belt",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tile helpers for entities that span multiple tiles
+// ---------------------------------------------------------------------------
+
+/// Second tile occupied by a splitter (perpendicular to flow direction).
+pub fn splitter_second_tile(e: &PlacedEntity) -> (i32, i32) {
+    match e.direction {
+        EntityDirection::North | EntityDirection::South => (e.x + 1, e.y),
+        _ => (e.x, e.y + 1),
+    }
+}
+
+/// Collect the set of recipes whose inputs and outputs are all fluids (no solid items).
+pub fn fluid_only_recipes(solver: Option<&SolverResult>) -> FxHashSet<String> {
+    let mut out = rustc_hash::FxHashSet::default();
+    if let Some(sr) = solver {
+        for spec in &sr.machines {
+            let has_solid = spec
+                .inputs
+                .iter()
+                .chain(spec.outputs.iter())
+                .any(|f| !f.is_fluid);
+            if !has_solid {
+                out.insert(spec.recipe.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Pick the cheapest belt tier whose throughput is `>= rate`.

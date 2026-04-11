@@ -6,67 +6,24 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::common::{dir_to_vec, ug_max_reach};
+use crate::common::{
+    dir_to_vec, is_belt_entity, is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile,
+    ug_max_reach, ug_to_surface_tier,
+};
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity};
 
 use super::{Severity, ValidationIssue};
 
 // ---------------------------------------------------------------------------
-// Entity-name predicates
-// ---------------------------------------------------------------------------
-
-const SURFACE_BELT_ENTITIES: &[&str] = &[
-    "transport-belt",
-    "fast-transport-belt",
-    "express-transport-belt",
-];
-const UG_BELT_ENTITIES: &[&str] = &[
-    "underground-belt",
-    "fast-underground-belt",
-    "express-underground-belt",
-];
-const SPLITTER_ENTITIES: &[&str] = &["splitter", "fast-splitter", "express-splitter"];
-
-fn is_surface_belt(name: &str) -> bool {
-    SURFACE_BELT_ENTITIES.contains(&name)
-}
-fn is_ug_belt(name: &str) -> bool {
-    UG_BELT_ENTITIES.contains(&name)
-}
-fn is_splitter(name: &str) -> bool {
-    SPLITTER_ENTITIES.contains(&name)
-}
-fn is_any_belt(name: &str) -> bool {
-    is_surface_belt(name) || is_ug_belt(name) || is_splitter(name)
-}
-
-/// Map underground belt entity name to its surface belt tier for reach lookup.
-fn ug_belt_surface_tier(ug_name: &str) -> &'static str {
-    match ug_name {
-        "fast-underground-belt" => "fast-transport-belt",
-        "express-underground-belt" => "express-transport-belt",
-        _ => "transport-belt",
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Second tile occupied by a splitter (they span 2 tiles perpendicular to flow).
-fn splitter_second_tile(e: &PlacedEntity) -> (i32, i32) {
-    match e.direction {
-        EntityDirection::North | EntityDirection::South => (e.x + 1, e.y),
-        EntityDirection::East | EntityDirection::West => (e.x, e.y + 1),
-    }
-}
 
 /// Build a map of `(x, y) → direction` for all belt-like entities,
 /// expanding splitters to both tiles they occupy.
 fn build_belt_dir_map(entities: &[PlacedEntity]) -> FxHashMap<(i32, i32), EntityDirection> {
     let mut map = FxHashMap::default();
     for e in entities {
-        if !is_any_belt(&e.name) {
+        if !is_belt_entity(&e.name) {
             continue;
         }
         map.insert((e.x, e.y), e.direction);
@@ -110,7 +67,7 @@ pub fn check_underground_belt_pairs(layout_result: &LayoutResult) -> Vec<Validat
 
     for inp in &ug_inputs {
         let (dx, dy) = dir_to_vec(inp.direction);
-        let max_reach = ug_max_reach(ug_belt_surface_tier(&inp.name));
+        let max_reach = ug_max_reach(ug_to_surface_tier(&inp.name));
 
         // Find the nearest matching output along the direction vector.
         let mut best_out: Option<&PlacedEntity> = None;

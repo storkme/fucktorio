@@ -14,83 +14,14 @@ use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::common::{
-    dir_to_vec, inserter_target_lane, lane_capacity, machine_size, machine_tiles, ug_max_reach,
-    LANE_LEFT,
+    dir_to_vec, fluid_only_recipes, inserter_reach, inserter_target_lane, is_belt_entity,
+    is_inserter, is_machine_entity, is_splitter, is_surface_belt, is_ug_belt,
+    splitter_second_tile, ug_max_reach, ug_to_surface_tier, lane_capacity, machine_size,
+    machine_tiles, LANE_LEFT,
 };
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 
 use super::{LayoutStyle, Severity, ValidationIssue};
-
-// ---------------------------------------------------------------------------
-// Entity classification helpers
-// ---------------------------------------------------------------------------
-
-fn is_machine(name: &str) -> bool {
-    matches!(
-        name,
-        "assembling-machine-1"
-            | "assembling-machine-2"
-            | "assembling-machine-3"
-            | "chemical-plant"
-            | "electric-furnace"
-            | "oil-refinery"
-    )
-}
-
-fn is_surface_belt(name: &str) -> bool {
-    matches!(
-        name,
-        "transport-belt" | "fast-transport-belt" | "express-transport-belt"
-    )
-}
-
-fn is_ug_belt(name: &str) -> bool {
-    matches!(
-        name,
-        "underground-belt" | "fast-underground-belt" | "express-underground-belt"
-    )
-}
-
-fn is_splitter(name: &str) -> bool {
-    matches!(name, "splitter" | "fast-splitter" | "express-splitter")
-}
-
-fn is_belt(name: &str) -> bool {
-    is_surface_belt(name) || is_ug_belt(name) || is_splitter(name)
-}
-
-fn is_inserter(name: &str) -> bool {
-    matches!(
-        name,
-        "inserter" | "long-handed-inserter" | "fast-inserter" | "stack-inserter"
-    )
-}
-
-/// Reach (tiles) for each inserter type.
-fn inserter_reach(name: &str) -> i32 {
-    if name == "long-handed-inserter" { 2 } else { 1 }
-}
-
-/// Map underground-belt entity name to corresponding surface belt tier.
-fn ug_to_surface_tier(ug_name: &str) -> &'static str {
-    match ug_name {
-        "underground-belt" => "transport-belt",
-        "fast-underground-belt" => "fast-transport-belt",
-        "express-underground-belt" => "express-transport-belt",
-        _ => "transport-belt",
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Splitter second tile
-// ---------------------------------------------------------------------------
-
-fn splitter_second_tile(e: &PlacedEntity) -> (i32, i32) {
-    match e.direction {
-        EntityDirection::North | EntityDirection::South => (e.x + 1, e.y),
-        _ => (e.x, e.y + 1),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Belt direction map (including splitter expansion)
@@ -103,7 +34,7 @@ fn belt_dir_map_from(entities: &[PlacedEntity]) -> FxHashMap<(i32, i32), EntityD
 fn belt_dir_map_filtered(entities: &[PlacedEntity], skip_balancers: bool) -> FxHashMap<(i32, i32), EntityDirection> {
     let mut bdm = FxHashMap::default();
     for e in entities {
-        if !is_belt(&e.name) {
+        if !is_belt_entity(&e.name) {
             continue;
         }
         if skip_balancers {
@@ -129,7 +60,7 @@ fn belt_dir_map_filtered(entities: &[PlacedEntity], skip_balancers: bool) -> FxH
 fn build_belt_tile_set(entities: &[PlacedEntity]) -> FxHashSet<(i32, i32)> {
     let mut tiles = FxHashSet::default();
     for e in entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             tiles.insert((e.x, e.y));
             if is_splitter(&e.name) {
                 tiles.insert(splitter_second_tile(e));
@@ -340,7 +271,7 @@ fn bfs_belt_upstream(
 fn build_machine_tile_set(layout: &LayoutResult) -> FxHashSet<(i32, i32)> {
     let mut tiles = FxHashSet::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             let size = machine_size(&e.name);
             for t in machine_tiles(e.x, e.y, size) {
                 tiles.insert(t);
@@ -354,7 +285,7 @@ fn build_machine_tile_set(layout: &LayoutResult) -> FxHashSet<(i32, i32)> {
 fn build_machine_by_tile(layout: &LayoutResult) -> FxHashMap<(i32, i32), (i32, i32)> {
     let mut by_tile = FxHashMap::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             let size = machine_size(&e.name);
             for t in machine_tiles(e.x, e.y, size) {
                 by_tile.insert(t, (e.x, e.y));
@@ -362,27 +293,6 @@ fn build_machine_by_tile(layout: &LayoutResult) -> FxHashMap<(i32, i32), (i32, i
         }
     }
     by_tile
-}
-
-// ---------------------------------------------------------------------------
-// Fluid-only recipe detection
-// ---------------------------------------------------------------------------
-
-fn get_fluid_only_recipes(solver: Option<&SolverResult>) -> FxHashSet<String> {
-    let mut recipes = FxHashSet::default();
-    if let Some(sr) = solver {
-        for spec in &sr.machines {
-            let has_solid = spec
-                .inputs
-                .iter()
-                .chain(spec.outputs.iter())
-                .any(|f| !f.is_fluid);
-            if !has_solid {
-                recipes.insert(spec.recipe.clone());
-            }
-        }
-    }
-    recipes
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +313,7 @@ pub fn check_belt_connectivity(
 ) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
 
-    let fluid_only = get_fluid_only_recipes(solver);
+    let fluid_only = fluid_only_recipes(solver);
     let belt_tiles = build_belt_tile_set(&layout.entities);
     let ug_pairs = build_ug_pairs(layout);
     let inserter_positions: FxHashSet<(i32, i32)> = layout
@@ -415,7 +325,7 @@ pub fn check_belt_connectivity(
 
     if belt_tiles.is_empty() {
         let has_solid = layout.entities.iter().any(|e| {
-            is_machine(&e.name)
+            is_machine_entity(&e.name)
                 && e.recipe
                     .as_deref()
                     .is_none_or(|r| !fluid_only.contains(r))
@@ -432,7 +342,7 @@ pub fn check_belt_connectivity(
 
     let mut checked: FxHashSet<(i32, i32)> = FxHashSet::default();
     for e in &layout.entities {
-        if !is_machine(&e.name) {
+        if !is_machine_entity(&e.name) {
             continue;
         }
         if !checked.insert((e.x, e.y)) {
@@ -525,7 +435,7 @@ pub fn check_belt_flow_path(
 ) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
 
-    let fluid_only = get_fluid_only_recipes(solver);
+    let fluid_only = fluid_only_recipes(solver);
     let ug_pairs = build_ug_pairs(layout);
     let belt_tiles = build_belt_tile_set(&layout.entities);
 
@@ -595,7 +505,7 @@ pub fn check_belt_flow_path(
     let machine_entities: Vec<&PlacedEntity> = layout
         .entities
         .iter()
-        .filter(|e| is_machine(&e.name))
+        .filter(|e| is_machine_entity(&e.name))
         .collect();
 
     for e in &machine_entities {
@@ -790,7 +700,7 @@ pub fn check_belt_network_topology(
     let mut belt_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut belt_carries: FxHashMap<(i32, i32), Option<String>> = FxHashMap::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_tiles.insert((e.x, e.y));
             belt_carries.insert((e.x, e.y), e.carries.clone());
             if is_splitter(&e.name) {
@@ -856,7 +766,7 @@ pub fn check_belt_network_topology(
     // Group machines by recipe
     let mut recipe_machines: FxHashMap<&str, Vec<(i32, i32)>> = FxHashMap::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             if let Some(r) = e.recipe.as_deref() {
                 recipe_machines.entry(r).or_default().push((e.x, e.y));
             }
@@ -1061,7 +971,7 @@ pub fn check_belt_junctions(layout: &LayoutResult) -> Vec<ValidationIssue> {
     let mut belt_dir: FxHashMap<(i32, i32), EntityDirection> = FxHashMap::default();
     let mut belt_carry: FxHashMap<(i32, i32), Option<String>> = FxHashMap::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_dir.insert((e.x, e.y), e.direction);
             belt_carry.insert((e.x, e.y), e.carries.clone());
             if is_splitter(&e.name) {
@@ -1136,7 +1046,7 @@ pub fn check_belt_flow_reachability(
         return issues;
     }
 
-    let fluid_only = get_fluid_only_recipes(solver);
+    let fluid_only = fluid_only_recipes(solver);
     let belt_dir_map = belt_dir_map_from(&layout.entities);
     if belt_dir_map.is_empty() {
         return issues;
@@ -1195,7 +1105,7 @@ pub fn check_belt_flow_reachability(
     // Input check
     let mut checked: FxHashSet<(i32, i32)> = FxHashSet::default();
     for e in &layout.entities {
-        if !is_machine(&e.name) {
+        if !is_machine_entity(&e.name) {
             continue;
         }
         let mpos = (e.x, e.y);
@@ -1238,7 +1148,7 @@ pub fn check_belt_flow_reachability(
     // Output check
     checked.clear();
     for e in &layout.entities {
-        if !is_machine(&e.name) {
+        if !is_machine_entity(&e.name) {
             continue;
         }
         let mpos = (e.x, e.y);
@@ -1295,7 +1205,7 @@ pub fn check_belt_throughput(layout: &LayoutResult) -> Vec<ValidationIssue> {
     let mut tile_names: FxHashMap<(i32, i32), &str> = FxHashMap::default();
 
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             let pos = (e.x, e.y);
             *tile_counts.entry(pos).or_insert(0) += 1;
             tile_names.insert(pos, &e.name);
@@ -1351,7 +1261,7 @@ pub fn check_output_belt_coverage(
 
     let mut checked: FxHashSet<(i32, i32)> = FxHashSet::default();
     for e in &layout.entities {
-        if !is_machine(&e.name) {
+        if !is_machine_entity(&e.name) {
             continue;
         }
         if !checked.insert((e.x, e.y)) {
@@ -1556,7 +1466,7 @@ pub fn check_underground_belt_sideloading(layout: &LayoutResult) -> Vec<Validati
 
     let mut belt_dir: FxHashMap<(i32, i32), EntityDirection> = FxHashMap::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_dir.insert((e.x, e.y), e.direction);
             if is_splitter(&e.name) {
                 belt_dir.insert(splitter_second_tile(e), e.direction);
@@ -1658,7 +1568,7 @@ pub fn check_belt_dead_ends(layout: &LayoutResult) -> Vec<ValidationIssue> {
     // All tiles that can receive belt output
     let mut receiver_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             receiver_tiles.insert((e.x, e.y));
             if is_splitter(&e.name) {
                 receiver_tiles.insert(splitter_second_tile(e));
@@ -1837,7 +1747,7 @@ pub fn check_belt_item_isolation(layout: &LayoutResult) -> Vec<ValidationIssue> 
     let mut ug_inputs: FxHashSet<(i32, i32)> = FxHashSet::default();
 
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_dir.insert((e.x, e.y), e.direction);
             belt_carry.insert((e.x, e.y), e.carries.clone());
             if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("input") {
@@ -2035,7 +1945,7 @@ fn compute_lane_rates_impl(
 
     let mut belt_carries: FxHashMap<(i32, i32), Option<String>> = FxHashMap::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_carries.insert((e.x, e.y), e.carries.clone());
             if is_splitter(&e.name) {
                 belt_carries.insert(splitter_second_tile(e), e.carries.clone());
@@ -2050,7 +1960,7 @@ fn compute_lane_rates_impl(
         .collect();
     let mut machine_entity: FxHashMap<(i32, i32), &PlacedEntity> = FxHashMap::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             machine_entity.insert((e.x, e.y), e);
         }
     }
@@ -2452,14 +2362,14 @@ pub fn check_input_rate_delivery(
         .collect();
     let mut machine_entity: FxHashMap<(i32, i32), &PlacedEntity> = FxHashMap::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             machine_entity.insert((e.x, e.y), e);
         }
     }
 
     let mut belt_carries: FxHashMap<(i32, i32), Option<String>> = FxHashMap::default();
     for e in &layout.entities {
-        if is_belt(&e.name) {
+        if is_belt_entity(&e.name) {
             belt_carries.insert((e.x, e.y), e.carries.clone());
             if is_splitter(&e.name) {
                 belt_carries.insert(splitter_second_tile(e), e.carries.clone());
