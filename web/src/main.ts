@@ -697,8 +697,10 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       updateValidationOverlay();
     }
 
-    // Pre-fill sidebar form with snapshot params
-    sidebarCtrl?.setParams(snapshot.params);
+    // Pre-fill sidebar form with snapshot params. Skip auto-solve —
+    // otherwise the debounced runSolve fires ~150ms later and wipes the
+    // rendered entities when it redraws the DAG.
+    sidebarCtrl?.setParams(snapshot.params, { skipAutoSolve: true });
 
     // Show banner
     clearSnapshotBanner();

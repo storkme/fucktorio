@@ -522,7 +522,7 @@ export function renderSidebar(
   engine: Engine,
   callbacks: SidebarCallbacks,
   options?: SidebarOptions,
-): { getParams(): SidebarParams | null; setParams(params: SidebarParams): void; updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void): void } {
+): { getParams(): SidebarParams | null; setParams(params: SidebarParams, opts?: { skipAutoSolve?: boolean }): void; updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void): void } {
   el.innerHTML = "";
 
   if (!document.getElementById("fucktorio-sidebar-style")) {
@@ -887,7 +887,7 @@ export function renderSidebar(
       if (!item || isNaN(rate) || rate <= 0) return null;
       return { item, rate };
     },
-    setParams(params) {
+    setParams(params, opts) {
       itemInput.value = params.item;
       rateInput.value = String(params.rate);
       if (params.machine) {
@@ -908,7 +908,9 @@ export function renderSidebar(
         beltSelect.value = "";
       }
       previousItem = params.item;
-      scheduleAutoSolve();
+      if (!opts?.skipAutoSolve) {
+        scheduleAutoSolve();
+      }
     },
     updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void) {
       valBody.innerHTML = "";
