@@ -375,7 +375,6 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Lane-throughput errors: both lanes at 15/s on yellow belt (7.5/s per-lane cap)
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
