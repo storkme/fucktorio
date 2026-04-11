@@ -9,9 +9,10 @@ use crate::bus::bus_router::{
     plan_bus_lanes, bus_width_for_lanes, stamp_family_balancer, render_family_input_paths,
     merge_output_rows, place_merger_block, route_lane, negotiate_and_route,
     extract_and_solve_crossings, SatCrossingRegion,
-    BusLane, LaneFamily, MACHINE_ENTITIES,
+    BusLane, DroppedBridge, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};
+use crate::bus::plan::{plan_layout, apply_dropped_to_gaps, PlanError};
 
 /// Convert a SolverResult into a bus-style LayoutResult.
 ///
@@ -69,79 +70,237 @@ pub fn build_bus_layout(
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_1".to_string(), duration_ms: t_plan1.elapsed().as_millis() as u64 });
     let actual_bw = bus_width_for_lanes(&lanes);
 
-    // Compute extra gaps needed for balancer blocks
-    let extra_gaps = compute_extra_gaps(&families);
+    // Compute extra gaps needed for balancer blocks. The retry loop below
+    // may add to this map when `route_bus` reports dropped UG bridges.
+    let mut extra_gaps = compute_extra_gaps(&families);
 
-    // Re-place rows if bus width changed or balancers need extra space
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_place2 = std::time::Instant::now();
-    let (row_entities, row_spans, row_width, total_height) = if actual_bw != temp_bw || !extra_gaps.is_empty()
-    {
-        place_rows(
-            &solver_result.machines,
-            &solver_result.dependency_order,
+    // Retry loop: place_rows (pass 2) → plan_bus_lanes (pass 2) → route_bus.
+    //
+    // When `route_bus` reports dropped UG bridges (the filter in
+    // `route_belt_lane`/`route_intermediate_lane` couldn't bridge because
+    // the bridge output would collide with the trunk's own tap-off), we
+    // translate those drops into `extra_gap_after_row` entries that push
+    // the conflicting row down by 1, freeing the tile for the bridge, and
+    // retry the second pass. Capped at MAX_BRIDGE_RETRIES to prevent
+    // pathological cases from looping indefinitely.
+    const MAX_BRIDGE_RETRIES: u32 = 3;
+
+    let mut cur_row_entities = row_entities;
+    let mut cur_row_spans = row_spans;
+    let mut cur_row_width = row_width;
+    let mut cur_total_height = total_height;
+    let mut cur_lanes = lanes;
+    let mut cur_families = families;
+
+    // Assigned inside the retry loop (every iteration overwrites).
+    let mut bus_entities: Vec<PlacedEntity>;
+    let mut max_y: i32;
+    let mut merge_max_x: i32;
+    let mut regions: Vec<crate::models::LayoutRegion>;
+
+    let mut attempt: u32 = 0;
+    loop {
+        // Re-place rows + re-plan lanes if this is a retry, or on first
+        // iteration if the initial bus width / extra_gaps changed.
+        let need_replace = attempt > 0 || actual_bw != temp_bw || !extra_gaps.is_empty();
+        if need_replace {
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_place2 = std::time::Instant::now();
+            let (re, rs, rw, th) = place_rows(
+                &solver_result.machines,
+                &solver_result.dependency_order,
+                actual_bw,
+                bus_header,
+                max_belt_tier,
+                Some(&final_output_items),
+                Some(&extra_gaps),
+            );
+            cur_row_entities = re;
+            cur_row_spans = rs;
+            cur_row_width = rw;
+            cur_total_height = th;
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+                phase: format!("place_rows_2_attempt_{}", attempt),
+                duration_ms: t_place2.elapsed().as_millis() as u64,
+            });
+
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_plan2 = std::time::Instant::now();
+            let (nl, nf) = plan_bus_lanes(solver_result, &cur_row_spans, max_belt_tier)?;
+            cur_lanes = nl;
+            cur_families = nf;
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+                phase: format!("plan_bus_lanes_2_attempt_{}", attempt),
+                duration_ms: t_plan2.elapsed().as_millis() as u64,
+            });
+        }
+
+        if attempt == 0 {
+            crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
+                phase: "rows_placed".into(),
+                entity_count: cur_row_entities.len(),
+            });
+            if crate::trace::is_active() {
+                crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+                    phase: "rows_placed".into(),
+                    entities: cur_row_entities.clone(),
+                    width: cur_row_width.max(actual_bw),
+                    height: cur_total_height,
+                });
+            }
+            crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
+                phase: "lanes_planned".into(),
+                entity_count: cur_row_entities.len(),
+            });
+            if crate::trace::is_active() {
+                crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+                    phase: "lanes_planned".into(),
+                    entities: cur_row_entities.clone(),
+                    width: cur_row_width.max(actual_bw),
+                    height: cur_total_height,
+                });
+            }
+        }
+
+        // Phase 3c: build the global routing plan. `plan_layout` resolves
+        // pre-A* bridge conflicts (foreign tap-offs crossing this trunk) and
+        // either returns an empty-drops Plan or a `DroppedBridges` error
+        // with the unbridgeable ranges. On error we short-circuit the
+        // route_bus call — translate the drops into extra_gap updates and
+        // retry the pipeline from place_rows. This is a faster retry path
+        // than letting route_bus run A* first and then dropping.
+        match plan_layout(&cur_lanes, &cur_row_spans, actual_bw) {
+            Ok(_plan) => {}
+            Err(PlanError::DroppedBridges { dropped: pre_drops }) => {
+                for db in &pre_drops {
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeDropped {
+                        trunk_item: db.trunk_item.clone(),
+                        trunk_x: db.trunk_x,
+                        range_start: db.range.0,
+                        range_end: db.range.1,
+                        colliding_tap_y: db.colliding_tap_y(),
+                    });
+                }
+                if attempt >= MAX_BRIDGE_RETRIES {
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                        final_dropped_count: pre_drops.len(),
+                        max_retries: MAX_BRIDGE_RETRIES,
+                    });
+                    // Fall through to route_bus so the validator can render
+                    // the best-effort layout — same failure mode as the
+                    // post-route_bus path.
+                }
+                let gap_updates = apply_dropped_to_gaps(&pre_drops, &cur_row_spans, &mut extra_gaps);
+                if gap_updates == 0 || attempt >= MAX_BRIDGE_RETRIES {
+                    // No actionable updates — route_bus and let the
+                    // post-A* retry handle any remaining drops.
+                } else {
+                    attempt += 1;
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeRetry {
+                        attempt,
+                        dropped_count: pre_drops.len(),
+                        extra_gap_updates: gap_updates,
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Route bus lanes
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_route_bus = std::time::Instant::now();
+        let mut dropped: Vec<crate::bus::bus_router::DroppedBridge> = Vec::new();
+        let (be, my, mx, rg) = route_bus(
+            &cur_lanes,
+            &cur_row_spans,
+            cur_total_height,
             actual_bw,
-            bus_header,
             max_belt_tier,
-            Some(&final_output_items),
-            Some(&extra_gaps),
-        )
-    } else {
-        (row_entities, row_spans, row_width, total_height)
-    };
-    crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
-        phase: "rows_placed".into(),
-        entity_count: row_entities.len(),
-    });
-    if crate::trace::is_active() {
-        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
-            phase: "rows_placed".into(),
-            entities: row_entities.clone(),
-            width: row_width.max(actual_bw),
-            height: total_height,
+            solver_result,
+            &cur_families,
+            &cur_row_entities,
+            &mut dropped,
+        )?;
+        bus_entities = be;
+        max_y = my;
+        merge_max_x = mx;
+        regions = rg;
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+            phase: format!("route_bus_attempt_{}", attempt),
+            duration_ms: t_route_bus.elapsed().as_millis() as u64,
         });
+
+        // Emit dropped-bridge trace events regardless of retry outcome so
+        // the debug panel can see them even if we eventually succeed.
+        for db in &dropped {
+            crate::trace::emit(crate::trace::TraceEvent::BridgeDropped {
+                trunk_item: db.trunk_item.clone(),
+                trunk_x: db.trunk_x,
+                range_start: db.range.0,
+                range_end: db.range.1,
+                colliding_tap_y: db.colliding_tap_y(),
+            });
+        }
+
+        if dropped.is_empty() {
+            break;
+        }
+
+        if attempt >= MAX_BRIDGE_RETRIES {
+            crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                final_dropped_count: dropped.len(),
+                max_retries: MAX_BRIDGE_RETRIES,
+            });
+            break;
+        }
+
+        // Translate each dropped bridge into an extra_gap_after_row update.
+        // For each drop, find the row whose input_belt_y or output_belt_y
+        // equals the colliding tap y, then add a gap AFTER the previous row
+        // to push the colliding row down by one tile. If the colliding row
+        // is row 0 there's no predecessor, so the drop is unresolvable here
+        // and we lose progress for that one (other drops may still help).
+        let mut gap_updates: usize = 0;
+        for db in &dropped {
+            let colliding_y = db.colliding_tap_y();
+            let row_idx_opt = cur_row_spans.iter().position(|rs| {
+                rs.input_belt_y.contains(&colliding_y) || rs.output_belt_y == colliding_y
+            });
+            if let Some(row_idx) = row_idx_opt {
+                if row_idx > 0 {
+                    let target = row_idx - 1;
+                    let cur = extra_gaps.entry(target).or_insert(0);
+                    *cur += 1;
+                    gap_updates += 1;
+                }
+            }
+        }
+
+        attempt += 1;
+        crate::trace::emit(crate::trace::TraceEvent::BridgeRetry {
+            attempt,
+            dropped_count: dropped.len(),
+            extra_gap_updates: gap_updates,
+        });
+
+        if gap_updates == 0 {
+            // Nothing actionable — further retries can't make progress.
+            crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                final_dropped_count: dropped.len(),
+                max_retries: MAX_BRIDGE_RETRIES,
+            });
+            break;
+        }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_2".to_string(), duration_ms: t_place2.elapsed().as_millis() as u64 });
-    // Re-plan lanes with final row positions
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_plan2 = std::time::Instant::now();
-    let (lanes, families) = if actual_bw != temp_bw || !extra_gaps.is_empty() {
-        plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?
-    } else {
-        (lanes, families)
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_2".to_string(), duration_ms: t_plan2.elapsed().as_millis() as u64 });
-    crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
-        phase: "lanes_planned".into(),
-        entity_count: row_entities.len(),
-    });
-    if crate::trace::is_active() {
-        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
-            phase: "lanes_planned".into(),
-            entities: row_entities.clone(),
-            width: row_width.max(actual_bw),
-            height: total_height,
-        });
-    }
-
-    // Route bus lanes
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_route_bus = std::time::Instant::now();
-    let (bus_entities, max_y, merge_max_x, regions) = route_bus(
-        &lanes,
-        &row_spans,
-        total_height,
-        actual_bw,
-        max_belt_tier,
-        solver_result,
-        &families,
-        &row_entities,
-    )?;
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "route_bus_total".to_string(), duration_ms: t_route_bus.elapsed().as_millis() as u64 });
+    // Only row_entities, row_width, and families are read past this point;
+    // row_spans, total_height, and lanes are consumed inside the retry loop.
+    let row_entities = cur_row_entities;
+    let row_width = cur_row_width;
+    let families = cur_families;
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "bus_routed".into(),
         entity_count: bus_entities.len(),
@@ -356,6 +515,7 @@ fn route_bus(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     row_entities: &[PlacedEntity],
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) -> Result<(Vec<PlacedEntity>, i32, i32, Vec<crate::models::LayoutRegion>), String> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
     let mut max_y = total_height;
@@ -502,7 +662,7 @@ fn route_bus(
     let route_lanes_start = std::time::Instant::now();
     for lane in lanes {
         let entity_count_before = entities.len();
-        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles);
+        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles, dropped_bridges);
         let new_entities = entities.len() - entity_count_before;
         let has_tapoffs = !lane.tap_off_ys.is_empty();
         crate::trace::emit(crate::trace::TraceEvent::LaneRouted {

@@ -97,6 +97,60 @@ pub struct LaneFamily {
     pub total_rate: f64,  // sum across all lanes
 }
 
+/// A foreign-trunk yield (UG bridge) that was requested by the skip
+/// analysis but could not be emitted because the bridge's UG output position
+/// (`range.1 + 1`) collides with this trunk's own tap-off.
+///
+/// Used as feedback to the layout orchestrator: push the colliding row down
+/// via `extra_gap_after_row` and retry the second pass so the bridge becomes
+/// valid. Without this feedback the bridge is silently dropped, the trunk
+/// stays surface across the foreign tap-off, and A* falls back to a UG-input
+/// at the tap-off start tile — producing an invalid sideload when that tile
+/// is the first cell of a non-last-tap-off splitter stamp.
+#[derive(Debug, Clone)]
+pub struct DroppedBridge {
+    pub trunk_item: String,
+    pub trunk_x: i32,
+    /// Inclusive y-range of the dropped UG bridge.
+    pub range: (i32, i32),
+}
+
+impl DroppedBridge {
+    /// The own-tap-off y that caused the drop: `range.1 + 1`.
+    pub fn colliding_tap_y(&self) -> i32 {
+        self.range.1 + 1
+    }
+}
+
+/// Shared filter used by `route_belt_lane` and `route_intermediate_lane`.
+///
+/// Merged foreign-skip ranges that would land their UG bridge output on
+/// one of `own_tap_ys` are dropped from the returned `bridgeable` list and
+/// recorded in `dropped` for the layout orchestrator to resolve.
+fn filter_and_record_dropped_bridges(
+    merged_ranges: Vec<(i32, i32)>,
+    own_tap_ys: &FxHashSet<i32>,
+    lane_item: &str,
+    trunk_x: i32,
+    dropped: &mut Vec<DroppedBridge>,
+) -> Vec<(i32, i32)> {
+    merged_ranges
+        .into_iter()
+        .filter(|&(range_start, range_end)| {
+            if own_tap_ys.contains(&(range_end + 1)) {
+                dropped.push(DroppedBridge {
+                    trunk_item: lane_item.to_string(),
+                    trunk_x,
+                    range: (range_start, range_end),
+                });
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 /// Determine which items need bus lanes and assign x-columns.
 ///
 /// Lanes are ordered so that lanes tapping off at earlier (higher) rows
@@ -1671,13 +1725,14 @@ pub(crate) fn route_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     if lane.is_fluid {
         entities.extend(route_fluid_lane(lane));
     } else if is_intermediate(lane) {
-        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
+        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles, dropped_bridges);
     } else {
-        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
+        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles, dropped_bridges);
     }
 }
 
@@ -1699,6 +1754,7 @@ fn route_belt_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     let x = lane.x;
     let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
@@ -1759,10 +1815,16 @@ fn route_belt_lane(
         .copied()
         .collect();
     let merged_ranges = merge_consecutive_skips(&non_sat_skips);
-    // Keep only ranges whose UG output position doesn't conflict with own tap-off
-    let bridgeable_ranges: Vec<(i32, i32)> = merged_ranges.into_iter()
-        .filter(|&(_, range_end)| !tap_off_set.contains(&(range_end + 1)))
-        .collect();
+    // Keep only ranges whose UG output position doesn't conflict with own
+    // tap-off; dropped ranges are surfaced to `build_bus_layout` via
+    // `dropped_bridges` so it can push rows apart and retry.
+    let bridgeable_ranges = filter_and_record_dropped_bridges(
+        merged_ranges,
+        &tap_off_set,
+        &lane.item,
+        x,
+        dropped_bridges,
+    );
     // Rebuild bridgeable_skips from the accepted ranges (for skip_ys expansion)
     let bridgeable_skips: FxHashSet<i32> = bridgeable_ranges.iter()
         .flat_map(|&(s, e)| s..=e)
@@ -1996,6 +2058,7 @@ fn route_intermediate_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     let x = lane.x;
     // Both belt_name and horiz_belt use the same tier for intermediate lanes
@@ -2107,9 +2170,13 @@ fn route_intermediate_lane(
         .copied()
         .collect();
     let merged_ranges_int = merge_consecutive_skips(&non_sat_skips_int);
-    let bridgeable_ranges: Vec<(i32, i32)> = merged_ranges_int.into_iter()
-        .filter(|&(_, range_end)| !tap_off_set_intermediate.contains(&(range_end + 1)))
-        .collect();
+    let bridgeable_ranges = filter_and_record_dropped_bridges(
+        merged_ranges_int,
+        &tap_off_set_intermediate,
+        &lane.item,
+        x,
+        dropped_bridges,
+    );
     let bridgeable_skips: FxHashSet<i32> = bridgeable_ranges.iter()
         .flat_map(|&(s, e)| s..=e)
         .collect();
@@ -2247,6 +2314,10 @@ fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i3
 ///    column, so the trunk tile must be free.
 ///    Guard: if the bridge output (tap_y + 1) would land on this trunk's own
 ///    tap-off belt, skip it — the geometry is handled differently there.
+/// Derive y-positions this trunk must skip (go underground) across the
+/// given range. Thin wrapper over the planner's `compute_foreign_yields_for_lane`:
+/// 3b migrated the core logic into `bus/plan.rs`. 3c will wire the
+/// callers to read from `Plan` directly and delete this shim.
 fn foreign_trunk_skip_ys(
     lane: &BusLane,
     all_lanes: &[BusLane],
@@ -2254,76 +2325,10 @@ fn foreign_trunk_skip_ys(
     trunk_start_y: i32,
     trunk_end_y: i32,
 ) -> FxHashSet<i32> {
-    let mut foreign: FxHashSet<i32> = FxHashSet::default();
-
-    // Case 1: west neighbor's output-return rows need a free landing tile here.
-    let west_col = lane.x - 1;
-    if let Some(neighbor) = all_lanes.iter().find(|other| {
-        !other.is_fluid && !std::ptr::eq(*other, lane) && other.x == west_col
-    }) {
-        let mut producer_rows: Vec<usize> = Vec::new();
-        if let Some(pr) = neighbor.producer_row {
-            producer_rows.push(pr);
-        }
-        producer_rows.extend(&neighbor.extra_producer_rows);
-        for p in producer_rows {
-            if p >= row_spans.len() {
-                continue;
-            }
-            let y = row_spans[p].output_belt_y;
-            if trunk_start_y < y && y < trunk_end_y {
-                foreign.insert(y);
-            }
-        }
-    }
-
-    // Case 2: any left-lane tap-off that would cross this trunk column and whose
-    // UG input would sit here.  Only add if the bridge output (tap_y + 1) doesn't
-    // collide with this trunk's own tap-off belt at that position.
-    let own_tap_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
-    for other in all_lanes {
-        if other.is_fluid || std::ptr::eq(other, lane) || other.x >= lane.x {
-            continue;
-        }
-        let other_last_tap = other.tap_off_ys.iter().copied().max();
-        for &tap_y in &other.tap_off_ys {
-            if !(trunk_start_y < tap_y && tap_y < trunk_end_y) {
-                continue;
-            }
-            if own_tap_set.contains(&(tap_y + 1)) {
-                continue;
-            }
-            // Only bridge if the tap-off travels surface all the way to this
-            // trunk.  If any intermediate lane has a surface belt at tap_y, the
-            // tap-off already went underground before reaching lane.x — no
-            // bridge needed here.
-            let all_intermediate_clear = all_lanes.iter()
-                .filter(|mid| !mid.is_fluid && mid.x > other.x && mid.x < lane.x)
-                .all(|mid| {
-                    // mid has no surface belt at tap_y when:
-                    // (a) mid skips tap_y (tap_y is one of its own tap-offs), OR
-                    // (b) mid's trunk doesn't reach tap_y (all its tap_off_ys are above)
-                    mid.tap_off_ys.contains(&tap_y)
-                        || mid.tap_off_ys.iter().all(|&y| y < tap_y)
-                });
-            if all_intermediate_clear {
-                foreign.insert(tap_y);
-                // Non-last splitter tap-offs also occupy (other.x+1, tap_y-1)
-                // (splitter right half) and (other.x+1, tap_y) (belt East).
-                // If this trunk IS that adjacent column, skip tap_y-1 too.
-                let is_non_last = other.tap_off_ys.len() > 1
-                    && Some(tap_y) != other_last_tap;
-                if is_non_last && lane.x == other.x + 1
-                    && trunk_start_y < tap_y - 1 && tap_y - 1 < trunk_end_y
-                    && !own_tap_set.contains(&tap_y)
-                {
-                    foreign.insert(tap_y - 1);
-                }
-            }
-        }
-    }
-
-    foreign
+    let yields = crate::bus::plan::compute_foreign_yields_for_lane(
+        lane, all_lanes, row_spans, trunk_start_y, trunk_end_y,
+    );
+    yields.into_iter().map(|y| y.y_range.0).collect()
 }
 
 /// Extra y-rows to add to trunk skip set so UG-pair tiles don't collide.
@@ -4370,7 +4375,8 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -4427,7 +4433,8 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
@@ -4499,7 +4506,8 @@ mod tests {
         let row_spans = vec![producer_row, consumer_row];
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
         let ug_entities: Vec<_> = entities.iter()
