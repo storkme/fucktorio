@@ -2036,20 +2036,8 @@ fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i3
     segments
 }
 
-/// Y-rows where this trunk must bridge underground so other items can use the
-/// surface tile at that y.  Two cases handled:
-///
-/// 1. The immediate western neighbor produces items whose output-return belt lands
-///    here — that y must be surface-free so the return belt can enter the trunk.
-/// 2. Any lane to the left taps off at a y that falls inside this trunk's range
-///    and that tap-off crosses this column.  The tap-off's UG input sits on this
-///    column, so the trunk tile must be free.
-///    Guard: if the bridge output (tap_y + 1) would land on this trunk's own
-///    tap-off belt, skip it — the geometry is handled differently there.
 /// Derive y-positions this trunk must skip (go underground) across the
-/// given range. Thin wrapper over the planner's `compute_foreign_yields_for_lane`:
-/// 3b migrated the core logic into `bus/plan.rs`. 3c will wire the
-/// callers to read from `Plan` directly and delete this shim.
+/// given range. Thin wrapper over the planner's `compute_foreign_yields_for_lane`.
 fn foreign_trunk_skip_ys(
     lane: &BusLane,
     all_lanes: &[BusLane],

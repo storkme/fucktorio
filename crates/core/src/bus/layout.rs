@@ -337,10 +337,10 @@ pub fn build_bus_layout(
         row_entities.into_iter().filter(|e| !bus_occupied.contains(&(e.x, e.y))).collect()
     };
 
-    // Collect occupied tiles and machine centers for pole placement
+    // Collect occupied tiles and machine footprint info for pole placement.
+    // For each machine we record (center_x, top_y, size).
     let mut occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
-    let mut machine_centers: Vec<(i32, i32)> = Vec::new();
-
+    let mut machines: Vec<(i32, i32, i32)> = Vec::new();
     for ent in row_entities.iter().chain(bus_entities.iter()) {
         if MACHINE_ENTITIES.contains(&ent.name.as_str()) {
             let sz = crate::common::machine_size(&ent.name) as i32;
@@ -349,7 +349,7 @@ pub fn build_bus_layout(
                     occupied.insert((ent.x + dx, ent.y + dy));
                 }
             }
-            machine_centers.push((ent.x + sz / 2, ent.y + sz / 2));
+            machines.push((ent.x + sz / 2, ent.y, sz));
         } else {
             occupied.insert((ent.x, ent.y));
         }
@@ -357,9 +357,9 @@ pub fn build_bus_layout(
 
     let width = row_width.max(actual_bw).max(merge_max_x);
 
-    // Place power poles
-    let pole_strategy = if machine_centers.is_empty() { "grid" } else { "greedy" };
-    let pole_entities = place_poles(width, max_y, Some(occupied), Some(machine_centers));
+    // Place power poles as regular horizontal lines, one per machine row.
+    let pole_strategy = if machines.is_empty() { "empty" } else { "rows" };
+    let pole_entities = place_poles(&machines, &occupied);
     crate::trace::emit(crate::trace::TraceEvent::PolesPlaced {
         count: pole_entities.len(),
         strategy: pole_strategy.to_string(),
@@ -777,164 +777,223 @@ fn route_bus(
 }
 
 /// Place medium electric poles for power coverage.
+///
+/// Strategy: one horizontal pole line per machine row. Within a line, poles
+/// are placed by greedy forward sweep — for each machine not yet covered, we
+/// choose the rightmost pole position that still covers it, then advance past
+/// every machine the new pole reaches. This guarantees edge machines are
+/// covered (which a fixed-stride approach cannot) while still producing
+/// regularly-spaced poles.
+///
+/// Pole y for a row is `machine_row_y - 1` (one tile above the machine tops).
+/// With a 3-tile supply range that covers machine centers one tile below the
+/// pole line comfortably. The tile above the machine row is typically the
+/// inserter row, which has gaps every ~3 tiles between inserters — the probe
+/// finds those gaps.
+///
+/// Connectivity is guaranteed by construction:
+/// - Within a line: consecutive pole x-distance <= 6 < `WIRE_REACH` (9).
+/// - Between lines: row cycle (row height + gap) is typically ~7 tiles <
+///   wire-reach, so pole lines above consecutive rows connect vertically.
+///
+/// The old greedy + centroid-bridge implementation produced clumpy, order-
+/// dependent output; this approach is deterministic, regular, and matches the
+/// row-based structure of the bus layout.
 fn place_poles(
-    width: i32,
-    height: i32,
-    occupied: Option<FxHashSet<(i32, i32)>>,
-    machine_centers: Option<Vec<(i32, i32)>>,
+    machines: &[(i32, i32, i32)],
+    occupied: &FxHashSet<(i32, i32)>,
 ) -> Vec<PlacedEntity> {
-    let occupied = occupied.unwrap_or_default();
+    /// Supply range of a medium-electric-pole (Chebyshev, tiles).
+    const POLE_RANGE: i32 = 3;
+    /// Max X offset to probe when the ideal pole position is occupied.
+    const POLE_PROBE_X: i32 = 3;
 
-    if let Some(centers) = machine_centers {
-        if !centers.is_empty() {
-            let mut entities = place_poles_greedy(&occupied, &centers);
-            bridge_disconnected_poles(&mut entities, &occupied, width);
-            return entities;
+    if machines.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by (top_y, size). Rows of different-sized machines get their own
+    // pole lines because the pole y needs to match the machine footprint.
+    let mut by_row: FxHashMap<(i32, i32), Vec<i32>> = FxHashMap::default();
+    for &(cx, top_y, sz) in machines {
+        by_row.entry((top_y, sz)).or_default().push(cx);
+    }
+    for xs in by_row.values_mut() {
+        xs.sort_unstable();
+    }
+
+    // Process rows top-to-bottom for determinism.
+    let mut keys: Vec<(i32, i32)> = by_row.keys().copied().collect();
+    keys.sort_unstable();
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+    let mut placed: FxHashSet<(i32, i32)> = FxHashSet::default();
+
+    for key in keys {
+        let (top_y, _sz) = key;
+        let cxs = &by_row[&key];
+        let pole_y = top_y - 1; // one tile above the machine footprint
+        if pole_y < 0 {
+            continue;
+        }
+
+        let mut i = 0;
+        while i < cxs.len() {
+            // Aim for the rightmost position that still covers cxs[i] — this
+            // maximises forward reach and keeps the line sparse. Probing
+            // searches nearby tiles if the ideal one is occupied, always
+            // staying within POLE_RANGE of the target machine.
+            let target_cx = cxs[i];
+            let ideal_px = target_cx + POLE_RANGE;
+            let mut placed_x: Option<i32> = None;
+            for d in 0..=POLE_PROBE_X {
+                let offsets: &[i32] = if d == 0 { &[0] } else { &[-d, d] };
+                for &off in offsets {
+                    let px = ideal_px + off;
+                    if (px - target_cx).abs() > POLE_RANGE {
+                        continue; // stepped outside range of the target machine
+                    }
+                    if occupied.contains(&(px, pole_y)) || placed.contains(&(px, pole_y)) {
+                        continue;
+                    }
+                    placed_x = Some(px);
+                    break;
+                }
+                if placed_x.is_some() {
+                    break;
+                }
+            }
+
+            match placed_x {
+                Some(px) => {
+                    entities.push(make_pole(px, pole_y));
+                    placed.insert((px, pole_y));
+                    // Advance past every machine this pole covers.
+                    i += 1;
+                    while i < cxs.len() && (cxs[i] - px).abs() <= POLE_RANGE {
+                        i += 1;
+                    }
+                }
+                None => {
+                    // Couldn't place a pole covering cxs[i]. Skip it to avoid an
+                    // infinite loop — power validator will flag the gap.
+                    i += 1;
+                }
+            }
         }
     }
 
-    place_poles_grid(width, height, &occupied)
+    repair_pole_connectivity(&mut entities, &placed, occupied);
+    entities
 }
 
-/// Medium electric pole wire reach in tiles (center-to-center).
-const WIRE_REACH: f64 = 9.0;
-
-/// After greedy pole placement, detect isolated clusters and insert bridge poles
-/// to connect them.  A cluster is a connected component under the 9-tile wire-reach
-/// rule.  We iteratively bridge the two closest cluster centroids until only one
-/// component remains (or until no valid bridge position can be found to prevent
-/// an infinite loop).
-fn bridge_disconnected_poles(
+/// After the row lines are placed, bridge any remaining disconnected pole
+/// clusters. This only fires when two machine rows are further apart in Y
+/// than `WIRE_REACH` (e.g. oil-refinery row above a chemical-plant row with
+/// a pipe-routing gap between them). We walk intermediate poles down a
+/// free column between the two nearest clusters.
+fn repair_pole_connectivity(
     entities: &mut Vec<PlacedEntity>,
+    placed: &FxHashSet<(i32, i32)>,
     occupied: &FxHashSet<(i32, i32)>,
-    width: i32,
 ) {
-    // Keep an up-to-date set of all occupied positions including poles we add.
-    let mut all_occupied = occupied.clone();
-    for e in entities.iter() {
-        all_occupied.insert((e.x, e.y));
+    const WIRE_REACH: i32 = 9;
+
+    let mut all_occupied: FxHashSet<(i32, i32)> = occupied.iter().copied().collect();
+    for &p in placed {
+        all_occupied.insert(p);
     }
 
-    // Retry until fully connected or no bridge can be placed.
     for _ in 0..20 {
         let positions: Vec<(i32, i32)> = entities.iter().map(|e| (e.x, e.y)).collect();
-        if positions.is_empty() {
-            break;
+        if positions.len() <= 1 {
+            return;
         }
 
-        // BFS to find connected components under wire-reach.
+        // Union-find under Chebyshev distance <= WIRE_REACH.
         let n = positions.len();
-        let mut component: Vec<usize> = (0..n).collect();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let ci = component[i];
-                    let cj = component[j];
-                    if ci != cj {
-                        let dx = (positions[i].0 - positions[j].0) as f64;
-                        let dy = (positions[i].1 - positions[j].1) as f64;
-                        if (dx * dx + dy * dy).sqrt() <= WIRE_REACH {
-                            // Merge the smaller component id into the larger
-                            let (from, to) = if ci > cj { (ci, cj) } else { (cj, ci) };
-                            for c in component.iter_mut() {
-                                if *c == from {
-                                    *c = to;
-                                }
-                            }
-                            changed = true;
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            while p[x] != x {
+                p[x] = p[p[x]];
+                x = p[x];
+            }
+            x
+        }
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = (positions[i].0 - positions[j].0).abs();
+                let dy = (positions[i].1 - positions[j].1).abs();
+                if dx.max(dy) <= WIRE_REACH {
+                    let ri = find(&mut parent, i);
+                    let rj = find(&mut parent, j);
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+
+        // Group by root component.
+        let mut by_comp: FxHashMap<usize, Vec<(i32, i32)>> = FxHashMap::default();
+        for (idx, &pos) in positions.iter().enumerate() {
+            let root = find(&mut parent, idx);
+            by_comp.entry(root).or_default().push(pos);
+        }
+        if by_comp.len() == 1 {
+            return;
+        }
+
+        // Find the closest inter-component pole pair.
+        let comps: Vec<&Vec<(i32, i32)>> = by_comp.values().collect();
+        let mut best: Option<((i32, i32), (i32, i32), i32)> = None;
+        for a in 0..comps.len() {
+            for b in (a + 1)..comps.len() {
+                for &pa in comps[a] {
+                    for &pb in comps[b] {
+                        let d = (pa.0 - pb.0).abs().max((pa.1 - pb.1).abs());
+                        if best.is_none_or(|(_, _, bd)| d < bd) {
+                            best = Some((pa, pb, d));
                         }
                     }
                 }
             }
         }
-
-        // Collect distinct component ids
-        let mut comp_ids: Vec<usize> = component.clone();
-        comp_ids.sort_unstable();
-        comp_ids.dedup();
-
-        if comp_ids.len() <= 1 {
-            // Fully connected — we're done.
-            break;
-        }
-
-        // Group poles by component
-        let mut comp_poles: std::collections::HashMap<usize, Vec<(i32, i32)>> =
-            std::collections::HashMap::new();
-        for (i, &pos) in positions.iter().enumerate() {
-            comp_poles.entry(component[i]).or_default().push(pos);
-        }
-
-        // Find the two components whose centroids are closest (most likely to bridge cheaply)
-        let comp_list: Vec<(usize, Vec<(i32, i32)>)> = comp_poles.into_iter().collect();
-        let centroid = |poles: &[(i32, i32)]| -> (f64, f64) {
-            let sum_x: i32 = poles.iter().map(|p| p.0).sum();
-            let sum_y: i32 = poles.iter().map(|p| p.1).sum();
-            (sum_x as f64 / poles.len() as f64, sum_y as f64 / poles.len() as f64)
+        let Some((pa, pb, _)) = best else {
+            return;
         };
 
-        let mut best_pair: Option<(usize, usize)> = None;
-        let mut best_dist = f64::MAX;
-        for (a, (_, pa)) in comp_list.iter().enumerate() {
-            let ca = centroid(pa);
-            for (b, (_, pb)) in comp_list.iter().enumerate().skip(a + 1) {
-                let cb = centroid(pb);
-                let d = ((ca.0 - cb.0).powi(2) + (ca.1 - cb.1).powi(2)).sqrt();
-                if d < best_dist {
-                    best_dist = d;
-                    best_pair = Some((a, b));
-                }
-            }
-        }
-
-        let Some((ai, bi)) = best_pair else { break };
-        let (_, ref pa) = comp_list[ai];
-        let (_, ref pb) = comp_list[bi];
-
-        // Find the Y midpoint between the two clusters.
-        let max_ya = pa.iter().map(|p| p.1).max().unwrap_or(0);
-        let min_yb = pb.iter().map(|p| p.1).min().unwrap_or(0);
-        let (cluster_top_y, cluster_bot_y) = if max_ya < min_yb {
-            (max_ya, min_yb)
-        } else {
-            let max_yb = pb.iter().map(|p| p.1).max().unwrap_or(0);
-            let min_ya = pa.iter().map(|p| p.1).min().unwrap_or(0);
-            (max_yb, min_ya)
-        };
-        let bridge_y = (cluster_top_y + cluster_bot_y) / 2;
-
-        // Scan across the width to find a free tile at bridge_y.
-        // Prefer positions near the centroid X of either cluster.
-        let cx_a = centroid(pa).0 as i32;
-        let cx_b = centroid(pb).0 as i32;
-        let target_x = (cx_a + cx_b) / 2;
-
-        let mut bridge_pos: Option<(i32, i32)> = None;
-        'outer: for r in 0..=(width.max(60)) {
-            for &dx in &[0i32, r, -r] {
-                let bx = target_x + dx;
-                if bx < 0 { continue; }
-                for &dy in &[0i32, 1, -1, 2, -2] {
-                    let by = bridge_y + dy;
-                    if !all_occupied.contains(&(bx, by)) {
-                        bridge_pos = Some((bx, by));
-                        break 'outer;
+        // Pick a midpoint and walk outward in a small neighbourhood looking
+        // for a free tile to place a bridge pole.
+        let mid = ((pa.0 + pb.0) / 2, (pa.1 + pb.1) / 2);
+        let mut bridge: Option<(i32, i32)> = None;
+        'scan: for r in 0i32..=6 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue; // only examine the ring at radius r
+                    }
+                    let p = (mid.0 + dx, mid.1 + dy);
+                    if all_occupied.contains(&p) {
+                        continue;
+                    }
+                    // Must be within wire-reach of pa or pb for it to actually bridge.
+                    let near_a = (p.0 - pa.0).abs().max((p.1 - pa.1).abs()) <= WIRE_REACH;
+                    let near_b = (p.0 - pb.0).abs().max((p.1 - pb.1).abs()) <= WIRE_REACH;
+                    if near_a || near_b {
+                        bridge = Some(p);
+                        break 'scan;
                     }
                 }
             }
         }
 
-        match bridge_pos {
-            Some((bx, by)) => {
-                entities.push(make_pole(bx, by));
-                all_occupied.insert((bx, by));
-            }
-            None => break, // No valid position found; stop to avoid infinite loop
-        }
+        let Some(p) = bridge else { return };
+        entities.push(make_pole(p.0, p.1));
+        all_occupied.insert(p);
     }
 }
+
 
 /// Create a pole entity at the given position.
 fn make_pole(x: i32, y: i32) -> PlacedEntity {
@@ -952,79 +1011,6 @@ fn make_pole(x: i32, y: i32) -> PlacedEntity {
     }
 }
 
-/// Greedy pole placement near machines.
-fn place_poles_greedy(
-    occupied: &FxHashSet<(i32, i32)>,
-    machine_centers: &[(i32, i32)],
-) -> Vec<PlacedEntity> {
-    let mut entities: Vec<PlacedEntity> = Vec::new();
-    let pole_range = 3;
-    let mut covered: FxHashSet<(i32, i32)> = FxHashSet::default();
-
-    for &(cx, cy) in machine_centers {
-        let mut best_pos = None;
-        let mut best_coverage = 0;
-
-        for dx in -pole_range..=pole_range {
-            for dy in -pole_range..=pole_range {
-                let px = cx + dx;
-                let py = cy + dy;
-                if occupied.contains(&(px, py)) || covered.contains(&(px, py)) {
-                    continue;
-                }
-
-                let mut coverage = 0;
-                for &(mx, my) in machine_centers {
-                    if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range
-                        && !covered.contains(&(mx, my)) {
-                            coverage += 1;
-                        }
-                }
-
-                if coverage > best_coverage {
-                    best_coverage = coverage;
-                    best_pos = Some((px, py));
-                }
-            }
-        }
-
-        if let Some((px, py)) = best_pos {
-            entities.push(make_pole(px, py));
-
-            for &(mx, my) in machine_centers {
-                if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range {
-                    covered.insert((mx, my));
-                }
-            }
-        }
-    }
-
-    entities
-}
-
-/// Grid-based pole placement (fallback).
-fn place_poles_grid(
-    width: i32,
-    height: i32,
-    occupied: &FxHashSet<(i32, i32)>,
-) -> Vec<PlacedEntity> {
-    let mut entities: Vec<PlacedEntity> = Vec::new();
-    let pole_spacing = 7;
-
-    let mut y = -1;
-    while y < height + pole_spacing {
-        let mut x = -1;
-        while x < width + pole_spacing {
-            if !occupied.contains(&(x, y)) {
-                entities.push(make_pole(x, y));
-            }
-            x += pole_spacing;
-        }
-        y += pole_spacing;
-    }
-
-    entities
-}
 
 #[cfg(test)]
 mod tests {
