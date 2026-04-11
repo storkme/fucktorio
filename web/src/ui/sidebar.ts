@@ -956,9 +956,19 @@ function renderResult(container: HTMLElement, result: SolverResult): void {
       const tier = beltTierForRate(flow.rate);
       if (tier) {
         const tierColor = hexToCss(tier.color);
-        row.innerHTML += `${flow.rate.toFixed(1)}/s<span class="sb-belt-chip" style="border-color:${tierColor};color:${tierColor}">${tier.name}</span>`;
+        row.appendChild(document.createTextNode(`${flow.rate.toFixed(1)}/s`));
+        const chip = document.createElement("span");
+        chip.className = "sb-belt-chip";
+        chip.style.borderColor = tierColor;
+        chip.style.color = tierColor;
+        chip.textContent = tier.name;
+        row.appendChild(chip);
       } else {
-        row.innerHTML += `${flow.rate.toFixed(1)}/s<span class="sb-belt-overflow">\u26a0 overflow</span>`;
+        row.appendChild(document.createTextNode(`${flow.rate.toFixed(1)}/s`));
+        const warn = document.createElement("span");
+        warn.className = "sb-belt-overflow";
+        warn.textContent = "\u26a0 overflow";
+        row.appendChild(warn);
       }
       container.appendChild(row);
     }

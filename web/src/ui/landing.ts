@@ -611,7 +611,9 @@ function openPreview(
         })),
       );
 
-      showModal(entry, layout, solverResult);
+      showModal(entry, layout, solverResult).catch((err) => {
+        console.error("Modal init failed:", err);
+      });
     });
   });
 }
