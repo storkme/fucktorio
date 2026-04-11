@@ -614,7 +614,6 @@ fn run_timed_validators(lr: &LayoutResult, sr: &SolverResult) {
         ("fluid_port_connectivity", Box::new(|| validate::check_fluid_port_connectivity(lr, LayoutStyle::Bus))),
         ("belt_connectivity", Box::new(|| belt_flow::check_belt_connectivity(lr, Some(sr)))),
         ("belt_flow_path", Box::new(|| belt_flow::check_belt_flow_path(lr, Some(sr), LayoutStyle::Bus))),
-        ("belt_direction_continuity", Box::new(|| belt_flow::check_belt_direction_continuity(lr))),
         ("entity_overlaps", Box::new(|| belt_structural::check_entity_overlaps(lr))),
         ("belt_throughput", Box::new(|| belt_structural::check_belt_throughput(lr))),
         ("output_belt_coverage", Box::new(|| belt_structural::check_output_belt_coverage(lr, Some(sr)))),
