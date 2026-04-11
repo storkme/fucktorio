@@ -5,8 +5,9 @@ import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
 import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, niceName, getRecipeFlows, TILE_PX, type HighlightController } from "./renderer/entities";
 import { createSelectionController, type SelectionController } from "./renderer/selection";
-import { renderSidebar } from "./ui/sidebar";
+import { renderSidebar, type DisplayToggles } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
+import { renderLanding } from "./ui/landing";
 import {
   setupSnapshotDropZone,
   showSnapshotBanner,
@@ -32,8 +33,43 @@ async function main(): Promise<void> {
   const engine = getEngine();
   await initEntityIcons(MACHINE_SLUGS);
 
+  // Show landing page first. The generator UI is hidden until the user
+  // clicks "Open Generator" (or if the URL has ?generator=true).
+  const appRoot = document.getElementById("app")!;
+  const skipLanding = new URLSearchParams(window.location.search).has("generator");
+
+  if (!skipLanding) {
+    const landingHost = document.createElement("div");
+    appRoot.appendChild(landingHost);
+
+    renderLanding(landingHost, engine, {
+      onOpenGenerator: () => {
+        landingHost.remove();
+        initGenerator(engine);
+        // Persist generator mode in URL so refresh stays
+        const url = new URL(window.location.href);
+        url.searchParams.set("generator", "true");
+        window.history.replaceState({}, "", url.toString());
+      },
+    });
+    return;
+  }
+
+  initGenerator(engine);
+}
+
+async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void> {
   const container = document.getElementById("canvas-container");
   if (!container) throw new Error("Missing #canvas-container element");
+
+  // Show sidebar + canvas (may be hidden behind landing page).
+  // Explicitly set flex to ensure the two-column layout activates even if
+  // the landing page previously hid #app or the HTML has a different default.
+  const appRoot = document.getElementById("app")!;
+  appRoot.style.display = "flex";
+  const sidebar = document.getElementById("sidebar");
+  if (sidebar) sidebar.style.display = "";
+  container.style.display = "";
 
   const { app, viewport } = await createApp(container);
   drawGrid(viewport);
@@ -126,38 +162,12 @@ async function main(): Promise<void> {
   container.style.position = "relative";
   container.appendChild(coordsEl);
 
-  // --- Item colour toggle (top-right of canvas) ---
-  const colorToggle = document.createElement("label");
-  colorToggle.style.cssText = "position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
-  const colorCb = document.createElement("input");
-  colorCb.type = "checkbox";
-  colorCb.checked = true;
-  colorCb.style.accentColor = "#569cd6";
-  colorToggle.appendChild(colorCb);
-  colorToggle.appendChild(document.createTextNode("Item colours"));
-  container.appendChild(colorToggle);
-
-  // --- Rate overlay toggle ---
-  const rateToggle = document.createElement("label");
-  rateToggle.style.cssText = "position:absolute;top:34px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
-  const rateCb = document.createElement("input");
-  rateCb.type = "checkbox";
-  rateCb.checked = false;
-  rateCb.style.accentColor = "#569cd6";
-  rateToggle.appendChild(rateCb);
-  rateToggle.appendChild(document.createTextNode("Rates"));
-  container.appendChild(rateToggle);
-
-  // --- Debug trace toggle ---
-  const debugToggle = document.createElement("label");
-  debugToggle.style.cssText = "position:absolute;top:60px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
-  const debugCb = document.createElement("input");
-  debugCb.type = "checkbox";
-  debugCb.checked = false;
-  debugCb.style.accentColor = "#569cd6";
-  debugToggle.appendChild(debugCb);
-  debugToggle.appendChild(document.createTextNode("Debug"));
-  container.appendChild(debugToggle);
+  // Display toggles are created by the sidebar and wired via onDisplayToggles callback.
+  // Forward-declare checkbox references — they get populated by onDisplayToggles.
+  let colorCb: HTMLInputElement;
+  let rateCb: HTMLInputElement;
+  let debugCb: HTMLInputElement;
+  let valCb: HTMLInputElement;
 
   let traceOverlayLayer: Container | null = null;
   let tracePhaseIndex = -1; // -1 = show all phases
@@ -335,11 +345,6 @@ async function main(): Promise<void> {
     updateTraceOverlay();
   });
 
-  debugCb.addEventListener("change", () => {
-    tracePhaseIndex = -1;
-    updateTraceOverlay();
-  });
-
   // --- Jump to first route failure ---
   function jumpToFirstFailure(): void {
     if (!lastLayout?.trace) return;
@@ -391,17 +396,6 @@ async function main(): Promise<void> {
     }
   });
 
-  // --- Validation overlay toggle ---
-  const valToggle = document.createElement("label");
-  valToggle.style.cssText = "position:absolute;top:86px;right:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;cursor:pointer;z-index:10;display:flex;align-items:center;gap:5px;user-select:none";
-  const valCb = document.createElement("input");
-  valCb.type = "checkbox";
-  valCb.checked = false;
-  valCb.style.accentColor = "#569cd6";
-  valToggle.appendChild(valCb);
-  valToggle.appendChild(document.createTextNode("Validation"));
-  container.appendChild(valToggle);
-
   let valOverlayLayer: Container | null = null;
   let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
@@ -446,8 +440,6 @@ async function main(): Promise<void> {
     populateIssuesPanel(cachedValidationIssues);
   }
 
-  valCb.addEventListener("change", updateValidationOverlay);
-
   // --- Item color legend (bottom-left) ---
   const legendEl = document.createElement("div");
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
@@ -481,12 +473,60 @@ async function main(): Promise<void> {
   // Also handle shift release when window loses focus.
   window.addEventListener("blur", () => viewport.plugins.resume("drag"));
 
-  // --- Validation issues panel (right side, below toggles) ---
-  // top:112px = stacked toggle buttons (debug ~42px, trace ~44px, validation ~26px) + 8px gap.
-  // Update if the toggle stack height changes.
+  // --- Validation issues floating dialog ---
   const issuesPanel = document.createElement("div");
-  issuesPanel.style.cssText = "position:absolute;top:112px;right:8px;background:rgba(0,0,0,0.85);color:#e0e0e0;font:11px monospace;padding:6px 8px;border-radius:4px;border:1px solid #555;z-index:10;display:none;max-width:360px;max-height:calc(100% - 130px);overflow-y:auto;line-height:1.4";
+  issuesPanel.style.cssText = "position:absolute;top:8px;right:8px;background:#1a1a1a;color:#e0e0e0;font:11px monospace;border-radius:4px;border:1px solid #333;z-index:10;display:none;max-width:360px;max-height:calc(100% - 24px);overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.5);flex-direction:column";
   container.appendChild(issuesPanel);
+
+  // Title bar for dragging
+  const issuesTitleBar = document.createElement("div");
+  issuesTitleBar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:#222;border-bottom:1px solid #333;cursor:move;user-select:none;flex-shrink:0";
+  const issuesTitleText = document.createElement("span");
+  issuesTitleText.style.cssText = "font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.8px";
+  issuesTitleText.textContent = "Validation";
+  issuesTitleBar.appendChild(issuesTitleText);
+  const issuesCountBadge = document.createElement("span");
+  issuesCountBadge.style.cssText = "font-size:10px;color:#f66;background:rgba(255,68,68,0.12);padding:1px 6px;border-radius:3px;margin-left:8px";
+  issuesTitleBar.appendChild(issuesCountBadge);
+  const issuesCloseBtn = document.createElement("span");
+  issuesCloseBtn.style.cssText = "cursor:pointer;color:#666;font-size:14px;line-height:1;padding:0 2px";
+  issuesCloseBtn.textContent = "\u00d7";
+  issuesCloseBtn.addEventListener("click", () => {
+    valCb.checked = false;
+    updateValidationOverlay();
+  });
+  issuesTitleBar.appendChild(issuesCloseBtn);
+  issuesPanel.appendChild(issuesTitleBar);
+
+  const issuesBody = document.createElement("div");
+  issuesBody.style.cssText = "overflow-y:auto;max-height:calc(100% - 32px);padding:4px 8px;line-height:1.4";
+  issuesPanel.appendChild(issuesBody);
+
+  // Make the dialog draggable
+  {
+    let dragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+    issuesTitleBar.addEventListener("pointerdown", (e) => {
+      if ((e.target as HTMLElement) === issuesCloseBtn) return;
+      dragging = true;
+      const rect = issuesPanel.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      offsetX = e.clientX - rect.left + containerRect.left;
+      offsetY = e.clientY - rect.top + containerRect.top;
+      issuesTitleBar.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    issuesTitleBar.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const x = e.clientX - offsetX;
+      const y = e.clientY - offsetY;
+      issuesPanel.style.left = `${x}px`;
+      issuesPanel.style.top = `${y}px`;
+      issuesPanel.style.right = "auto";
+    });
+    issuesTitleBar.addEventListener("pointerup", () => { dragging = false; });
+  }
 
   // Pulse state: tracks the markers being pulsed and the Pixi ticker callback.
   let activePulse: { markers: Graphics[]; tickerFn: () => void } | null = null;
@@ -521,14 +561,19 @@ async function main(): Promise<void> {
   }
 
   function populateIssuesPanel(issues: ValidationIssue[]): void {
-    issuesPanel.innerHTML = "";
+    issuesBody.innerHTML = "";
     pinnedRow = null;
     clearPulse();
     if (!valCb.checked || issues.length === 0) {
       issuesPanel.style.display = "none";
       return;
     }
-    issuesPanel.style.display = "block";
+    issuesPanel.style.display = "flex";
+    const errors = issues.filter(i => i.severity === "Error").length;
+    const warns = issues.length - errors;
+    issuesCountBadge.textContent = errors > 0 ? `${errors} error${errors > 1 ? "s" : ""}` : `${warns} warning${warns > 1 ? "s" : ""}`;
+    issuesCountBadge.style.color = errors > 0 ? "#f66" : "#fa0";
+    issuesCountBadge.style.background = errors > 0 ? "rgba(255,68,68,0.12)" : "rgba(255,170,0,0.12)";
     for (const issue of issues) {
       const row = document.createElement("div");
       row.style.cssText = "padding:3px 0;border-bottom:1px solid #333;cursor:default;display:flex;align-items:baseline;gap:6px;user-select:text";
@@ -571,7 +616,7 @@ async function main(): Promise<void> {
           }
         });
       }
-      issuesPanel.appendChild(row);
+      issuesBody.appendChild(row);
     }
   }
 
@@ -676,16 +721,6 @@ async function main(): Promise<void> {
       annotationBar.style.display = "block";
     }
   }
-
-  colorCb.addEventListener("change", () => {
-    setItemColoring(colorCb.checked);
-    if (lastLayout) renderLayoutOnCanvas(lastLayout);
-  });
-
-  rateCb.addEventListener("change", () => {
-    setRateOverlay(rateCb.checked);
-    if (lastLayout) renderLayoutOnCanvas(lastLayout);
-  });
 
   app.canvas.addEventListener("pointermove", (e) => {
     const rect = app.canvas.getBoundingClientRect();
@@ -800,12 +835,12 @@ async function main(): Promise<void> {
   if (sidebarEl) {
     // ---- Tab bar ----
     const tabBar = document.createElement("div");
-    tabBar.style.cssText = "display:flex;border-bottom:1px solid #333;background:#252526;flex-shrink:0";
+    tabBar.style.cssText = "display:flex;border-bottom:1px solid #2a2a2a;background:#141414;flex-shrink:0";
 
     function makeTab(label: string): HTMLButtonElement {
       const btn = document.createElement("button");
       btn.textContent = label;
-      btn.style.cssText = "flex:1;padding:8px 4px;background:none;border:none;border-bottom:2px solid transparent;color:#aaa;font:13px sans-serif;cursor:pointer;";
+      btn.style.cssText = "flex:1;padding:10px 4px;background:none;border:none;border-bottom:2px solid transparent;color:#777;font:12px 'JetBrains Mono','Consolas',monospace;cursor:pointer;letter-spacing:0.5px;transition:all 0.15s";
       return btn;
     }
 
@@ -832,9 +867,9 @@ async function main(): Promise<void> {
       generatePanel.style.display = isGenerate ? "flex" : "none";
       corpusPanel.style.display = isGenerate ? "none" : "flex";
       tabGenerate.style.borderBottomColor = isGenerate ? "#569cd6" : "transparent";
-      tabGenerate.style.color = isGenerate ? "#e0e0e0" : "#aaa";
+      tabGenerate.style.color = isGenerate ? "#d4d4d4" : "#777";
       tabCorpus.style.borderBottomColor = isGenerate ? "transparent" : "#569cd6";
-      tabCorpus.style.color = isGenerate ? "#aaa" : "#e0e0e0";
+      tabCorpus.style.color = isGenerate ? "#777" : "#d4d4d4";
     }
 
     tabGenerate.onclick = () => switchTab("generate");
@@ -846,6 +881,27 @@ async function main(): Promise<void> {
       renderLayout: renderLayoutOnCanvas,
     }, {
       getDebugMode: () => debugCb.checked,
+      onDisplayToggles: (toggles: DisplayToggles) => {
+        colorCb = toggles.colorCb;
+        rateCb = toggles.rateCb;
+        debugCb = toggles.debugCb;
+        valCb = toggles.valCb;
+
+        // Wire up the same listeners that used to be on the canvas toggles.
+        colorCb.addEventListener("change", () => {
+          setItemColoring(colorCb.checked);
+          if (lastLayout) renderLayoutOnCanvas(lastLayout);
+        });
+        rateCb.addEventListener("change", () => {
+          setRateOverlay(rateCb.checked);
+          if (lastLayout) renderLayoutOnCanvas(lastLayout);
+        });
+        debugCb.addEventListener("change", () => {
+          tracePhaseIndex = -1;
+          updateTraceOverlay();
+        });
+        valCb.addEventListener("change", updateValidationOverlay);
+      },
     });
 
     initCorpusPanel(corpusPanel, renderLayoutOnCanvas);

@@ -4,182 +4,360 @@ import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 import { niceName, setRecipeFlows } from "../renderer/entities.js";
 import { renderDebugPanel } from "./debugPanel.js";
 
+// ---------------------------------------------------------------------------
+// Style
+// ---------------------------------------------------------------------------
+
 const STYLE = `
-  .sidebar-inner {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 12px;
-    height: 100%;
-    box-sizing: border-box;
-    overflow-y: auto;
-    background: #1e1e1e;
-    color: #e0e0e0;
-    font-family: sans-serif;
-    font-size: 13px;
-  }
-  .sidebar-inner h1 {
-    margin: 0 0 4px;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #c8c8c8;
-  }
-  .sidebar-inner label {
-    display: block;
-    margin-bottom: 3px;
-    color: #aaa;
-    font-size: 12px;
-  }
-  .sidebar-inner select,
-  .sidebar-inner input[type="number"],
-  .sidebar-inner input[type="text"] {
-    width: 100%;
-    box-sizing: border-box;
-    background: #252526;
-    color: #e0e0e0;
-    border: 1px solid #444;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-size: 13px;
-  }
-  .sidebar-inner input[type="text"].item-invalid {
-    border-color: #c44;
-    color: #f88;
-  }
-  .sidebar-inner .inputs-section {
-    background: #252526;
-    border-radius: 4px;
-    padding: 8px;
-  }
-  .sidebar-inner .inputs-section label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: #ccc;
-    margin-bottom: 4px;
-    font-size: 12px;
-  }
-  .sidebar-inner .inputs-section label input[type="checkbox"] {
-    accent-color: #569cd6;
-  }
-  .sidebar-inner .result-error {
-    color: #f44;
-    font-family: monospace;
-    font-size: 12px;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .sidebar-inner .result-section h3 {
-    margin: 0 0 6px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #9cdcfe;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .sidebar-inner .machine-entry {
-    background: #252526;
-    border-radius: 4px;
-    padding: 7px 9px;
-    margin-bottom: 6px;
-    font-family: monospace;
-    font-size: 12px;
-  }
-  .sidebar-inner .machine-title {
-    font-weight: 700;
-    color: #dcdcaa;
-  }
-  .sidebar-inner .machine-recipe {
-    color: #888;
-    margin-bottom: 4px;
-  }
-  .sidebar-inner .machine-flows {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .sidebar-inner .flow-in {
-    color: #9cdcfe;
-  }
-  .sidebar-inner .flow-out {
-    color: #b5cea8;
-  }
-  .sidebar-inner .ext-flow {
-    font-family: monospace;
-    font-size: 12px;
-    color: #c8c8c8;
-    padding: 2px 0;
-  }
-  .sidebar-inner .totals-section {
-    background: #252526;
-    border-radius: 4px;
-    padding: 8px 10px;
-    font-family: monospace;
-    font-size: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .sidebar-inner .totals-section .totals-row {
-    color: #c8c8c8;
-  }
-  .sidebar-inner .belt-chip {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: 600;
-    border-left: 3px solid;
-    margin-left: 6px;
-  }
-  .sidebar-inner .belt-overflow {
-    color: #f88;
-  }
-  .sidebar-inner .tier-rate {
-    font-weight: 700;
-  }
-  .sidebar-inner button.layout-btn {
-    width: 100%;
-    padding: 8px;
-    background: #0e639c;
-    border: none;
-    color: #fff;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .sidebar-inner button.layout-btn:disabled {
-    background: #333;
-    color: #777;
-    cursor: default;
-  }
-  .sidebar-inner button.copy-btn {
-    width: 100%;
-    padding: 8px;
-    background: #2d7a2d;
-    border: none;
-    color: #fff;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .sidebar-inner .copy-status {
-    margin-top: 4px;
-    font-size: 11px;
-    color: #7ec87e;
-    text-align: center;
-  }
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  background: #1a1a1a;
+  color: #d4d4d4;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #333 #1a1a1a;
+}
+
+/* ---- Section ---- */
+.sb-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid #252525;
+}
+.sb-section:last-child { border-bottom: none; }
+
+.sb-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #6b7280;
+}
+.sb-section-header .sb-section-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.5;
+}
+.sb-section-header .sb-section-count {
+  margin-left: auto;
+  color: #4b5563;
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+/* ---- Inputs ---- */
+.sb-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #222;
+  color: #d4d4d4;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 5px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.sb-input:focus { border-color: #555; }
+.sb-input.item-invalid {
+  border-color: #c44;
+  color: #f88;
+}
+
+.sb-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sb-select {
+  background: #222;
+  color: #d4d4d4;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+.sb-select:focus { border-color: #555; }
+
+/* ---- Tag pills ---- */
+.sb-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sb-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  color: #999;
+  transition: all 0.12s;
+}
+.sb-tag:hover { border-color: #444; background: #282828; }
+.sb-tag.active {
+  background: #1a2a1a;
+  border-color: #3a5a3a;
+  color: #b5cea8;
+}
+.sb-tag img {
+  width: 14px;
+  height: 14px;
+  image-rendering: pixelated;
+}
+.sb-tag .sb-tag-check {
+  font-size: 10px;
+  opacity: 0.4;
+}
+.sb-tag.active .sb-tag-check { opacity: 1; color: #b5cea8; }
+
+/* Fluid inputs get a blue tint */
+.sb-tag.active.fluid {
+  background: #1a1a2a;
+  border-color: #3a3a5a;
+  color: #9cdcfe;
+}
+.sb-tag.active.fluid .sb-tag-check { color: #9cdcfe; }
+
+/* ---- Solver results ---- */
+.sb-solver-empty {
+  color: #4b5563;
+  font-style: italic;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.sb-ext-flow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: 11px;
+  color: #9cdcfe;
+}
+.sb-ext-flow img {
+  width: 14px;
+  height: 14px;
+  image-rendering: pixelated;
+}
+.sb-ext-flow .sb-ext-rate {
+  color: #6b7280;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-machine-group {
+  background: #1e1e1e;
+  border: 1px solid #262626;
+  border-radius: 4px;
+  margin-bottom: 5px;
+  overflow: hidden;
+}
+.sb-machine-group-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  background: #1e1e1e;
+  border-bottom: 1px solid #262626;
+}
+.sb-machine-group-header img {
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+}
+.sb-machine-group-name {
+  font-weight: 600;
+  color: #dcdcaa;
+  font-size: 11px;
+}
+.sb-machine-group-count {
+  margin-left: auto;
+  color: #6b7280;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.sb-machine-group-body {
+  padding: 4px 8px 6px;
+}
+.sb-machine-flow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sb-machine-flow img {
+  width: 13px;
+  height: 13px;
+  image-rendering: pixelated;
+}
+.sb-machine-flow.flow-in { color: #9cdcfe; }
+.sb-machine-flow.flow-out { color: #b5cea8; }
+.sb-machine-flow .flow-rate {
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-divider {
+  height: 1px;
+  background: #262626;
+  margin: 5px 0;
+}
+
+.sb-ext-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #4b5563;
+  margin-bottom: 4px;
+  margin-top: 2px;
+}
+
+/* ---- Status bar ---- */
+.sb-status {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: #4b5563;
+  padding: 4px 0 0;
+}
+.sb-status span { color: #6b7280; }
+
+/* ---- Belt tier chips ---- */
+.sb-belt-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  border-left: 3px solid;
+  margin-left: 4px;
+}
+.sb-belt-overflow {
+  color: #f88;
+}
+
+/* ---- Buttons ---- */
+.sb-btn {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #333;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: all 0.15s;
+  outline: none;
+}
+.sb-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.sb-btn-primary {
+  background: #1a3a1a;
+  color: #6a6;
+  border-color: #3a5a3a;
+}
+.sb-btn-primary:hover:not(:disabled) {
+  background: #1e4a1e;
+  border-color: #4a6a4a;
+}
+.sb-btn-secondary {
+  background: #1a1a2a;
+  color: #69c;
+  border-color: #3a3a5a;
+}
+.sb-btn-secondary:hover:not(:disabled) {
+  background: #1e1e3a;
+  border-color: #4a4a6a;
+}
+
+.sb-copy-status {
+  margin-top: 3px;
+  font-size: 10px;
+  color: #6a6;
+  text-align: center;
+}
+
+/* ---- Display toggles ---- */
+.sb-toggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+}
+.sb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  color: #888;
+}
+.sb-toggle input {
+  accent-color: #569cd6;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+/* ---- Errors (inline) ---- */
+.sb-result-error {
+  color: #f44;
+  font-family: monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px 0;
+}
+
+/* ---- Warnings ---- */
+.sb-warning {
+  color: #fa0;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+/* ---- Rate suffix ---- */
+.sb-rate-suffix {
+  color: #6b7280;
+  font-size: 10px;
+  margin-left: 2px;
+}
 `;
 
-function itemIcon(slug: string, size = 18): HTMLImageElement {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function itemIcon(slug: string, size = 14): HTMLImageElement {
   const img = document.createElement("img");
   img.src = `${import.meta.env.BASE_URL}icons/${slug}.png`;
   img.width = size;
   img.height = size;
-  img.style.cssText = "vertical-align:middle;margin-right:4px;image-rendering:pixelated";
+  img.style.cssText = "image-rendering:pixelated";
   img.onerror = () => { img.style.display = "none"; };
   return img;
 }
@@ -192,34 +370,72 @@ function makeOption(value: string, defaultValue: string): HTMLOptionElement {
   return opt;
 }
 
-function makeSection(heading: string): { section: HTMLDivElement; body: HTMLDivElement } {
+/** Create a section block with icon + title. */
+function makeSection(
+  iconSvg: string,
+  title: string,
+  extra?: string,
+): { section: HTMLDivElement; body: HTMLDivElement; countEl: HTMLSpanElement | null } {
   const section = document.createElement("div");
-  section.className = "result-section";
-  const h3 = document.createElement("h3");
-  h3.textContent = heading;
-  section.appendChild(h3);
+  section.className = "sb-section";
+
+  const header = document.createElement("div");
+  header.className = "sb-section-header";
+
+  const iconEl = document.createElement("span");
+  iconEl.className = "sb-section-icon";
+  iconEl.innerHTML = iconSvg;
+  header.appendChild(iconEl);
+
+  const titleEl = document.createElement("span");
+  titleEl.textContent = title;
+  header.appendChild(titleEl);
+
+  let countEl: HTMLSpanElement | null = null;
+  if (extra !== undefined) {
+    countEl = document.createElement("span");
+    countEl.className = "sb-section-count";
+    countEl.textContent = extra;
+    header.appendChild(countEl);
+  }
+
+  section.appendChild(header);
+
   const body = document.createElement("div");
   section.appendChild(body);
-  return { section, body };
+
+  return { section, body, countEl };
 }
 
-function appendFlows(container: HTMLElement, flows: ItemFlow[], className: string, prefix: string): void {
-  flows.forEach((flow) => {
+function appendFlows(
+  container: HTMLElement,
+  flows: ItemFlow[],
+  className: string,
+  prefix: string,
+): void {
+  for (const flow of flows) {
     const el = document.createElement("div");
-    el.className = className;
+    el.className = `sb-machine-flow ${className}`;
+    if (prefix) el.appendChild(document.createTextNode(prefix));
+    el.appendChild(itemIcon(flow.item, 13));
+    el.appendChild(document.createTextNode(niceName(flow.item)));
+    const rateSpan = document.createElement("span");
+    rateSpan.className = "flow-rate";
     const tier = beltTierForRate(flow.rate);
     const rateColor = tier ? hexToCss(tier.color) : "#f88";
-    if (prefix) el.appendChild(document.createTextNode(prefix));
-    el.appendChild(itemIcon(flow.item));
-    const rateSpan = document.createElement("span");
-    rateSpan.className = "tier-rate";
     rateSpan.style.color = rateColor;
-    rateSpan.textContent = `${flow.rate.toFixed(2)}/s`;
+    rateSpan.textContent = `${flow.rate.toFixed(1)}/s`;
     el.appendChild(rateSpan);
-    el.appendChild(document.createTextNode(` ${niceName(flow.item)}`));
     container.appendChild(el);
-  });
+  }
 }
+
+// Fluid items that get blue-tinted tag pills
+const FLUID_ITEMS = new Set(["water", "crude-oil", "petroleum-gas", "light-oil", "heavy-oil", "sulfuric-acid", "lubricant", "steam"]);
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
 
 export interface SidebarCallbacks {
   renderGraph: (result: SolverResult | null) => void;
@@ -234,11 +450,26 @@ export interface SidebarParams {
   belt?: string | null;
 }
 
+/** Callbacks the sidebar can use to read canvas overlay state. */
+export interface SidebarOptions {
+  getDebugMode?: () => boolean;
+  /** Called after the sidebar creates its display toggles. */
+  onDisplayToggles?: (toggles: DisplayToggles) => void;
+}
+
+/** Controls exposed for the display toggle checkboxes. */
+export interface DisplayToggles {
+  colorCb: HTMLInputElement;
+  rateCb: HTMLInputElement;
+  debugCb: HTMLInputElement;
+  valCb: HTMLInputElement;
+}
+
 export function renderSidebar(
   el: HTMLElement,
   engine: Engine,
   callbacks: SidebarCallbacks,
-  options?: { getDebugMode?: () => boolean },
+  options?: SidebarOptions,
 ): { getParams(): SidebarParams | null; setParams(params: SidebarParams): void } {
   el.innerHTML = "";
 
@@ -252,13 +483,11 @@ export function renderSidebar(
   const inner = document.createElement("div");
   inner.className = "sidebar-inner";
 
-  const heading = document.createElement("h1");
-  heading.textContent = "Fucktorio";
-  inner.appendChild(heading);
-
-  const itemLabel = document.createElement("label");
-  itemLabel.textContent = "Target item";
-  inner.appendChild(itemLabel);
+  // ==================== TARGET ====================
+  const { section: targetSection, body: targetBody } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2"/></svg>`,
+    "Target",
+  );
 
   const datalist = document.createElement("datalist");
   datalist.id = "fucktorio-items-datalist";
@@ -269,101 +498,210 @@ export function renderSidebar(
     opt.value = item;
     datalist.appendChild(opt);
   });
-  inner.appendChild(datalist);
+  targetBody.appendChild(datalist);
 
   const itemInput = document.createElement("input");
   itemInput.type = "text";
+  itemInput.className = "sb-input";
   itemInput.setAttribute("list", "fucktorio-items-datalist");
   itemInput.autocomplete = "off";
-  inner.appendChild(itemInput);
+  itemInput.placeholder = "Search item…";
+  targetBody.appendChild(itemInput);
 
-  const rateLabel = document.createElement("label");
-  rateLabel.textContent = "Rate (items/sec)";
-  inner.appendChild(rateLabel);
+  // Rate + Machine row
+  const rateMachineRow = document.createElement("div");
+  rateMachineRow.className = "sb-row";
+  rateMachineRow.style.cssText = "margin-top:6px";
 
   const rateInput = document.createElement("input");
   rateInput.type = "number";
+  rateInput.className = "sb-input";
   rateInput.step = "0.5";
   rateInput.min = "0.1";
-  inner.appendChild(rateInput);
+  rateInput.style.cssText = "width:72px;flex-shrink:0";
+  rateInput.placeholder = "10";
+  rateMachineRow.appendChild(rateInput);
 
-  const machineLabel = document.createElement("label");
-  machineLabel.textContent = "Machine";
-  inner.appendChild(machineLabel);
+  const rateSuffix = document.createElement("span");
+  rateSuffix.className = "sb-rate-suffix";
+  rateSuffix.textContent = "/s";
+  rateMachineRow.appendChild(rateSuffix);
 
   const machineSelect = document.createElement("select");
+  machineSelect.className = "sb-select";
+  machineSelect.style.cssText = "flex:1;min-width:0";
   engine.allProducerMachines().forEach((m) => machineSelect.appendChild(makeOption(m, "assembling-machine-3")));
-  inner.appendChild(machineSelect);
+  rateMachineRow.appendChild(machineSelect);
 
-  const inputsLabel = document.createElement("label");
-  inputsLabel.textContent = "Available inputs";
-  inner.appendChild(inputsLabel);
+  targetBody.appendChild(rateMachineRow);
+  inner.appendChild(targetSection);
 
-  const inputsSection = document.createElement("div");
-  inputsSection.className = "inputs-section";
+  // ==================== INPUTS ====================
+  const { section: inputsSection, body: inputsBody } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="12" height="6" rx="1"/><line x1="5" y1="8" x2="11" y2="8"/></svg>`,
+    "Inputs",
+  );
+
+  const tagsWrap = document.createElement("div");
+  tagsWrap.className = "sb-tags";
 
   const checkboxes = new Map<string, HTMLInputElement>();
   DEFAULT_INPUTS.forEach((inp) => {
-    const lbl = document.createElement("label");
+    const tag = document.createElement("label");
+    tag.className = `sb-tag${FLUID_ITEMS.has(inp) ? " fluid" : ""}`;
+
+    const checkSpan = document.createElement("span");
+    checkSpan.className = "sb-tag-check";
+    checkSpan.textContent = "\u2713";
+
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = inp;
+    cb.style.display = "none";
     checkboxes.set(inp, cb);
-    lbl.appendChild(cb);
-    lbl.appendChild(itemIcon(inp));
-    lbl.appendChild(document.createTextNode(niceName(inp)));
-    inputsSection.appendChild(lbl);
+
+    tag.appendChild(checkSpan);
+    tag.appendChild(itemIcon(inp, 14));
+    tag.appendChild(document.createTextNode(niceName(inp)));
+    tag.appendChild(cb);
+
+    // Toggle active class on check/uncheck
+    cb.addEventListener("change", () => {
+      tag.classList.toggle("active", cb.checked);
+    });
+
+    tagsWrap.appendChild(tag);
   });
+  inputsBody.appendChild(tagsWrap);
   inner.appendChild(inputsSection);
 
+  // ==================== SOLVER ====================
+  const { section: solverSection, body: solverBody, countEl: solverCount } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg>`,
+    "Solver",
+    "",
+  );
+
   const resultContainer = document.createElement("div");
-  inner.appendChild(resultContainer);
+  solverBody.appendChild(resultContainer);
+  inner.appendChild(solverSection);
 
-  const beltLabel = document.createElement("label");
-  beltLabel.textContent = "Max belt tier";
-  inner.appendChild(beltLabel);
+  // ==================== LAYOUT ====================
+  const { section: layoutSection, body: layoutBody } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="8" y1="2" x2="8" y2="14"/><line x1="2" y1="8" x2="14" y2="8"/></svg>`,
+    "Layout",
+  );
 
+  const beltRow = document.createElement("div");
+  beltRow.className = "sb-row";
+  beltRow.style.cssText = "margin-bottom:6px;align-items:center";
+  const beltLabel = document.createElement("span");
+  beltLabel.style.cssText = "color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;flex-shrink:0";
+  beltLabel.textContent = "Belt";
+  beltRow.appendChild(beltLabel);
   const beltSelect = document.createElement("select");
+  beltSelect.className = "sb-select";
+  beltSelect.style.cssText = "flex:1;min-width:0";
   [
     ["Auto", ""],
-    ["Yellow (15/s)", "transport-belt"],
-    ["Red (30/s)", "fast-transport-belt"],
-    ["Blue (45/s)", "express-transport-belt"],
+    ["Yellow 15/s", "transport-belt"],
+    ["Red 30/s", "fast-transport-belt"],
+    ["Blue 45/s", "express-transport-belt"],
   ].forEach(([label, value]) => {
     const opt = document.createElement("option");
     opt.value = value;
     opt.textContent = label;
     beltSelect.appendChild(opt);
   });
-  inner.appendChild(beltSelect);
+  beltRow.appendChild(beltSelect);
+  layoutBody.appendChild(beltRow);
 
   const layoutBtn = document.createElement("button");
-  layoutBtn.className = "layout-btn";
+  layoutBtn.className = "sb-btn sb-btn-primary";
   layoutBtn.textContent = "Generate Layout";
   layoutBtn.disabled = true;
-  inner.appendChild(layoutBtn);
+  layoutBtn.style.cssText = "margin-bottom:5px";
+  layoutBody.appendChild(layoutBtn);
 
   const blueprintSection = document.createElement("div");
   blueprintSection.style.display = "none";
+
   const copyBtn = document.createElement("button");
-  copyBtn.className = "copy-btn";
+  copyBtn.className = "sb-btn sb-btn-secondary";
   copyBtn.textContent = "Copy Blueprint";
   blueprintSection.appendChild(copyBtn);
+
   const copyStatus = document.createElement("div");
-  copyStatus.className = "copy-status";
+  copyStatus.className = "sb-copy-status";
   blueprintSection.appendChild(copyStatus);
-  inner.appendChild(blueprintSection);
+  layoutBody.appendChild(blueprintSection);
+
+  inner.appendChild(layoutSection);
+
+  // ==================== DISPLAY ====================
+  const { section: displaySection, body: displayBody } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M4.05 4.05l1.41 1.41M10.54 10.54l1.41 1.41M4.05 11.95l1.41-1.41M10.54 5.46l1.41-1.41"/></svg>`,
+    "Display",
+  );
+
+  const togglesWrap = document.createElement("div");
+  togglesWrap.className = "sb-toggles";
+
+  const colorCb = document.createElement("input");
+  colorCb.type = "checkbox";
+  colorCb.checked = true;
+  const colorToggle = document.createElement("label");
+  colorToggle.className = "sb-toggle";
+  colorToggle.appendChild(colorCb);
+  colorToggle.appendChild(document.createTextNode("Item colours"));
+  togglesWrap.appendChild(colorToggle);
+
+  const rateCb = document.createElement("input");
+  rateCb.type = "checkbox";
+  rateCb.checked = false;
+  const rateToggle = document.createElement("label");
+  rateToggle.className = "sb-toggle";
+  rateToggle.appendChild(rateCb);
+  rateToggle.appendChild(document.createTextNode("Rates"));
+  togglesWrap.appendChild(rateToggle);
+
+  const debugCb = document.createElement("input");
+  debugCb.type = "checkbox";
+  debugCb.checked = false;
+  const debugToggle = document.createElement("label");
+  debugToggle.className = "sb-toggle";
+  debugToggle.appendChild(debugCb);
+  debugToggle.appendChild(document.createTextNode("Debug"));
+  togglesWrap.appendChild(debugToggle);
+
+  const valCb = document.createElement("input");
+  valCb.type = "checkbox";
+  valCb.checked = false;
+  const valToggle = document.createElement("label");
+  valToggle.className = "sb-toggle";
+  valToggle.appendChild(valCb);
+  valToggle.appendChild(document.createTextNode("Validation"));
+  togglesWrap.appendChild(valToggle);
+
+  displayBody.appendChild(togglesWrap);
+  inner.appendChild(displaySection);
+
+  // Expose toggles to main.ts
+  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb });
 
   el.appendChild(inner);
 
+  // ==================== State init ====================
   const urlState = readUrlState();
   itemInput.value = urlState.item;
   rateInput.value = String(urlState.rate);
   machineSelect.value =
     urlState.machine ?? engine.defaultMachineForItem(urlState.item, "assembling-machine-3");
-  const machineOpts = machineSelect.options;
   checkboxes.forEach((cb, name) => {
     cb.checked = urlState.inputs.includes(name);
+    // Sync tag pill active state
+    const tag = cb.closest(".sb-tag") as HTMLLabelElement;
+    if (tag) tag.classList.toggle("active", cb.checked);
   });
   if (urlState.belt) beltSelect.value = urlState.belt;
 
@@ -393,6 +731,7 @@ export function renderSidebar(
 
     if (targetItem !== previousItem) {
       const suggestedMachine = engine.defaultMachineForItem(targetItem, machineEntity);
+      const machineOpts = machineSelect.options;
       for (let i = 0; i < machineOpts.length; i++) {
         if (machineOpts[i].value === suggestedMachine) {
           machineSelect.selectedIndex = i;
@@ -411,7 +750,6 @@ export function renderSidebar(
     });
 
     resultContainer.innerHTML = "";
-    // Invalidate any previous layout — inputs have changed.
     currentLayout = null;
     blueprintSection.style.display = "none";
     try {
@@ -420,12 +758,15 @@ export function renderSidebar(
       renderResult(resultContainer, result);
       callbacks.renderGraph(result);
       layoutBtn.disabled = false;
+      const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
+      if (solverCount) solverCount.textContent = `${totalMachines} machines`;
     } catch (err) {
       currentResult = null;
       callbacks.renderGraph(null);
       layoutBtn.disabled = true;
+      if (solverCount) solverCount.textContent = "error";
       const errDiv = document.createElement("div");
-      errDiv.className = "result-error";
+      errDiv.className = "sb-result-error";
       errDiv.textContent = String(err);
       resultContainer.appendChild(errDiv);
     }
@@ -444,29 +785,20 @@ export function renderSidebar(
       if (currentLayout.warnings?.length) {
         for (const w of currentLayout.warnings) {
           const wDiv = document.createElement("div");
-          wDiv.className = "result-error";
+          wDiv.className = "sb-warning";
           wDiv.textContent = `\u26A0 ${w}`;
           resultContainer.appendChild(wDiv);
         }
-        // Warnings mean the layout is broken — don't offer blueprint export.
         blueprintSection.style.display = "none";
       } else {
         blueprintSection.style.display = "block";
       }
-      if (currentLayout.regions?.length) {
-        const zoneDiv = document.createElement("div");
-        zoneDiv.style.cssText = "margin-top:8px;font-size:11px;color:#8af";
-        const total_us = currentLayout.regions.reduce((s, r) => s + (r.solve_time_us ?? 0), 0);
-        zoneDiv.textContent = `SAT: ${currentLayout.regions.length} crossing zone${currentLayout.regions.length > 1 ? "s" : ""} solved (${total_us}\u00B5s total)`;
-        resultContainer.appendChild(zoneDiv);
-      }
-      // Debug stats panel (only when trace events are present)
       if (currentLayout.trace?.length && options?.getDebugMode?.()) {
         resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
       }
     } catch (err) {
       const errDiv = document.createElement("div");
-      errDiv.className = "result-error";
+      errDiv.className = "sb-result-error";
       errDiv.textContent = `Layout error: ${err}`;
       resultContainer.appendChild(errDiv);
     }
@@ -505,6 +837,8 @@ export function renderSidebar(
       if (params.inputs) {
         checkboxes.forEach((cb, name) => {
           cb.checked = params.inputs!.includes(name);
+          const tag = cb.closest(".sb-tag") as HTMLLabelElement;
+          if (tag) tag.classList.toggle("active", cb.checked);
         });
       }
       if (params.belt) {
@@ -512,82 +846,131 @@ export function renderSidebar(
       } else {
         beltSelect.value = "";
       }
-      // Update internal state and re-solve
       previousItem = params.item;
       scheduleAutoSolve();
     },
   };
 }
 
+// ---------------------------------------------------------------------------
+// Result renderer — external inputs at top, then grouped machines
+// ---------------------------------------------------------------------------
+
 function renderResult(container: HTMLElement, result: SolverResult): void {
-  const { section: machinesSection, body: machinesBody } = makeSection("Machines");
-
-  result.machines.forEach((machine) => {
-    const entry = document.createElement("div");
-    entry.className = "machine-entry";
-
-    const title = document.createElement("div");
-    title.className = "machine-title";
-    title.appendChild(itemIcon(machine.entity, 20));
-    title.appendChild(document.createTextNode(`${machine.count.toFixed(2)} \u00d7 ${niceName(machine.entity)}`));
-    entry.appendChild(title);
-
-    const recipe = document.createElement("div");
-    recipe.className = "machine-recipe";
-    recipe.appendChild(document.createTextNode("  \u2192 "));
-    recipe.appendChild(itemIcon(machine.recipe, 16));
-    recipe.appendChild(document.createTextNode(niceName(machine.recipe)));
-    entry.appendChild(recipe);
-
-    const flows = document.createElement("div");
-    flows.className = "machine-flows";
-    appendFlows(flows, machine.inputs, "flow-in", "  ▶ ");
-    appendFlows(flows, machine.outputs, "flow-out", "  ◀ ");
-    entry.appendChild(flows);
-
-    machinesBody.appendChild(entry);
-  });
-
-  container.appendChild(machinesSection);
-
+  // External inputs at top
   if (result.external_inputs.length > 0) {
-    const { section: extSection, body: extBody } = makeSection("External inputs");
-    appendFlows(extBody, result.external_inputs, "ext-flow", "");
-    container.appendChild(extSection);
+    const extTitle = document.createElement("div");
+    extTitle.className = "sb-ext-section-title";
+    extTitle.textContent = "External inputs";
+    container.appendChild(extTitle);
+
+    for (const flow of result.external_inputs) {
+      const row = document.createElement("div");
+      row.className = "sb-ext-flow";
+      row.appendChild(itemIcon(flow.item, 14));
+      row.appendChild(document.createTextNode(niceName(flow.item)));
+      const rateSpan = document.createElement("span");
+      rateSpan.className = "sb-ext-rate";
+      rateSpan.textContent = `${flow.rate.toFixed(1)}/s`;
+      row.appendChild(rateSpan);
+      container.appendChild(row);
+    }
+
+    const divider = document.createElement("div");
+    divider.className = "sb-divider";
+    container.appendChild(divider);
   }
 
-  const totalsDiv = document.createElement("div");
-  totalsDiv.className = "totals-section";
+  // Group machines by entity type (e.g. all assembling-machine-2 together)
+  const groups = new Map<string, typeof result.machines>();
+  for (const m of result.machines) {
+    let group = groups.get(m.entity);
+    if (!group) { group = []; groups.set(m.entity, group); }
+    group.push(m);
+  }
+
+  for (const [entity, machines] of groups) {
+    const totalCount = machines.reduce((s, m) => s + Math.ceil(m.count), 0);
+
+    const groupEl = document.createElement("div");
+    groupEl.className = "sb-machine-group";
+
+    const header = document.createElement("div");
+    header.className = "sb-machine-group-header";
+    header.appendChild(itemIcon(entity, 16));
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "sb-machine-group-name";
+    nameSpan.textContent = niceName(entity);
+    header.appendChild(nameSpan);
+    const countSpan = document.createElement("span");
+    countSpan.className = "sb-machine-group-count";
+    countSpan.textContent = `\u00d7${totalCount}`;
+    header.appendChild(countSpan);
+    groupEl.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "sb-machine-group-body";
+
+    for (const machine of machines) {
+      const recipeRow = document.createElement("div");
+      recipeRow.className = "sb-machine-flow";
+      recipeRow.style.cssText = "color:#6b7280;margin-bottom:2px";
+      recipeRow.appendChild(document.createTextNode("\u2192 "));
+      recipeRow.appendChild(itemIcon(machine.recipe, 13));
+      recipeRow.appendChild(document.createTextNode(niceName(machine.recipe)));
+      body.appendChild(recipeRow);
+
+      appendFlows(body, machine.inputs, "flow-in", "\u25b6 ");
+      appendFlows(body, machine.outputs, "flow-out", "\u25c0 ");
+    }
+
+    groupEl.appendChild(body);
+    container.appendChild(groupEl);
+  }
+
+  // Status bar: totals + external outputs
+  const statusDiv = document.createElement("div");
+  statusDiv.className = "sb-status";
+  statusDiv.style.cssText = "margin-top:6px";
 
   const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
   const chainDepth = result.dependency_order.length;
 
-  const machinesRow = document.createElement("div");
-  machinesRow.className = "totals-row";
-  machinesRow.textContent = `Total machines: ${totalMachines}`;
-  totalsDiv.appendChild(machinesRow);
+  const machinesSpan = document.createElement("span");
+  machinesSpan.textContent = `${totalMachines} machines`;
+  statusDiv.appendChild(machinesSpan);
 
-  const depthRow = document.createElement("div");
-  depthRow.className = "totals-row";
-  depthRow.textContent = `Chain depth: ${chainDepth}`;
-  totalsDiv.appendChild(depthRow);
+  const depthSpan = document.createElement("span");
+  depthSpan.textContent = `depth ${chainDepth}`;
+  statusDiv.appendChild(depthSpan);
 
-  result.external_outputs.forEach((flow) => {
-    const row = document.createElement("div");
-    row.className = "totals-row";
-    const tier = beltTierForRate(flow.rate);
-    if (tier) {
-      const tierColor = hexToCss(tier.color);
-      row.innerHTML =
-        `${flow.item} ${flow.rate.toFixed(1)}/s` +
-        `<span class="belt-chip" style="border-color:${tierColor};color:${tierColor}">${tier.name}</span>`;
-    } else {
-      row.innerHTML =
-        `${flow.item} ${flow.rate.toFixed(1)}/s` +
-        `<span class="belt-overflow">⚠ overflow (needs multiple belts)</span>`;
+  container.appendChild(statusDiv);
+
+  // External outputs
+  if (result.external_outputs.length > 0) {
+    for (const flow of result.external_outputs) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px 0;font-size:11px;color:#b5cea8";
+      row.appendChild(itemIcon(flow.item, 13));
+      row.appendChild(document.createTextNode(niceName(flow.item)));
+      const tier = beltTierForRate(flow.rate);
+      if (tier) {
+        const tierColor = hexToCss(tier.color);
+        row.appendChild(document.createTextNode(`${flow.rate.toFixed(1)}/s`));
+        const chip = document.createElement("span");
+        chip.className = "sb-belt-chip";
+        chip.style.borderColor = tierColor;
+        chip.style.color = tierColor;
+        chip.textContent = tier.name;
+        row.appendChild(chip);
+      } else {
+        row.appendChild(document.createTextNode(`${flow.rate.toFixed(1)}/s`));
+        const warn = document.createElement("span");
+        warn.className = "sb-belt-overflow";
+        warn.textContent = "\u26a0 overflow";
+        row.appendChild(warn);
+      }
+      container.appendChild(row);
     }
-    totalsDiv.appendChild(row);
-  });
-
-  container.appendChild(totalsDiv);
+  }
 }

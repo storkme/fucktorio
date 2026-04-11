@@ -10,7 +10,6 @@ type LanesPlanned = Extract<TraceEvent, { phase: "LanesPlanned" }>;
 export type PhaseSnapshot = Extract<TraceEvent, { phase: "PhaseSnapshot" }>;
 export type PhaseComplete = Extract<TraceEvent, { phase: "PhaseComplete" }>;
 type RouteFailureEvent = Extract<TraceEvent, { phase: "RouteFailure" }>;
-type CrossingZoneConflictEvent = Extract<TraceEvent, { phase: "CrossingZoneConflict" }>;
 type LaneConsolidatedEvent = Extract<TraceEvent, { phase: "LaneConsolidated" }>;
 type RowSplitEvent = Extract<TraceEvent, { phase: "RowSplit" }>;
 type LaneOrderOptimizedEvent = Extract<TraceEvent, { phase: "LaneOrderOptimized" }>;
@@ -76,34 +75,6 @@ export function renderTraceOverlay(
       g.on("pointerleave", () => onHover(null));
       layer.addChild(g);
     }
-  }
-
-  // --- Crossing zones (from CrossingZoneSolved) ---
-  for (const evt of events) {
-    if (evt.phase !== "CrossingZoneSolved") continue;
-    const d = evt.data;
-    const g = new Graphics();
-    g.rect(d.x * TILE_PX, d.y * TILE_PX, d.width * TILE_PX, d.height * TILE_PX)
-      .fill({ color: 0x44aaff, alpha: 0.08 })
-      .stroke({ width: 1, color: 0x44aaff, alpha: 0.5 });
-    g.eventMode = "static";
-    g.on("pointerenter", () => onHover(`SAT zone: ${d.width}×${d.height} solved in ${d.solve_time_us}µs`));
-    g.on("pointerleave", () => onHover(null));
-    layer.addChild(g);
-  }
-
-  // --- Skipped crossing zones (from CrossingZoneSkipped) ---
-  for (const evt of events) {
-    if (evt.phase !== "CrossingZoneSkipped") continue;
-    const d = evt.data;
-    const g = new Graphics();
-    g.rect(d.tap_x * TILE_PX, (d.tap_y - 1) * TILE_PX, TILE_PX * 2, TILE_PX * 3)
-      .fill({ color: 0xff8844, alpha: 0.08 })
-      .stroke({ width: 1, color: 0xff8844, alpha: 0.5 });
-    g.eventMode = "static";
-    g.on("pointerenter", () => onHover(`Skipped: ${d.tap_item} @ (${d.tap_x},${d.tap_y}) — ${d.reason}`));
-    g.on("pointerleave", () => onHover(null));
-    layer.addChild(g);
   }
 
   // --- Balancer blocks (from BalancerStamped) ---
@@ -173,27 +144,6 @@ export function renderTraceOverlay(
     g.on("pointerenter", () => onHover(`Route failed: ${d.item} (${d.from_x},${d.from_y})\u2192(${d.to_x},${d.to_y}) [${d.spec_key}]`));
     g.on("pointerleave", () => onHover(null));
     layer.addChild(g);
-  }
-
-  // --- Crossing zone conflicts (from CrossingZoneConflict) ---
-  const conflictTextStyle = new TextStyle({ fontSize: 14, fill: "#ff44ff", fontFamily: "monospace", fontWeight: "bold" });
-  for (const evt of events) {
-    if (evt.phase !== "CrossingZoneConflict") continue;
-    const d = (evt as CrossingZoneConflictEvent).data;
-    const tx = d.conflict_x * TILE_PX;
-    const ty = d.conflict_y * TILE_PX;
-    const g = new Graphics();
-    g.rect(tx, ty, TILE_PX, TILE_PX)
-      .stroke({ width: 1.5, color: 0xff44ff });
-    const excl = new Text({ text: "!", style: conflictTextStyle });
-    excl.x = tx + TILE_PX / 2 - excl.width / 2;
-    excl.y = ty + TILE_PX / 2 - excl.height / 2;
-    excl.eventMode = "none";
-    g.eventMode = "static";
-    g.on("pointerenter", () => onHover(`Crossing conflict: segment ${d.segment_id} at (${d.conflict_x},${d.conflict_y})`));
-    g.on("pointerleave", () => onHover(null));
-    layer.addChild(g);
-    layer.addChild(excl);
   }
 
   // --- Lane consolidation badges (from LaneConsolidated) ---
