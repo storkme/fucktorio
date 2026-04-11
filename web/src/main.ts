@@ -400,6 +400,10 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
+  function panToTile(x: number, y: number): void {
+    viewport.moveCenter(x * TILE_PX + TILE_PX / 2, y * TILE_PX + TILE_PX / 2);
+  }
+
   function updateValidationOverlay(): void {
     if (valOverlayLayer) {
       entityLayer.removeChild(valOverlayLayer);
@@ -408,18 +412,24 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       valCircleMap = new Map();
     }
     clearPulse();
-    if (!valCb.checked || !lastLayout) {
-      populateIssuesPanel(cachedValidationIssues ?? []);
-      return;
-    }
-    if (!cachedValidationIssues) {
+
+    // Ensure issues are computed whenever we have a layout (not just when overlay is on).
+    if (lastLayout && !cachedValidationIssues) {
       try {
         cachedValidationIssues = engine.validateLayout(lastLayout, null);
       } catch {
         cachedValidationIssues = [];
       }
     }
-    if (cachedValidationIssues.length === 0) {
+
+    // Always update the sidebar validation list regardless of valCb state.
+    sidebarCtrl?.updateValidation(cachedValidationIssues ?? [], panToTile);
+
+    if (!valCb.checked || !lastLayout) {
+      populateIssuesPanel(cachedValidationIssues ?? []);
+      return;
+    }
+    if (!cachedValidationIssues || cachedValidationIssues.length === 0) {
       populateIssuesPanel([]);
       return;
     }
@@ -663,10 +673,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   }
 
   function loadSnapshot(snapshot: LayoutSnapshot): void {
-    cachedValidationIssues = snapshot.validation.issues.length > 0
-      ? snapshot.validation.issues as unknown as ValidationIssue[]
-      : null;
-
     // Build a LayoutResult from snapshot data (inject trace events)
     const layout: LayoutResult = {
       ...snapshot.layout,
@@ -683,6 +689,14 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
     renderLayoutOnCanvas(layout);
 
+    // Override cached issues with the snapshot's pre-computed validation
+    // (renderLayoutOnCanvas resets cachedValidationIssues, so set it after).
+    if (snapshot.validation.issues.length > 0) {
+      cachedValidationIssues = snapshot.validation.issues as unknown as ValidationIssue[];
+      // Re-render the overlay and sidebar list with the snapshot issues.
+      updateValidationOverlay();
+    }
+
     // Pre-fill sidebar form with snapshot params
     sidebarCtrl?.setParams(snapshot.params);
 
@@ -693,12 +707,14 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         clearSnapshotBanner();
         entityLayer.removeChildren();
         lastLayout = null;
+        cachedValidationIssues = null;
         drawGraph(viewport, null);
         viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
         legendEl.style.display = "none";
         infoPanel.style.display = "none";
         issuesPanel.style.display = "none";
         populateIssuesPanel([]);
+        sidebarCtrl?.updateValidation([], panToTile);
       },
     };
     const sidebarEl = document.getElementById("sidebar");
