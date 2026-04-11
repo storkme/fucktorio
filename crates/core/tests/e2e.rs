@@ -559,14 +559,16 @@ fn tier3_sulfuric_acid() {
 #[ignore] // Blocked by #64: lane-throughput warnings
 #[ntest::timeout(10000)]
 fn tier4_advanced_circuit_from_plates() {
-    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "plastic-bar"]
+    // Nauvis-style inputs: plates + raw resources (coal, crude-oil) + water.
+    // Solver will synthesize plastic-bar from petroleum-gas and coal.
+    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "coal", "crude-oil", "water"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
         "tier4_advanced_circuit_from_plates",
         "advanced-circuit",
-        10.0,
+        1.0,
         "assembling-machine-2",
         None,
         &inputs,
@@ -575,7 +577,7 @@ fn tier4_advanced_circuit_from_plates() {
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
-    assert_produces(&result, "advanced-circuit", 10.0);
+    assert_produces(&result, "advanced-circuit", 1.0);
     assert_round_trip(&result);
 }
 

@@ -311,21 +311,68 @@ pub(crate) fn extract_and_solve_crossings(
         }
     }
 
+    // Merge stacked specs: two tap-offs that cross the same set of trunks and
+    // sit within a few rows of each other produce overlapping default zones.
+    // Each zone would otherwise independently stamp UG entities that collide
+    // on the shared trunk columns, and surface tap-off belts outside the zone
+    // sideload into those UG entities. Grouping them into a single taller
+    // zone lets the SAT solver place ONE UG pair per trunk that bridges over
+    // both tap-off rows.
+    //
+    // Merge criterion: identical crossed-trunk set AND tap_y deltas ≤ 2 from
+    // any spec already in the cluster (so their ±1 vertical padding overlaps
+    // or touches).
+    struct MergedZone {
+        trunks: Vec<(i32, String)>, // sorted by x, same as spec.crossed
+        tap_ys: Vec<i32>,            // sorted ascending
+        // For error reporting — any member's tap_item/x is fine.
+        first_tap_item: String,
+        first_tap_x: i32,
+    }
+    let mut merged_zones: Vec<MergedZone> = Vec::new();
+    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
+        let mut placed = false;
+        for mz in merged_zones.iter_mut() {
+            if mz.trunks != *crossed {
+                continue;
+            }
+            let overlaps = mz.tap_ys.iter().any(|&cy| (cy - *tap_y).abs() <= 2);
+            if overlaps {
+                if !mz.tap_ys.contains(tap_y) {
+                    mz.tap_ys.push(*tap_y);
+                    mz.tap_ys.sort();
+                }
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            merged_zones.push(MergedZone {
+                trunks: crossed.clone(),
+                tap_ys: vec![*tap_y],
+                first_tap_item: tap_item.clone(),
+                first_tap_x: *tap_x,
+            });
+        }
+    }
+
     let mut solved = Vec::new();
     let mut entity_tiles = FxHashSet::default();
     let mut all_tiles = FxHashSet::default();
 
-    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
-        let x_min = crossed.first().unwrap().0;
-        let x_max = crossed.last().unwrap().0;
+    for mz in &merged_zones {
+        let x_min = mz.trunks.first().unwrap().0;
+        let x_max = mz.trunks.last().unwrap().0;
+        let y_min = *mz.tap_ys.first().unwrap() - 1;
+        let y_max = *mz.tap_ys.last().unwrap() + 1;
         let zone_width = (x_max - x_min + 1) as u32;
-        let zone_height: u32 = 3;
+        let zone_height = (y_max - y_min + 1) as u32;
         let zone_x = x_min;
-        let zone_y = tap_y - 1;
+        let zone_y = y_min;
 
         let mut boundaries = Vec::new();
         let mut forced_empty = Vec::new();
-        for (trunk_x, trunk_item) in crossed {
+        for (trunk_x, trunk_item) in &mz.trunks {
             boundaries.push(ZoneBoundary {
                 x: *trunk_x,
                 y: zone_y,
@@ -340,7 +387,9 @@ pub(crate) fn extract_and_solve_crossings(
                 item: trunk_item.clone(),
                 is_input: false,
             });
-            forced_empty.push((*trunk_x, *tap_y));
+            for &tap_y in &mz.tap_ys {
+                forced_empty.push((*trunk_x, tap_y));
+            }
         }
 
         let zone = CrossingZone {
@@ -363,9 +412,9 @@ pub(crate) fn extract_and_solve_crossings(
             solved.push(SolvedCrossing { zone, solution });
         } else {
             crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSkipped {
-                tap_item: tap_item.clone(),
-                tap_x: *tap_x,
-                tap_y: *tap_y,
+                tap_item: mz.first_tap_item.clone(),
+                tap_x: mz.first_tap_x,
+                tap_y: *mz.tap_ys.first().unwrap(),
                 reason: "sat-unsolved".into(),
             });
         }

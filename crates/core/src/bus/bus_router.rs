@@ -1155,13 +1155,10 @@ pub(crate) fn merge_output_rows(
     let belt_name = belt_entity_for_rate(total_rate * 2.0, max_belt_tier);
     let splitter_name = splitter_for_belt(belt_name);
 
-    // Merge columns sit just past the widest output row.
-    // Earlier rows (lower idx, higher up in the layout) get farther-right
-    // columns so their SOUTH columns don't block later rows' EAST extensions.
     let merge_x = output_rows.iter()
         .map(|&ri| if ri < row_spans.len() { row_spans[ri].row_width } else { 0 })
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0) + 1;
 
     for (idx, &ri) in output_rows.iter().enumerate() {
         if ri >= row_spans.len() {
@@ -1490,6 +1487,18 @@ fn route_belt_lane(
 ) {
     let x = lane.x;
     let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+    // Non-last tap-offs place a splitter stamp at (x, tap_y - 1). A bridge
+    // whose UG output lands on that splitter row would overlap the splitter
+    // entity — treat those rows like tap-off rows for bridge filtering.
+    let last_tap_y_for_filter = lane.tap_off_ys.iter().copied().max();
+    let mut bridge_forbidden: FxHashSet<i32> = tap_off_set.clone();
+    if lane.tap_off_ys.len() > 1 {
+        for &ty in &lane.tap_off_ys {
+            if Some(ty) != last_tap_y_for_filter {
+                bridge_forbidden.insert(ty - 1);
+            }
+        }
+    }
     let empty: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
     let paths: &FxHashMap<String, Vec<(i32, i32)>> = routed_paths.unwrap_or(&empty);
 
@@ -1552,7 +1561,7 @@ fn route_belt_lane(
     // `dropped_bridges` so it can push rows apart and retry.
     let bridgeable_ranges = filter_and_record_dropped_bridges(
         merged_ranges,
-        &tap_off_set,
+        &bridge_forbidden,
         &lane.item,
         x,
         dropped_bridges,
@@ -2545,6 +2554,10 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 0,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 } else {
@@ -2645,6 +2658,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -2672,6 +2691,9 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 3,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 }
@@ -2699,6 +2721,12 @@ pub(crate) fn negotiate_and_route(
                             flow_dir: None,
                             goal_on_obstacle: true,
                             y_tolerance: 0,
+                            respect_extra_obstacles: true,
+
+                            own_trunk_x: None,
+
+
+                            forbid_ug_exit_to_goal: false,
                         });
                         lane_id += 1;
                     }
@@ -2732,6 +2760,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -2784,6 +2818,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -2817,6 +2857,12 @@ pub(crate) fn negotiate_and_route(
                         x_constraint: None, flow_dir: fd,
                         goal_on_obstacle: false,
                         y_tolerance: 0,
+                        respect_extra_obstacles: false,
+
+                        own_trunk_x: None,
+
+
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 }
@@ -2857,6 +2903,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -2884,6 +2936,9 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 3,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 }
@@ -2920,6 +2975,12 @@ pub(crate) fn negotiate_and_route(
                 flow_dir: None,
                 goal_on_obstacle: false,
                 y_tolerance: 0,
+                respect_extra_obstacles: false,
+
+                own_trunk_x: None,
+
+
+                forbid_ug_exit_to_goal: false,
             });
             lane_id += 1;
         }
@@ -2940,6 +3001,12 @@ pub(crate) fn negotiate_and_route(
                 flow_dir: None,
                 goal_on_obstacle: false,
                 y_tolerance: 0,
+                respect_extra_obstacles: false,
+
+                own_trunk_x: None,
+
+
+                forbid_ug_exit_to_goal: false,
             });
             lane_id += 1;
             i += 2;
@@ -2950,12 +3017,64 @@ pub(crate) fn negotiate_and_route(
         return FxHashMap::default();
     }
 
+    // Extra obstacle set: tiles that vertical trunk columns will claim during
+    // the later stamping pass. Trunks are routed through `negotiate_lanes` via
+    // `trunk:` specs with `x_constraint`, so in principle priority promotion
+    // would propagate trunk claims down to lower-priority `ret:`/`bal:` specs.
+    // In practice, x-constrained trunk specs can fail silently (e.g. when an
+    // obstacle span is wider than UG reach), in which case their tiles never
+    // get claimed and `ret:`/merger specs walk straight through them. By
+    // pre-computing the trunk y-range here and exposing it to opted-in specs,
+    // we make trunk avoidance unconditional regardless of trunk-spec success.
+    //
+    // Includes input, intermediate, collector, AND family-output lanes — all
+    // non-fluid lanes whose stamped trunk shares a column.
+    let mut extra_obstacles: FxHashSet<(i16, i16)> = FxHashSet::default();
+    for lane in lanes {
+        if lane.is_fluid {
+            continue;
+        }
+        let mut producer_out_ys: Vec<i32> = Vec::new();
+        if let Some(pr) = lane.producer_row {
+            if pr < row_spans.len() {
+                producer_out_ys.push(row_spans[pr].output_belt_y);
+            }
+        }
+        for &p in &lane.extra_producer_rows {
+            if p < row_spans.len() {
+                producer_out_ys.push(row_spans[p].output_belt_y);
+            }
+        }
+        let start_y = if !producer_out_ys.is_empty() {
+            producer_out_ys.iter().copied().min().unwrap().min(lane.source_y)
+        } else {
+            lane.source_y
+        };
+        let mut end_y = lane.tap_off_ys.iter().copied().max().unwrap_or(start_y);
+        for &y in &producer_out_ys {
+            end_y = end_y.max(y);
+        }
+        if let Some(bal_y) = lane.balancer_y {
+            end_y = end_y.max(bal_y + 1);
+        }
+        if let Some((_, by_end)) = lane.family_balancer_range {
+            end_y = end_y.max(by_end + 1);
+        }
+        if end_y < start_y {
+            continue;
+        }
+        for y in start_y..=end_y {
+            extra_obstacles.insert((lane.x as i16, y as i16));
+        }
+    }
+
     let max_extent = (bw.max(total_height) + 50) as i16;
     let effective_belt = crate::common::belt_entity_for_rate(f64::MAX, max_belt_tier);
     let reach = crate::common::ug_max_reach(effective_belt) as i16;
     let routed = negotiate_lanes(
         &specs,
         &obstacles,
+        &extra_obstacles,
         /* max_iterations */ 20,
         max_extent,
         /* allow_underground */ true,

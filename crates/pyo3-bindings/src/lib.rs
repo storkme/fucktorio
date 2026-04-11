@@ -153,12 +153,19 @@ fn negotiate_lanes(
         flow_dir: ps.flow_dir,
         goal_on_obstacle: ps.goal_on_obstacle,
         y_tolerance: ps.y_tolerance,
+        respect_extra_obstacles: false,
+
+        own_trunk_x: None,
+
+
+        forbid_ug_exit_to_goal: false,
     }).collect();
 
     let obs: FxHashSet<(i16, i16)> = obstacles.into_iter().collect();
+    let extras: FxHashSet<(i16, i16)> = FxHashSet::default();
 
     let routed: Vec<RoutedLane> = astar::negotiate_lanes(
-        &specs, &obs, max_iterations, max_extent,
+        &specs, &obs, &extras, max_iterations, max_extent,
         allow_underground, ug_max_reach, history_factor, present_factor,
     );
 
