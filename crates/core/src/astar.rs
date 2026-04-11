@@ -455,10 +455,16 @@ pub fn astar_inner(
                     if forbid_ug_exit_to_goal && landing_on_goal {
                         continue;
                     }
-                    // UG exits cannot land on obstacles — even goal tiles.
-                    // A UG exit entity would overlap with the obstacle entity.
-                    // Surface moves CAN reach goal obstacles (checked separately).
-                    if obstacles.contains(&(ex, ey)) {
+                    // UG exits cannot land on obstacles, except when landing on
+                    // a goal tile with `goal_on_obstacle` set. That flag is used
+                    // by feeder specs whose goal is the foreign-trunk landing
+                    // column — which is either a tunnel tile (no entity) or
+                    // will be overwritten by the renderer's UG-exit entity.
+                    // Without this exemption, a feeder crossing foreign trunks
+                    // can't UG-exit onto its goal and A* finds no path at all.
+                    let ug_exit_obstacle =
+                        obstacles.contains(&(ex, ey)) && !(goal_on_obstacle && landing_on_goal);
+                    if ug_exit_obstacle {
                         continue;
                     }
                     if landing_on_goal && !hard_block_perp_ug {
