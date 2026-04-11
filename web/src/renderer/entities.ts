@@ -535,17 +535,16 @@ function drawPipe(entity: PlacedEntity, connections: number): Graphics {
   const pipeWidth = Math.max(2, s * 0.4);
 
   if (isGround) {
-    // pipe-to-ground: single stub in flow direction
+    // pipe-to-ground: stub toward surface connection (opposite of underground direction)
     g.setStrokeStyle({ width: pipeWidth, color: pipeColor, cap: "round" });
     const [dx, dy] = dirVec(entity.direction);
-    g.moveTo(cx, cy).lineTo(cx + dx * s / 2, cy + dy * s / 2).stroke();
+    g.moveTo(cx, cy).lineTo(cx - dx * s / 2, cy - dy * s / 2).stroke();
     g.circle(cx, cy, pipeWidth * 0.4).fill(pipeColor);
     g.circle(cx, cy, pipeWidth * 0.25).fill(0x0a1520);
   } else if (connections === 0) {
     // Isolated pipe: just a center dot
     g.circle(cx, cy, pipeWidth * 0.4).fill(pipeColor);
   } else {
-    const halfS = s / 2;
     const hasN = !!(connections & CONN_N);
     const hasE = !!(connections & CONN_E);
     const hasS = !!(connections & CONN_S);
@@ -568,15 +567,15 @@ function drawPipe(entity: PlacedEntity, connections: number): Graphics {
       // Straight E-W
       g.moveTo(0, cy).lineTo(s, cy).stroke();
     } else if (count === 2) {
-      // Corner arc — smooth quarter-circle centred on the tile corner
+      // Corner — smooth quadratic curve through the tile interior
       if (hasN && hasE) {
-        g.arc(s, 0, halfS, Math.PI, Math.PI / 2, true).stroke();
+        g.moveTo(cx, 0).quadraticCurveTo(s, 0, s, cy).stroke();
       } else if (hasE && hasS) {
-        g.arc(s, s, halfS, 3 * Math.PI / 2, Math.PI, true).stroke();
+        g.moveTo(s, cy).quadraticCurveTo(s, s, cx, s).stroke();
       } else if (hasS && hasW) {
-        g.arc(0, s, halfS, 0, 3 * Math.PI / 2, true).stroke();
+        g.moveTo(cx, s).quadraticCurveTo(0, s, 0, cy).stroke();
       } else { // W+N
-        g.arc(0, 0, halfS, Math.PI / 2, 0, true).stroke();
+        g.moveTo(0, cy).quadraticCurveTo(0, 0, cx, 0).stroke();
       }
     } else if (count === 3) {
       // T-junction: straight through the two opposite + stub for the third
