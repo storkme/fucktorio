@@ -176,12 +176,9 @@ mod tests {
         let mut has_east_exit = false;
         for y in 0..grid.h {
             let right_cell = grid.get(grid.w - 1, y);
-            match right_cell {
-                Cell::Belt(Dir::East) => {
-                    has_east_exit = true;
-                    break;
-                }
-                _ => {}
+            if let Cell::Belt(Dir::East) = right_cell {
+                has_east_exit = true;
+                break;
             }
         }
         if !has_east_exit {
