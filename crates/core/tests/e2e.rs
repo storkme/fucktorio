@@ -503,7 +503,6 @@ fn tier2_electronic_circuit_splitter_stamp_regression() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Layout warning: underground-belt sideload at (1,1) — belt at (1,0) facing south sideloads into UG input facing east, only one lane loaded
 #[ntest::timeout(10000)]
 fn tier3_plastic_bar() {
     let inputs: FxHashSet<String> = ["petroleum-gas", "coal"]
