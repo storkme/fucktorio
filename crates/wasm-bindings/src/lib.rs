@@ -1,4 +1,12 @@
-// Build: wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
+//! wasm-bindgen bindings for the Fucktorio pipeline.
+//!
+//! Thin wrapper around `fucktorio_core` that exposes the full pipeline to the
+//! browser via WASM. Loaded by `web/src/engine.ts`.
+//!
+//! Build: `wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg`
+//!
+//! Exposed functions: `init`, `solve`, `layout`, `export_blueprint`, `validate`,
+//! `get_all_items`, `get_recipes_for_item`, `parse_blueprint`.
 
 use fucktorio_core::models::{LayoutResult, SolverResult};
 use fucktorio_core::validate::{self, LayoutStyle, ValidationIssue};
