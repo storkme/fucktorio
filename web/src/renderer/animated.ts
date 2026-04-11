@@ -29,8 +29,8 @@ export function renderLayoutAnimated(
   // Render everything normally (no hover/click callbacks in the preview)
   renderLayout(layout, container);
 
-  // Collect all direct children that are entity graphics
   const children = container.children.slice();
+  const totalChildren = children.length;
 
   // Hide everything
   for (const child of children) {
@@ -39,35 +39,36 @@ export function renderLayoutAnimated(
 
   const entityTotal = layout.entities.length;
 
-  // Batch size: aim for ~1.5s total animation
-  // For small layouts (< 50 entities): reveal 2-3 at a time
-  // For medium layouts (50-200): reveal 5-8 at a time
-  // For large layouts (200+): reveal 10-20 at a time
-  let batchSize: number;
+  // Batch size in terms of entities: aim for ~1.5s total animation
+  let entitiesPerBatch: number;
   if (entityTotal < 50) {
-    batchSize = 2;
+    entitiesPerBatch = 2;
   } else if (entityTotal < 200) {
-    batchSize = 6;
+    entitiesPerBatch = 6;
   } else {
-    batchSize = Math.max(10, Math.ceil(entityTotal / 30));
+    entitiesPerBatch = Math.max(10, Math.ceil(entityTotal / 30));
   }
+
+  // Map entity batches to child-index batches so each reveal completes whole entities
+  const childrenPerEntity = totalChildren / entityTotal;
+  const childrenPerBatch = Math.max(1, Math.round(entitiesPerBatch * childrenPerEntity));
 
   // Delay between batches: ~15-30ms for a snappy but visible animation
   const batchDelay = entityTotal < 50 ? 30 : entityTotal < 200 ? 20 : 12;
 
-  let idx = 0;
+  let childIdx = 0;
+  let entitiesShown = 0;
 
   function revealBatch(): void {
-    const end = Math.min(idx + batchSize, children.length);
-    for (let i = idx; i < end; i++) {
+    const end = Math.min(childIdx + childrenPerBatch, totalChildren);
+    for (let i = childIdx; i < end; i++) {
       children[i].alpha = 1;
     }
-    idx = end;
-    // Show progress based on entity count, not raw child count
-    const shown = Math.min(idx, entityTotal);
-    badge.textContent = `${shown} / ${entityTotal}`;
+    childIdx = end;
+    entitiesShown = Math.min(Math.round(childIdx / childrenPerEntity), entityTotal);
+    badge.textContent = `${entitiesShown} / ${entityTotal}`;
 
-    if (idx < children.length) {
+    if (childIdx < totalChildren) {
       setTimeout(revealBatch, batchDelay);
     } else {
       badge.textContent = `${entityTotal} entities`;

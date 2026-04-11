@@ -340,13 +340,6 @@ const STYLE = `
   padding: 2px 0;
 }
 
-/* ---- SAT stats ---- */
-.sb-sat-stats {
-  margin-top: 6px;
-  font-size: 10px;
-  color: #8af;
-}
-
 /* ---- Rate suffix ---- */
 .sb-rate-suffix {
   color: #6b7280;
@@ -577,9 +570,9 @@ export function renderSidebar(
       tag.classList.toggle("active", cb.checked);
     });
 
-    inputsBody.appendChild(tagsWrap);
     tagsWrap.appendChild(tag);
   });
+  inputsBody.appendChild(tagsWrap);
   inner.appendChild(inputsSection);
 
   // ==================== SOLVER ====================
@@ -799,13 +792,6 @@ export function renderSidebar(
         blueprintSection.style.display = "none";
       } else {
         blueprintSection.style.display = "block";
-      }
-      if (currentLayout.regions?.length) {
-        const zoneDiv = document.createElement("div");
-        zoneDiv.className = "sb-sat-stats";
-        const total_us = currentLayout.regions.reduce((s, r) => s + (r.solve_time_us ?? 0), 0);
-        zoneDiv.textContent = `SAT: ${currentLayout.regions.length} zone${currentLayout.regions.length > 1 ? "s" : ""} (${total_us}\u00B5s)`;
-        resultContainer.appendChild(zoneDiv);
       }
       if (currentLayout.trace?.length && options?.getDebugMode?.()) {
         resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
