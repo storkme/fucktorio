@@ -5,27 +5,13 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::common::{dir_to_vec, is_machine_entity, machine_size, machine_tiles};
+use crate::common::{
+    dir_to_vec, fluid_only_recipes, inserter_reach, is_inserter, is_machine_entity,
+    machine_size, machine_tiles,
+};
 use crate::models::{LayoutResult, SolverResult};
 
 use super::{Severity, ValidationIssue};
-
-// ── Entity classification ────────────────────────────────────────────────────
-
-const INSERTER_ENTITIES: &[&str] =
-    &["inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"];
-
-fn is_inserter(name: &str) -> bool {
-    INSERTER_ENTITIES.contains(&name)
-}
-
-/// Inserter reach: how many tiles away the pick-up / drop position is.
-fn inserter_reach(name: &str) -> i32 {
-    match name {
-        "long-handed-inserter" => 2,
-        _ => 1,
-    }
-}
 
 // ── Helper: build machine tile set ───────────────────────────────────────────
 
@@ -37,25 +23,6 @@ fn build_machine_tile_set(layout: &LayoutResult) -> FxHashSet<(i32, i32)> {
         }
     }
     tiles
-}
-
-// ── Helper: fluid-only recipes ───────────────────────────────────────────────
-
-fn fluid_only_recipes(solver_result: Option<&SolverResult>) -> FxHashSet<String> {
-    let mut out = FxHashSet::default();
-    if let Some(sr) = solver_result {
-        for spec in &sr.machines {
-            let has_solid = spec
-                .inputs
-                .iter()
-                .chain(spec.outputs.iter())
-                .any(|f| !f.is_fluid);
-            if !has_solid {
-                out.insert(spec.recipe.clone());
-            }
-        }
-    }
-    out
 }
 
 // ── check_inserter_chains ─────────────────────────────────────────────────────

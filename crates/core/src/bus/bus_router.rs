@@ -38,23 +38,44 @@ pub(crate) const MACHINE_ENTITIES: &[&str] = &[
     "biochamber",
 ];
 
-/// A single vertical lane on the bus.
+/// A single vertical lane on the main bus, carrying one item (or fluid) from its
+/// source row(s) down to its consumer row(s). Lanes run SOUTH; at each consumer the
+/// lane turns EAST via a tap-off. See `docs/layout-engine-deep-dive.md` for the full
+/// bus layout model.
 #[derive(Clone, Debug)]
 pub struct BusLane {
+    /// Item (or fluid) name this lane carries.
     pub item: String,
-    pub x: i32,  // column in the layout
-    pub source_y: i32,  // where items enter (0 for external, output_y for intermediate)
-    pub consumer_rows: Vec<usize>,  // indices into row_spans
-    pub producer_row: Option<usize>,  // index or None for external
-    pub rate: f64,  // total throughput for belt tier selection
+    /// Column (x-coordinate) assigned to this lane in the layout.
+    pub x: i32,
+    /// Y-coordinate where items enter this lane (0 for external inputs, or the
+    /// producer row's output y for intermediate items).
+    pub source_y: i32,
+    /// Indices into the row-spans list for rows that consume from this lane.
+    pub consumer_rows: Vec<usize>,
+    /// Primary producer row index, or `None` for externally supplied items.
+    pub producer_row: Option<usize>,
+    /// Total throughput (items/s or fluid/s) for belt/pipe tier selection.
+    pub rate: f64,
+    /// Whether this lane carries a fluid (pipe + underground-pipe) instead of items.
     pub is_fluid: bool,
+    /// Y-coordinates where tap-offs turn this lane EAST into a consumer row.
     pub tap_off_ys: Vec<i32>,
-    pub extra_producer_rows: Vec<usize>,  // additional sub-rows
-    pub balancer_y: Option<i32>,  // y of lane balancer splitter (None = no balancer)
-    pub family_id: Option<usize>,  // index into LaneFamily list if fed by N-to-M balancer
-    pub fluid_port_positions: Vec<(usize, i32, i32)>,  // (row_index, x, y) of pipe-to-ground exit
-    pub fluid_output_port_positions: Vec<(usize, i32, i32)>,  // (row_index, x, y) of producer output ports
-    pub family_balancer_range: Option<(i32, i32)>,  // (y_start, y_end) inclusive — full balancer zone to skip
+    /// Additional producer row indices beyond the primary (e.g. multiple sub-rows
+    /// producing the same item).
+    pub extra_producer_rows: Vec<usize>,
+    /// Y-coordinate of the lane-balancer splitter, or `None` if no balancer is needed.
+    pub balancer_y: Option<i32>,
+    /// Index into the [`LaneFamily`] list when this lane is fed by an N-to-M balancer.
+    pub family_id: Option<usize>,
+    /// `(row_index, x, y)` of each pipe-to-ground exit connecting a fluid producer
+    /// to this lane.
+    pub fluid_port_positions: Vec<(usize, i32, i32)>,
+    /// `(row_index, x, y)` of each fluid producer's output pipe port.
+    pub fluid_output_port_positions: Vec<(usize, i32, i32)>,
+    /// `(y_start, y_end)` inclusive — the full vertical range occupied by a
+    /// balancer family block. Trunk segments inside this range are skipped.
+    pub family_balancer_range: Option<(i32, i32)>,
 }
 
 impl BusLane {
@@ -95,16 +116,25 @@ impl BusLane {
     }
 }
 
-/// An N-to-M balancer block that feeds M sibling trunk lanes for one item.
+/// An N-to-M balancer block that merges N producer outputs into M sibling trunk
+/// lanes for one item, ensuring even distribution. Stamped as a pre-solved SAT
+/// template from `balancer_library`. See `docs/layout-engine-deep-dive.md`.
 #[derive(Clone, Debug)]
 pub struct LaneFamily {
+    /// Item name shared by all lanes in this family.
     pub item: String,
-    pub shape: (usize, usize),  // (N producers, M lanes)
+    /// `(N producers, M lanes)` — the balancer shape.
+    pub shape: (usize, usize),
+    /// Row indices of the N producers feeding into this balancer.
     pub producer_rows: Vec<usize>,
-    pub lane_xs: Vec<i32>,  // filled in after x-assignment
+    /// X-coordinates of the M output lanes, populated after column assignment.
+    pub lane_xs: Vec<i32>,
+    /// Y-coordinate of the first (topmost) row of the balancer block.
     pub balancer_y_start: i32,
-    pub balancer_y_end: i32,  // inclusive
-    pub total_rate: f64,  // sum across all lanes
+    /// Y-coordinate of the last row of the balancer block (inclusive).
+    pub balancer_y_end: i32,
+    /// Combined throughput across all lanes, used for belt tier selection.
+    pub total_rate: f64,
 }
 
 /// A foreign-trunk yield (UG bridge) that was requested by the skip
@@ -561,11 +591,8 @@ fn split_overflowing_lanes(
 
         if n_producers >= 1 && n_producers < n_lanes_with_consumers {
             let shape = (n_producers, n_lanes_with_consumers);
-            // TODO: Check if template exists and create LaneFamily
-            // For now, we skip balancer creation as it's Phase 2
             family_id = Some(families.len());
 
-            // Placeholder: we would stamp the balancer here in Phase 2
             let balancer_y_start = if n_producers == 1 {
                 row_spans[all_producer_rows[0]].output_belt_y
             } else {
@@ -575,17 +602,16 @@ fn split_overflowing_lanes(
                     .unwrap_or(0)
             };
 
-            // For now, we create a placeholder family
             families.push(LaneFamily {
                 item: lane.item.clone(),
                 shape,
                 producer_rows: all_producer_rows.to_vec(),
                 lane_xs: Vec::new(),
                 balancer_y_start,
-                balancer_y_end: balancer_y_start,  // Placeholder
+                balancer_y_end: balancer_y_start,
                 total_rate: lane.rate,
             });
-            family_source_y = Some(balancer_y_start + 1);  // Placeholder
+            family_source_y = Some(balancer_y_start + 1);
         }
 
         // Create split lanes

@@ -14,76 +14,14 @@ use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::common::{
-    belt_throughput, dir_to_vec, inserter_target_lane, is_machine_entity, lane_capacity,
+    belt_throughput, dir_to_vec, inserter_reach, inserter_target_lane, is_belt_entity,
+    is_inserter, is_machine_entity, is_splitter, is_surface_belt, is_ug_belt,
+    splitter_second_tile, splitter_to_surface_tier, ug_to_surface_tier, lane_capacity,
     machine_size, machine_tiles,
 };
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 
 use super::{Severity, ValidationIssue};
-
-// ---------------------------------------------------------------------------
-// Entity-set helpers
-// ---------------------------------------------------------------------------
-
-const SURFACE_BELT_ENTITIES: &[&str] =
-    &["transport-belt", "fast-transport-belt", "express-transport-belt"];
-const UG_BELT_ENTITIES: &[&str] = &[
-    "underground-belt",
-    "fast-underground-belt",
-    "express-underground-belt",
-];
-const SPLITTER_ENTITIES: &[&str] = &["splitter", "fast-splitter", "express-splitter"];
-const INSERTER_ENTITIES: &[&str] =
-    &["inserter", "long-handed-inserter", "fast-inserter", "stack-inserter"];
-const MACHINE_ENTITIES: &[&str] = &[
-    "assembling-machine-1",
-    "assembling-machine-2",
-    "assembling-machine-3",
-    "chemical-plant",
-    "electric-furnace",
-    "oil-refinery",
-];
-
-fn is_surface_belt(name: &str) -> bool {
-    SURFACE_BELT_ENTITIES.contains(&name)
-}
-fn is_ug_belt(name: &str) -> bool {
-    UG_BELT_ENTITIES.contains(&name)
-}
-fn is_splitter(name: &str) -> bool {
-    SPLITTER_ENTITIES.contains(&name)
-}
-fn is_belt_entity(name: &str) -> bool {
-    is_surface_belt(name) || is_ug_belt(name) || is_splitter(name)
-}
-fn is_inserter(name: &str) -> bool {
-    INSERTER_ENTITIES.contains(&name)
-}
-fn is_machine(name: &str) -> bool {
-    MACHINE_ENTITIES.contains(&name)
-}
-
-fn inserter_reach(name: &str) -> i32 {
-    if name == "long-handed-inserter" { 2 } else { 1 }
-}
-
-fn ug_to_surface_tier(ug: &str) -> &'static str {
-    match ug {
-        "underground-belt" => "transport-belt",
-        "fast-underground-belt" => "fast-transport-belt",
-        "express-underground-belt" => "express-transport-belt",
-        _ => "transport-belt",
-    }
-}
-
-fn splitter_to_surface_tier(splitter: &str) -> &'static str {
-    match splitter {
-        "splitter" => "transport-belt",
-        "fast-splitter" => "fast-transport-belt",
-        "express-splitter" => "express-transport-belt",
-        _ => "transport-belt",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -103,14 +41,6 @@ fn belt_dir_map(entities: &[PlacedEntity]) -> FxHashMap<(i32, i32), EntityDirect
         }
     }
     map
-}
-
-/// Second tile occupied by a splitter (perpendicular to flow).
-fn splitter_second_tile(e: &PlacedEntity) -> (i32, i32) {
-    match e.direction {
-        EntityDirection::North | EntityDirection::South => (e.x + 1, e.y),
-        _ => (e.x, e.y + 1),
-    }
 }
 
 /// All tiles occupied by belt entities (expanding splitters).
@@ -186,7 +116,7 @@ fn build_ug_pairs(entities: &[PlacedEntity]) -> FxHashMap<(i32, i32), (i32, i32)
 fn build_machine_tile_set(entities: &[PlacedEntity]) -> FxHashSet<(i32, i32)> {
     let mut tiles = FxHashSet::default();
     for e in entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             let size = machine_size(&e.name) as i32;
             for dx in 0..size {
                 for dy in 0..size {
@@ -546,7 +476,7 @@ pub fn check_output_belt_coverage(
     let mut checked: FxHashSet<(i32, i32)> = FxHashSet::default();
 
     for e in &layout.entities {
-        if !is_machine(&e.name) || !checked.insert((e.x, e.y)) {
+        if !is_machine_entity(&e.name) || !checked.insert((e.x, e.y)) {
             continue;
         }
         if let Some(recipe) = &e.recipe {
@@ -697,7 +627,7 @@ pub fn compute_lane_rates(layout: &LayoutResult, solver_result: &SolverResult) -
     let mut machine_by_tile: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
     let mut machine_entity_map: FxHashMap<(i32, i32), &PlacedEntity> = FxHashMap::default();
     for e in &layout.entities {
-        if is_machine(&e.name) {
+        if is_machine_entity(&e.name) {
             machine_entity_map.insert((e.x, e.y), e);
             let size = machine_size(&e.name) as i32;
             for dx in 0..size {

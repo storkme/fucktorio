@@ -70,25 +70,41 @@ pub struct ModuleItem {
 }
 
 /// A single entity placed in the blueprint grid.
+///
+/// Represents any game entity (belt, inserter, machine, pipe, pole, etc.) at a
+/// specific tile position with an orientation. Flows through layout → blueprint export.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlacedEntity {
+    /// Factorio entity prototype name (e.g. `"transport-belt"`, `"assembling-machine-2"`).
     pub name: String,
+    /// Tile X coordinate (integer grid).
     #[serde(default)]
     pub x: i32,
+    /// Tile Y coordinate (integer grid).
     #[serde(default)]
     pub y: i32,
+    /// Facing direction (N/E/S/W). Corresponds to Factorio's 4-way direction
+    /// constants (0/4/8/12).
     #[serde(default)]
     pub direction: EntityDirection,
+    /// Recipe assigned to crafting machines (`None` for belts, inserters, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
+    /// I/O role tag for bus entities: `"input"`, `"output"`, or `"passthrough"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_type: Option<String>,
+    /// Item or fluid name this belt/pipe is currently carrying.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub carries: Option<String>,
+    /// Factorio Space Age fluid-box mirroring. When `true`, flips fluid port
+    /// positions along the entity's primary axis, giving 8 orientations (4
+    /// rotations × 2 mirrors). Ignored in Factorio 1.1. See `CLAUDE.md`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirror: bool,
+    /// Optional identifier linking this entity to a layout segment or balancer
+    /// group for debugging/analysis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segment_id: Option<String>,
     /// Throughput rate (items/s or fluid units/s) flowing through this entity.
