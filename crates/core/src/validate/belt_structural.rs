@@ -76,6 +76,15 @@ fn ug_to_surface_tier(ug: &str) -> &'static str {
     }
 }
 
+fn splitter_to_surface_tier(splitter: &str) -> &'static str {
+    match splitter {
+        "splitter" => "transport-belt",
+        "fast-splitter" => "fast-transport-belt",
+        "express-splitter" => "express-transport-belt",
+        _ => "transport-belt",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -964,6 +973,10 @@ pub fn check_lane_throughput(
             belt_name_map.insert((e.x, e.y), &e.name);
         } else if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output") {
             belt_name_map.insert((e.x, e.y), ug_to_surface_tier(&e.name));
+        } else if is_splitter(&e.name) {
+            let tier = splitter_to_surface_tier(&e.name);
+            belt_name_map.insert((e.x, e.y), tier);
+            belt_name_map.insert(splitter_second_tile(e), tier);
         }
     }
 

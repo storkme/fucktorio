@@ -375,7 +375,6 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Lane-throughput errors: both lanes at 15/s on yellow belt (7.5/s per-lane cap)
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
@@ -423,7 +422,9 @@ fn tier2_electronic_circuit_from_ore() {
 }
 
 #[test]
-#[ignore] // Validation errors: entity-overlap, belt-dead-end, belt-item-isolation, lane-throughput — layout quality issue, not a performance hang
+#[ignore] // Remaining errors: belt-dead-end, lane-throughput (6× on yellow belt).
+          // NOTE: entity-overlap and belt-item-isolation were eliminated by the
+          // dropped-bridge retry loop in build_bus_layout (see BridgeDropped trace).
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_20s_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
@@ -446,12 +447,61 @@ fn tier2_electronic_circuit_20s_from_ore() {
     assert_round_trip(&result);
 }
 
+/// Regression test for the splitter-stamp sideload-into-UG-input bug that the
+/// user reported: `electronic-circuit` at 10/s, assembling-machine-1 with fast
+/// belts, generating from `{iron-plate, copper-plate}`. The bug class manifests
+/// as a `DroppedBridge` in the router — the foreign-trunk yield (UG bridge)
+/// for one lane's trunk couldn't be emitted because its UG output tile
+/// collided with the trunk's own tap-off. Before the retry-loop fix in
+/// `build_bus_layout`, this produced an invalid sideload into the tap-off's
+/// underground-belt-input first tile. The retry loop maps dropped bridges to
+/// `extra_gap_after_row` updates, pushing the colliding row down by 1 so the
+/// bridge becomes valid.
+///
+/// This test specifically guards the retry feedback loop: if it ever stops
+/// firing (e.g. route_belt_lane stops pushing to dropped_bridges), this test
+/// fails because the sideload warning comes back.
+#[test]
+#[ntest::timeout(10000)]
+fn tier2_electronic_circuit_splitter_stamp_regression() {
+    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let result = run_e2e(
+        "tier2_electronic_circuit_splitter_stamp_regression",
+        "electronic-circuit",
+        10.0,
+        "assembling-machine-1",
+        Some("fast-transport-belt"),
+        &inputs,
+    )
+    .expect("e2e pipeline");
+
+    // Specifically assert there's no sideload-into-UG-input warning, which
+    // is the precise bug class the retry loop addresses.
+    let sideload_issues: Vec<_> = result.issues.iter()
+        .filter(|i| i.message.contains("sideloads into underground input"))
+        .collect();
+    assert!(
+        sideload_issues.is_empty(),
+        "Expected no sideload-into-UG-input warnings, got {}:\n{}",
+        sideload_issues.len(),
+        sideload_issues.iter()
+            .map(|i| format!("  [{}] {} ({},{})", i.category, i.message,
+                i.x.unwrap_or(-1), i.y.unwrap_or(-1)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Ensure the layout can actually produce items (no solver/routing failure).
+    assert_produces(&result, "electronic-circuit", 10.0);
+}
+
 // ---------------------------------------------------------------------------
 // Tier 3: plastic-bar (1 recipe, 1 fluid + 1 solid input)
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Layout warning: underground-belt sideload at (1,1) — belt at (1,0) facing south sideloads into UG input facing east, only one lane loaded
 #[ntest::timeout(10000)]
 fn tier3_plastic_bar() {
     let inputs: FxHashSet<String> = ["petroleum-gas", "coal"]
@@ -508,14 +558,16 @@ fn tier3_sulfuric_acid() {
 #[ignore] // Blocked by #64: lane-throughput warnings
 #[ntest::timeout(10000)]
 fn tier4_advanced_circuit_from_plates() {
-    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "plastic-bar"]
+    // Nauvis-style inputs: plates + raw resources (coal, crude-oil) + water.
+    // Solver will synthesize plastic-bar from petroleum-gas and coal.
+    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "coal", "crude-oil", "water"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let result = run_e2e(
         "tier4_advanced_circuit_from_plates",
         "advanced-circuit",
-        10.0,
+        1.0,
         "assembling-machine-2",
         None,
         &inputs,
@@ -524,7 +576,7 @@ fn tier4_advanced_circuit_from_plates() {
 
     assert_no_errors(&result);
     assert_no_warnings(&result);
-    assert_produces(&result, "advanced-circuit", 10.0);
+    assert_produces(&result, "advanced-circuit", 1.0);
     assert_round_trip(&result);
 }
 

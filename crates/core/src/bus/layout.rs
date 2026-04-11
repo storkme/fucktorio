@@ -8,10 +8,10 @@ use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 use crate::bus::bus_router::{
     plan_bus_lanes, bus_width_for_lanes, stamp_family_balancer, render_family_input_paths,
     merge_output_rows, place_merger_block, route_lane, negotiate_and_route,
-    extract_and_solve_crossings, SatCrossingRegion,
-    BusLane, LaneFamily, MACHINE_ENTITIES,
+    BusLane, DroppedBridge, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};
+use crate::bus::plan::{plan_layout, apply_dropped_to_gaps, extract_and_solve_crossings, PlanError};
 
 /// Convert a SolverResult into a bus-style LayoutResult.
 ///
@@ -69,79 +69,237 @@ pub fn build_bus_layout(
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_1".to_string(), duration_ms: t_plan1.elapsed().as_millis() as u64 });
     let actual_bw = bus_width_for_lanes(&lanes);
 
-    // Compute extra gaps needed for balancer blocks
-    let extra_gaps = compute_extra_gaps(&families);
+    // Compute extra gaps needed for balancer blocks. The retry loop below
+    // may add to this map when `route_bus` reports dropped UG bridges.
+    let mut extra_gaps = compute_extra_gaps(&families);
 
-    // Re-place rows if bus width changed or balancers need extra space
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_place2 = std::time::Instant::now();
-    let (row_entities, row_spans, row_width, total_height) = if actual_bw != temp_bw || !extra_gaps.is_empty()
-    {
-        place_rows(
-            &solver_result.machines,
-            &solver_result.dependency_order,
+    // Retry loop: place_rows (pass 2) → plan_bus_lanes (pass 2) → route_bus.
+    //
+    // When `route_bus` reports dropped UG bridges (the filter in
+    // `route_belt_lane`/`route_intermediate_lane` couldn't bridge because
+    // the bridge output would collide with the trunk's own tap-off), we
+    // translate those drops into `extra_gap_after_row` entries that push
+    // the conflicting row down by 1, freeing the tile for the bridge, and
+    // retry the second pass. Capped at MAX_BRIDGE_RETRIES to prevent
+    // pathological cases from looping indefinitely.
+    const MAX_BRIDGE_RETRIES: u32 = 3;
+
+    let mut cur_row_entities = row_entities;
+    let mut cur_row_spans = row_spans;
+    let mut cur_row_width = row_width;
+    let mut cur_total_height = total_height;
+    let mut cur_lanes = lanes;
+    let mut cur_families = families;
+
+    // Assigned inside the retry loop (every iteration overwrites).
+    let mut bus_entities: Vec<PlacedEntity>;
+    let mut max_y: i32;
+    let mut merge_max_x: i32;
+    let mut regions: Vec<crate::models::LayoutRegion>;
+
+    let mut attempt: u32 = 0;
+    loop {
+        // Re-place rows + re-plan lanes if this is a retry, or on first
+        // iteration if the initial bus width / extra_gaps changed.
+        let need_replace = attempt > 0 || actual_bw != temp_bw || !extra_gaps.is_empty();
+        if need_replace {
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_place2 = std::time::Instant::now();
+            let (re, rs, rw, th) = place_rows(
+                &solver_result.machines,
+                &solver_result.dependency_order,
+                actual_bw,
+                bus_header,
+                max_belt_tier,
+                Some(&final_output_items),
+                Some(&extra_gaps),
+            );
+            cur_row_entities = re;
+            cur_row_spans = rs;
+            cur_row_width = rw;
+            cur_total_height = th;
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+                phase: format!("place_rows_2_attempt_{}", attempt),
+                duration_ms: t_place2.elapsed().as_millis() as u64,
+            });
+
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_plan2 = std::time::Instant::now();
+            let (nl, nf) = plan_bus_lanes(solver_result, &cur_row_spans, max_belt_tier)?;
+            cur_lanes = nl;
+            cur_families = nf;
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+                phase: format!("plan_bus_lanes_2_attempt_{}", attempt),
+                duration_ms: t_plan2.elapsed().as_millis() as u64,
+            });
+        }
+
+        if attempt == 0 {
+            crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
+                phase: "rows_placed".into(),
+                entity_count: cur_row_entities.len(),
+            });
+            if crate::trace::is_active() {
+                crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+                    phase: "rows_placed".into(),
+                    entities: cur_row_entities.clone(),
+                    width: cur_row_width.max(actual_bw),
+                    height: cur_total_height,
+                });
+            }
+            crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
+                phase: "lanes_planned".into(),
+                entity_count: cur_row_entities.len(),
+            });
+            if crate::trace::is_active() {
+                crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
+                    phase: "lanes_planned".into(),
+                    entities: cur_row_entities.clone(),
+                    width: cur_row_width.max(actual_bw),
+                    height: cur_total_height,
+                });
+            }
+        }
+
+        // Phase 3c: build the global routing plan. `plan_layout` resolves
+        // pre-A* bridge conflicts (foreign tap-offs crossing this trunk) and
+        // either returns an empty-drops Plan or a `DroppedBridges` error
+        // with the unbridgeable ranges. On error we short-circuit the
+        // route_bus call — translate the drops into extra_gap updates and
+        // retry the pipeline from place_rows. This is a faster retry path
+        // than letting route_bus run A* first and then dropping.
+        match plan_layout(&cur_lanes, &cur_row_spans) {
+            Ok(()) => {}
+            Err(PlanError::DroppedBridges { dropped: pre_drops }) => {
+                for db in &pre_drops {
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeDropped {
+                        trunk_item: db.trunk_item.clone(),
+                        trunk_x: db.trunk_x,
+                        range_start: db.range.0,
+                        range_end: db.range.1,
+                        colliding_tap_y: db.colliding_tap_y(),
+                    });
+                }
+                if attempt >= MAX_BRIDGE_RETRIES {
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                        final_dropped_count: pre_drops.len(),
+                        max_retries: MAX_BRIDGE_RETRIES,
+                    });
+                    // Fall through to route_bus so the validator can render
+                    // the best-effort layout — same failure mode as the
+                    // post-route_bus path.
+                }
+                let gap_updates = apply_dropped_to_gaps(&pre_drops, &cur_row_spans, &mut extra_gaps);
+                if gap_updates == 0 || attempt >= MAX_BRIDGE_RETRIES {
+                    // No actionable updates — route_bus and let the
+                    // post-A* retry handle any remaining drops.
+                } else {
+                    attempt += 1;
+                    crate::trace::emit(crate::trace::TraceEvent::BridgeRetry {
+                        attempt,
+                        dropped_count: pre_drops.len(),
+                        extra_gap_updates: gap_updates,
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Route bus lanes
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_route_bus = std::time::Instant::now();
+        let mut dropped: Vec<crate::bus::bus_router::DroppedBridge> = Vec::new();
+        let (be, my, mx, rg) = route_bus(
+            &cur_lanes,
+            &cur_row_spans,
+            cur_total_height,
             actual_bw,
-            bus_header,
             max_belt_tier,
-            Some(&final_output_items),
-            Some(&extra_gaps),
-        )
-    } else {
-        (row_entities, row_spans, row_width, total_height)
-    };
-    crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
-        phase: "rows_placed".into(),
-        entity_count: row_entities.len(),
-    });
-    if crate::trace::is_active() {
-        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
-            phase: "rows_placed".into(),
-            entities: row_entities.clone(),
-            width: row_width.max(actual_bw),
-            height: total_height,
+            solver_result,
+            &cur_families,
+            &cur_row_entities,
+            &mut dropped,
+        )?;
+        bus_entities = be;
+        max_y = my;
+        merge_max_x = mx;
+        regions = rg;
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+            phase: format!("route_bus_attempt_{}", attempt),
+            duration_ms: t_route_bus.elapsed().as_millis() as u64,
         });
+
+        // Emit dropped-bridge trace events regardless of retry outcome so
+        // the debug panel can see them even if we eventually succeed.
+        for db in &dropped {
+            crate::trace::emit(crate::trace::TraceEvent::BridgeDropped {
+                trunk_item: db.trunk_item.clone(),
+                trunk_x: db.trunk_x,
+                range_start: db.range.0,
+                range_end: db.range.1,
+                colliding_tap_y: db.colliding_tap_y(),
+            });
+        }
+
+        if dropped.is_empty() {
+            break;
+        }
+
+        if attempt >= MAX_BRIDGE_RETRIES {
+            crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                final_dropped_count: dropped.len(),
+                max_retries: MAX_BRIDGE_RETRIES,
+            });
+            break;
+        }
+
+        // Translate each dropped bridge into an extra_gap_after_row update.
+        // For each drop, find the row whose input_belt_y or output_belt_y
+        // equals the colliding tap y, then add a gap AFTER the previous row
+        // to push the colliding row down by one tile. If the colliding row
+        // is row 0 there's no predecessor, so the drop is unresolvable here
+        // and we lose progress for that one (other drops may still help).
+        let mut gap_updates: usize = 0;
+        for db in &dropped {
+            let colliding_y = db.colliding_tap_y();
+            let row_idx_opt = cur_row_spans.iter().position(|rs| {
+                rs.input_belt_y.contains(&colliding_y) || rs.output_belt_y == colliding_y
+            });
+            if let Some(row_idx) = row_idx_opt {
+                if row_idx > 0 {
+                    let target = row_idx - 1;
+                    let cur = extra_gaps.entry(target).or_insert(0);
+                    *cur += 1;
+                    gap_updates += 1;
+                }
+            }
+        }
+
+        attempt += 1;
+        crate::trace::emit(crate::trace::TraceEvent::BridgeRetry {
+            attempt,
+            dropped_count: dropped.len(),
+            extra_gap_updates: gap_updates,
+        });
+
+        if gap_updates == 0 {
+            // Nothing actionable — further retries can't make progress.
+            crate::trace::emit(crate::trace::TraceEvent::BridgeRetryExhausted {
+                final_dropped_count: dropped.len(),
+                max_retries: MAX_BRIDGE_RETRIES,
+            });
+            break;
+        }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "place_rows_2".to_string(), duration_ms: t_place2.elapsed().as_millis() as u64 });
-    // Re-plan lanes with final row positions
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_plan2 = std::time::Instant::now();
-    let (lanes, families) = if actual_bw != temp_bw || !extra_gaps.is_empty() {
-        plan_bus_lanes(solver_result, &row_spans, max_belt_tier)?
-    } else {
-        (lanes, families)
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "plan_bus_lanes_2".to_string(), duration_ms: t_plan2.elapsed().as_millis() as u64 });
-    crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
-        phase: "lanes_planned".into(),
-        entity_count: row_entities.len(),
-    });
-    if crate::trace::is_active() {
-        crate::trace::emit(crate::trace::TraceEvent::PhaseSnapshot {
-            phase: "lanes_planned".into(),
-            entities: row_entities.clone(),
-            width: row_width.max(actual_bw),
-            height: total_height,
-        });
-    }
-
-    // Route bus lanes
-    #[cfg(not(target_arch = "wasm32"))]
-    let t_route_bus = std::time::Instant::now();
-    let (bus_entities, max_y, merge_max_x, regions) = route_bus(
-        &lanes,
-        &row_spans,
-        total_height,
-        actual_bw,
-        max_belt_tier,
-        solver_result,
-        &families,
-        &row_entities,
-    )?;
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::trace::emit(crate::trace::TraceEvent::PhaseTime { phase: "route_bus_total".to_string(), duration_ms: t_route_bus.elapsed().as_millis() as u64 });
+    // Only row_entities, row_width, and families are read past this point;
+    // row_spans, total_height, and lanes are consumed inside the retry loop.
+    let row_entities = cur_row_entities;
+    let row_width = cur_row_width;
+    let families = cur_families;
     crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
         phase: "bus_routed".into(),
         entity_count: bus_entities.len(),
@@ -179,10 +337,10 @@ pub fn build_bus_layout(
         row_entities.into_iter().filter(|e| !bus_occupied.contains(&(e.x, e.y))).collect()
     };
 
-    // Collect occupied tiles and machine centers for pole placement
+    // Collect occupied tiles and machine footprint info for pole placement.
+    // For each machine we record (center_x, top_y, size).
     let mut occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
-    let mut machine_centers: Vec<(i32, i32)> = Vec::new();
-
+    let mut machines: Vec<(i32, i32, i32)> = Vec::new();
     for ent in row_entities.iter().chain(bus_entities.iter()) {
         if MACHINE_ENTITIES.contains(&ent.name.as_str()) {
             let sz = crate::common::machine_size(&ent.name) as i32;
@@ -191,7 +349,7 @@ pub fn build_bus_layout(
                     occupied.insert((ent.x + dx, ent.y + dy));
                 }
             }
-            machine_centers.push((ent.x + sz / 2, ent.y + sz / 2));
+            machines.push((ent.x + sz / 2, ent.y, sz));
         } else {
             occupied.insert((ent.x, ent.y));
         }
@@ -199,9 +357,9 @@ pub fn build_bus_layout(
 
     let width = row_width.max(actual_bw).max(merge_max_x);
 
-    // Place power poles
-    let pole_strategy = if machine_centers.is_empty() { "grid" } else { "greedy" };
-    let pole_entities = place_poles(width, max_y, Some(occupied), Some(machine_centers));
+    // Place power poles as regular horizontal lines, one per machine row.
+    let pole_strategy = if machines.is_empty() { "empty" } else { "rows" };
+    let pole_entities = place_poles(&machines, &occupied);
     crate::trace::emit(crate::trace::TraceEvent::PolesPlaced {
         count: pole_entities.len(),
         strategy: pole_strategy.to_string(),
@@ -356,6 +514,7 @@ fn route_bus(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     row_entities: &[PlacedEntity],
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) -> Result<(Vec<PlacedEntity>, i32, i32, Vec<crate::models::LayoutRegion>), String> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
     let mut max_y = total_height;
@@ -366,8 +525,8 @@ fn route_bus(
     // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
     #[cfg(not(target_arch = "wasm32"))]
     let sat_start = std::time::Instant::now();
-    let (solved_crossings, mut crossing_tiles, _sat_regions) =
-        extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
+    let (solved_crossings, mut crossing_tiles) =
+        extract_and_solve_crossings(lanes, max_belt_tier);
     #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
         phase: "sat_crossing_zones".to_string(),
@@ -384,8 +543,6 @@ fn route_bus(
         entities.extend(sc.solution.entities.clone());
     }
 
-    // No spec splitting needed — A* runs normally, SAT only affects trunk rendering.
-    let empty_regions: Vec<SatCrossingRegion> = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
     let negotiate_start = std::time::Instant::now();
     let routed_paths = negotiate_and_route(
@@ -397,8 +554,6 @@ fn route_bus(
         solver_result,
         families,
         max_belt_tier,
-        &empty_regions,
-        &FxHashSet::default(),
     );
     #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
@@ -502,7 +657,7 @@ fn route_bus(
     let route_lanes_start = std::time::Instant::now();
     for lane in lanes {
         let entity_count_before = entities.len();
-        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles);
+        route_lane(&mut entities, lane, lanes, row_spans, bw, max_belt_tier, Some(&routed_paths), &crossing_tiles, &tapoff_tiles, dropped_bridges);
         let new_entities = entities.len() - entity_count_before;
         let has_tapoffs = !lane.tap_off_ys.is_empty();
         crate::trace::emit(crate::trace::TraceEvent::LaneRouted {
@@ -622,164 +777,223 @@ fn route_bus(
 }
 
 /// Place medium electric poles for power coverage.
+///
+/// Strategy: one horizontal pole line per machine row. Within a line, poles
+/// are placed by greedy forward sweep — for each machine not yet covered, we
+/// choose the rightmost pole position that still covers it, then advance past
+/// every machine the new pole reaches. This guarantees edge machines are
+/// covered (which a fixed-stride approach cannot) while still producing
+/// regularly-spaced poles.
+///
+/// Pole y for a row is `machine_row_y - 1` (one tile above the machine tops).
+/// With a 3-tile supply range that covers machine centers one tile below the
+/// pole line comfortably. The tile above the machine row is typically the
+/// inserter row, which has gaps every ~3 tiles between inserters — the probe
+/// finds those gaps.
+///
+/// Connectivity is guaranteed by construction:
+/// - Within a line: consecutive pole x-distance <= 6 < `WIRE_REACH` (9).
+/// - Between lines: row cycle (row height + gap) is typically ~7 tiles <
+///   wire-reach, so pole lines above consecutive rows connect vertically.
+///
+/// The old greedy + centroid-bridge implementation produced clumpy, order-
+/// dependent output; this approach is deterministic, regular, and matches the
+/// row-based structure of the bus layout.
 fn place_poles(
-    width: i32,
-    height: i32,
-    occupied: Option<FxHashSet<(i32, i32)>>,
-    machine_centers: Option<Vec<(i32, i32)>>,
+    machines: &[(i32, i32, i32)],
+    occupied: &FxHashSet<(i32, i32)>,
 ) -> Vec<PlacedEntity> {
-    let occupied = occupied.unwrap_or_default();
+    /// Supply range of a medium-electric-pole (Chebyshev, tiles).
+    const POLE_RANGE: i32 = 3;
+    /// Max X offset to probe when the ideal pole position is occupied.
+    const POLE_PROBE_X: i32 = 3;
 
-    if let Some(centers) = machine_centers {
-        if !centers.is_empty() {
-            let mut entities = place_poles_greedy(&occupied, &centers);
-            bridge_disconnected_poles(&mut entities, &occupied, width);
-            return entities;
+    if machines.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by (top_y, size). Rows of different-sized machines get their own
+    // pole lines because the pole y needs to match the machine footprint.
+    let mut by_row: FxHashMap<(i32, i32), Vec<i32>> = FxHashMap::default();
+    for &(cx, top_y, sz) in machines {
+        by_row.entry((top_y, sz)).or_default().push(cx);
+    }
+    for xs in by_row.values_mut() {
+        xs.sort_unstable();
+    }
+
+    // Process rows top-to-bottom for determinism.
+    let mut keys: Vec<(i32, i32)> = by_row.keys().copied().collect();
+    keys.sort_unstable();
+
+    let mut entities: Vec<PlacedEntity> = Vec::new();
+    let mut placed: FxHashSet<(i32, i32)> = FxHashSet::default();
+
+    for key in keys {
+        let (top_y, _sz) = key;
+        let cxs = &by_row[&key];
+        let pole_y = top_y - 1; // one tile above the machine footprint
+        if pole_y < 0 {
+            continue;
+        }
+
+        let mut i = 0;
+        while i < cxs.len() {
+            // Aim for the rightmost position that still covers cxs[i] — this
+            // maximises forward reach and keeps the line sparse. Probing
+            // searches nearby tiles if the ideal one is occupied, always
+            // staying within POLE_RANGE of the target machine.
+            let target_cx = cxs[i];
+            let ideal_px = target_cx + POLE_RANGE;
+            let mut placed_x: Option<i32> = None;
+            for d in 0..=POLE_PROBE_X {
+                let offsets: &[i32] = if d == 0 { &[0] } else { &[-d, d] };
+                for &off in offsets {
+                    let px = ideal_px + off;
+                    if (px - target_cx).abs() > POLE_RANGE {
+                        continue; // stepped outside range of the target machine
+                    }
+                    if occupied.contains(&(px, pole_y)) || placed.contains(&(px, pole_y)) {
+                        continue;
+                    }
+                    placed_x = Some(px);
+                    break;
+                }
+                if placed_x.is_some() {
+                    break;
+                }
+            }
+
+            match placed_x {
+                Some(px) => {
+                    entities.push(make_pole(px, pole_y));
+                    placed.insert((px, pole_y));
+                    // Advance past every machine this pole covers.
+                    i += 1;
+                    while i < cxs.len() && (cxs[i] - px).abs() <= POLE_RANGE {
+                        i += 1;
+                    }
+                }
+                None => {
+                    // Couldn't place a pole covering cxs[i]. Skip it to avoid an
+                    // infinite loop — power validator will flag the gap.
+                    i += 1;
+                }
+            }
         }
     }
 
-    place_poles_grid(width, height, &occupied)
+    repair_pole_connectivity(&mut entities, &placed, occupied);
+    entities
 }
 
-/// Medium electric pole wire reach in tiles (center-to-center).
-const WIRE_REACH: f64 = 9.0;
-
-/// After greedy pole placement, detect isolated clusters and insert bridge poles
-/// to connect them.  A cluster is a connected component under the 9-tile wire-reach
-/// rule.  We iteratively bridge the two closest cluster centroids until only one
-/// component remains (or until no valid bridge position can be found to prevent
-/// an infinite loop).
-fn bridge_disconnected_poles(
+/// After the row lines are placed, bridge any remaining disconnected pole
+/// clusters. This only fires when two machine rows are further apart in Y
+/// than `WIRE_REACH` (e.g. oil-refinery row above a chemical-plant row with
+/// a pipe-routing gap between them). We walk intermediate poles down a
+/// free column between the two nearest clusters.
+fn repair_pole_connectivity(
     entities: &mut Vec<PlacedEntity>,
+    placed: &FxHashSet<(i32, i32)>,
     occupied: &FxHashSet<(i32, i32)>,
-    width: i32,
 ) {
-    // Keep an up-to-date set of all occupied positions including poles we add.
-    let mut all_occupied = occupied.clone();
-    for e in entities.iter() {
-        all_occupied.insert((e.x, e.y));
+    const WIRE_REACH: i32 = 9;
+
+    let mut all_occupied: FxHashSet<(i32, i32)> = occupied.iter().copied().collect();
+    for &p in placed {
+        all_occupied.insert(p);
     }
 
-    // Retry until fully connected or no bridge can be placed.
     for _ in 0..20 {
         let positions: Vec<(i32, i32)> = entities.iter().map(|e| (e.x, e.y)).collect();
-        if positions.is_empty() {
-            break;
+        if positions.len() <= 1 {
+            return;
         }
 
-        // BFS to find connected components under wire-reach.
+        // Union-find under Chebyshev distance <= WIRE_REACH.
         let n = positions.len();
-        let mut component: Vec<usize> = (0..n).collect();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let ci = component[i];
-                    let cj = component[j];
-                    if ci != cj {
-                        let dx = (positions[i].0 - positions[j].0) as f64;
-                        let dy = (positions[i].1 - positions[j].1) as f64;
-                        if (dx * dx + dy * dy).sqrt() <= WIRE_REACH {
-                            // Merge the smaller component id into the larger
-                            let (from, to) = if ci > cj { (ci, cj) } else { (cj, ci) };
-                            for c in component.iter_mut() {
-                                if *c == from {
-                                    *c = to;
-                                }
-                            }
-                            changed = true;
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            while p[x] != x {
+                p[x] = p[p[x]];
+                x = p[x];
+            }
+            x
+        }
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = (positions[i].0 - positions[j].0).abs();
+                let dy = (positions[i].1 - positions[j].1).abs();
+                if dx.max(dy) <= WIRE_REACH {
+                    let ri = find(&mut parent, i);
+                    let rj = find(&mut parent, j);
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+
+        // Group by root component.
+        let mut by_comp: FxHashMap<usize, Vec<(i32, i32)>> = FxHashMap::default();
+        for (idx, &pos) in positions.iter().enumerate() {
+            let root = find(&mut parent, idx);
+            by_comp.entry(root).or_default().push(pos);
+        }
+        if by_comp.len() == 1 {
+            return;
+        }
+
+        // Find the closest inter-component pole pair.
+        let comps: Vec<&Vec<(i32, i32)>> = by_comp.values().collect();
+        let mut best: Option<((i32, i32), (i32, i32), i32)> = None;
+        for a in 0..comps.len() {
+            for b in (a + 1)..comps.len() {
+                for &pa in comps[a] {
+                    for &pb in comps[b] {
+                        let d = (pa.0 - pb.0).abs().max((pa.1 - pb.1).abs());
+                        if best.is_none_or(|(_, _, bd)| d < bd) {
+                            best = Some((pa, pb, d));
                         }
                     }
                 }
             }
         }
-
-        // Collect distinct component ids
-        let mut comp_ids: Vec<usize> = component.clone();
-        comp_ids.sort_unstable();
-        comp_ids.dedup();
-
-        if comp_ids.len() <= 1 {
-            // Fully connected — we're done.
-            break;
-        }
-
-        // Group poles by component
-        let mut comp_poles: std::collections::HashMap<usize, Vec<(i32, i32)>> =
-            std::collections::HashMap::new();
-        for (i, &pos) in positions.iter().enumerate() {
-            comp_poles.entry(component[i]).or_default().push(pos);
-        }
-
-        // Find the two components whose centroids are closest (most likely to bridge cheaply)
-        let comp_list: Vec<(usize, Vec<(i32, i32)>)> = comp_poles.into_iter().collect();
-        let centroid = |poles: &[(i32, i32)]| -> (f64, f64) {
-            let sum_x: i32 = poles.iter().map(|p| p.0).sum();
-            let sum_y: i32 = poles.iter().map(|p| p.1).sum();
-            (sum_x as f64 / poles.len() as f64, sum_y as f64 / poles.len() as f64)
+        let Some((pa, pb, _)) = best else {
+            return;
         };
 
-        let mut best_pair: Option<(usize, usize)> = None;
-        let mut best_dist = f64::MAX;
-        for (a, (_, pa)) in comp_list.iter().enumerate() {
-            let ca = centroid(pa);
-            for (b, (_, pb)) in comp_list.iter().enumerate().skip(a + 1) {
-                let cb = centroid(pb);
-                let d = ((ca.0 - cb.0).powi(2) + (ca.1 - cb.1).powi(2)).sqrt();
-                if d < best_dist {
-                    best_dist = d;
-                    best_pair = Some((a, b));
-                }
-            }
-        }
-
-        let Some((ai, bi)) = best_pair else { break };
-        let (_, ref pa) = comp_list[ai];
-        let (_, ref pb) = comp_list[bi];
-
-        // Find the Y midpoint between the two clusters.
-        let max_ya = pa.iter().map(|p| p.1).max().unwrap_or(0);
-        let min_yb = pb.iter().map(|p| p.1).min().unwrap_or(0);
-        let (cluster_top_y, cluster_bot_y) = if max_ya < min_yb {
-            (max_ya, min_yb)
-        } else {
-            let max_yb = pb.iter().map(|p| p.1).max().unwrap_or(0);
-            let min_ya = pa.iter().map(|p| p.1).min().unwrap_or(0);
-            (max_yb, min_ya)
-        };
-        let bridge_y = (cluster_top_y + cluster_bot_y) / 2;
-
-        // Scan across the width to find a free tile at bridge_y.
-        // Prefer positions near the centroid X of either cluster.
-        let cx_a = centroid(pa).0 as i32;
-        let cx_b = centroid(pb).0 as i32;
-        let target_x = (cx_a + cx_b) / 2;
-
-        let mut bridge_pos: Option<(i32, i32)> = None;
-        'outer: for r in 0..=(width.max(60)) {
-            for &dx in &[0i32, r, -r] {
-                let bx = target_x + dx;
-                if bx < 0 { continue; }
-                for &dy in &[0i32, 1, -1, 2, -2] {
-                    let by = bridge_y + dy;
-                    if !all_occupied.contains(&(bx, by)) {
-                        bridge_pos = Some((bx, by));
-                        break 'outer;
+        // Pick a midpoint and walk outward in a small neighbourhood looking
+        // for a free tile to place a bridge pole.
+        let mid = ((pa.0 + pb.0) / 2, (pa.1 + pb.1) / 2);
+        let mut bridge: Option<(i32, i32)> = None;
+        'scan: for r in 0i32..=6 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue; // only examine the ring at radius r
+                    }
+                    let p = (mid.0 + dx, mid.1 + dy);
+                    if all_occupied.contains(&p) {
+                        continue;
+                    }
+                    // Must be within wire-reach of pa or pb for it to actually bridge.
+                    let near_a = (p.0 - pa.0).abs().max((p.1 - pa.1).abs()) <= WIRE_REACH;
+                    let near_b = (p.0 - pb.0).abs().max((p.1 - pb.1).abs()) <= WIRE_REACH;
+                    if near_a || near_b {
+                        bridge = Some(p);
+                        break 'scan;
                     }
                 }
             }
         }
 
-        match bridge_pos {
-            Some((bx, by)) => {
-                entities.push(make_pole(bx, by));
-                all_occupied.insert((bx, by));
-            }
-            None => break, // No valid position found; stop to avoid infinite loop
-        }
+        let Some(p) = bridge else { return };
+        entities.push(make_pole(p.0, p.1));
+        all_occupied.insert(p);
     }
 }
+
 
 /// Create a pole entity at the given position.
 fn make_pole(x: i32, y: i32) -> PlacedEntity {
@@ -797,79 +1011,6 @@ fn make_pole(x: i32, y: i32) -> PlacedEntity {
     }
 }
 
-/// Greedy pole placement near machines.
-fn place_poles_greedy(
-    occupied: &FxHashSet<(i32, i32)>,
-    machine_centers: &[(i32, i32)],
-) -> Vec<PlacedEntity> {
-    let mut entities: Vec<PlacedEntity> = Vec::new();
-    let pole_range = 3;
-    let mut covered: FxHashSet<(i32, i32)> = FxHashSet::default();
-
-    for &(cx, cy) in machine_centers {
-        let mut best_pos = None;
-        let mut best_coverage = 0;
-
-        for dx in -pole_range..=pole_range {
-            for dy in -pole_range..=pole_range {
-                let px = cx + dx;
-                let py = cy + dy;
-                if occupied.contains(&(px, py)) || covered.contains(&(px, py)) {
-                    continue;
-                }
-
-                let mut coverage = 0;
-                for &(mx, my) in machine_centers {
-                    if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range
-                        && !covered.contains(&(mx, my)) {
-                            coverage += 1;
-                        }
-                }
-
-                if coverage > best_coverage {
-                    best_coverage = coverage;
-                    best_pos = Some((px, py));
-                }
-            }
-        }
-
-        if let Some((px, py)) = best_pos {
-            entities.push(make_pole(px, py));
-
-            for &(mx, my) in machine_centers {
-                if (px - mx).abs() <= pole_range && (py - my).abs() <= pole_range {
-                    covered.insert((mx, my));
-                }
-            }
-        }
-    }
-
-    entities
-}
-
-/// Grid-based pole placement (fallback).
-fn place_poles_grid(
-    width: i32,
-    height: i32,
-    occupied: &FxHashSet<(i32, i32)>,
-) -> Vec<PlacedEntity> {
-    let mut entities: Vec<PlacedEntity> = Vec::new();
-    let pole_spacing = 7;
-
-    let mut y = -1;
-    while y < height + pole_spacing {
-        let mut x = -1;
-        while x < width + pole_spacing {
-            if !occupied.contains(&(x, y)) {
-                entities.push(make_pole(x, y));
-            }
-            x += pole_spacing;
-        }
-        y += pole_spacing;
-    }
-
-    entities
-}
 
 #[cfg(test)]
 mod tests {

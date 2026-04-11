@@ -26,11 +26,9 @@ For Rust builds (PyO3 extension, WASM bundle) and the web app, see [`docs/build-
 
 ## Architecture
 
-Two parallel implementations share the same pipeline shape:
+**Rust pipeline** (`crates/core/`) is the active implementation — solver, recipe DB, bus layout, blueprint export, validation, and A*. It powers the WASM web app and the PyO3 extension, and is where all new work happens. Tier 4 investigation, bus routing changes, and layout bug fixes should be driven through Rust tests (`crates/core/tests/e2e.rs`) and the web app.
 
-**Python pipeline** (`src/pipeline.py` orchestrates) — the canonical/reference implementation; used for pytest, HTML visualizations, and analysis tooling.
-
-**Rust pipeline** (`crates/core/`) — complete port of all pipeline stages (solver, recipe DB, bus layout, blueprint export, validation, A\*), used by the PyO3 extension and by the WASM web app.
+**Python pipeline** (`src/pipeline.py`, `src/bus/`, `src/routing/`, etc.) is **largely deprecated**. It was the original reference implementation but has been superseded by the Rust port. It still runs for legacy pytest tests and the `src/analysis/` tooling, but does not reflect current behavior — do not use Python output to diagnose issues seen in the web app or Rust tests. Don't extend the Python layout code; port fixes to Rust instead.
 
 Pipeline stages:
 

@@ -217,6 +217,34 @@ pub enum TraceEvent {
         conflict_x: i32,
         conflict_y: i32,
     },
+
+    // A foreign-trunk UG bridge was dropped because its output collided with
+    // the trunk's own tap-off. Surfaced by `route_belt_lane`/`route_intermediate_lane`
+    // to `build_bus_layout` so it can push rows apart and retry.
+    BridgeDropped {
+        trunk_item: String,
+        trunk_x: i32,
+        range_start: i32,
+        range_end: i32,
+        colliding_tap_y: i32,
+    },
+
+    // `build_bus_layout` is retrying place_rows → plan_bus_lanes → route_bus
+    // after seeing dropped bridges from the previous attempt. `attempt` is
+    // the retry number (1 = first retry, so second overall attempt).
+    BridgeRetry {
+        attempt: u32,
+        dropped_count: usize,
+        extra_gap_updates: usize,
+    },
+
+    // All retries exhausted (hit MAX_BRIDGE_RETRIES) but bridges are still
+    // being dropped. Layout will render with the current (possibly broken)
+    // state and the validator will flag remaining issues.
+    BridgeRetryExhausted {
+        final_dropped_count: usize,
+        max_retries: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------

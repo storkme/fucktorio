@@ -230,6 +230,7 @@ pub fn astar_inner(
     flow_dir: Option<(i8, i8)>,
     goal_on_obstacle: bool,
     y_tolerance: i16,
+    forbid_ug_exit_to_goal: bool,
 ) -> Option<Vec<(i16, i16)>> {
     if start_set.is_empty() || goals.is_empty() {
         return None;
@@ -367,12 +368,12 @@ pub fn astar_inner(
                 }
             }
             // Allow reaching goal tiles on obstacles for constrained specs:
-            // x_constrained (trunks) need to reach goals promoted by tap-offs,
-            // y_constrained (feeders) need to reach goals on trunk tiles.
+            // x_constrained (trunks) need to reach goals promoted by tap-offs.
             // Also allowed when goal_on_obstacle flag is explicitly set (feeders
-            // that are unconstrained but still need to reach trunk tile goals).
-            // Unconstrained specs (mergers) must not place on obstacle tiles.
-            let goal_on_obstacle_ok = (x_constraint.is_some() || y_constraint.is_some() || goal_on_obstacle) && goals.contains(&(nx, ny));
+            // and ret: specs whose goal sits on an existing belt tile).
+            // Unconstrained specs (mergers) and y-constrained specs without the
+            // explicit flag must not place on obstacle tiles.
+            let goal_on_obstacle_ok = (x_constraint.is_some() || goal_on_obstacle) && goals.contains(&(nx, ny));
             if obstacles.contains(&(nx, ny)) && !goal_on_obstacle_ok {
                 continue;
             }
@@ -449,10 +450,21 @@ pub fn astar_inner(
                         }
                     }
                     let landing_on_goal = goals.contains(&(ex, ey));
-                    // UG exits cannot land on obstacles — even goal tiles.
-                    // A UG exit entity would overlap with the obstacle entity.
-                    // Surface moves CAN reach goal obstacles (checked separately).
-                    if obstacles.contains(&(ex, ey)) {
+                    // Some specs (e.g. `ret:`) need the terminal tile to be a
+                    // surface belt so the renderer can force its direction.
+                    if forbid_ug_exit_to_goal && landing_on_goal {
+                        continue;
+                    }
+                    // UG exits cannot land on obstacles, except when landing on
+                    // a goal tile with `goal_on_obstacle` set. That flag is used
+                    // by feeder specs whose goal is the foreign-trunk landing
+                    // column — which is either a tunnel tile (no entity) or
+                    // will be overwritten by the renderer's UG-exit entity.
+                    // Without this exemption, a feeder crossing foreign trunks
+                    // can't UG-exit onto its goal and A* finds no path at all.
+                    let ug_exit_obstacle =
+                        obstacles.contains(&(ex, ey)) && !(goal_on_obstacle && landing_on_goal);
+                    if ug_exit_obstacle {
                         continue;
                     }
                     if landing_on_goal && !hard_block_perp_ug {
@@ -580,6 +592,7 @@ pub fn astar_path(
         None,  // no flow direction
         false, // no goal_on_obstacle
         0,     // no y tolerance
+        false, // no forbid_ug_exit_to_goal
     )
 }
 
@@ -619,6 +632,20 @@ pub struct LaneSpec {
     /// If true, the A* is allowed to reach goal tiles that sit on obstacles.
     /// Used by feeders whose goal is on a trunk tile claimed by a higher-priority spec.
     pub goal_on_obstacle: bool,
+    /// If true, this spec sees `extra_obstacles` (passed to `negotiate_lanes`)
+    /// merged into its obstacle set. Lets specific specs (e.g. `ret:`, `bal:`)
+    /// avoid tiles that other specs are allowed to traverse — without
+    /// poisoning the global obstacle set.
+    pub respect_extra_obstacles: bool,
+    /// When `respect_extra_obstacles` is true, extra obstacles at this x
+    /// column are skipped (treated as non-obstacle). Lets a `ret:` spec
+    /// cross its own trunk column to reach its goal without the per-spec
+    /// merge rejecting its own landing tiles.
+    pub own_trunk_x: Option<i16>,
+    /// If true, the A* may not end a path with a UG-exit landing directly
+    /// on a goal tile. The final move must be surface. Used by `ret:` specs
+    /// so the renderer can force the terminal direction (South into trunk).
+    pub forbid_ug_exit_to_goal: bool,
 }
 
 /// A routed lane: the resolved path through the grid.
@@ -844,6 +871,7 @@ fn route_astar(
         spec.flow_dir,
         spec.goal_on_obstacle,
         spec.y_tolerance,
+        spec.forbid_ug_exit_to_goal,
     )?;
 
     // Compute directions from path
@@ -897,6 +925,7 @@ fn find_crossings(lanes: &[RoutedLane]) -> Vec<(i16, i16, u32, u32)> {
 pub fn negotiate_lanes(
     specs: &[LaneSpec],
     obstacles: &FxHashSet<(i16, i16)>,
+    extra_obstacles: &FxHashSet<(i16, i16)>,
     max_iterations: u16,
     max_extent: i16,
     allow_underground: bool,
@@ -974,10 +1003,31 @@ pub fn negotiate_lanes(
                 (wp_max_x + 20).max(wp_max_y + 20).min(max_extent)
             };
 
+            // Per-spec obstacle view: when this spec opts in, fold extra
+            // obstacles (e.g. input trunk columns) into its private set.
+            // route_axis_aligned ignores obstacles entirely so this only
+            // affects strategy 1 and 2.
+            let merged_obs_owned: FxHashSet<(i16, i16)>;
+            let spec_obstacles: &FxHashSet<(i16, i16)> = if spec.respect_extra_obstacles
+                && !extra_obstacles.is_empty()
+            {
+                let mut merged = obstacles.clone();
+                for &(ex, ey) in extra_obstacles.iter() {
+                    if spec.own_trunk_x == Some(ex) {
+                        continue;
+                    }
+                    merged.insert((ex, ey));
+                }
+                merged_obs_owned = merged;
+                &merged_obs_owned
+            } else {
+                obstacles
+            };
+
             let result = match spec.strategy {
-                0 => route_axis_aligned(spec, &grid, obstacles),
-                1 => route_astar(spec, &grid, obstacles, spec_max_extent, allow_underground, ug_max_reach, false),
-                2 => route_astar(spec, &grid, obstacles, spec_max_extent, true, ug_max_reach, true),
+                0 => route_axis_aligned(spec, &grid, spec_obstacles),
+                1 => route_astar(spec, &grid, spec_obstacles, spec_max_extent, allow_underground, ug_max_reach, false),
+                2 => route_astar(spec, &grid, spec_obstacles, spec_max_extent, true, ug_max_reach, true),
                 _ => None,
             };
 
@@ -1077,6 +1127,12 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         }
     }
 
@@ -1268,7 +1324,8 @@ mod tests {
     #[test]
     fn test_negotiate_empty_specs() {
         let obstacles = set(&[]);
-        let result = negotiate_lanes(&[], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+        let extras = set(&[]);
+        let result = negotiate_lanes(&[], &obstacles, &extras, 5, 20, false, 4, 1.0, 1.0);
         assert!(result.is_empty());
     }
 
@@ -1277,7 +1334,8 @@ mod tests {
     fn test_negotiate_single_axis_aligned_no_conflict() {
         let spec = lane_spec(1, 10, (0, 0), (0, 5), 0 /* axis-aligned */);
         let obstacles = set(&[]);
-        let result = negotiate_lanes(&[spec], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+        let extras = set(&[]);
+        let result = negotiate_lanes(&[spec], &obstacles, &extras, 5, 20, false, 4, 1.0, 1.0);
 
         assert_eq!(result.len(), 1);
         let lane = &result[0];
@@ -1294,7 +1352,8 @@ mod tests {
     fn test_negotiate_single_astar_lane() {
         let spec = lane_spec(2, 20, (0, 0), (4, 0), 1 /* A* */);
         let obstacles = set(&[]);
-        let result = negotiate_lanes(&[spec], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+        let extras = set(&[]);
+        let result = negotiate_lanes(&[spec], &obstacles, &extras, 5, 20, false, 4, 1.0, 1.0);
 
         assert_eq!(result.len(), 1);
         let lane = &result[0];
@@ -1320,6 +1379,12 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         };
         let spec_b = LaneSpec {
             id: 2,
@@ -1332,10 +1397,17 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         };
         let obstacles = set(&[]);
+        let extras = set(&[]);
         let result =
-            negotiate_lanes(&[spec_a, spec_b], &obstacles, 10, 20, true, 4, 1.0, 1.0);
+            negotiate_lanes(&[spec_a, spec_b], &obstacles, &extras, 10, 20, true, 4, 1.0, 1.0);
 
         assert_eq!(result.len(), 2);
         // At least one of the lanes should report a crossing at (3,3)
@@ -1363,6 +1435,12 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         };
         let spec_b = LaneSpec {
             id: 2,
@@ -1375,10 +1453,17 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         };
         let obstacles = set(&[]);
+        let extras = set(&[]);
         let result =
-            negotiate_lanes(&[spec_a, spec_b], &obstacles, 5, 20, false, 4, 1.0, 1.0);
+            negotiate_lanes(&[spec_a, spec_b], &obstacles, &extras, 5, 20, false, 4, 1.0, 1.0);
 
         assert_eq!(result.len(), 2);
         // No cross-item crossings
@@ -1407,10 +1492,17 @@ mod tests {
             flow_dir: None,
             goal_on_obstacle: false,
             y_tolerance: 0,
+            respect_extra_obstacles: false,
+
+            own_trunk_x: None,
+
+
+            forbid_ug_exit_to_goal: false,
         };
         let obstacles = set(&[(2, -1), (2, 0), (2, 1)]);
+        let extras = set(&[]);
         let result =
-            negotiate_lanes(&[spec], &obstacles, 5, 20, true, 4, 1.0, 1.0);
+            negotiate_lanes(&[spec], &obstacles, &extras, 5, 20, true, 4, 1.0, 1.0);
 
         assert_eq!(result.len(), 1);
         let lane = &result[0];

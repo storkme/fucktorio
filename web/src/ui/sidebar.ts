@@ -1,4 +1,4 @@
-import type { Engine, SolverResult, LayoutResult, ItemFlow } from "../engine.js";
+import type { Engine, SolverResult, LayoutResult, ItemFlow, ValidationIssue } from "../engine.js";
 import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 import { niceName, setRecipeFlows } from "../renderer/entities.js";
@@ -346,6 +346,58 @@ const STYLE = `
   font-size: 10px;
   margin-left: 2px;
 }
+
+/* ---- Validation issues list ---- */
+.sb-val-ok {
+  color: #6a6;
+  font-size: 11px;
+  padding: 4px 0;
+}
+.sb-val-group {
+  margin-bottom: 4px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid #2a2a2a;
+}
+.sb-val-group-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  background: #1e1e1e;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+}
+.sb-val-group-header:hover { background: #242424; }
+.sb-val-group-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sb-val-group-name { flex: 1; color: #ccc; }
+.sb-val-group-count {
+  font-size: 10px;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+.sb-val-group-chevron { color: #555; font-size: 10px; }
+.sb-val-group-body { background: #191919; }
+.sb-val-issue {
+  padding: 3px 7px 3px 19px;
+  font-size: 11px;
+  color: #bbb;
+  border-top: 1px solid #222;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.sb-val-issue.clickable {
+  cursor: pointer;
+}
+.sb-val-issue.clickable:hover { background: rgba(255,255,255,0.05); }
+.sb-val-issue.pinned { background: rgba(255,255,255,0.08); }
 `;
 
 // ---------------------------------------------------------------------------
@@ -470,7 +522,7 @@ export function renderSidebar(
   engine: Engine,
   callbacks: SidebarCallbacks,
   options?: SidebarOptions,
-): { getParams(): SidebarParams | null; setParams(params: SidebarParams): void } {
+): { getParams(): SidebarParams | null; setParams(params: SidebarParams, opts?: { skipAutoSolve?: boolean }): void; updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void): void } {
   el.innerHTML = "";
 
   if (!document.getElementById("fucktorio-sidebar-style")) {
@@ -637,6 +689,15 @@ export function renderSidebar(
   layoutBody.appendChild(blueprintSection);
 
   inner.appendChild(layoutSection);
+
+  // ==================== VALIDATION ====================
+  const { section: valSection, body: valBody, countEl: valCountEl } = makeSection(
+    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="8.5"/><circle cx="8" cy="11" r="0.8" fill="currentColor" stroke="none"/></svg>`,
+    "Validation",
+    "",
+  );
+  valSection.style.display = "none";
+  inner.appendChild(valSection);
 
   // ==================== DISPLAY ====================
   const { section: displaySection, body: displayBody } = makeSection(
@@ -826,7 +887,7 @@ export function renderSidebar(
       if (!item || isNaN(rate) || rate <= 0) return null;
       return { item, rate };
     },
-    setParams(params) {
+    setParams(params, opts) {
       itemInput.value = params.item;
       rateInput.value = String(params.rate);
       if (params.machine) {
@@ -847,7 +908,105 @@ export function renderSidebar(
         beltSelect.value = "";
       }
       previousItem = params.item;
-      scheduleAutoSolve();
+      if (!opts?.skipAutoSolve) {
+        scheduleAutoSolve();
+      }
+    },
+    updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void) {
+      valBody.innerHTML = "";
+      if (issues.length === 0) {
+        valSection.style.display = "none";
+        if (valCountEl) valCountEl.textContent = "";
+        return;
+      }
+      valSection.style.display = "";
+
+      const errors = issues.filter(i => i.severity === "Error").length;
+      const warns = issues.length - errors;
+      if (valCountEl) {
+        if (errors > 0) {
+          valCountEl.textContent = `${errors} error${errors !== 1 ? "s" : ""}`;
+          valCountEl.style.color = "#f66";
+        } else {
+          valCountEl.textContent = `${warns} warning${warns !== 1 ? "s" : ""}`;
+          valCountEl.style.color = "#fa0";
+        }
+      }
+
+      // Group by category
+      const groups = new Map<string, ValidationIssue[]>();
+      for (const issue of issues) {
+        let g = groups.get(issue.category);
+        if (!g) { g = []; groups.set(issue.category, g); }
+        g.push(issue);
+      }
+
+      for (const [category, groupIssues] of groups) {
+        const hasErrors = groupIssues.some(i => i.severity === "Error");
+        const dotColor = hasErrors ? "#f44" : "#fa0";
+
+        const groupEl = document.createElement("div");
+        groupEl.className = "sb-val-group";
+
+        const header = document.createElement("div");
+        header.className = "sb-val-group-header";
+
+        const dot = document.createElement("span");
+        dot.className = "sb-val-group-dot";
+        dot.style.background = dotColor;
+        header.appendChild(dot);
+
+        const name = document.createElement("span");
+        name.className = "sb-val-group-name";
+        name.textContent = category;
+        header.appendChild(name);
+
+        const count = document.createElement("span");
+        count.className = "sb-val-group-count";
+        count.textContent = String(groupIssues.length);
+        header.appendChild(count);
+
+        const chevron = document.createElement("span");
+        chevron.className = "sb-val-group-chevron";
+        chevron.textContent = "\u25be"; // down triangle (open)
+        header.appendChild(chevron);
+
+        const body = document.createElement("div");
+        body.className = "sb-val-group-body";
+
+        // Toggle collapse on header click
+        header.addEventListener("click", () => {
+          const collapsed = body.style.display === "none";
+          body.style.display = collapsed ? "" : "none";
+          chevron.textContent = collapsed ? "\u25be" : "\u25b8";
+        });
+
+        for (const issue of groupIssues) {
+          const row = document.createElement("div");
+          const hasPos = issue.x != null && issue.y != null;
+          row.className = "sb-val-issue" + (hasPos ? " clickable" : "");
+          row.textContent = issue.message;
+          if (!hasPos) row.style.opacity = "0.6";
+          if (hasPos) {
+            row.addEventListener("click", (e) => {
+              e.stopPropagation();
+              // Toggle pin style
+              const wasPinned = row.classList.contains("pinned");
+              // Unpin all rows in this panel
+              valBody.querySelectorAll(".sb-val-issue.pinned").forEach(el => el.classList.remove("pinned"));
+              if (!wasPinned) {
+                row.classList.add("pinned");
+              }
+              onPanToTile(issue.x!, issue.y!);
+            });
+          }
+          body.appendChild(row);
+        }
+
+        groupEl.appendChild(header);
+        groupEl.appendChild(body);
+        valBody.appendChild(groupEl);
+      }
     },
   };
 }

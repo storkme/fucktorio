@@ -2131,10 +2131,59 @@ fn compute_lane_rates_impl(
         }
     }
 
+    let mut splitter_sibling: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
+    for e in &layout.entities {
+        if is_splitter(&e.name) {
+            let second = splitter_second_tile(e);
+            splitter_sibling.insert((e.x, e.y), second);
+            splitter_sibling.insert(second, (e.x, e.y));
+        }
+    }
+
     let mut in_degree: FxHashMap<(i32, i32), i32> =
         belt_dir_map.keys().map(|&p| (p, 0)).collect();
     for (&pos, tile_feeders) in &feeders {
         in_degree.insert(pos, tile_feeders.len() as i32);
+    }
+    // Unify splitter pair in-degrees: both tiles share the sum of both sides'
+    // feeders. Without this, a 1→2 splitter whose "empty" side has no feeders
+    // enters the queue immediately (in_degree=0) and exhausts retries waiting
+    // for its sibling, propagating with stale [0,0] rates. See belt-flow bug
+    // where tier2 copper-cable trunks fed from a single-input splitter all
+    // delivered 0/s to downstream rows.
+    let mut visited_pairs: FxHashSet<((i32, i32), (i32, i32))> = FxHashSet::default();
+    for (&a, &b) in &splitter_sibling {
+        let key = if a < b { (a, b) } else { (b, a) };
+        if !visited_pairs.insert(key) {
+            continue;
+        }
+        let total = in_degree.get(&a).copied().unwrap_or(0)
+            + in_degree.get(&b).copied().unwrap_or(0);
+        in_degree.insert(a, total);
+        in_degree.insert(b, total);
+    }
+
+    // Virtual dependency: each UG-output inherits its rate from the surface
+    // tile "behind" its paired UG-input. Track those dependencies as an
+    // additional in_degree bump so UG-outputs don't dequeue before their
+    // source is ready. `behind_to_ug_outputs` lets us decrement the UG-output's
+    // counter once the "behind" tile is processed.
+    let mut behind_to_ug_outputs: FxHashMap<(i32, i32), Vec<(i32, i32)>> =
+        FxHashMap::default();
+    for &ug_out in &ug_output_tiles {
+        if let Some(&paired_input) = ug_output_to_input.get(&ug_out) {
+            if let Some(&inp_d) = ug_input_dir.get(&paired_input) {
+                let (idx, idy) = dir_to_vec(inp_d);
+                let behind = (paired_input.0 - idx, paired_input.1 - idy);
+                if belt_dir_map.contains_key(&behind) && behind != ug_out {
+                    behind_to_ug_outputs
+                        .entry(behind)
+                        .or_default()
+                        .push(ug_out);
+                    *in_degree.entry(ug_out).or_insert(0) += 1;
+                }
+            }
+        }
     }
 
     let mut lane_rates: FxHashMap<(i32, i32), [f64; 2]> = belt_dir_map
@@ -2189,15 +2238,6 @@ fn compute_lane_rates_impl(
         }
     }
 
-    let mut splitter_sibling: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
-    for e in &layout.entities {
-        if is_splitter(&e.name) {
-            let second = splitter_second_tile(e);
-            splitter_sibling.insert((e.x, e.y), second);
-            splitter_sibling.insert(second, (e.x, e.y));
-        }
-    }
-
     let mut processed: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut splitter_input_ready: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut queue: VecDeque<(i32, i32)> = in_degree
@@ -2206,34 +2246,42 @@ fn compute_lane_rates_impl(
         .map(|(&p, _)| p)
         .collect();
 
-    // Guard against infinite re-enqueue: if a tile's upstream is part of a
-    // cycle or otherwise unresolvable, give up after 3 retries.
-    // Separate counters for UG-pair waits and splitter-sibling waits so one
-    // doesn't consume the other's budget.
-    let mut ug_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+    // Splitter sibling waits are still retry-driven (the pair is serialized,
+    // so whichever half dequeues second triggers the averaging path).
     let mut splitter_retries: FxHashMap<(i32, i32), u32> = FxHashMap::default();
     const MAX_RETRIES: u32 = 3;
+
+    // Helper: after marking `tile` processed, decrement in_degree for any
+    // UG-output tiles that depended on `tile` as their "behind" source, and
+    // enqueue them if ready.
+    let notify_ug_deps = |tile: (i32, i32),
+                          in_degree: &mut FxHashMap<(i32, i32), i32>,
+                          queue: &mut VecDeque<(i32, i32)>| {
+        if let Some(deps) = behind_to_ug_outputs.get(&tile) {
+            for &ug_out in deps {
+                let d = in_degree.entry(ug_out).or_insert(0);
+                *d -= 1;
+                if *d <= 0 {
+                    queue.push_back(ug_out);
+                }
+            }
+        }
+    };
 
     while let Some(pos) = queue.pop_front() {
         if processed.contains(&pos) {
             continue;
         }
 
-        // Underground output: inherit from behind paired input
+        // Underground output: inherit from behind paired input. The topo-sort
+        // dependency is encoded via `behind_to_ug_outputs` — this tile won't
+        // be dequeued until `behind` has been processed, so we can read its
+        // rates directly.
         if ug_output_tiles.contains(&pos) {
             if let Some(&paired_input) = ug_output_to_input.get(&pos) {
                 if let Some(&inp_d) = ug_input_dir.get(&paired_input) {
                     let (idx, idy) = dir_to_vec(inp_d);
                     let behind = (paired_input.0 - idx, paired_input.1 - idy);
-                    if belt_dir_map.contains_key(&behind) && !processed.contains(&behind) {
-                        let retry = ug_retries.entry(pos).or_insert(0);
-                        if *retry < MAX_RETRIES {
-                            *retry += 1;
-                            queue.push_back(pos);
-                            continue;
-                        }
-                        // Gave up — fall through with rate 0 for the UG tunnel.
-                    }
                     if let Some(&behind_rates) = lane_rates.get(&behind) {
                         let rates = lane_rates.entry(pos).or_insert([0.0, 0.0]);
                         rates[0] += behind_rates[0];
@@ -2257,7 +2305,8 @@ fn compute_lane_rates_impl(
                     // Gave up waiting for sibling — mark processed with current
                     // rates and skip averaging to avoid silently wrong numbers.
                     processed.insert(pos);
-                    do_propagate(pos, &belt_dir_map, &feeders, &mut in_degree, &mut queue, &mut lane_rates);
+                    do_propagate(pos, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+                    notify_ug_deps(pos, &mut in_degree, &mut queue);
                     continue;
                 } else {
                     let pos_rates = lane_rates.get(&pos).copied().unwrap_or([0.0, 0.0]);
@@ -2271,7 +2320,8 @@ fn compute_lane_rates_impl(
                     }
                     for &tile in &[sib, pos] {
                         processed.insert(tile);
-                        do_propagate(tile, &belt_dir_map, &feeders, &mut in_degree, &mut queue, &mut lane_rates);
+                        do_propagate(tile, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+                        notify_ug_deps(tile, &mut in_degree, &mut queue);
                     }
                     continue;
                 }
@@ -2279,7 +2329,8 @@ fn compute_lane_rates_impl(
         }
 
         processed.insert(pos);
-        do_propagate(pos, &belt_dir_map, &feeders, &mut in_degree, &mut queue, &mut lane_rates);
+        do_propagate(pos, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+        notify_ug_deps(pos, &mut in_degree, &mut queue);
     }
 
     lane_rates
@@ -2289,6 +2340,7 @@ fn do_propagate(
     tile: (i32, i32),
     belt_dir_map: &FxHashMap<(i32, i32), EntityDirection>,
     feeders: &FxHashMap<(i32, i32), Vec<((i32, i32), u8)>>,
+    splitter_sibling: &FxHashMap<(i32, i32), (i32, i32)>,
     in_degree: &mut FxHashMap<(i32, i32), i32>,
     queue: &mut VecDeque<(i32, i32)>,
     lane_rates: &mut FxHashMap<(i32, i32), [f64; 2]>,
@@ -2354,8 +2406,18 @@ fn do_propagate(
 
     let deg = in_degree.entry(downstream).or_insert(0);
     *deg -= 1;
-    if *deg <= 0 {
+    let ready = *deg <= 0;
+    if ready {
         queue.push_back(downstream);
+    }
+    // If downstream is one half of a splitter, also decrement its sibling so
+    // both tiles reach zero in lockstep (see in_degree unification above).
+    if let Some(&sib) = splitter_sibling.get(&downstream) {
+        let sib_deg = in_degree.entry(sib).or_insert(0);
+        *sib_deg -= 1;
+        if *sib_deg <= 0 {
+            queue.push_back(sib);
+        }
     }
 }
 

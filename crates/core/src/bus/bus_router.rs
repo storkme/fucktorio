@@ -83,6 +83,16 @@ impl BusLane {
             family_balancer_range: None,
         }
     }
+
+    /// Collect all producer row indices for this lane.
+    pub(crate) fn all_producers(&self) -> Vec<usize> {
+        let mut rows = Vec::new();
+        if let Some(pr) = self.producer_row {
+            rows.push(pr);
+        }
+        rows.extend(&self.extra_producer_rows);
+        rows
+    }
 }
 
 /// An N-to-M balancer block that feeds M sibling trunk lanes for one item.
@@ -95,6 +105,60 @@ pub struct LaneFamily {
     pub balancer_y_start: i32,
     pub balancer_y_end: i32,  // inclusive
     pub total_rate: f64,  // sum across all lanes
+}
+
+/// A foreign-trunk yield (UG bridge) that was requested by the skip
+/// analysis but could not be emitted because the bridge's UG output position
+/// (`range.1 + 1`) collides with this trunk's own tap-off.
+///
+/// Used as feedback to the layout orchestrator: push the colliding row down
+/// via `extra_gap_after_row` and retry the second pass so the bridge becomes
+/// valid. Without this feedback the bridge is silently dropped, the trunk
+/// stays surface across the foreign tap-off, and A* falls back to a UG-input
+/// at the tap-off start tile — producing an invalid sideload when that tile
+/// is the first cell of a non-last-tap-off splitter stamp.
+#[derive(Debug, Clone)]
+pub struct DroppedBridge {
+    pub trunk_item: String,
+    pub trunk_x: i32,
+    /// Inclusive y-range of the dropped UG bridge.
+    pub range: (i32, i32),
+}
+
+impl DroppedBridge {
+    /// The own-tap-off y that caused the drop: `range.1 + 1`.
+    pub fn colliding_tap_y(&self) -> i32 {
+        self.range.1 + 1
+    }
+}
+
+/// Shared filter used by `route_belt_lane` and `route_intermediate_lane`.
+///
+/// Merged foreign-skip ranges that would land their UG bridge output on
+/// one of `own_tap_ys` are dropped from the returned `bridgeable` list and
+/// recorded in `dropped` for the layout orchestrator to resolve.
+fn filter_and_record_dropped_bridges(
+    merged_ranges: Vec<(i32, i32)>,
+    own_tap_ys: &FxHashSet<i32>,
+    lane_item: &str,
+    trunk_x: i32,
+    dropped: &mut Vec<DroppedBridge>,
+) -> Vec<(i32, i32)> {
+    merged_ranges
+        .into_iter()
+        .filter(|&(range_start, range_end)| {
+            if own_tap_ys.contains(&(range_end + 1)) {
+                dropped.push(DroppedBridge {
+                    trunk_item: lane_item.to_string(),
+                    trunk_x,
+                    range: (range_start, range_end),
+                });
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 /// Determine which items need bus lanes and assign x-columns.
@@ -242,7 +306,7 @@ pub fn plan_bus_lanes(
         if !lane.consumer_rows.is_empty() {
             continue;
         }
-        let all_producers = lane_all_producers(lane);
+        let all_producers = lane.all_producers();
 
         if all_producers.len() <= 1 {
             continue;
@@ -260,7 +324,7 @@ pub fn plan_bus_lanes(
     }
 
     // Optimize lane left-to-right ordering
-    lanes = optimize_lane_order(&lanes, row_spans);
+    lanes = crate::bus::plan::optimize_lane_order(&lanes, row_spans);
 
     // Assign x-columns with 1-tile spacing
     for (i, lane) in lanes.iter_mut().enumerate() {
@@ -377,16 +441,6 @@ const UNDERGROUND_MAP: &[(&str, &str)] = &[
     ("express-transport-belt", "express-underground-belt"),
 ];
 
-/// Factorio direction IDs mapped to EntityDirection
-#[allow(dead_code)]
-const FACTORIO_DIR_TO_ENTITY: &[(usize, EntityDirection)] = &[
-    (0, EntityDirection::North),
-    (2, EntityDirection::East),
-    (4, EntityDirection::South),
-    (6, EntityDirection::West),
-];
-
-#[allow(dead_code)]
 fn splitter_for_belt(belt: &str) -> &'static str {
     SPLITTER_MAP.iter()
         .find(|(b, _)| *b == belt)
@@ -399,260 +453,6 @@ fn underground_for_belt(belt: &str) -> &'static str {
         .find(|(b, _)| *b == belt)
         .map(|(_, u)| *u)
         .unwrap_or("underground-belt")
-}
-
-/// Collect all producer row indices for a lane.
-fn lane_all_producers(lane: &BusLane) -> Vec<usize> {
-    let mut rows = Vec::new();
-    if let Some(pr) = lane.producer_row {
-        rows.push(pr);
-    }
-    rows.extend(&lane.extra_producer_rows);
-    rows
-}
-
-/// Count total underground crossings for a given lane ordering.
-fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
-    let mut score = 0;
-
-    fn active_range(lane: &BusLane, row_spans: &[RowSpan]) -> (i32, i32) {
-        let all_p = lane_all_producers(lane);
-
-        if !all_p.is_empty() && !lane.consumer_rows.is_empty() {
-            let start = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .min()
-                .unwrap();
-            let end = if !lane.tap_off_ys.is_empty() {
-                lane.tap_off_ys.iter().copied().max().unwrap()
-            } else {
-                start
-            };
-            (start, end)
-        } else if !lane.tap_off_ys.is_empty() {
-            let end = lane.tap_off_ys.iter().copied().max().unwrap();
-            (lane.source_y, end)
-        } else {
-            let end = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .max()
-                .unwrap_or(lane.source_y);
-            (lane.source_y, end)
-        }
-    }
-
-    let ranges: Vec<(i32, i32)> = ordered.iter().map(|ln| active_range(ln, row_spans)).collect();
-
-    for (pos, lane) in ordered.iter().enumerate() {
-        // EAST tap-off crossings
-        for &tap_y in &lane.tap_off_ys {
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= tap_y && tap_y <= re {
-                    score += 1;
-                }
-            }
-        }
-
-        // WEST output return crossings
-        let all_producers = lane_all_producers(lane);
-        for &pri in &all_producers {
-            let ret_y = row_spans[pri].output_belt_y;
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= ret_y && ret_y <= re {
-                    score += 1;
-                }
-            }
-        }
-    }
-
-    // Family feeder landing conflict: penalise when a family lane's template
-    // input landing column (input_x + 1) overlaps with a lane to the RIGHT
-    // of the family block.  This ensures the optimizer places family blocks
-    // rightmost so feeders don't collide with other trunks.
-    let templates = crate::bus::balancer_library::balancer_templates();
-    // Assign tentative x positions (lanes at x = pos + 1, bus_width = n + 2).
-    let n = ordered.len();
-    for (pos, lane) in ordered.iter().enumerate() {
-        if let Some(fid) = lane.family_id {
-            // Only check the first lane in a family block
-            if pos > 0 && ordered[pos - 1].family_id == Some(fid) {
-                continue;
-            }
-            // Count contiguous family lanes
-            let fam_count = ordered[pos..].iter()
-                .take_while(|l| l.family_id == Some(fid))
-                .count();
-            let ox = pos + 1; // tentative x of leftmost family lane
-            let (fn_, fm) = {
-                // Find family shape by counting producers across the block
-                let all_p = lane_all_producers(lane);
-                (all_p.len().max(1), fam_count)
-            };
-            if let Some(tpl) = templates.get(&(fn_ as u32, fm as u32)) {
-                for &(dx, _) in tpl.input_tiles {
-                    let landing_x = (ox as i32) + dx + 1;
-                    // Check if any lane to the right of the family block occupies landing_x
-                    for rpos in (pos + fam_count)..n {
-                        let rx = (rpos + 1) as i32;
-                        if rx == landing_x {
-                            // Heavy penalty: feeder would be blocked
-                            score += 100;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    score
-}
-
-/// Optimize lane left-to-right ordering to minimize underground crossings.
-fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if lanes.len() <= 1 {
-        return lanes.to_vec();
-    }
-
-    let solid: Vec<BusLane> = lanes.iter().filter(|ln| !ln.is_fluid).cloned().collect();
-    let fluid: Vec<BusLane> = lanes.iter().filter(|ln| ln.is_fluid).cloned().collect();
-
-    // Exact search for tiny sets (≤7 lanes: 7! = 5040 permutations).
-    // Hill-climbing for larger sets: start from heuristic, try all pairwise
-    // swaps repeatedly until no improvement (O(k·n²) where k ≈ n typically).
-    let best_solid = if solid.len() <= 7 {
-        find_best_permutation(&solid, row_spans)
-    } else {
-        hill_climb_lane_order(&solid, row_spans)
-    };
-
-    let mut result = best_solid;
-    result.extend(fluid);
-
-    let crossing_score = score_lane_ordering(&result, row_spans);
-    crate::trace::emit(crate::trace::TraceEvent::LaneOrderOptimized {
-        ordering: result.iter().map(|ln| ln.item.clone()).collect(),
-        crossing_score,
-    });
-
-    result
-}
-
-/// Find best permutation of solid lanes that respects family contiguity.
-fn find_best_permutation(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if solid.is_empty() {
-        return Vec::new();
-    }
-
-    fn family_contiguous(ordered: &[BusLane]) -> bool {
-        let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
-        for (i, ln) in ordered.iter().enumerate() {
-            if let Some(fid) = ln.family_id {
-                let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
-                seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
-            }
-        }
-
-        let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
-        for ln in ordered {
-            if let Some(fid) = ln.family_id {
-                *counts.entry(fid).or_insert(0) += 1;
-            }
-        }
-
-        seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
-    }
-
-    // Use iterative approach instead of recursive permutations for small sets
-    let n = solid.len();
-    let mut indices: Vec<usize> = (0..n).collect();
-    let mut best_order: Vec<usize> = indices.clone();
-    let mut best_score = score_lane_ordering(
-        &indices.iter().map(|&i| solid[i].clone()).collect::<Vec<_>>(),
-        row_spans,
-    );
-
-    // Heap's algorithm for permutation generation
-    let mut c = vec![0; n];
-    let mut i = 0;
-    while i < n {
-        if c[i] < i {
-            if i % 2 == 0 {
-                indices.swap(0, i);
-            } else {
-                indices.swap(c[i], i);
-            }
-            let ordered: Vec<BusLane> = indices.iter().map(|&idx| solid[idx].clone()).collect();
-            if family_contiguous(&ordered) {
-                let score = score_lane_ordering(&ordered, row_spans);
-                if score < best_score {
-                    best_score = score;
-                    best_order = indices.clone();
-                }
-            }
-            c[i] += 1;
-            i = 0;
-        } else {
-            c[i] = 0;
-            i += 1;
-        }
-    }
-
-    best_order.iter().map(|&i| solid[i].clone()).collect()
-}
-
-/// Hill-climbing lane order optimizer for larger sets (>7 lanes).
-///
-/// Starts from a heuristic seed (family-grouped, then sorted by earliest tap-off),
-/// then repeatedly tries all pairwise swaps, keeping improvements. Stops when no
-/// swap reduces the crossing score. Runs in O(k·n²) where k ≈ n in practice.
-/// Family-contiguity is checked after every accepted swap.
-fn hill_climb_lane_order(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    fn family_contiguous(ordered: &[BusLane]) -> bool {
-        let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
-        for (i, ln) in ordered.iter().enumerate() {
-            if let Some(fid) = ln.family_id {
-                let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
-                seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
-            }
-        }
-        let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
-        for ln in ordered {
-            if let Some(fid) = ln.family_id { *counts.entry(fid).or_insert(0) += 1; }
-        }
-        seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
-    }
-
-    // Seed: group by family, then sort by earliest tap-off within each group
-    let mut order = solid.to_vec();
-    order.sort_by_key(|ln| {
-        let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
-        let y = ln.tap_off_ys.iter().min().copied().map(|y| -y).unwrap_or(9999);
-        (fid, y)
-    });
-
-    let n = order.len();
-    let mut best_score = score_lane_ordering(&order, row_spans);
-
-    loop {
-        let mut improved = false;
-        'outer: for i in 0..n {
-            for j in (i + 1)..n {
-                order.swap(i, j);
-                if family_contiguous(&order) {
-                    let score = score_lane_ordering(&order, row_spans);
-                    if score < best_score {
-                        best_score = score;
-                        improved = true;
-                        continue 'outer; // keep swap, try next i
-                    }
-                }
-                order.swap(i, j); // undo
-            }
-        }
-        if !improved { break; }
-    }
-
-    order
 }
 
 /// Split lanes whose rate exceeds the available belt's per-lane capacity.
@@ -726,7 +526,7 @@ fn split_overflowing_lanes(
         }
 
         // Distribute producer rows by rate
-        let all_producer_rows = lane_all_producers(lane);
+        let all_producer_rows = lane.all_producers();
 
         let mut producers_per_split: Vec<Vec<usize>> = vec![Vec::new(); n_splits];
         let mut split_prod_rate: Vec<f64> = vec![0.0; n_splits];
@@ -1315,20 +1115,6 @@ pub(crate) fn render_family_input_paths(
     Ok(entities)
 }
 
-/// Vector direction (dx, dy) to entity direction.
-#[allow(dead_code)]
-fn vec_to_entity_dir(dx: i32, dy: i32) -> EntityDirection {
-    if dx > 0 {
-        EntityDirection::East
-    } else if dx < 0 {
-        EntityDirection::West
-    } else if dy > 0 {
-        EntityDirection::South
-    } else {
-        EntityDirection::North
-    }
-}
-
 /// Merge EAST-flowing output belts from multiple rows at the bottom-right.
 ///
 /// Each output row's belt flows EAST and collects items at its rightmost
@@ -1369,13 +1155,10 @@ pub(crate) fn merge_output_rows(
     let belt_name = belt_entity_for_rate(total_rate * 2.0, max_belt_tier);
     let splitter_name = splitter_for_belt(belt_name);
 
-    // Merge columns sit just past the widest output row.
-    // Earlier rows (lower idx, higher up in the layout) get farther-right
-    // columns so their SOUTH columns don't block later rows' EAST extensions.
     let merge_x = output_rows.iter()
         .map(|&ri| if ri < row_spans.len() { row_spans[ri].row_width } else { 0 })
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0) + 1;
 
     for (idx, &ri) in output_rows.iter().enumerate() {
         if ri >= row_spans.len() {
@@ -1671,13 +1454,14 @@ pub(crate) fn route_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     if lane.is_fluid {
         entities.extend(route_fluid_lane(lane));
     } else if is_intermediate(lane) {
-        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
+        route_intermediate_lane(entities, lane, all_lanes, row_spans, bw, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles, dropped_bridges);
     } else {
-        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles);
+        route_belt_lane(entities, lane, all_lanes, row_spans, max_belt_tier, routed_paths, crossing_tiles, _tapoff_tiles, dropped_bridges);
     }
 }
 
@@ -1699,9 +1483,22 @@ fn route_belt_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     let x = lane.x;
     let tap_off_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+    // Non-last tap-offs place a splitter stamp at (x, tap_y - 1). A bridge
+    // whose UG output lands on that splitter row would overlap the splitter
+    // entity — treat those rows like tap-off rows for bridge filtering.
+    let last_tap_y_for_filter = lane.tap_off_ys.iter().copied().max();
+    let mut bridge_forbidden: FxHashSet<i32> = tap_off_set.clone();
+    if lane.tap_off_ys.len() > 1 {
+        for &ty in &lane.tap_off_ys {
+            if Some(ty) != last_tap_y_for_filter {
+                bridge_forbidden.insert(ty - 1);
+            }
+        }
+    }
     let empty: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
     let paths: &FxHashMap<String, Vec<(i32, i32)>> = routed_paths.unwrap_or(&empty);
 
@@ -1759,10 +1556,16 @@ fn route_belt_lane(
         .copied()
         .collect();
     let merged_ranges = merge_consecutive_skips(&non_sat_skips);
-    // Keep only ranges whose UG output position doesn't conflict with own tap-off
-    let bridgeable_ranges: Vec<(i32, i32)> = merged_ranges.into_iter()
-        .filter(|&(_, range_end)| !tap_off_set.contains(&(range_end + 1)))
-        .collect();
+    // Keep only ranges whose UG output position doesn't conflict with own
+    // tap-off; dropped ranges are surfaced to `build_bus_layout` via
+    // `dropped_bridges` so it can push rows apart and retry.
+    let bridgeable_ranges = filter_and_record_dropped_bridges(
+        merged_ranges,
+        &bridge_forbidden,
+        &lane.item,
+        x,
+        dropped_bridges,
+    );
     // Rebuild bridgeable_skips from the accepted ranges (for skip_ys expansion)
     let bridgeable_skips: FxHashSet<i32> = bridgeable_ranges.iter()
         .flat_map(|&(s, e)| s..=e)
@@ -1996,6 +1799,7 @@ fn route_intermediate_lane(
     routed_paths: Option<&FxHashMap<String, Vec<(i32, i32)>>>,
     crossing_tiles: &CrossingTileSet,
     _tapoff_tiles: &FxHashSet<(i32, i32)>,
+    dropped_bridges: &mut Vec<DroppedBridge>,
 ) {
     let x = lane.x;
     // Both belt_name and horiz_belt use the same tier for intermediate lanes
@@ -2107,9 +1911,13 @@ fn route_intermediate_lane(
         .copied()
         .collect();
     let merged_ranges_int = merge_consecutive_skips(&non_sat_skips_int);
-    let bridgeable_ranges: Vec<(i32, i32)> = merged_ranges_int.into_iter()
-        .filter(|&(_, range_end)| !tap_off_set_intermediate.contains(&(range_end + 1)))
-        .collect();
+    let bridgeable_ranges = filter_and_record_dropped_bridges(
+        merged_ranges_int,
+        &tap_off_set_intermediate,
+        &lane.item,
+        x,
+        dropped_bridges,
+    );
     let bridgeable_skips: FxHashSet<i32> = bridgeable_ranges.iter()
         .flat_map(|&(s, e)| s..=e)
         .collect();
@@ -2237,16 +2045,8 @@ fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i3
     segments
 }
 
-/// Y-rows where this trunk must bridge underground so other items can use the
-/// surface tile at that y.  Two cases handled:
-///
-/// 1. The immediate western neighbor produces items whose output-return belt lands
-///    here — that y must be surface-free so the return belt can enter the trunk.
-/// 2. Any lane to the left taps off at a y that falls inside this trunk's range
-///    and that tap-off crosses this column.  The tap-off's UG input sits on this
-///    column, so the trunk tile must be free.
-///    Guard: if the bridge output (tap_y + 1) would land on this trunk's own
-///    tap-off belt, skip it — the geometry is handled differently there.
+/// Derive y-positions this trunk must skip (go underground) across the
+/// given range. Thin wrapper over the planner's `compute_foreign_yields_for_lane`.
 fn foreign_trunk_skip_ys(
     lane: &BusLane,
     all_lanes: &[BusLane],
@@ -2254,76 +2054,10 @@ fn foreign_trunk_skip_ys(
     trunk_start_y: i32,
     trunk_end_y: i32,
 ) -> FxHashSet<i32> {
-    let mut foreign: FxHashSet<i32> = FxHashSet::default();
-
-    // Case 1: west neighbor's output-return rows need a free landing tile here.
-    let west_col = lane.x - 1;
-    if let Some(neighbor) = all_lanes.iter().find(|other| {
-        !other.is_fluid && !std::ptr::eq(*other, lane) && other.x == west_col
-    }) {
-        let mut producer_rows: Vec<usize> = Vec::new();
-        if let Some(pr) = neighbor.producer_row {
-            producer_rows.push(pr);
-        }
-        producer_rows.extend(&neighbor.extra_producer_rows);
-        for p in producer_rows {
-            if p >= row_spans.len() {
-                continue;
-            }
-            let y = row_spans[p].output_belt_y;
-            if trunk_start_y < y && y < trunk_end_y {
-                foreign.insert(y);
-            }
-        }
-    }
-
-    // Case 2: any left-lane tap-off that would cross this trunk column and whose
-    // UG input would sit here.  Only add if the bridge output (tap_y + 1) doesn't
-    // collide with this trunk's own tap-off belt at that position.
-    let own_tap_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
-    for other in all_lanes {
-        if other.is_fluid || std::ptr::eq(other, lane) || other.x >= lane.x {
-            continue;
-        }
-        let other_last_tap = other.tap_off_ys.iter().copied().max();
-        for &tap_y in &other.tap_off_ys {
-            if !(trunk_start_y < tap_y && tap_y < trunk_end_y) {
-                continue;
-            }
-            if own_tap_set.contains(&(tap_y + 1)) {
-                continue;
-            }
-            // Only bridge if the tap-off travels surface all the way to this
-            // trunk.  If any intermediate lane has a surface belt at tap_y, the
-            // tap-off already went underground before reaching lane.x — no
-            // bridge needed here.
-            let all_intermediate_clear = all_lanes.iter()
-                .filter(|mid| !mid.is_fluid && mid.x > other.x && mid.x < lane.x)
-                .all(|mid| {
-                    // mid has no surface belt at tap_y when:
-                    // (a) mid skips tap_y (tap_y is one of its own tap-offs), OR
-                    // (b) mid's trunk doesn't reach tap_y (all its tap_off_ys are above)
-                    mid.tap_off_ys.contains(&tap_y)
-                        || mid.tap_off_ys.iter().all(|&y| y < tap_y)
-                });
-            if all_intermediate_clear {
-                foreign.insert(tap_y);
-                // Non-last splitter tap-offs also occupy (other.x+1, tap_y-1)
-                // (splitter right half) and (other.x+1, tap_y) (belt East).
-                // If this trunk IS that adjacent column, skip tap_y-1 too.
-                let is_non_last = other.tap_off_ys.len() > 1
-                    && Some(tap_y) != other_last_tap;
-                if is_non_last && lane.x == other.x + 1
-                    && trunk_start_y < tap_y - 1 && tap_y - 1 < trunk_end_y
-                    && !own_tap_set.contains(&tap_y)
-                {
-                    foreign.insert(tap_y - 1);
-                }
-            }
-        }
-    }
-
-    foreign
+    let yields = crate::bus::plan::compute_foreign_yields_for_lane(
+        lane, all_lanes, row_spans, trunk_start_y, trunk_end_y,
+    );
+    yields.into_iter().map(|y| y.y).collect()
 }
 
 /// Extra y-rows to add to trunk skip set so UG-pair tiles don't collide.
@@ -2366,27 +2100,13 @@ fn merge_consecutive_skips(skips: &FxHashSet<i32>) -> Vec<(i32, i32)> {
 // SAT-based crossing zone solver
 // ---------------------------------------------------------------------------
 
-use crate::sat::{self, CrossingZone, CrossingZoneSolution, ZoneBoundary};
+use crate::sat::{CrossingZone, CrossingZoneSolution};
 
 /// A solved crossing zone: the SAT solution plus its origin.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct SolvedCrossing {
     pub zone: CrossingZone,
     pub solution: CrossingZoneSolution,
-}
-
-/// A SAT-solved region that the A* should route around.
-/// The tap-off at `tap_y` from lane at `tap_x` is handled by SAT
-/// from `x_min` to `x_max` (inclusive).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) struct SatCrossingRegion {
-    pub tap_x: i32,    // x of the tapping lane
-    pub x_min: i32,
-    pub x_max: i32,
-    pub tap_y: i32,
-    pub tap_item: String,
 }
 
 /// Tile set of all (x, y) positions owned by solved crossing zones.
@@ -2404,6 +2124,13 @@ impl CrossingTileSet {
     /// Rebuild from a set of entity positions (all = entity_only).
     pub fn from_tiles(tiles: FxHashSet<(i32, i32)>) -> Self {
         Self { all: tiles.clone(), entity_only: tiles }
+    }
+
+    pub(crate) fn from_parts(
+        all: FxHashSet<(i32, i32)>,
+        entity_only: FxHashSet<(i32, i32)>,
+    ) -> Self {
+        Self { all, entity_only }
     }
 
     /// Check if a tile is in the zone (entity or forced-empty).
@@ -2425,176 +2152,6 @@ impl CrossingTileSet {
     }
 }
 
-/// Extract crossing zones from the lane plan and solve them via SAT.
-///
-/// Returns (solved_crossings, tile_set) where tile_set contains all (x,y)
-/// positions owned by crossing zone entities.
-#[allow(dead_code)]
-pub(crate) fn extract_and_solve_crossings(
-    lanes: &[BusLane],
-    _row_spans: &[RowSpan],
-    max_belt_tier: Option<&str>,
-) -> (Vec<SolvedCrossing>, CrossingTileSet, Vec<SatCrossingRegion>) {
-    let effective_belt = belt_entity_for_rate(f64::MAX, max_belt_tier);
-    let max_reach = crate::common::ug_max_reach(effective_belt);
-
-    // For each left-lane tap-off, find which right-lane trunks it crosses on
-    // the surface. Group contiguous crossed columns into zones.
-    let mut zone_specs: Vec<(String, i32, i32, Vec<(i32, String)>)> = Vec::new();
-    // zone_specs: (tap_item, tap_x, tap_y, vec of (trunk_x, trunk_item))
-
-    for tapping_lane in lanes {
-        if tapping_lane.is_fluid {
-            continue;
-        }
-        for &tap_y in &tapping_lane.tap_off_ys {
-            let mut crossed_trunks: Vec<(i32, String)> = Vec::new();
-
-            // Find trunk columns the tap-off reaches on the surface
-            // (intermediate-clear check, same as foreign_trunk_skip_ys Case 2).
-            for trunk_lane in lanes {
-                if trunk_lane.is_fluid
-                    || std::ptr::eq(trunk_lane, tapping_lane)
-                    || trunk_lane.x <= tapping_lane.x
-                {
-                    continue;
-                }
-                let trunk_extends = trunk_lane.tap_off_ys.iter().any(|&y| y >= tap_y);
-                let trunk_skips_tap_y = trunk_lane.tap_off_ys.contains(&tap_y);
-                // Trunk doesn't physically exist above its source_y or inside
-                // its family balancer zone — no crossing to solve.
-                let trunk_above_source = tap_y < trunk_lane.source_y;
-                let trunk_in_balancer = trunk_lane.family_balancer_range
-                    .is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be);
-                // UG output at tap_y+1 would clobber the trunk's own tap-off —
-                // the tap-off needs a surface belt there to turn East.
-                let ug_output_on_tapoff = trunk_lane.tap_off_ys.contains(&(tap_y + 1));
-                if !trunk_extends || trunk_skips_tap_y || trunk_above_source
-                    || trunk_in_balancer || ug_output_on_tapoff
-                {
-                    continue;
-                }
-                let all_clear = lanes.iter()
-                    .filter(|mid| {
-                        !mid.is_fluid
-                            && mid.x > tapping_lane.x
-                            && mid.x < trunk_lane.x
-                    })
-                    .all(|mid| {
-                        mid.tap_off_ys.contains(&tap_y)
-                            || mid.tap_off_ys.iter().all(|&y| y < tap_y)
-                    });
-                if all_clear {
-                    crossed_trunks.push((trunk_lane.x, trunk_lane.item.clone()));
-                }
-            }
-
-            if !crossed_trunks.is_empty() {
-                crossed_trunks.sort_by_key(|(x, _)| *x);
-                zone_specs.push((
-                    tapping_lane.item.clone(),
-                    tapping_lane.x,
-                    tap_y,
-                    crossed_trunks,
-                ));
-            }
-        }
-    }
-
-    // Deduplicate: if the same tap_y has overlapping zones from multiple
-    // tapping lanes, merge them (take the union of crossed trunks).
-    // For now, just solve each independently.
-
-    let mut solved = Vec::new();
-    let mut entity_tiles = FxHashSet::default();
-    let mut all_tiles = FxHashSet::default();
-
-    #[allow(unused_variables)]
-    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
-        let x_min = crossed.first().unwrap().0;
-        let x_max = crossed.last().unwrap().0;
-        let zone_width = (x_max - x_min + 1) as u32;
-        let zone_height: u32 = 3;
-        let zone_x = x_min;
-        let zone_y = tap_y - 1;
-
-        let mut boundaries = Vec::new();
-
-        // Trunk boundaries only: each crossed column enters top, exits bottom.
-        // Tap-off tiles are forced empty (the A* routes the tap-off underground).
-        let mut forced_empty = Vec::new();
-        for (trunk_x, trunk_item) in crossed {
-            boundaries.push(ZoneBoundary {
-                x: *trunk_x,
-                y: zone_y,
-                direction: EntityDirection::South,
-                item: trunk_item.clone(),
-                is_input: true,
-            });
-            boundaries.push(ZoneBoundary {
-                x: *trunk_x,
-                y: zone_y + zone_height as i32 - 1,
-                direction: EntityDirection::South,
-                item: trunk_item.clone(),
-                is_input: false,
-            });
-            // Force the tap-off row empty so the trunk must bridge around it.
-            forced_empty.push((*trunk_x, *tap_y));
-        }
-
-        let zone = CrossingZone {
-            x: zone_x,
-            y: zone_y,
-            width: zone_width,
-            height: zone_height,
-            boundaries,
-            forced_empty,
-        };
-
-        if let Some(solution) = sat::solve_crossing_zone(&zone, max_reach, effective_belt) {
-            // Register entity positions and forced-empty tiles.
-            for e in &solution.entities {
-                entity_tiles.insert((e.x, e.y));
-                all_tiles.insert((e.x, e.y));
-            }
-            for &(fx, fy) in &zone.forced_empty {
-                all_tiles.insert((fx, fy));
-            }
-            solved.push(SolvedCrossing { zone, solution });
-        } else {
-            crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSkipped {
-                tap_item: tap_item.clone(),
-                tap_x: *tap_x,
-                tap_y: *tap_y,
-                reason: "sat-unsolved".into(),
-            });
-        }
-    }
-
-    // Build SatCrossingRegions for spec-splitting in negotiate_and_route.
-    let mut regions: Vec<SatCrossingRegion> = Vec::new();
-    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
-        if crossed.is_empty() {
-            continue;
-        }
-        let x_min = crossed.first().unwrap().0;
-        let x_max = crossed.last().unwrap().0;
-        // Only create region if SAT actually solved this zone.
-        let zone_origin = (x_min, tap_y - 1);
-        if solved.iter().any(|sc| sc.zone.x == zone_origin.0 && sc.zone.y == zone_origin.1) {
-            regions.push(SatCrossingRegion {
-                tap_x: *tap_x,
-                x_min,
-                x_max,
-                tap_y: *tap_y,
-                tap_item: tap_item.clone(),
-            });
-        }
-    }
-
-    let tile_sets = CrossingTileSet { all: all_tiles, entity_only: entity_tiles };
-    (solved, tile_sets, regions)
-}
 
 /// Maximum tiles between PTG input and output positions.
 const PTG_MAX_SPAN: i32 = 10;
@@ -2782,8 +2339,6 @@ pub(crate) fn negotiate_and_route(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     max_belt_tier: Option<&str>,
-    sat_regions: &[SatCrossingRegion],
-    _sat_obstacles: &FxHashSet<(i32, i32)>,
 ) -> FxHashMap<String, Vec<(i32, i32)>> {
     use crate::astar::{LaneSpec, negotiate_lanes};
     use crate::bus::balancer_library::balancer_templates;
@@ -2863,12 +2418,10 @@ pub(crate) fn negotiate_and_route(
 
         // Build list of (sub_template, sub_producers, sub_lane_xs, sub_origin_y) groups.
         // Direct template: one group. Decomposed: g groups.
-        #[allow(dead_code)]
         struct SubGroup<'a> {
             template: &'a crate::bus::balancer_library::BalancerTemplate,
             producers: Vec<usize>,
             lane_xs: Vec<i32>,
-            origin_y: i32,
         }
         let mut sub_groups: Vec<SubGroup> = Vec::new();
 
@@ -2877,7 +2430,6 @@ pub(crate) fn negotiate_and_route(
                 template,
                 producers: fam.producer_rows.clone(),
                 lane_xs: fam.lane_xs.clone(),
-                origin_y: fam.balancer_y_start,
             });
         } else {
             // Decomposition: find divisor g
@@ -2897,22 +2449,10 @@ pub(crate) fn negotiate_and_route(
                         let le = (ls + lanes_per).min(fam.lane_xs.len());
                         let sub_prods = sorted_prods[ps..pe].to_vec();
                         let sub_lxs = fam.lane_xs[ls..le].to_vec();
-                        let oy = if sub_prods.len() == 1 {
-                            if sub_prods[0] < row_spans.len() {
-                                row_spans[sub_prods[0]].output_belt_y
-                            } else { fam.balancer_y_start }
-                        } else {
-                            sub_prods.iter()
-                                .filter(|&&p| p < row_spans.len())
-                                .map(|&p| row_spans[p].y_end)
-                                .max()
-                                .unwrap_or(fam.balancer_y_start)
-                        };
                         sub_groups.push(SubGroup {
                             template: sub_tpl,
                             producers: sub_prods,
                             lane_xs: sub_lxs,
-                            origin_y: oy,
                         });
                     }
                     break;
@@ -3014,6 +2554,10 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 0,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 } else {
@@ -3114,6 +2658,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -3141,6 +2691,9 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 3,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 }
@@ -3168,6 +2721,12 @@ pub(crate) fn negotiate_and_route(
                             flow_dir: None,
                             goal_on_obstacle: true,
                             y_tolerance: 0,
+                            respect_extra_obstacles: true,
+
+                            own_trunk_x: None,
+
+
+                            forbid_ug_exit_to_goal: false,
                         });
                         lane_id += 1;
                     }
@@ -3183,70 +2742,32 @@ pub(crate) fn negotiate_and_route(
                 last_tap_y
             };
             if x < bw {
-                let sat_region = sat_regions.iter().find(|r| {
-                    r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
+                // Tap-off spec is always full-width: A* routes through any SAT
+                // forced_empty tiles naturally (those are the tap-off's row,
+                // and SAT entities live at trunk_x ± 1 rows, not on tap_y).
+                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                id_to_key.insert(lane_id, tap_key);
+                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 6,
+                    y_constraint: Some(tap_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                    goal_on_obstacle: false,
+                    y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
-                if let Some(region) = sat_region {
-                    // Before zone: lane.x → zone.x_min - 1
-                    if x < region.x_min {
-                        let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, key);
-                        let wps = vec![(x as i16, tap_y as i16), ((region.x_min - 1) as i16, tap_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id,
-                            item_id,
-                            waypoints: wps,
-                            strategy: 2,
-                            priority: 6,
-                            y_constraint: Some(tap_y as i16),
-                            x_constraint: None,
-                            flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
-                    // After zone: zone.x_max + 1 → bw - 1
-                    if region.x_max + 1 < bw {
-                        let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, key);
-                        let wps = vec![((region.x_max + 1) as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id,
-                            item_id,
-                            waypoints: wps,
-                            strategy: 2,
-                            priority: 6,
-                            y_constraint: Some(tap_y as i16),
-                            x_constraint: None,
-                            flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
-                } else {
-                    // No SAT zone — normal full-width tap-off spec.
-                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                    id_to_key.insert(lane_id, tap_key);
-                    let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                    let fd = flow_dir(&wps);
-                    specs.push(LaneSpec {
-                        id: lane_id,
-                        item_id,
-                        waypoints: wps,
-                        strategy: 2,
-                        priority: 6,
-                        y_constraint: Some(tap_y as i16),
-                        x_constraint: None,
-                        flow_dir: fd,
-                        goal_on_obstacle: false,
-                        y_tolerance: 0,
-                    });
-                    lane_id += 1;
-                }
+                lane_id += 1;
             }
         } else if !lane.consumer_rows.is_empty() {
             // External input lane: trunk from source to all tap-offs, then
@@ -3297,6 +2818,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -3319,52 +2846,25 @@ pub(crate) fn negotiate_and_route(
                 };
 
                 if spec_start_x < bw {
-                    let sat_region = sat_regions.iter().find(|r| {
-                        r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
+                    // Tap-off spec is always full-width (see note above).
+                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                    id_to_key.insert(lane_id, tap_key);
+                    let wps = vec![(spec_start_x as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id, item_id, waypoints: wps, strategy: 2,
+                        priority: 6, y_constraint: Some(spec_y as i16),
+                        x_constraint: None, flow_dir: fd,
+                        goal_on_obstacle: false,
+                        y_tolerance: 0,
+                        respect_extra_obstacles: false,
+
+                        own_trunk_x: None,
+
+
+                        forbid_ug_exit_to_goal: false,
                     });
-                    if let Some(region) = sat_region {
-                        if spec_start_x < region.x_min {
-                            let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                            id_to_key.insert(lane_id, key);
-                            let wps = vec![(spec_start_x as i16, spec_y as i16), ((region.x_min - 1) as i16, spec_y as i16)];
-                            let fd = flow_dir(&wps);
-                            specs.push(LaneSpec {
-                                id: lane_id, item_id, waypoints: wps, strategy: 2,
-                                priority: 6, y_constraint: Some(spec_y as i16),
-                                x_constraint: None, flow_dir: fd,
-                                goal_on_obstacle: false,
-                                y_tolerance: 0,
-                            });
-                            lane_id += 1;
-                        }
-                        if region.x_max + 1 < bw {
-                            let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
-                            id_to_key.insert(lane_id, key);
-                            let wps = vec![((region.x_max + 1) as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
-                            let fd = flow_dir(&wps);
-                            specs.push(LaneSpec {
-                                id: lane_id, item_id, waypoints: wps, strategy: 2,
-                                priority: 6, y_constraint: Some(spec_y as i16),
-                                x_constraint: None, flow_dir: fd,
-                                goal_on_obstacle: false,
-                                y_tolerance: 0,
-                            });
-                            lane_id += 1;
-                        }
-                    } else {
-                        let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, tap_key);
-                        let wps = vec![(spec_start_x as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id, item_id, waypoints: wps, strategy: 2,
-                            priority: 6, y_constraint: Some(spec_y as i16),
-                            x_constraint: None, flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
+                    lane_id += 1;
                 }
             }
         } else {
@@ -3403,6 +2903,12 @@ pub(crate) fn negotiate_and_route(
                     flow_dir: fd,
                     goal_on_obstacle: false,
                     y_tolerance: 0,
+                    respect_extra_obstacles: false,
+
+                    own_trunk_x: None,
+
+
+                    forbid_ug_exit_to_goal: false,
                 });
                 lane_id += 1;
             }
@@ -3430,6 +2936,9 @@ pub(crate) fn negotiate_and_route(
                         flow_dir: fd,
                         goal_on_obstacle: true,
                         y_tolerance: 3,
+                        respect_extra_obstacles: true,
+                        own_trunk_x: None,
+                        forbid_ug_exit_to_goal: false,
                     });
                     lane_id += 1;
                 }
@@ -3466,6 +2975,12 @@ pub(crate) fn negotiate_and_route(
                 flow_dir: None,
                 goal_on_obstacle: false,
                 y_tolerance: 0,
+                respect_extra_obstacles: false,
+
+                own_trunk_x: None,
+
+
+                forbid_ug_exit_to_goal: false,
             });
             lane_id += 1;
         }
@@ -3486,6 +3001,12 @@ pub(crate) fn negotiate_and_route(
                 flow_dir: None,
                 goal_on_obstacle: false,
                 y_tolerance: 0,
+                respect_extra_obstacles: false,
+
+                own_trunk_x: None,
+
+
+                forbid_ug_exit_to_goal: false,
             });
             lane_id += 1;
             i += 2;
@@ -3496,12 +3017,64 @@ pub(crate) fn negotiate_and_route(
         return FxHashMap::default();
     }
 
+    // Extra obstacle set: tiles that vertical trunk columns will claim during
+    // the later stamping pass. Trunks are routed through `negotiate_lanes` via
+    // `trunk:` specs with `x_constraint`, so in principle priority promotion
+    // would propagate trunk claims down to lower-priority `ret:`/`bal:` specs.
+    // In practice, x-constrained trunk specs can fail silently (e.g. when an
+    // obstacle span is wider than UG reach), in which case their tiles never
+    // get claimed and `ret:`/merger specs walk straight through them. By
+    // pre-computing the trunk y-range here and exposing it to opted-in specs,
+    // we make trunk avoidance unconditional regardless of trunk-spec success.
+    //
+    // Includes input, intermediate, collector, AND family-output lanes — all
+    // non-fluid lanes whose stamped trunk shares a column.
+    let mut extra_obstacles: FxHashSet<(i16, i16)> = FxHashSet::default();
+    for lane in lanes {
+        if lane.is_fluid {
+            continue;
+        }
+        let mut producer_out_ys: Vec<i32> = Vec::new();
+        if let Some(pr) = lane.producer_row {
+            if pr < row_spans.len() {
+                producer_out_ys.push(row_spans[pr].output_belt_y);
+            }
+        }
+        for &p in &lane.extra_producer_rows {
+            if p < row_spans.len() {
+                producer_out_ys.push(row_spans[p].output_belt_y);
+            }
+        }
+        let start_y = if !producer_out_ys.is_empty() {
+            producer_out_ys.iter().copied().min().unwrap().min(lane.source_y)
+        } else {
+            lane.source_y
+        };
+        let mut end_y = lane.tap_off_ys.iter().copied().max().unwrap_or(start_y);
+        for &y in &producer_out_ys {
+            end_y = end_y.max(y);
+        }
+        if let Some(bal_y) = lane.balancer_y {
+            end_y = end_y.max(bal_y + 1);
+        }
+        if let Some((_, by_end)) = lane.family_balancer_range {
+            end_y = end_y.max(by_end + 1);
+        }
+        if end_y < start_y {
+            continue;
+        }
+        for y in start_y..=end_y {
+            extra_obstacles.insert((lane.x as i16, y as i16));
+        }
+    }
+
     let max_extent = (bw.max(total_height) + 50) as i16;
     let effective_belt = crate::common::belt_entity_for_rate(f64::MAX, max_belt_tier);
     let reach = crate::common::ug_max_reach(effective_belt) as i16;
     let routed = negotiate_lanes(
         &specs,
         &obstacles,
+        &extra_obstacles,
         /* max_iterations */ 20,
         max_extent,
         /* allow_underground */ true,
@@ -3657,7 +3230,7 @@ mod tests {
             ),
         ];
 
-        let score = score_lane_ordering(&lanes, &row_spans);
+        let score = crate::bus::plan::score_lane_ordering(&lanes, &row_spans);
         // Iron-ore taps at y=1, copper-ore is active from y=0 to y=5, so 1 crossing
         assert_eq!(score, 1);
     }
@@ -3702,7 +3275,7 @@ mod tests {
             ),
         ];
 
-        let score = score_lane_ordering(&lanes, &row_spans);
+        let score = crate::bus::plan::score_lane_ordering(&lanes, &row_spans);
         // Iron-ore taps at y=10, copper-ore is only active from y=0 to y=5, no crossing
         assert_eq!(score, 0);
     }
@@ -4143,14 +3716,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_vec_to_entity_dir() {
-        assert_eq!(vec_to_entity_dir(1, 0), EntityDirection::East);
-        assert_eq!(vec_to_entity_dir(-1, 0), EntityDirection::West);
-        assert_eq!(vec_to_entity_dir(0, 1), EntityDirection::South);
-        assert_eq!(vec_to_entity_dir(0, -1), EntityDirection::North);
-    }
-
     // -----------------------------------------------------------------------
     // plan_bus_lanes tests
     // -----------------------------------------------------------------------
@@ -4370,7 +3935,8 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 3, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // Should have produced some entities
         assert!(!entities.is_empty(), "route_lane must produce entities");
@@ -4427,7 +3993,8 @@ mod tests {
         );
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &lane, std::slice::from_ref(&lane), &[row_span], 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // The tap-off at y=8 should be an EAST belt
         let tap_belt = entities.iter().find(|e| e.x == 2 && e.y == 8 && e.name.contains("belt") && !e.name.contains("underground"));
@@ -4499,7 +4066,8 @@ mod tests {
         let row_spans = vec![producer_row, consumer_row];
 
         let mut entities: Vec<PlacedEntity> = Vec::new();
-        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default());
+        let mut dropped: Vec<DroppedBridge> = Vec::new();
+        route_lane(&mut entities, &east_lane, &all_lanes, &row_spans, 4, None, None, &CrossingTileSet::empty(), &FxHashSet::default(), &mut dropped);
 
         // Should have underground belts at y=4 (input before y=5) and y=6 (output after y=5)
         let ug_entities: Vec<_> = entities.iter()

@@ -180,9 +180,9 @@ const MACHINE_ENTITIES = new Set(Object.keys(MACHINE_SIZES));
 const INSERTER_ENTITIES = new Set(Object.keys(INSERTER_COLORS));
 // Derived from BELT_COLORS keys by tier prefix
 const BELT_ENTITIES = new Set(
-  Object.keys(BELT_COLORS).filter((k) => !k.startsWith("underground") && !k.includes("splitter"))
+  Object.keys(BELT_COLORS).filter((k) => !k.includes("underground") && !k.includes("splitter"))
 );
-const UG_BELT_ENTITIES = new Set(Object.keys(BELT_COLORS).filter((k) => k.startsWith("underground")));
+const UG_BELT_ENTITIES = new Set(Object.keys(BELT_COLORS).filter((k) => k.includes("underground")));
 const SPLITTER_ENTITIES = new Set(Object.keys(BELT_COLORS).filter((k) => k.includes("splitter")));
 const PIPE_ENTITIES = new Set(["pipe", "pipe-to-ground"]);
 const POLE_ENTITIES = new Set(["medium-electric-pole", "small-electric-pole"]);
@@ -817,6 +817,48 @@ export function renderLayout(
       for (let dy = 0; dy < h; dy++) {
         for (let dx = 0; dx < w; dx++) {
           machineTileSet.add(`${ex + dx},${ey + dy}`);
+        }
+      }
+    }
+  }
+
+  // Draw underground belt tunnels beneath all entities.
+  // For each UG input, scan forward for its matching output and draw a
+  // semi-transparent stripe through the tiles in between so it's clear
+  // what passes under surface entities.
+  {
+    const ugEntityMap = new Map<string, PlacedEntity>();
+    for (const e of layout.entities) {
+      if (UG_BELT_ENTITIES.has(e.name)) {
+        ugEntityMap.set(`${e.x ?? 0},${e.y ?? 0}`, e);
+      }
+    }
+    const MAX_UG = 8;
+    for (const e of layout.entities) {
+      if (!UG_BELT_ENTITIES.has(e.name) || e.io_type !== "input") continue;
+      const [dx, dy] = dirVec(e.direction);
+      const x = e.x ?? 0;
+      const y = e.y ?? 0;
+      for (let dist = 1; dist <= MAX_UG; dist++) {
+        const te = ugEntityMap.get(`${x + dx * dist},${y + dy * dist}`);
+        if (!te) continue;
+        if (UG_BELT_ENTITIES.has(te.name) && te.name === e.name && te.direction === e.direction && te.io_type === "input") break;
+        if (UG_BELT_ENTITIES.has(te.name) && te.name === e.name && te.direction === e.direction && te.io_type === "output") {
+          // Draw tunnel stripe through intermediate tiles
+          const [base] = BELT_COLORS[e.name] ?? [0xa89030, 0xe0d070];
+          const tg = new Graphics();
+          const isHoriz = Math.abs(dx) > 0;
+          for (let i = 1; i < dist; i++) {
+            const tx = (x + dx * i) * TILE_PX;
+            const ty = (y + dy * i) * TILE_PX;
+            if (isHoriz) {
+              tg.rect(tx, ty + TILE_PX * 0.2, TILE_PX, TILE_PX * 0.6).fill({ color: base, alpha: 0.3 });
+            } else {
+              tg.rect(tx + TILE_PX * 0.2, ty, TILE_PX * 0.6, TILE_PX).fill({ color: base, alpha: 0.3 });
+            }
+          }
+          container.addChild(tg);
+          break;
         }
       }
     }
