@@ -245,6 +245,19 @@ pub enum TraceEvent {
         final_dropped_count: usize,
         max_retries: u32,
     },
+
+    // Per-band measurement emitted after a successful route_bus. One event
+    // per adjacent row pair. Used by the compaction baseline/scoreboard to
+    // measure total inter-row gap tiles before any shrinking is applied.
+    InterRowBand {
+        upper_row_idx: usize,
+        lower_row_idx: usize,
+        band_y_start: i32,
+        band_y_end: i32,
+        gap_height: i32,
+        trunk_count: usize,
+        distinct_items: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------

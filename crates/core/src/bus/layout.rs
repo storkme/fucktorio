@@ -304,6 +304,7 @@ pub fn build_bus_layout(
         phase: "bus_routed".into(),
         entity_count: bus_entities.len(),
     });
+    emit_inter_row_bands(&cur_row_spans, &cur_lanes);
     if crate::trace::is_active() {
         let mut snap_entities = row_entities.clone();
         snap_entities.extend(bus_entities.clone());
@@ -996,6 +997,58 @@ fn repair_pole_connectivity(
 
 
 /// Create a pole entity at the given position.
+fn emit_inter_row_bands(row_spans: &[RowSpan], lanes: &[BusLane]) {
+    if row_spans.len() < 2 {
+        return;
+    }
+    let lane_extents: Vec<(i32, i32)> = lanes
+        .iter()
+        .map(|l| {
+            let mut y_min = l.source_y;
+            let mut y_max = l.source_y;
+            for &ty in &l.tap_off_ys {
+                y_min = y_min.min(ty);
+                y_max = y_max.max(ty);
+            }
+            for &cr in &l.consumer_rows {
+                if let Some(rs) = row_spans.get(cr) {
+                    y_min = y_min.min(rs.y_start);
+                    y_max = y_max.max(rs.y_end - 1);
+                }
+            }
+            (y_min, y_max)
+        })
+        .collect();
+
+    for i in 0..row_spans.len() - 1 {
+        let upper = &row_spans[i];
+        let lower = &row_spans[i + 1];
+        // y_end is exclusive, so y_end is the first tile of the gap.
+        let band_y_start = upper.y_end;
+        let band_y_end = lower.y_start - 1;
+        if band_y_end < band_y_start {
+            continue;
+        }
+        let mut trunk_count = 0usize;
+        let mut items: FxHashSet<&str> = FxHashSet::default();
+        for (lane, &(y_min, y_max)) in lanes.iter().zip(lane_extents.iter()) {
+            if y_min <= band_y_start && y_max >= band_y_end {
+                trunk_count += 1;
+                items.insert(lane.item.as_str());
+            }
+        }
+        crate::trace::emit(crate::trace::TraceEvent::InterRowBand {
+            upper_row_idx: i,
+            lower_row_idx: i + 1,
+            band_y_start,
+            band_y_end,
+            gap_height: band_y_end - band_y_start + 1,
+            trunk_count,
+            distinct_items: items.len(),
+        });
+    }
+}
+
 fn make_pole(x: i32, y: i32) -> PlacedEntity {
     PlacedEntity {
         name: "medium-electric-pole".to_string(),

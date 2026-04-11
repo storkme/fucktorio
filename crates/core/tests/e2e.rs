@@ -688,14 +688,56 @@ fn report_stress_scoreboard(test_name: &str, result: &E2EResult) -> ! {
     let mut zones_solved = 0usize;
     let mut zones_skipped = 0usize;
     let mut bridges_dropped = 0usize;
+    let mut band_count = 0usize;
+    let mut crossing_bands = 0usize;
+    let mut noncrossing_bands = 0usize;
+    let mut total_gap_tiles: i32 = 0;
+    let mut max_gap: i32 = 0;
+    let mut band_trunks_max: usize = 0;
+    let mut crossing_zones: Vec<(i32, i32)> = Vec::new(); // (y, y+height-1) inclusive
     for ev in &result.trace_events {
         match ev {
-            TraceEvent::CrossingZoneSolved { .. } => zones_solved += 1,
+            TraceEvent::CrossingZoneSolved { y, height, .. } => {
+                zones_solved += 1;
+                crossing_zones.push((*y, *y + *height as i32 - 1));
+            }
             TraceEvent::CrossingZoneSkipped { .. } => zones_skipped += 1,
             TraceEvent::BridgeDropped { .. } => bridges_dropped += 1,
             _ => {}
         }
     }
+    for ev in &result.trace_events {
+        if let TraceEvent::InterRowBand {
+            band_y_start,
+            band_y_end,
+            gap_height,
+            trunk_count,
+            ..
+        } = ev
+        {
+            band_count += 1;
+            total_gap_tiles += *gap_height;
+            if *gap_height > max_gap {
+                max_gap = *gap_height;
+            }
+            if *trunk_count > band_trunks_max {
+                band_trunks_max = *trunk_count;
+            }
+            let has_crossing = crossing_zones
+                .iter()
+                .any(|&(y0, y1)| y1 >= *band_y_start && y0 <= *band_y_end);
+            if has_crossing {
+                crossing_bands += 1;
+            } else {
+                noncrossing_bands += 1;
+            }
+        }
+    }
+    let mean_gap = if band_count > 0 {
+        total_gap_tiles as f64 / band_count as f64
+    } else {
+        0.0
+    };
 
     let total_warnings: usize = by_category.values().sum();
     let mut msg = format!(
@@ -705,12 +747,24 @@ fn report_stress_scoreboard(test_name: &str, result: &E2EResult) -> ! {
          zones solved:     {}\n\
          zones skipped:    {}\n\
          bridges dropped:  {}\n\
+         bands:            {} (crossing: {}, non-crossing: {})\n\
+         total gap tiles:  {}\n\
+         mean gap:         {:.2}\n\
+         max gap:          {}\n\
+         max trunks/band:  {}\n\
          warnings by category:\n",
         result.layout.entities.len(),
         total_warnings,
         zones_solved,
         zones_skipped,
         bridges_dropped,
+        band_count,
+        crossing_bands,
+        noncrossing_bands,
+        total_gap_tiles,
+        mean_gap,
+        max_gap,
+        band_trunks_max,
     );
     if by_category.is_empty() {
         msg.push_str("  (none)\n");
@@ -722,8 +776,11 @@ fn report_stress_scoreboard(test_name: &str, result: &E2EResult) -> ! {
     panic!("{msg}");
 }
 
-/// Baseline (pre-Phase 1): warnings=?, zones_solved=?, zones_skipped=?.
-/// Fill in after the first run. Monotone-decrease across phases is the goal.
+/// Baseline (Phase 1, 2026-04-11): entities=11232, warnings=0, zones_solved=19,
+/// bands=3 (1 crossing, 2 non-crossing), total_gap_tiles=33, mean_gap=11.00,
+/// max_gap=15, max_trunks/band=20. Note: the "non-crossing" bands here are
+/// inflated by balancer reflow — Phase 2 must mark balancer-touching bands as
+/// non-compactable.
 #[test]
 #[ignore]
 #[ntest::timeout(180000)]
@@ -742,7 +799,9 @@ fn stress_electronic_circuit_30s_from_ore() {
     report_stress_scoreboard("stress_electronic_circuit_30s_from_ore", &result);
 }
 
-/// Baseline (pre-Phase 1): warnings=?, zones_solved=?, zones_skipped=?.
+/// Baseline (Phase 1, 2026-04-11): entities=13131, warnings=0, zones_solved=28,
+/// bands=2 (2 crossing, 0 non-crossing), total_gap_tiles=5, mean_gap=2.50,
+/// max_gap=3, max_trunks/band=12.
 #[test]
 #[ignore]
 #[ntest::timeout(180000)]
@@ -781,7 +840,9 @@ fn stress_processing_unit_20s_from_plates() {
     report_stress_scoreboard("stress_processing_unit_20s_from_plates", &result);
 }
 
-/// Baseline (pre-Phase 1): warnings=?, zones_solved=?, zones_skipped=?.
+/// Baseline (Phase 1, 2026-04-11): entities=9190, warnings=0, zones_solved=13,
+/// bands=3 (1 crossing, 2 non-crossing), total_gap_tiles=22, mean_gap=7.33,
+/// max_gap=12, max_trunks/band=14.
 #[test]
 #[ignore]
 #[ntest::timeout(180000)]
