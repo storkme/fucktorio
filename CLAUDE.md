@@ -1,140 +1,139 @@
 # Fucktorio
 
-Automated Factorio factory blueprint generator. Takes a target item + production rate, solves recipe dependencies, generates a spatial layout, and exports a Factorio-importable blueprint string.
+Automated Factorio factory blueprint generator. Takes a target item + production rate, solves recipe dependencies, generates a spatial bus layout, and exports a Factorio-importable blueprint string.
 
 ## Quick start
 
 ```bash
-# Requires: uv (manages Python version + deps)
-uv sync
+# Rust workspace check + unit + e2e tests
+cargo test --manifest-path crates/core/Cargo.toml
 
-# Run tests
-uv run pytest tests/
+# A single test with output
+cargo test --manifest-path crates/core/Cargo.toml --test e2e -- \
+    tier2_electronic_circuit_from_ore --exact --nocapture
 
-# Generate a blueprint
-uv run python -m src.pipeline
+# Web app (dev server at http://localhost:5173)
+cd web && npm install && npm run dev
 ```
 
-For Rust builds (PyO3 extension, WASM bundle) and the web app, see [`docs/build-systems.md`](docs/build-systems.md).
+For full build commands (PyO3 extension, WASM rebuild, release builds), see [`docs/build-systems.md`](docs/build-systems.md).
 
 ## Development conventions
 
-- **Python version**: Pinned in `.python-version`. Use `uv` to manage the venv and run commands.
-- **Running snippets**: Don't use inline `python -c` for multi-line exploratory code. Instead, write a script to `scripts/` (e.g. `scripts/debug_lanes.py`) and run it with `uv run python scripts/debug_lanes.py`. This makes it easier to iterate and review.
-- **Running tests**: `uv run pytest tests/`.
-- **Pre-commit hooks**: Committed in `.githooks/pre-commit`. Activate with `git config core.hooksPath .githooks`. Runs ruff check + format on Python, cargo clippy on Rust (if .rs files staged), and tsc on TypeScript (if web/src/ files staged). Bypass with `git commit --no-verify`.
+- **Primary workflow**: edit Rust, run `cargo test`, then rebuild WASM and hit the web app to eyeball the layout.
+- **WASM rebuild**: `wasm-pack build crates/wasm-bindings --target web --out-dir "$(pwd)/web/src/wasm-pkg"`. Always pass an absolute `--out-dir` (see memory: `feedback_wasmpack_outdir`).
+- **Pre-commit hooks**: in `.githooks/pre-commit`, activate with `git config core.hooksPath .githooks`. Runs `cargo clippy` on staged Rust, `tsc` on staged TS, and ruff on any staged Python. Bypass with `--no-verify` only for genuine emergencies.
+- **Scripts**: put exploratory snippets in `scripts/` rather than inline one-liners. Rust debug scripts go in `crates/core/examples/` or as `#[test] #[ignore]` benchmarks.
+- **Snapshots**: `FUCKTORIO_DUMP_SNAPSHOTS=1 cargo test ...` writes `.fls` files under `crates/core/target/tmp/`. Decode with `tail -c +5 <file> | base64 -d | gunzip`. See [`docs/layout-snapshot-debugger.md`](docs/layout-snapshot-debugger.md).
 
 ## Architecture
 
-**Rust pipeline** (`crates/core/`) is the active implementation — solver, recipe DB, bus layout, blueprint export, validation, and A*. It powers the WASM web app and the PyO3 extension, and is where all new work happens. Tier 4 investigation, bus routing changes, and layout bug fixes should be driven through Rust tests (`crates/core/tests/e2e.rs`) and the web app.
+**Rust workspace** (`crates/`) is where all work happens. Three crates:
 
-**Python pipeline** (`src/pipeline.py`, `src/bus/`, `src/routing/`, etc.) is **largely deprecated**. It was the original reference implementation but has been superseded by the Rust port. It still runs for legacy pytest tests and the `src/analysis/` tooling, but does not reflect current behavior — do not use Python output to diagnose issues seen in the web app or Rust tests. Don't extend the Python layout code; port fixes to Rust instead.
+- **`crates/core/`** — pure shared logic: solver, recipe DB, bus layout engine, blueprint export, A\*, validation. All new features and bug fixes land here. The `wasm` feature gates WASM-only derives so the same crate serves PyO3 and the browser.
+- **`crates/wasm-bindings/`** — thin wasm-bindgen wrapper exposing `solve`, `layout`, `export_blueprint`, and recipe lookups to the browser. Consumed by `web/src/engine.ts`.
+- **`crates/pyo3-bindings/`** — thin PyO3 adapter that exposes `astar_path` + `negotiate_lanes` to Python, used only by the legacy Python pipeline's routing.
 
-Pipeline stages:
+**Web app** (`web/`) is the primary interactive interface. Vite + vanilla TS + PixiJS v8 + pixi-viewport. Runs the full solver → layout → blueprint pipeline client-side via WASM. URL state encodes the recipe, rate, machine tier, external inputs, and belt tier, so links reproduce layouts exactly.
 
-1. **Solver** (`src/solver/`, `crates/core/src/solver.rs`) — Recursively resolves recipes, calculates machine counts and flow rates. Returns `SolverResult`. Python uses `draftsman.data`; Rust loads a pre-extracted `crates/core/data/recipes.json`.
-2. **Layout** — Two engines, both return `LayoutResult`:
-   - **Bus** (`src/bus/`, `crates/core/src/bus/`) — Deterministic row-based layout with main bus pattern. The primary focus, and the engine exposed to the web app. See [`docs/layout-engine-deep-dive.md`](docs/layout-engine-deep-dive.md) for internals.
-   - **Spaghetti** (`src/spaghetti/`, `src/routing/`, `src/search/`) — Python-only. Random search with A\* place-and-route. Parked pending routing rework ([#62](https://github.com/storkme/fucktorio/issues/62)).
-3. **Blueprint** (`src/blueprint/`, `crates/core/src/blueprint.rs`) — Converts `LayoutResult` to a base64 blueprint string. Python version wraps draftsman; Rust version emits the JSON + zlib + base64 envelope directly.
-4. **Validation** (`src/validate.py`, `crates/core/src/validate/`) — 21 functional checks: pipe isolation, fluid port connectivity, inserter chains, power coverage, belt flow/structural, underground belt pairs, lane throughput.
-5. **Analysis** (`src/analysis/`) — Python-only. Parses real Factorio blueprints into production graphs for studying community layouts.
+**Python pipeline** (`src/`) is **deprecated**. It was the original reference but has been superseded by the Rust port. Do not extend it. Do not use its output to diagnose issues seen in the web app or Rust tests — it is out of sync with current behavior. The only Python still in active use is `src/analysis/` (parses real Factorio blueprints for studying community layouts) and the `scripts/generate_balancer_library.py` generator.
 
-## Key models (`src/models.py`)
+### Pipeline stages (all Rust)
+
+1. **Solver** (`crates/core/src/solver.rs`) — Recursively resolves recipes, computes machine counts and flow rates. Loads `crates/core/data/recipes.json` via `include_str!`. Returns a `SolverResult`.
+2. **Bus layout** (`crates/core/src/bus/`) — Deterministic row-based layout. Machines group by recipe into rows, trunks run on parallel columns, tap-offs bridge via underground belts. See [`docs/layout-engine-deep-dive.md`](docs/layout-engine-deep-dive.md) for the pipeline internals, retry loop, and SAT crossing solver.
+3. **Blueprint export** (`crates/core/src/blueprint.rs`) — Emits the JSON + zlib + base64 envelope directly (no draftsman dependency).
+4. **Validation** (`crates/core/src/validate/`) — 21 functional checks: pipe isolation, fluid port connectivity, inserter chains, power coverage, belt flow/structural, underground belt pairs, lane throughput.
+
+## Key models (`crates/core/src/models.rs`)
 
 - `ItemFlow` — item name, rate, fluid flag
 - `MachineSpec` — machine type, recipe, count, inputs/outputs
 - `SolverResult` — machines, external inputs/outputs, dependency order
-- `PlacedEntity` — entity name, position, direction, recipe, carries (what item/fluid it transports)
+- `PlacedEntity` — entity name, position, direction, recipe, carries, segment id
 - `LayoutResult` — entities, connections, dimensions
 
 ## Key source files
 
-Most-visited files. For the full reference table see [`docs/file-reference.md`](docs/file-reference.md).
+Most-visited files. Full reference in [`docs/file-reference.md`](docs/file-reference.md).
 
 | File | Purpose |
 |------|---------|
-| `src/bus/bus_router.py` / `crates/core/src/bus/bus_router.rs` | Trunk placement, tap-offs, balancer families, output mergers |
-| `src/bus/templates.py` / `crates/core/src/bus/templates.rs` | Belt/inserter row templates |
-| `src/validate.py` / `crates/core/src/validate/` | 21 validation checks |
-| `crates/core/src/astar.rs` | Rust A\* pathfinder (shared PyO3 + WASM) |
-| `crates/core/src/models.rs` / `src/models.py` | Shared data models |
-| `crates/core/src/common.rs` / `src/routing/common.py` | Shared constants and helpers (belt tiers, entity sizes) |
-| `src/bus/balancer_library.py` / `crates/core/src/bus/balancer_library.rs` | Pre-generated N-to-M balancer templates (SAT-solved) |
+| `crates/core/src/bus/layout.rs` | Top-level `build_bus_layout` pipeline: place_rows → plan_bus_lanes → route_bus, retry loop, pole placement |
+| `crates/core/src/bus/bus_router.rs` | Trunk routing, tap-offs, N-to-M balancer stamping, output mergers, negotiated crossing map |
+| `crates/core/src/bus/placer.rs` | Row placement: group machines by recipe, split for throughput, `place_rows` geometry |
+| `crates/core/src/bus/templates.rs` | Belt/inserter row templates (single-input, dual-input, lane-splitting sideload bridges) |
+| `crates/core/src/bus/plan.rs` | `plan_bus_lanes`, `plan_layout`, `extract_and_solve_crossings` (SAT crossing zones) |
+| `crates/core/src/bus/balancer_library.rs` | Pre-generated N→M balancer templates. Regenerate via `scripts/generate_balancer_library.py` |
+| `crates/core/src/astar.rs` | A\* pathfinder + lane-first negotiated congestion routing |
+| `crates/core/src/sat.rs` | Varisat-backed crossing-zone SAT solver (see memory: `project_sat_crossing_solver`) |
+| `crates/core/src/validate/belt_flow.rs` | Lane-rate walker (Kahn topo sort with splitter pairing and balancer feedback-loop handling) |
+| `crates/core/src/validate/` | Rest of the 21 checks: `belt_structural`, `fluids`, `inserters`, `power`, `underground` |
+| `crates/core/src/trace.rs` | Thread-local trace event collector; `TraceEvent` variants drive the snapshot debugger and stress scoreboards |
+| `crates/core/src/snapshot.rs` | `.fls` snapshot reader/writer for the layout debugger |
+| `crates/core/tests/e2e.rs` | End-to-end test harness: tier1–4 regression tests and stress corpus with scoreboards |
+| `crates/wasm-bindings/src/lib.rs` | wasm-bindgen wrapper exposing `solve`, `layout`, `export_blueprint` to the browser |
+| `web/src/engine.ts` | WASM loader and typed wrappers |
+| `web/src/renderer/entities.ts` | PixiJS entity renderer (bus layout view) |
+| `web/src/ui/sidebar.ts` | Searchable item picker, rate input, live solve, URL state |
 
 ## Factorio game rules (constraints for the layout engine)
 
 Physical rules the layout engine must satisfy:
 
-- **Machines** craft recipes, need ingredients delivered and products extracted
-- **Inserters** pick from one side, drop to the other. Regular inserters reach 1 tile; long-handed inserters reach 2 tiles
-- **Belts** move items in a direction, connect when adjacent. Tiers: yellow 15/s, red 30/s, blue 45/s
-- **Pipes** carry fluids, connect to any adjacent pipe (and merge — separate fluid networks must be physically isolated)
-- **Fluid ports** on machines are at specific tile positions (queryable from `draftsman.data.entities`)
-- **Fluid-box mirroring (Space Age)** — entities with fluid boxes support a `mirror: true` blueprint attribute that flips fluid port positions along the entity's primary axis. Combined with `direction`, this gives 8 orientations (4 rotations × 2 mirrors). Only effective in Factorio Space Age (2.0+); ignored in 1.1.
-- **Entities** cannot overlap
-- **Power** — machines need electricity; medium-electric-pole covers a 7×7 area
-- **Belt lane mechanics** — see [`docs/factorio-mechanics.md`](docs/factorio-mechanics.md) for detailed lane-level rules (sideloading, underground lanes, splitter behavior)
+- **Machines** craft recipes, need ingredients delivered and products extracted.
+- **Inserters** pick from one side, drop to the other. Regular reach 1 tile; long-handed reach 2.
+- **Belts** move items in a direction, connect when adjacent. Tiers: yellow 15/s, red 30/s, blue 45/s.
+- **Pipes** carry fluids and merge with any adjacent pipe — separate fluid networks must be physically isolated.
+- **Fluid ports** on machines are at specific tile positions that depend on direction and `mirror`.
+- **Fluid-box mirroring (Space Age)** — entities with fluid boxes support `mirror: true` in the blueprint. Combined with `direction`, this gives 8 orientations (4 rotations × 2 mirrors). Only honored by Factorio 2.0+.
+- **Entities** cannot overlap.
+- **Power** — machines need electricity; medium-electric-pole covers a 7×7 area.
+- **Belt lane mechanics** — sideloading, UG lane rules, splitter behavior — detailed in [`docs/factorio-mechanics.md`](docs/factorio-mechanics.md).
 
 ## Recipe complexity ladder
 
-Tracks which recipes produce zero-error blueprints. Each tier represents increasing complexity. Moving up = real progress.
+Tracks which recipes produce zero-error bus blueprints. Moving up = real progress. Tests for each tier live in `crates/core/tests/e2e.rs`.
 
-| Tier | Recipe | Complexity | Spaghetti | Bus |
-|------|--------|-----------|-----------|-----|
-| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | Inconsistent (xfail) — loops, contamination, unpaired UG | SOLVED |
-| 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | Failing — belt-flow-reachability | SOLVED (incl. from ores) |
-| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | Failing — pipe isolation | SOLVED |
-| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Failing — massive routing failures | Partial (from plates: lane-throughput warnings, needs [#65](https://github.com/storkme/fucktorio/issues/65)) |
-| 5 | `processing-unit` | Deep chain, multiple fluids | Not attempted | Not attempted |
-| 6 | `rocket-control-unit` | Very deep chain | Not attempted | Not attempted |
+| Tier | Recipe | Complexity | Bus status |
+|------|--------|-----------|-----|
+| 1 | `iron-gear-wheel` | 1 recipe, 1 solid input | SOLVED |
+| 2 | `electronic-circuit` | 2 recipes, 2 solid inputs | SOLVED (incl. from ores) |
+| 3 | `plastic-bar` | 1 recipe, 1 fluid + 1 solid input | SOLVED |
+| 4 | `advanced-circuit` | 5+ recipes, mixed solid/fluid | Partial (from plates: lane-throughput warnings, needs [#65](https://github.com/storkme/fucktorio/issues/65); from ores blocked by [#68](https://github.com/storkme/fucktorio/issues/68) and missing balancer shapes [#136](https://github.com/storkme/fucktorio/issues/136)) |
+| 5 | `processing-unit` | Deep chain, multiple fluids | Not attempted |
+| 6 | `rocket-control-unit` | Very deep chain | Not attempted |
 
-### Known failure modes
-
-1. **Belt-flow-reachability** (current #1 blocker): Continuation routing connects tiles topologically but belt directions point the wrong way for input edges. The belt path exists physically but items can't flow upstream. Fix needed at `route_connections` level.
-2. **Belt cross-item contamination**: SOLVED for tier 1 via `other_item_tiles` hard-blocking in A\*. Proximity penalty (+3.0) and contamination guard in `_fix_belt_directions()` prevent residual cases.
-3. **Belt loops**: A\* routing accidentally creates cycles in the belt network.
-4. **Disconnected networks**: Output belts from different machines don't merge into a connected trunk.
-5. **Throughput violations**: Too many inserters feeding the same belt lane.
-6. **Failed routing edges**: A\* can't find any path from source to destination.
-7. **Pipe merge contamination**: Adjacent pipes carrying different fluids merge (fluids connect to all adjacent pipes).
+Open tracking issues for layout quality: [#135 balancer templates are oversized](https://github.com/storkme/fucktorio/issues/135), [#136 missing coprime balancer shapes](https://github.com/storkme/fucktorio/issues/136), [#68 fluid row 3-tile pitch](https://github.com/storkme/fucktorio/issues/68).
 
 ## Verification protocol for layout engine changes
 
-Layout changes are easy to get wrong — errors can be masked by other changes, imports can shadow silently, and error counts can drop to zero for the wrong reason. Follow this protocol:
+Layout bugs are easy to get wrong — zero validation errors can mean the check was wrong, not that the layout is. Follow this protocol:
 
-1. **Check the viz**: After any routing/placement change, generate `test_viz/iron-gear-wheel-10s.html` and visually inspect it. Zero validation errors mean nothing if the layout looks wrong.
-   ```bash
-   pytest tests/test_spaghetti.py::TestSpaghettiVisualization::test_viz_iron_gear_wheel --viz -x
-   ```
-2. **Verify the fix is running**: If you add new logic inside the incremental builder, confirm it actually executes (e.g. add a temporary `logger.info` or check that output changes). The `_evaluate` function catches ALL exceptions silently, so broken code just scores 10000 and gets ignored.
-3. **Watch for import shadowing**: `build_layout_incremental()` is a long function. A `from .router import X` anywhere inside it makes `X` a local variable for the ENTIRE function, shadowing any module-level import of `X`. All imports from router should be at the top of the file.
-4. **Don't trust error count drops alone**: If errors go from 5 to 0, ask WHY. Check that belt types are correct (should be yellow transport-belt for 10/s), check that the topology makes sense, check that the specific fix you intended is the reason errors dropped.
-5. **One search attempt should take <2s** with the Rust A\*. If it takes >10s, something is wrong (likely N×A\* instead of multi-start, or an infinite loop).
+1. **Run the full e2e suite** — `cargo test --manifest-path crates/core/Cargo.toml`. All 10 non-ignored tests must stay green.
+2. **Load the case in the browser** — start the dev server, open the URL for the recipe you changed, and look at the layout with your eyes. A zero-warning layout that visibly has disconnected belts is a validator bug, not a success.
+3. **Check the snapshot for the exact bug you intended to fix** — `FUCKTORIO_DUMP_SNAPSHOTS=1 cargo test ... --nocapture <test>` then decode with the snippet in [`docs/layout-snapshot-debugger.md`](docs/layout-snapshot-debugger.md). Inspect entities at the suspect coordinates, not just the warning count.
+4. **Trace events are reliable signals** — `RouteFailure`, `BridgeDropped`, `CrossingZoneSkipped`, `BalancerStamped` are emitted by the pipeline and land in the snapshot's `trace.events`. Use them to confirm the specific failure mode before theorizing.
+5. **Don't trust an error-count drop alone** — if warnings go 5 → 0, ask *why*. Does the topology still make sense? Were belts actually re-routed, or did a check get silently skipped? Check the specific change caused the fix you wanted.
+6. **Clippy + WASM builds are checks, not nits** — a layout change that clippy-fails or breaks the WASM build is not done.
 
 ## Where to find X
 
 | Looking for | Location |
 |-------------|----------|
-| Recipe data | `crates/core/data/recipes.json` (Rust, embedded via `include_str!`). Python uses `draftsman.data` at runtime. |
-| Balancer templates | `src/bus/balancer_library.py` / `crates/core/src/bus/balancer_library.rs`. Regenerate: `uv run python scripts/generate_balancer_library.py` |
-| Belt tier thresholds | `crates/core/src/common.rs` (`belt_entity_for_rate`) / `src/routing/common.py` |
-| Entity sizes | `crates/core/src/common.rs` (`entity_size`) / `src/routing/common.py` (`MACHINE_SIZES`) |
-| Validation checks | `src/validate.py` (Python reference) ↔ `crates/core/src/validate/` (Rust port, 1:1 check parity) |
-| Layout snapshot format | `crates/core/src/snapshot.rs` + `docs/layout-snapshot-debugger.md` |
-| Belt lane physics | `docs/factorio-mechanics.md` |
-| Bus layout internals | `docs/layout-engine-deep-dive.md` |
-| Build commands | `docs/build-systems.md` |
-| Full source file list | `docs/file-reference.md` |
-
-## Verification & validation
-
-- `src/verify.py` — structural blueprint validation (overlap detection, unpaired undergrounds, ASCII map)
-- `src/validate.py` — functional validation (21 checks: pipe isolation, fluid connectivity, inserter chains, power coverage, belt flow/structural, underground pairs, lane throughput)
-- `crates/core/src/validate/` — Rust mirror of the same check suite, used by the WASM web app
-- `tests/` — pytest suite with `--viz` flag for HTML visualizations, deployed to GitHub Pages via CI
+| Recipe data | `crates/core/data/recipes.json` (embedded via `include_str!`) |
+| Balancer templates | `crates/core/src/bus/balancer_library.rs`. Regenerate: `uv run python scripts/generate_balancer_library.py` |
+| Belt tier thresholds | `crates/core/src/common.rs` (`belt_entity_for_rate`, `ug_max_reach`) |
+| Entity sizes | `crates/core/src/common.rs` (`entity_size`) |
+| Validation checks | `crates/core/src/validate/` (21 checks) |
+| Snapshot format | `crates/core/src/snapshot.rs` + [`docs/layout-snapshot-debugger.md`](docs/layout-snapshot-debugger.md) |
+| Belt lane physics | [`docs/factorio-mechanics.md`](docs/factorio-mechanics.md) |
+| Bus layout internals | [`docs/layout-engine-deep-dive.md`](docs/layout-engine-deep-dive.md) |
+| Build commands | [`docs/build-systems.md`](docs/build-systems.md) |
+| Full source file list | [`docs/file-reference.md`](docs/file-reference.md) |
 
 ## Visualizations
 
-Test visualizations are deployed to GitHub Pages on main branch pushes:
-https://storkme.github.io/fucktorio/
+The web app at `http://localhost:5173` is the primary visualization — any URL (`?item=...&rate=...&in=...&belt=...`) renders a live layout with entity overlays, segment highlighting, and validation markers.
+
+The legacy Python test suite also emits HTML viz files (`tests/ --viz`) that are deployed to GitHub Pages on main branch pushes: https://storkme.github.io/fucktorio/ — these reflect the deprecated Python pipeline, not Rust behavior.
