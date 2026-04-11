@@ -1,3 +1,15 @@
+//! Shared data models for the Fucktorio pipeline.
+//!
+//! Rust port of `src/models.py`. These types flow through every pipeline stage:
+//! solver → layout → blueprint export → validation.
+//!
+//! Key types:
+//! - [`ItemFlow`] — an item (or fluid) flowing at a given rate
+//! - [`MachineSpec`] — one recipe step: machine type, count, inputs/outputs
+//! - [`SolverResult`] — the full solved production graph
+//! - [`PlacedEntity`] — a single entity placed on the tile grid (belt, machine, inserter, etc.)
+//! - [`LayoutResult`] — the complete spatial layout ready for blueprint export
+
 use serde::{Deserialize, Serialize};
 
 /// An item flowing at a certain rate.
