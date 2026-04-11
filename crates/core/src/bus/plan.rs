@@ -18,9 +18,13 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::bus::bus_router::{BusLane, DroppedBridge};
+use crate::bus::bus_router::{
+    BusLane, CrossingTileSet, DroppedBridge, SatCrossingRegion, SolvedCrossing,
+};
 use crate::bus::placer::RowSpan;
+use crate::common::belt_entity_for_rate;
 use crate::models::EntityDirection;
+use crate::sat::{self, CrossingZone, ZoneBoundary};
 
 // ---------------------------------------------------------------------------
 // Lane ordering
@@ -234,6 +238,159 @@ pub fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusL
     });
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// SAT crossing-zone extraction
+// ---------------------------------------------------------------------------
+
+/// Extract crossing zones from the lane plan and solve them via SAT.
+///
+/// Returns (solved_crossings, tile_set, regions) where tile_set contains all
+/// (x,y) positions owned by crossing zone entities.
+pub(crate) fn extract_and_solve_crossings(
+    lanes: &[BusLane],
+    _row_spans: &[RowSpan],
+    max_belt_tier: Option<&str>,
+) -> (Vec<SolvedCrossing>, CrossingTileSet, Vec<SatCrossingRegion>) {
+    let effective_belt = belt_entity_for_rate(f64::MAX, max_belt_tier);
+    let max_reach = crate::common::ug_max_reach(effective_belt);
+
+    let mut zone_specs: Vec<(String, i32, i32, Vec<(i32, String)>)> = Vec::new();
+
+    for tapping_lane in lanes {
+        if tapping_lane.is_fluid {
+            continue;
+        }
+        for &tap_y in &tapping_lane.tap_off_ys {
+            let mut crossed_trunks: Vec<(i32, String)> = Vec::new();
+
+            for trunk_lane in lanes {
+                if trunk_lane.is_fluid
+                    || std::ptr::eq(trunk_lane, tapping_lane)
+                    || trunk_lane.x <= tapping_lane.x
+                {
+                    continue;
+                }
+                let trunk_extends = trunk_lane.tap_off_ys.iter().any(|&y| y >= tap_y);
+                let trunk_skips_tap_y = trunk_lane.tap_off_ys.contains(&tap_y);
+                let trunk_above_source = tap_y < trunk_lane.source_y;
+                let trunk_in_balancer = trunk_lane.family_balancer_range
+                    .is_some_and(|(bs, be)| tap_y >= bs && tap_y <= be);
+                let ug_output_on_tapoff = trunk_lane.tap_off_ys.contains(&(tap_y + 1));
+                if !trunk_extends || trunk_skips_tap_y || trunk_above_source
+                    || trunk_in_balancer || ug_output_on_tapoff
+                {
+                    continue;
+                }
+                let all_clear = lanes.iter()
+                    .filter(|mid| {
+                        !mid.is_fluid
+                            && mid.x > tapping_lane.x
+                            && mid.x < trunk_lane.x
+                    })
+                    .all(|mid| {
+                        mid.tap_off_ys.contains(&tap_y)
+                            || mid.tap_off_ys.iter().all(|&y| y < tap_y)
+                    });
+                if all_clear {
+                    crossed_trunks.push((trunk_lane.x, trunk_lane.item.clone()));
+                }
+            }
+
+            if !crossed_trunks.is_empty() {
+                crossed_trunks.sort_by_key(|(x, _)| *x);
+                zone_specs.push((
+                    tapping_lane.item.clone(),
+                    tapping_lane.x,
+                    tap_y,
+                    crossed_trunks,
+                ));
+            }
+        }
+    }
+
+    let mut solved = Vec::new();
+    let mut entity_tiles = FxHashSet::default();
+    let mut all_tiles = FxHashSet::default();
+
+    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
+        let x_min = crossed.first().unwrap().0;
+        let x_max = crossed.last().unwrap().0;
+        let zone_width = (x_max - x_min + 1) as u32;
+        let zone_height: u32 = 3;
+        let zone_x = x_min;
+        let zone_y = tap_y - 1;
+
+        let mut boundaries = Vec::new();
+        let mut forced_empty = Vec::new();
+        for (trunk_x, trunk_item) in crossed {
+            boundaries.push(ZoneBoundary {
+                x: *trunk_x,
+                y: zone_y,
+                direction: EntityDirection::South,
+                item: trunk_item.clone(),
+                is_input: true,
+            });
+            boundaries.push(ZoneBoundary {
+                x: *trunk_x,
+                y: zone_y + zone_height as i32 - 1,
+                direction: EntityDirection::South,
+                item: trunk_item.clone(),
+                is_input: false,
+            });
+            forced_empty.push((*trunk_x, *tap_y));
+        }
+
+        let zone = CrossingZone {
+            x: zone_x,
+            y: zone_y,
+            width: zone_width,
+            height: zone_height,
+            boundaries,
+            forced_empty,
+        };
+
+        if let Some(solution) = sat::solve_crossing_zone(&zone, max_reach, effective_belt) {
+            for e in &solution.entities {
+                entity_tiles.insert((e.x, e.y));
+                all_tiles.insert((e.x, e.y));
+            }
+            for &(fx, fy) in &zone.forced_empty {
+                all_tiles.insert((fx, fy));
+            }
+            solved.push(SolvedCrossing { zone, solution });
+        } else {
+            crate::trace::emit(crate::trace::TraceEvent::CrossingZoneSkipped {
+                tap_item: tap_item.clone(),
+                tap_x: *tap_x,
+                tap_y: *tap_y,
+                reason: "sat-unsolved".into(),
+            });
+        }
+    }
+
+    let mut regions: Vec<SatCrossingRegion> = Vec::new();
+    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
+        if crossed.is_empty() {
+            continue;
+        }
+        let x_min = crossed.first().unwrap().0;
+        let x_max = crossed.last().unwrap().0;
+        let zone_origin = (x_min, tap_y - 1);
+        if solved.iter().any(|sc| sc.zone.x == zone_origin.0 && sc.zone.y == zone_origin.1) {
+            regions.push(SatCrossingRegion {
+                tap_x: *tap_x,
+                x_min,
+                x_max,
+                tap_y: *tap_y,
+                tap_item: tap_item.clone(),
+            });
+        }
+    }
+
+    let tile_sets = CrossingTileSet::from_parts(all_tiles, entity_tiles);
+    (solved, tile_sets, regions)
 }
 
 // ---------------------------------------------------------------------------

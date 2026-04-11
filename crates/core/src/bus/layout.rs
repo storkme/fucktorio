@@ -8,11 +8,11 @@ use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 use crate::bus::bus_router::{
     plan_bus_lanes, bus_width_for_lanes, stamp_family_balancer, render_family_input_paths,
     merge_output_rows, place_merger_block, route_lane, negotiate_and_route,
-    extract_and_solve_crossings, SatCrossingRegion,
+    SatCrossingRegion,
     BusLane, DroppedBridge, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};
-use crate::bus::plan::{plan_layout, apply_dropped_to_gaps, PlanError};
+use crate::bus::plan::{plan_layout, apply_dropped_to_gaps, extract_and_solve_crossings, PlanError};
 
 /// Convert a SolverResult into a bus-style LayoutResult.
 ///
