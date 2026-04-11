@@ -1,9 +1,8 @@
-//! Belt connectivity, flow paths, direction continuity, reachability, network topology, junctions.
+//! Belt connectivity, flow paths, reachability, network topology, junctions.
 //!
 //! Port of the belt-check functions from `src/validate.py`:
 //! - `check_belt_connectivity`
 //! - `check_belt_flow_path`
-//! - `check_belt_direction_continuity`
 //! - `check_belt_network_topology`
 //! - `check_belt_junctions`
 //! - `check_belt_flow_reachability`
@@ -302,7 +301,6 @@ fn build_machine_by_tile(layout: &LayoutResult) -> FxHashMap<(i32, i32), (i32, i
 fn opposite_vec((dx, dy): (i32, i32)) -> (i32, i32) {
     (-dx, -dy)
 }
-
 // ---------------------------------------------------------------------------
 // 1. check_belt_connectivity
 // ---------------------------------------------------------------------------
@@ -633,57 +631,7 @@ pub fn check_belt_flow_path(
 }
 
 // ---------------------------------------------------------------------------
-// 3. check_belt_direction_continuity
-// ---------------------------------------------------------------------------
-
-pub fn check_belt_direction_continuity(layout: &LayoutResult) -> Vec<ValidationIssue> {
-    let mut issues = Vec::new();
-
-    let belt_dir_map = belt_dir_map_from(&layout.entities);
-    let mut checked: FxHashSet<((i32, i32), (i32, i32))> = FxHashSet::default();
-
-    for (&(bx, by), &direction) in &belt_dir_map {
-        let dir_vec = dir_to_vec(direction);
-        let opposite = opposite_vec(dir_vec);
-
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let nb = (bx + dx, by + dy);
-            if !belt_dir_map.contains_key(&nb) {
-                continue;
-            }
-            let pair = if (bx, by) <= nb {
-                ((bx, by), nb)
-            } else {
-                (nb, (bx, by))
-            };
-            if !checked.insert(pair) {
-                continue;
-            }
-            let nb_dir = belt_dir_map[&nb];
-            let nb_vec = dir_to_vec(nb_dir);
-
-            // Only flag if 180° opposite AND the adjacency is along the flow axis
-            if nb_vec == opposite && ((dx, dy) == dir_vec || (dx, dy) == opposite) {
-                issues.push(ValidationIssue::with_pos(
-                    Severity::Warning,
-                    "belt-direction",
-                    format!(
-                        "Adjacent belts at ({},{}) and ({},{}) face opposite directions ({:?} vs {:?}), creating a dead spot",
-                        bx, by, nb.0, nb.1,
-                        direction, nb_dir
-                    ),
-                    bx,
-                    by,
-                ));
-            }
-        }
-    }
-
-    issues
-}
-
-// ---------------------------------------------------------------------------
-// 4. check_belt_network_topology
+// 3. check_belt_network_topology
 // ---------------------------------------------------------------------------
 
 pub fn check_belt_network_topology(
@@ -2776,69 +2724,6 @@ mod tests {
             .filter(|i| i.severity == Severity::Error && i.category == "belt-flow-path")
             .collect();
         assert_eq!(errors.len(), 1);
-    }
-
-    // --- check_belt_direction_continuity ---
-
-    #[test]
-    fn direction_continuity_same_direction_ok() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(1, 0, EntityDirection::East),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        assert!(check_belt_direction_continuity(&lr).is_empty());
-    }
-
-    #[test]
-    fn direction_continuity_turn_ok() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(1, 0, EntityDirection::South),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        assert!(check_belt_direction_continuity(&lr).is_empty());
-    }
-
-    #[test]
-    fn direction_continuity_head_on_warning() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(1, 0, EntityDirection::West),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        let issues = check_belt_direction_continuity(&lr);
-        let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].category, "belt-direction");
-    }
-
-    #[test]
-    fn direction_continuity_parallel_opposite_ok() {
-        let lr = LayoutResult {
-            entities: vec![
-                belt(0, 0, EntityDirection::East),
-                belt(0, 1, EntityDirection::West),
-            ],
-            width: 10,
-            height: 10,
-            ..Default::default()
-        };
-        let issues = check_belt_direction_continuity(&lr);
-        let warnings: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Warning).collect();
-        assert!(warnings.is_empty());
     }
 
     // --- check_belt_throughput ---

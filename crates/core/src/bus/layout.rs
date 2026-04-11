@@ -1160,7 +1160,6 @@ mod tests {
         all_issues.extend(belt_flow::check_underground_belt_pairs(&layout));
         all_issues.extend(belt_flow::check_belt_connectivity(&layout, Some(&sr)));
         all_issues.extend(belt_flow::check_belt_flow_path(&layout, Some(&sr), crate::validate::LayoutStyle::Bus));
-        all_issues.extend(belt_flow::check_belt_direction_continuity(&layout));
 
         let errors: Vec<_> = all_issues.iter()
             .filter(|i| i.severity == Severity::Error)
@@ -1456,7 +1455,7 @@ mod tests {
         use crate::validate::underground::check_underground_belt_pairs;
         use crate::validate::belt_flow::{
             check_belt_dead_ends, check_belt_item_isolation, check_belt_loops,
-            check_belt_junctions, check_belt_direction_continuity,
+            check_belt_junctions,
         };
         use crate::validate::Severity;
 
@@ -1502,9 +1501,6 @@ mod tests {
                 if issue.severity == Severity::Error { all_errors.push(issue.message); }
             }
             for issue in check_belt_junctions(&layout) {
-                if issue.severity == Severity::Error { all_errors.push(issue.message); }
-            }
-            for issue in check_belt_direction_continuity(&layout) {
                 if issue.severity == Severity::Error { all_errors.push(issue.message); }
             }
 
@@ -1554,7 +1550,7 @@ mod tests {
         // Full validation — dead-ends, loops, isolation, etc.
         use crate::validate::belt_flow::{
             check_belt_dead_ends, check_belt_item_isolation, check_belt_loops,
-            check_belt_junctions, check_belt_direction_continuity,
+            check_belt_junctions,
         };
         use crate::validate::underground::check_underground_belt_pairs;
         use crate::validate::Severity;
@@ -1572,9 +1568,6 @@ mod tests {
             if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
         }
         for issue in check_belt_junctions(&layout) {
-            if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
-        }
-        for issue in check_belt_direction_continuity(&layout) {
             if issue.severity == Severity::Error { all_errors.push(issue.message.clone()); }
         }
         if !all_errors.is_empty() {

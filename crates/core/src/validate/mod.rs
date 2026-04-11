@@ -19,7 +19,7 @@ use crate::models::{LayoutResult, SolverResult};
 use power::{check_pole_network_connectivity, check_power_coverage};
 
 use belt_flow::{
-    check_belt_connectivity, check_belt_direction_continuity, check_belt_flow_path,
+    check_belt_connectivity, check_belt_flow_path,
     check_belt_flow_reachability, check_belt_junctions, check_belt_network_topology,
     check_input_rate_delivery, check_underground_belt_entry_sideload,
     check_underground_belt_pairs, check_underground_belt_sideloading,
@@ -141,7 +141,6 @@ pub fn validate(
     issues.extend(check_fluid_port_connectivity(layout_result, layout_style));
     issues.extend(check_belt_connectivity(layout_result, solver_result));
     issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style));
-    issues.extend(check_belt_direction_continuity(layout_result));
     issues.extend(belt_structural::check_entity_overlaps(layout_result));
     issues.extend(belt_structural::check_belt_throughput(layout_result));
     issues.extend(belt_structural::check_output_belt_coverage(layout_result, solver_result));
