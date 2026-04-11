@@ -170,8 +170,8 @@ pub fn build_bus_layout(
         // route_bus call — translate the drops into extra_gap updates and
         // retry the pipeline from place_rows. This is a faster retry path
         // than letting route_bus run A* first and then dropping.
-        match plan_layout(&cur_lanes, &cur_row_spans, actual_bw) {
-            Ok(_plan) => {}
+        match plan_layout(&cur_lanes, &cur_row_spans) {
+            Ok(()) => {}
             Err(PlanError::DroppedBridges { dropped: pre_drops }) => {
                 for db in &pre_drops {
                     crate::trace::emit(crate::trace::TraceEvent::BridgeDropped {
@@ -526,7 +526,7 @@ fn route_bus(
     #[cfg(not(target_arch = "wasm32"))]
     let sat_start = std::time::Instant::now();
     let (solved_crossings, mut crossing_tiles) =
-        extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
+        extract_and_solve_crossings(lanes, max_belt_tier);
     #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
         phase: "sat_crossing_zones".to_string(),

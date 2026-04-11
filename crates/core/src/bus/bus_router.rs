@@ -441,16 +441,6 @@ const UNDERGROUND_MAP: &[(&str, &str)] = &[
     ("express-transport-belt", "express-underground-belt"),
 ];
 
-/// Factorio direction IDs mapped to EntityDirection
-#[allow(dead_code)]
-const FACTORIO_DIR_TO_ENTITY: &[(usize, EntityDirection)] = &[
-    (0, EntityDirection::North),
-    (2, EntityDirection::East),
-    (4, EntityDirection::South),
-    (6, EntityDirection::West),
-];
-
-#[allow(dead_code)]
 fn splitter_for_belt(belt: &str) -> &'static str {
     SPLITTER_MAP.iter()
         .find(|(b, _)| *b == belt)
@@ -1123,20 +1113,6 @@ pub(crate) fn render_family_input_paths(
     }
 
     Ok(entities)
-}
-
-/// Vector direction (dx, dy) to entity direction.
-#[allow(dead_code)]
-fn vec_to_entity_dir(dx: i32, dy: i32) -> EntityDirection {
-    if dx > 0 {
-        EntityDirection::East
-    } else if dx < 0 {
-        EntityDirection::West
-    } else if dy > 0 {
-        EntityDirection::South
-    } else {
-        EntityDirection::North
-    }
 }
 
 /// Merge EAST-flowing output belts from multiple rows at the bottom-right.
@@ -2084,7 +2060,7 @@ fn foreign_trunk_skip_ys(
     let yields = crate::bus::plan::compute_foreign_yields_for_lane(
         lane, all_lanes, row_spans, trunk_start_y, trunk_end_y,
     );
-    yields.into_iter().map(|y| y.y_range.0).collect()
+    yields.into_iter().map(|y| y.y).collect()
 }
 
 /// Extra y-rows to add to trunk skip set so UG-pair tiles don't collide.
@@ -2131,7 +2107,6 @@ use crate::sat::{CrossingZone, CrossingZoneSolution};
 
 /// A solved crossing zone: the SAT solution plus its origin.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct SolvedCrossing {
     pub zone: CrossingZone,
     pub solution: CrossingZoneSolution,
@@ -2446,12 +2421,10 @@ pub(crate) fn negotiate_and_route(
 
         // Build list of (sub_template, sub_producers, sub_lane_xs, sub_origin_y) groups.
         // Direct template: one group. Decomposed: g groups.
-        #[allow(dead_code)]
         struct SubGroup<'a> {
             template: &'a crate::bus::balancer_library::BalancerTemplate,
             producers: Vec<usize>,
             lane_xs: Vec<i32>,
-            origin_y: i32,
         }
         let mut sub_groups: Vec<SubGroup> = Vec::new();
 
@@ -2460,7 +2433,6 @@ pub(crate) fn negotiate_and_route(
                 template,
                 producers: fam.producer_rows.clone(),
                 lane_xs: fam.lane_xs.clone(),
-                origin_y: fam.balancer_y_start,
             });
         } else {
             // Decomposition: find divisor g
@@ -2480,22 +2452,10 @@ pub(crate) fn negotiate_and_route(
                         let le = (ls + lanes_per).min(fam.lane_xs.len());
                         let sub_prods = sorted_prods[ps..pe].to_vec();
                         let sub_lxs = fam.lane_xs[ls..le].to_vec();
-                        let oy = if sub_prods.len() == 1 {
-                            if sub_prods[0] < row_spans.len() {
-                                row_spans[sub_prods[0]].output_belt_y
-                            } else { fam.balancer_y_start }
-                        } else {
-                            sub_prods.iter()
-                                .filter(|&&p| p < row_spans.len())
-                                .map(|&p| row_spans[p].y_end)
-                                .max()
-                                .unwrap_or(fam.balancer_y_start)
-                        };
                         sub_groups.push(SubGroup {
                             template: sub_tpl,
                             producers: sub_prods,
                             lane_xs: sub_lxs,
-                            origin_y: oy,
                         });
                     }
                     break;
@@ -3647,14 +3607,6 @@ mod tests {
         for entity in &entities {
             assert_eq!(entity.carries, Some("crude-oil".to_string()));
         }
-    }
-
-    #[test]
-    fn test_vec_to_entity_dir() {
-        assert_eq!(vec_to_entity_dir(1, 0), EntityDirection::East);
-        assert_eq!(vec_to_entity_dir(-1, 0), EntityDirection::West);
-        assert_eq!(vec_to_entity_dir(0, 1), EntityDirection::South);
-        assert_eq!(vec_to_entity_dir(0, -1), EntityDirection::North);
     }
 
     // -----------------------------------------------------------------------

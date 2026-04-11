@@ -252,7 +252,6 @@ pub fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusL
 /// the full row width and naturally fills the `forced_empty` middle tiles.
 pub(crate) fn extract_and_solve_crossings(
     lanes: &[BusLane],
-    _row_spans: &[RowSpan],
     max_belt_tier: Option<&str>,
 ) -> (Vec<SolvedCrossing>, CrossingTileSet) {
     let effective_belt = belt_entity_for_rate(f64::MAX, max_belt_tier);
@@ -419,14 +418,7 @@ pub fn compute_foreign_yields_for_lane(
             }
             let y = row_spans[p].output_belt_y;
             if trunk_start_y < y && y < trunk_end_y {
-                yields.push(Yield {
-                    trunk_x: lane.x,
-                    y_range: (y, y),
-                    reason: YieldReason::ForeignTapoff {
-                        foreign_item: neighbor.item.clone(),
-                        tap_y: y,
-                    },
-                });
+                yields.push(Yield { y });
             }
         }
     }
@@ -461,14 +453,7 @@ pub fn compute_foreign_yields_for_lane(
                         || mid.tap_off_ys.iter().all(|&y| y < tap_y)
                 });
             if all_intermediate_clear {
-                yields.push(Yield {
-                    trunk_x: lane.x,
-                    y_range: (tap_y, tap_y),
-                    reason: YieldReason::ForeignTapoff {
-                        foreign_item: other.item.clone(),
-                        tap_y,
-                    },
-                });
+                yields.push(Yield { y: tap_y });
                 // Non-last splitter tap-offs also occupy (other.x+1, tap_y-1)
                 // (splitter right half) and (other.x+1, tap_y) (belt East).
                 // If this trunk IS that adjacent column, skip tap_y-1 too.
@@ -478,14 +463,7 @@ pub fn compute_foreign_yields_for_lane(
                     && trunk_start_y < tap_y - 1 && tap_y - 1 < trunk_end_y
                     && !own_tap_set.contains(&tap_y)
                 {
-                    yields.push(Yield {
-                        trunk_x: lane.x,
-                        y_range: (tap_y - 1, tap_y - 1),
-                        reason: YieldReason::ForeignTapoff {
-                            foreign_item: other.item.clone(),
-                            tap_y,
-                        },
-                    });
+                    yields.push(Yield { y: tap_y - 1 });
                 }
             }
         }
@@ -498,71 +476,11 @@ pub fn compute_foreign_yields_for_lane(
 // Types
 // ---------------------------------------------------------------------------
 
-/// Why a trunk is being asked to yield (go underground) across a y-range.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum YieldReason {
-    /// The yield crosses a foreign lane's tap-off (perpendicular East belt).
-    ForeignTapoff { foreign_item: String, tap_y: i32 },
-}
-
-/// A trunk yield: the trunk at `trunk_x` goes underground across
-/// `y_range` (inclusive), re-emerging at `y_range.1 + 1`.
+/// A trunk yield: the trunk goes underground at y-position `y`,
+/// re-emerging at `y + 1`.
 #[derive(Debug, Clone)]
 pub struct Yield {
-    pub trunk_x: i32,
-    pub y_range: (i32, i32),
-    pub reason: YieldReason,
-}
-
-/// Allowed entry directions for a pinned tile. Restricts what A* may do
-/// when generating the tile's neighbours — used to forbid sideload-into-UG.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EntryDirection {
-    /// Straight entry (same direction as the pinned tile faces).
-    Straight,
-    SideloadFromNorth,
-    SideloadFromSouth,
-    SideloadFromEast,
-    SideloadFromWest,
-}
-
-/// A tap-off pin: declares "this tile MUST be a surface belt facing
-/// `direction`, and items may only enter via `allowed_entries`".
-///
-/// Used to forbid the non-last-tap-off splitter stamp → UG-input sideload
-/// pattern. If an A* spec would otherwise place a UG input on a pinned
-/// tile, the planner returns a conflict and forces a gap.
-#[derive(Debug, Clone)]
-pub struct TapoffPin {
-    pub pos: (i32, i32),
-    pub direction: EntityDirection,
-    /// Inclusive set of entry directions permitted at this tile.
-    /// Empty = pin exists but imposes no entry restriction.
-    pub allowed_entries: Vec<EntryDirection>,
-}
-
-/// Per-lane planner output. Indexed by the lane's `x` column in `Plan.per_lane`.
-#[derive(Debug, Clone, Default)]
-pub struct LanePlan {
-    /// Y-ranges this lane's trunk goes underground across — already filtered
-    /// for own-tap-off collisions, so these are safe to bridge.
-    pub yields: Vec<Yield>,
-    /// Tap-off tile pins owned by this lane.
-    pub tapoff_pins: Vec<TapoffPin>,
-}
-
-/// The global routing plan. Built once per layout attempt before `route_bus`.
-#[derive(Debug, Clone, Default)]
-pub struct Plan {
-    pub per_lane: FxHashMap<i32, LanePlan>,
-}
-
-impl Plan {
-    /// Look up the plan for a lane by trunk column x. Returns an empty
-    /// LanePlan if the lane has no entries (zero-yield/zero-pin case).
-    pub fn lane(&self, x: i32) -> LanePlan {
-        self.per_lane.get(&x).cloned().unwrap_or_default()
-    }
+    pub y: i32,
 }
 
 /// Reasons `plan_layout` can fail — surfaced to `build_bus_layout` so it
@@ -610,17 +528,14 @@ fn merge_consecutive(ys: &FxHashSet<i32>) -> Vec<(i32, i32)> {
 /// whose bridge output (`range_end + 1`) collides with one of the lane's
 /// own tap-off positions. Dropped ranges are surfaced as `DroppedBridge`
 /// entries for the orchestrator to resolve via row-gap updates.
-///
-/// Returns `(bridgeable, dropped)`.
 fn resolve_bridge_conflicts_for_lane(
     lane: &BusLane,
     foreign_yields: &[Yield],
-) -> (Vec<Yield>, Vec<DroppedBridge>) {
-    let ys: FxHashSet<i32> = foreign_yields.iter().map(|y| y.y_range.0).collect();
+) -> Vec<DroppedBridge> {
+    let ys: FxHashSet<i32> = foreign_yields.iter().map(|y| y.y).collect();
     let merged = merge_consecutive(&ys);
     let own_tap_set: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
 
-    let mut bridgeable: Vec<Yield> = Vec::new();
     let mut dropped: Vec<DroppedBridge> = Vec::new();
 
     for (range_start, range_end) in merged {
@@ -630,26 +545,10 @@ fn resolve_bridge_conflicts_for_lane(
                 trunk_x: lane.x,
                 range: (range_start, range_end),
             });
-        } else {
-            // Rebuild Yield entries spanning range_start..=range_end.
-            // We lose the individual reasons from the merge step, but the
-            // orchestrator only reads (trunk_x, y_range) so that's fine.
-            bridgeable.push(Yield {
-                trunk_x: lane.x,
-                y_range: (range_start, range_end),
-                reason: foreign_yields
-                    .iter()
-                    .find(|y| y.y_range.0 >= range_start && y.y_range.0 <= range_end)
-                    .map(|y| y.reason.clone())
-                    .unwrap_or(YieldReason::ForeignTapoff {
-                        foreign_item: String::new(),
-                        tap_y: range_start,
-                    }),
-            });
         }
     }
 
-    (bridgeable, dropped)
+    dropped
 }
 
 /// Build the global routing plan.
@@ -663,9 +562,7 @@ fn resolve_bridge_conflicts_for_lane(
 pub fn plan_layout(
     lanes: &[BusLane],
     row_spans: &[RowSpan],
-    _bus_width: i32,
-) -> Result<Plan, PlanError> {
-    let mut plan = Plan::default();
+) -> Result<(), PlanError> {
     let mut all_dropped: Vec<DroppedBridge> = Vec::new();
 
     for lane in lanes {
@@ -693,10 +590,7 @@ pub fn plan_layout(
             lane.source_y,
             end_y + 1,
         );
-        let (bridgeable, dropped) = resolve_bridge_conflicts_for_lane(lane, &foreign_yields);
-
-        let entry = plan.per_lane.entry(lane.x).or_default();
-        entry.yields.extend(bridgeable);
+        let dropped = resolve_bridge_conflicts_for_lane(lane, &foreign_yields);
 
         all_dropped.extend(dropped);
     }
@@ -705,7 +599,7 @@ pub fn plan_layout(
         return Err(PlanError::DroppedBridges { dropped: all_dropped });
     }
 
-    Ok(plan)
+    Ok(())
 }
 
 /// Translate a list of dropped bridges into `extra_gap_after_row` updates.
