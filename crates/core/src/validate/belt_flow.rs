@@ -2275,6 +2275,155 @@ fn compute_lane_rates_impl(
         notify_ug_deps(pos, &mut in_degree, &mut queue);
     }
 
+    // Cycle-breaker pass: tiles that are part of belt loops (e.g. internal
+    // feedback paths inside N-to-M balancer templates) never reach in_degree==0
+    // in the main topo-sort above because each tile waits for its predecessor,
+    // which in turn waits for it.  After the main queue drains, force-process
+    // any remaining tile whose *explicit* feeders (as recorded in `feeders`) are
+    // all already done.  Those tiles were blocked only by the splitter-sibling
+    // unified in_degree or a UG virtual dep that will never fire, not by a real
+    // missing input.  Iterate until no further progress is made.
+    loop {
+        // Tier-1 freed: tiles where both own feeders AND sibling's feeders are all
+        // processed (or the sibling is already done).  These are safe to process
+        // immediately — the sibling will have real rates when we average.
+        let tier1: Vec<(i32, i32)> = belt_dir_map
+            .keys()
+            .filter(|&&p| {
+                !processed.contains(&p)
+                    && !ug_output_tiles.contains(&p)
+                    && feeders
+                        .get(&p)
+                        .is_none_or(|fs| fs.iter().all(|(fp, _)| processed.contains(fp)))
+                    && splitter_sibling
+                        .get(&p)
+                        .is_none_or(|&sib| {
+                            processed.contains(&sib)
+                                || feeders
+                                    .get(&sib)
+                                    .is_none_or(|fs| fs.iter().all(|(fp, _)| processed.contains(fp)))
+                        })
+            })
+            .copied()
+            .collect();
+
+        if !tier1.is_empty() {
+            // Safe batch: process and let notify propagate before the next iteration.
+            for pos in tier1 {
+                in_degree.insert(pos, 0);
+                queue.push_back(pos);
+            }
+        } else {
+            // No fully-safe tile exists.  Fall back to forcing ONE tile from the
+            // broader "own feeders all processed" set and draining the queue fully.
+            // This breaks the deadlock at the cost of possibly averaging with a
+            // [0,0] cycle tile — acceptable for a feedback loop that has a real
+            // input on at least one side (the cycle tile inherits the same rate).
+            //
+            // Prefer tiles that already have non-zero lane_rates (they carry real
+            // throughput) over tiles with all-zero rates (pure cycle tiles). This
+            // ensures the "real-input" side of a splitter pair is freed first so
+            // the averaging uses the actual rate rather than [0,0].
+            let candidates: Vec<(i32, i32)> = belt_dir_map
+                .keys()
+                .filter(|&&p| {
+                    !processed.contains(&p)
+                        && !ug_output_tiles.contains(&p)
+                        && feeders
+                            .get(&p)
+                            .is_none_or(|fs| fs.iter().all(|(fp, _)| processed.contains(fp)))
+                })
+                .copied()
+                .collect();
+            let fallback: Option<(i32, i32)> = candidates
+                .iter()
+                .find(|&&p| {
+                    lane_rates.get(&p).is_some_and(|&r| r[0] > 0.0 || r[1] > 0.0)
+                })
+                .or_else(|| candidates.first())
+                .copied();
+            match fallback {
+                None => break,
+                Some(pos) => {
+                    in_degree.insert(pos, 0);
+                    queue.push_back(pos);
+                }
+            }
+        }
+        while let Some(pos) = queue.pop_front() {
+            if processed.contains(&pos) {
+                continue;
+            }
+            if ug_output_tiles.contains(&pos) {
+                if let Some(&paired_input) = ug_output_to_input.get(&pos) {
+                    if let Some(&inp_d) = ug_input_dir.get(&paired_input) {
+                        let (idx, idy) = dir_to_vec(inp_d);
+                        let behind = (paired_input.0 - idx, paired_input.1 - idy);
+                        if let Some(&behind_rates) = lane_rates.get(&behind) {
+                            let rates = lane_rates.entry(pos).or_insert([0.0, 0.0]);
+                            rates[0] += behind_rates[0];
+                            rates[1] += behind_rates[1];
+                        }
+                    }
+                }
+            }
+            if let Some(&sib) = splitter_sibling.get(&pos) {
+                if !processed.contains(&sib) {
+                    splitter_input_ready.insert(pos);
+                    // Also force-free the sibling so the averaging path can fire.
+                    in_degree.insert(sib, 0);
+                    queue.push_back(sib);
+                    if !splitter_input_ready.contains(&sib) {
+                        let retry = splitter_retries.entry(pos).or_insert(0);
+                        if *retry < MAX_RETRIES {
+                            *retry += 1;
+                            queue.push_back(pos);
+                            continue;
+                        }
+                        processed.insert(pos);
+                        do_propagate(pos, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+                        notify_ug_deps(pos, &mut in_degree, &mut queue);
+                        continue;
+                    } else {
+                        let pos_rates = lane_rates.get(&pos).copied().unwrap_or([0.0, 0.0]);
+                        let sib_rates = lane_rates.get(&sib).copied().unwrap_or([0.0, 0.0]);
+                        // In the cycle-breaker, one tile may be a feedback-loop
+                        // recirculation tile (rates=[0,0]) while the other carries
+                        // the real external rate.  Averaging (real+0)/2 would
+                        // halve the output; instead propagate the non-zero side
+                        // to both tiles so each output gets the full steady-state
+                        // throughput (the cycle carries the same rate as the source).
+                        let pos_zero = pos_rates[0] == 0.0 && pos_rates[1] == 0.0;
+                        let sib_zero = sib_rates[0] == 0.0 && sib_rates[1] == 0.0;
+                        let (eff_pos, eff_sib) = if pos_zero && !sib_zero {
+                            (sib_rates, sib_rates)
+                        } else if sib_zero && !pos_zero {
+                            (pos_rates, pos_rates)
+                        } else {
+                            (pos_rates, sib_rates)
+                        };
+                        let total_l = eff_pos[0] + eff_sib[0];
+                        let total_r = eff_pos[1] + eff_sib[1];
+                        for &tile in &[pos, sib] {
+                            let r = lane_rates.entry(tile).or_insert([0.0, 0.0]);
+                            r[0] = total_l / 2.0;
+                            r[1] = total_r / 2.0;
+                        }
+                        for &tile in &[sib, pos] {
+                            processed.insert(tile);
+                            do_propagate(tile, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+                            notify_ug_deps(tile, &mut in_degree, &mut queue);
+                        }
+                        continue;
+                    }
+                }
+            }
+            processed.insert(pos);
+            do_propagate(pos, &belt_dir_map, &feeders, &splitter_sibling, &mut in_degree, &mut queue, &mut lane_rates);
+            notify_ug_deps(pos, &mut in_degree, &mut queue);
+        }
+    }
+
     lane_rates
 }
 
