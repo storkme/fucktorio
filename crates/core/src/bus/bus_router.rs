@@ -2137,19 +2137,6 @@ pub(crate) struct SolvedCrossing {
     pub solution: CrossingZoneSolution,
 }
 
-/// A SAT-solved region that the A* should route around.
-/// The tap-off at `tap_y` from lane at `tap_x` is handled by SAT
-/// from `x_min` to `x_max` (inclusive).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) struct SatCrossingRegion {
-    pub tap_x: i32,    // x of the tapping lane
-    pub x_min: i32,
-    pub x_max: i32,
-    pub tap_y: i32,
-    pub tap_item: String,
-}
-
 /// Tile set of all (x, y) positions owned by solved crossing zones.
 /// `all` includes entity positions + forced-empty tiles (for trunk skip_ys).
 /// `entity_only` has just entity positions (for the retain filter).
@@ -2380,8 +2367,6 @@ pub(crate) fn negotiate_and_route(
     solver_result: &SolverResult,
     families: &[LaneFamily],
     max_belt_tier: Option<&str>,
-    sat_regions: &[SatCrossingRegion],
-    _sat_obstacles: &FxHashSet<(i32, i32)>,
 ) -> FxHashMap<String, Vec<(i32, i32)>> {
     use crate::astar::{LaneSpec, negotiate_lanes};
     use crate::bus::balancer_library::balancer_templates;
@@ -2781,70 +2766,26 @@ pub(crate) fn negotiate_and_route(
                 last_tap_y
             };
             if x < bw {
-                let sat_region = sat_regions.iter().find(|r| {
-                    r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
+                // Tap-off spec is always full-width: A* routes through any SAT
+                // forced_empty tiles naturally (those are the tap-off's row,
+                // and SAT entities live at trunk_x ± 1 rows, not on tap_y).
+                let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                id_to_key.insert(lane_id, tap_key);
+                let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
+                let fd = flow_dir(&wps);
+                specs.push(LaneSpec {
+                    id: lane_id,
+                    item_id,
+                    waypoints: wps,
+                    strategy: 2,
+                    priority: 6,
+                    y_constraint: Some(tap_y as i16),
+                    x_constraint: None,
+                    flow_dir: fd,
+                    goal_on_obstacle: false,
+                    y_tolerance: 0,
                 });
-                if let Some(region) = sat_region {
-                    // Before zone: lane.x → zone.x_min - 1
-                    if x < region.x_min {
-                        let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, key);
-                        let wps = vec![(x as i16, tap_y as i16), ((region.x_min - 1) as i16, tap_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id,
-                            item_id,
-                            waypoints: wps,
-                            strategy: 2,
-                            priority: 6,
-                            y_constraint: Some(tap_y as i16),
-                            x_constraint: None,
-                            flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
-                    // After zone: zone.x_max + 1 → bw - 1
-                    if region.x_max + 1 < bw {
-                        let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, key);
-                        let wps = vec![((region.x_max + 1) as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id,
-                            item_id,
-                            waypoints: wps,
-                            strategy: 2,
-                            priority: 6,
-                            y_constraint: Some(tap_y as i16),
-                            x_constraint: None,
-                            flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
-                } else {
-                    // No SAT zone — normal full-width tap-off spec.
-                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                    id_to_key.insert(lane_id, tap_key);
-                    let wps = vec![(x as i16, tap_y as i16), (bw as i16 - 1, tap_y as i16)];
-                    let fd = flow_dir(&wps);
-                    specs.push(LaneSpec {
-                        id: lane_id,
-                        item_id,
-                        waypoints: wps,
-                        strategy: 2,
-                        priority: 6,
-                        y_constraint: Some(tap_y as i16),
-                        x_constraint: None,
-                        flow_dir: fd,
-                        goal_on_obstacle: false,
-                        y_tolerance: 0,
-                    });
-                    lane_id += 1;
-                }
+                lane_id += 1;
             }
         } else if !lane.consumer_rows.is_empty() {
             // External input lane: trunk from source to all tap-offs, then
@@ -2917,52 +2858,19 @@ pub(crate) fn negotiate_and_route(
                 };
 
                 if spec_start_x < bw {
-                    let sat_region = sat_regions.iter().find(|r| {
-                        r.tap_x == x && r.tap_y == tap_y && r.tap_item == lane.item && r.x_min > x && r.x_max < bw - 1
+                    // Tap-off spec is always full-width (see note above).
+                    let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
+                    id_to_key.insert(lane_id, tap_key);
+                    let wps = vec![(spec_start_x as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
+                    let fd = flow_dir(&wps);
+                    specs.push(LaneSpec {
+                        id: lane_id, item_id, waypoints: wps, strategy: 2,
+                        priority: 6, y_constraint: Some(spec_y as i16),
+                        x_constraint: None, flow_dir: fd,
+                        goal_on_obstacle: false,
+                        y_tolerance: 0,
                     });
-                    if let Some(region) = sat_region {
-                        if spec_start_x < region.x_min {
-                            let key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                            id_to_key.insert(lane_id, key);
-                            let wps = vec![(spec_start_x as i16, spec_y as i16), ((region.x_min - 1) as i16, spec_y as i16)];
-                            let fd = flow_dir(&wps);
-                            specs.push(LaneSpec {
-                                id: lane_id, item_id, waypoints: wps, strategy: 2,
-                                priority: 6, y_constraint: Some(spec_y as i16),
-                                x_constraint: None, flow_dir: fd,
-                                goal_on_obstacle: false,
-                                y_tolerance: 0,
-                            });
-                            lane_id += 1;
-                        }
-                        if region.x_max + 1 < bw {
-                            let key = format!("tap:{}:{}:{}_post", lane.item, x, tap_y);
-                            id_to_key.insert(lane_id, key);
-                            let wps = vec![((region.x_max + 1) as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
-                            let fd = flow_dir(&wps);
-                            specs.push(LaneSpec {
-                                id: lane_id, item_id, waypoints: wps, strategy: 2,
-                                priority: 6, y_constraint: Some(spec_y as i16),
-                                x_constraint: None, flow_dir: fd,
-                                goal_on_obstacle: false,
-                                y_tolerance: 0,
-                            });
-                            lane_id += 1;
-                        }
-                    } else {
-                        let tap_key = format!("tap:{}:{}:{}", lane.item, x, tap_y);
-                        id_to_key.insert(lane_id, tap_key);
-                        let wps = vec![(spec_start_x as i16, spec_y as i16), (bw as i16 - 1, spec_y as i16)];
-                        let fd = flow_dir(&wps);
-                        specs.push(LaneSpec {
-                            id: lane_id, item_id, waypoints: wps, strategy: 2,
-                            priority: 6, y_constraint: Some(spec_y as i16),
-                            x_constraint: None, flow_dir: fd,
-                            goal_on_obstacle: false,
-                            y_tolerance: 0,
-                        });
-                        lane_id += 1;
-                    }
+                    lane_id += 1;
                 }
             }
         } else {

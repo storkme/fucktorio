@@ -19,7 +19,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::bus::bus_router::{
-    BusLane, CrossingTileSet, DroppedBridge, SatCrossingRegion, SolvedCrossing,
+    BusLane, CrossingTileSet, DroppedBridge, SolvedCrossing,
 };
 use crate::bus::placer::RowSpan;
 use crate::common::belt_entity_for_rate;
@@ -246,13 +246,15 @@ pub fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusL
 
 /// Extract crossing zones from the lane plan and solve them via SAT.
 ///
-/// Returns (solved_crossings, tile_set, regions) where tile_set contains all
-/// (x,y) positions owned by crossing zone entities.
+/// Returns (solved_crossings, tile_set) where tile_set contains all (x,y)
+/// positions owned by crossing zone entities. SAT-rendered trunk bridges are
+/// applied via `crossing_tiles` (trunks skip those rows); the tap-off A* runs
+/// the full row width and naturally fills the `forced_empty` middle tiles.
 pub(crate) fn extract_and_solve_crossings(
     lanes: &[BusLane],
     _row_spans: &[RowSpan],
     max_belt_tier: Option<&str>,
-) -> (Vec<SolvedCrossing>, CrossingTileSet, Vec<SatCrossingRegion>) {
+) -> (Vec<SolvedCrossing>, CrossingTileSet) {
     let effective_belt = belt_entity_for_rate(f64::MAX, max_belt_tier);
     let max_reach = crate::common::ug_max_reach(effective_belt);
 
@@ -370,27 +372,8 @@ pub(crate) fn extract_and_solve_crossings(
         }
     }
 
-    let mut regions: Vec<SatCrossingRegion> = Vec::new();
-    for (tap_item, tap_x, tap_y, crossed) in &zone_specs {
-        if crossed.is_empty() {
-            continue;
-        }
-        let x_min = crossed.first().unwrap().0;
-        let x_max = crossed.last().unwrap().0;
-        let zone_origin = (x_min, tap_y - 1);
-        if solved.iter().any(|sc| sc.zone.x == zone_origin.0 && sc.zone.y == zone_origin.1) {
-            regions.push(SatCrossingRegion {
-                tap_x: *tap_x,
-                x_min,
-                x_max,
-                tap_y: *tap_y,
-                tap_item: tap_item.clone(),
-            });
-        }
-    }
-
     let tile_sets = CrossingTileSet::from_parts(all_tiles, entity_tiles);
-    (solved, tile_sets, regions)
+    (solved, tile_sets)
 }
 
 // ---------------------------------------------------------------------------

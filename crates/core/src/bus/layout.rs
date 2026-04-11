@@ -8,7 +8,6 @@ use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 use crate::bus::bus_router::{
     plan_bus_lanes, bus_width_for_lanes, stamp_family_balancer, render_family_input_paths,
     merge_output_rows, place_merger_block, route_lane, negotiate_and_route,
-    SatCrossingRegion,
     BusLane, DroppedBridge, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};
@@ -526,7 +525,7 @@ fn route_bus(
     // SAT zones have forced-empty tiles at tap_y so trunks bridge around them.
     #[cfg(not(target_arch = "wasm32"))]
     let sat_start = std::time::Instant::now();
-    let (solved_crossings, mut crossing_tiles, _sat_regions) =
+    let (solved_crossings, mut crossing_tiles) =
         extract_and_solve_crossings(lanes, row_spans, max_belt_tier);
     #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
@@ -544,10 +543,6 @@ fn route_bus(
         entities.extend(sc.solution.entities.clone());
     }
 
-    // No spec splitting — A* runs normally, SAT only affects trunk rendering.
-    // (Activating sat_regions here causes entity overlaps in negotiate_and_route's
-    // spec-splitting branch; needs deeper work before it can be turned on.)
-    let empty_regions: Vec<SatCrossingRegion> = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
     let negotiate_start = std::time::Instant::now();
     let routed_paths = negotiate_and_route(
@@ -559,8 +554,6 @@ fn route_bus(
         solver_result,
         families,
         max_belt_tier,
-        &empty_regions,
-        &FxHashSet::default(),
     );
     #[cfg(not(target_arch = "wasm32"))]
     crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
