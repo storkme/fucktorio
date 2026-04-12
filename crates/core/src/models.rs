@@ -115,6 +115,39 @@ pub struct PlacedEntity {
     pub items: Vec<ModuleItem>,
 }
 
+/// Which edge of a rectangular zone a port sits on.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PortEdge {
+    N,
+    E,
+    S,
+    W,
+}
+
+/// Whether a boundary port is an input into the zone or an output from it.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PortIo {
+    Input,
+    Output,
+}
+
+/// A boundary port on a SAT crossing zone: edge, offset along that edge, and direction.
+///
+/// `offset` is measured from the zone's top-left corner along the edge in
+/// tile units (0 = first tile on that edge).
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortSpec {
+    pub edge: PortEdge,
+    pub offset: u32,
+    pub io: PortIo,
+}
+
 /// Metadata about a SAT-solved region in the layout.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
@@ -127,6 +160,10 @@ pub struct LayoutRegion {
     pub height: i32,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    /// Boundary ports with their edge/offset positions, used for canonical
+    /// orientation-invariant signatures in zone telemetry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<PortSpec>,
     pub variables: u32,
     pub clauses: u32,
     pub solve_time_us: u64,

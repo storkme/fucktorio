@@ -96,6 +96,10 @@ pub fn build_bus_layout(
     let mut max_y: i32;
     let mut merge_max_x: i32;
     let mut regions: Vec<crate::models::LayoutRegion>;
+    // Pole entities computed from row positions before routing so poles are
+    // visible to the router as hard obstacles. Updated each loop iteration
+    // when rows are re-placed.
+    let mut pole_entities: Vec<PlacedEntity> = Vec::new();
 
     let mut attempt: u32 = 0;
     loop {
@@ -207,6 +211,42 @@ pub fn build_bus_layout(
             }
         }
 
+        // Place power poles from machine positions before routing so the router
+        // sees them as hard obstacles. The greedy row-sweep only needs machine
+        // footprints and the currently-occupied (row-entity) tiles.
+        {
+            let mut row_occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
+            let mut machines_for_poles: Vec<(i32, i32, i32)> = Vec::new();
+            for ent in &cur_row_entities {
+                if MACHINE_ENTITIES.contains(&ent.name.as_str()) {
+                    let sz = crate::common::machine_size(&ent.name) as i32;
+                    for dx in 0..sz {
+                        for dy in 0..sz {
+                            row_occupied.insert((ent.x + dx, ent.y + dy));
+                        }
+                    }
+                    machines_for_poles.push((ent.x + sz / 2, ent.y, sz));
+                } else {
+                    row_occupied.insert((ent.x, ent.y));
+                }
+            }
+            let pole_strategy = if machines_for_poles.is_empty() { "empty" } else { "rows" };
+            pole_entities = place_poles(&machines_for_poles, &row_occupied);
+            crate::trace::emit(crate::trace::TraceEvent::PolesPlaced {
+                count: pole_entities.len(),
+                strategy: pole_strategy.to_string(),
+            });
+            crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
+                phase: "poles_placed".into(),
+                entity_count: pole_entities.len(),
+            });
+        }
+
+        // Combine row entities with pre-placed poles so the router treats
+        // pole tiles as hard obstacles from the start.
+        let mut row_entities_with_poles = cur_row_entities.clone();
+        row_entities_with_poles.extend(pole_entities.clone());
+
         // Route bus lanes
         #[cfg(not(target_arch = "wasm32"))]
         let t_route_bus = std::time::Instant::now();
@@ -219,7 +259,7 @@ pub fn build_bus_layout(
             max_belt_tier,
             solver_result,
             &cur_families,
-            &cur_row_entities,
+            &row_entities_with_poles,
             &mut dropped,
         )?;
         bus_entities = be;
@@ -759,7 +799,61 @@ fn route_bus(
                 .filter(|b| !b.is_input)
                 .map(|b| b.item.clone())
                 .collect();
-            crate::models::LayoutRegion {
+
+            // Convert each boundary to a PortSpec relative to the zone's top-left.
+            // Boundary tiles are INSIDE the zone (0 <= lx < width, 0 <= ly < height)
+            // and sit on one of the four edge rows/columns. We classify by which
+            // edge they're nearest to, using the belt direction as a tiebreaker for
+            // corner tiles.
+            let ports: Vec<crate::models::PortSpec> = sc.zone.boundaries.iter()
+                .filter_map(|b| {
+                    let lx = (b.x - sc.zone.x) as u32;
+                    let ly = (b.y - sc.zone.y) as u32;
+                    let w = sc.zone.width;
+                    let h = sc.zone.height;
+                    if lx >= w || ly >= h {
+                        return None;
+                    }
+                    let io = if b.is_input {
+                        crate::models::PortIo::Input
+                    } else {
+                        crate::models::PortIo::Output
+                    };
+                    // A boundary tile is on the edge of the zone. Determine which
+                    // edge by checking whether it's in the top/bottom row or
+                    // left/right column. Use the belt flow direction to break ties.
+                    let on_north = ly == 0;
+                    let on_south = ly == h - 1;
+                    let on_west  = lx == 0;
+                    let on_east  = lx == w - 1;
+
+                    let edge = match (on_north, on_south, on_west, on_east) {
+                        (true, false, false, false) => crate::models::PortEdge::N,
+                        (false, true, false, false) => crate::models::PortEdge::S,
+                        (false, false, true, false) => crate::models::PortEdge::W,
+                        (false, false, false, true) => crate::models::PortEdge::E,
+                        // Corner or centre tile: use belt direction to classify.
+                        _ => {
+                            use crate::models::EntityDirection;
+                            match b.direction {
+                                EntityDirection::North => crate::models::PortEdge::N,
+                                EntityDirection::South => crate::models::PortEdge::S,
+                                EntityDirection::West  => crate::models::PortEdge::W,
+                                EntityDirection::East  => crate::models::PortEdge::E,
+                            }
+                        }
+                    };
+
+                    let offset = match edge {
+                        crate::models::PortEdge::N | crate::models::PortEdge::S => lx,
+                        crate::models::PortEdge::W | crate::models::PortEdge::E => ly,
+                    };
+
+                    Some(crate::models::PortSpec { edge, offset, io })
+                })
+                .collect();
+
+            let region = crate::models::LayoutRegion {
                 kind: "crossing_zone".to_string(),
                 x: sc.zone.x,
                 y: sc.zone.y,
@@ -767,10 +861,14 @@ fn route_bus(
                 height: sc.zone.height as i32,
                 inputs,
                 outputs,
+                ports,
                 variables: sc.solution.stats.variables,
                 clauses: sc.solution.stats.clauses,
                 solve_time_us: sc.solution.stats.solve_time_us,
-            }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::zone_cache::record_zone(&region, None);
+            region
         })
         .collect();
 
