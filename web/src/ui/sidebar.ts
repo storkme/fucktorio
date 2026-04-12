@@ -515,6 +515,8 @@ export interface DisplayToggles {
   rateCb: HTMLInputElement;
   debugCb: HTMLInputElement;
   valCb: HTMLInputElement;
+  regionsCb: HTMLInputElement;
+  soloRegionsCb: HTMLInputElement;
 }
 
 export function renderSidebar(
@@ -744,11 +746,31 @@ export function renderSidebar(
   valToggle.appendChild(document.createTextNode("Validation"));
   togglesWrap.appendChild(valToggle);
 
+  const regionsCb = document.createElement("input");
+  regionsCb.type = "checkbox";
+  regionsCb.checked = false;
+  const regionsToggle = document.createElement("label");
+  regionsToggle.className = "sb-toggle";
+  regionsToggle.appendChild(regionsCb);
+  regionsToggle.appendChild(document.createTextNode("SAT Zones"));
+  togglesWrap.appendChild(regionsToggle);
+
+  const soloRegionsCb = document.createElement("input");
+  soloRegionsCb.type = "checkbox";
+  soloRegionsCb.checked = false;
+  const soloRegionsToggle = document.createElement("label");
+  soloRegionsToggle.className = "sb-toggle";
+  soloRegionsToggle.appendChild(soloRegionsCb);
+  soloRegionsToggle.appendChild(document.createTextNode("Solo regions"));
+  togglesWrap.appendChild(soloRegionsToggle);
+
   displayBody.appendChild(togglesWrap);
+  // Mark display section so snapshot mode doesn't disable its controls
+  displaySection.setAttribute("data-snapshot-keep", "");
   inner.appendChild(displaySection);
 
   // Expose toggles to main.ts
-  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb });
+  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb, regionsCb, soloRegionsCb });
 
   el.appendChild(inner);
 

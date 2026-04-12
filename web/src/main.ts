@@ -19,6 +19,7 @@ import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
 import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
 import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
+import { renderRegionOverlay } from "./renderer/regionOverlay";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -33,10 +34,12 @@ async function main(): Promise<void> {
   const engine = getEngine();
   await initEntityIcons(MACHINE_SLUGS);
 
-  // Show landing page first. The generator UI is hidden until the user
-  // clicks "Open Generator" (or if the URL has ?generator=true).
+  // Route: #/layout goes straight to the generator; anything else shows
+  // the landing page.  Also support the legacy ?generator=true param.
   const appRoot = document.getElementById("app")!;
-  const skipLanding = new URLSearchParams(window.location.search).has("generator");
+  const hash = window.location.hash;
+  const params = new URLSearchParams(window.location.search);
+  const skipLanding = hash.startsWith("#/layout") || params.has("generator");
 
   if (!skipLanding) {
     const landingHost = document.createElement("div");
@@ -46,10 +49,8 @@ async function main(): Promise<void> {
       onOpenGenerator: () => {
         landingHost.remove();
         initGenerator(engine);
-        // Persist generator mode in URL so refresh stays
-        const url = new URL(window.location.href);
-        url.searchParams.set("generator", "true");
-        window.history.replaceState({}, "", url.toString());
+        // Persist layout route so refresh stays on the generator
+        window.history.replaceState({}, "", "#/layout");
       },
     });
     return;
@@ -168,6 +169,17 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let rateCb: HTMLInputElement;
   let debugCb: HTMLInputElement;
   let valCb: HTMLInputElement;
+  let regionsCb: HTMLInputElement;
+  let soloRegionsCb: HTMLInputElement;
+
+  // Solo-regions state: saved toggle states before solo mode was enabled
+  let soloSavedState: {
+    colorChecked: boolean;
+    rateChecked: boolean;
+    valChecked: boolean;
+    regionsChecked: boolean;
+    entityAlpha: number;
+  } | null = null;
 
   let traceOverlayLayer: Container | null = null;
   let tracePhaseIndex = -1; // -1 = show all phases
@@ -400,6 +412,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
+  let regionOverlayLayer: Container | null = null;
+
   function panToTile(x: number, y: number): void {
     viewport.moveCenter(x * TILE_PX + TILE_PX / 2, y * TILE_PX + TILE_PX / 2);
   }
@@ -448,6 +462,18 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     valOverlayLayer = result.layer;
     valCircleMap = result.circleMap;
     populateIssuesPanel(cachedValidationIssues);
+  }
+
+  function updateRegionOverlay(): void {
+    if (regionOverlayLayer) {
+      entityLayer.removeChild(regionOverlayLayer);
+      regionOverlayLayer.destroy();
+      regionOverlayLayer = null;
+    }
+    if (!regionsCb?.checked || !lastLayout) return;
+    if (!lastLayout.regions || lastLayout.regions.length === 0) return;
+    regionOverlayLayer = renderRegionOverlay(lastLayout);
+    entityLayer.addChild(regionOverlayLayer);
   }
 
   // --- Item color legend (bottom-left) ---
@@ -666,7 +692,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }
     // Re-enable sidebar
     const sidebarEl = document.getElementById("sidebar");
-    if (sidebarEl) sidebarEl.style.opacity = "1";
     sidebarEl?.querySelectorAll("input,select,button").forEach((el) => {
       (el as HTMLInputElement).disabled = false;
     });
@@ -722,9 +747,10 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const sidebarEl = document.getElementById("sidebar");
     if (sidebarEl) {
       activeBanner = showSnapshotBanner(sidebarEl, snapshot, bannerCallbacks);
-      // Dim sidebar to indicate snapshot mode
-      sidebarEl.style.opacity = "0.5";
+      // Disable recipe/layout controls in snapshot mode, but keep display
+      // toggles (SAT Zones, Solo regions, etc.) fully interactive.
       sidebarEl.querySelectorAll("input,select,button").forEach((el) => {
+        if (el.closest("[data-snapshot-keep]")) return;
         (el as HTMLInputElement).disabled = true;
       });
     }
@@ -806,6 +832,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     buildLegend(layout);
     updateTraceOverlay();
     updateValidationOverlay();
+    updateRegionOverlay();
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {
@@ -904,6 +931,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         rateCb = toggles.rateCb;
         debugCb = toggles.debugCb;
         valCb = toggles.valCb;
+        regionsCb = toggles.regionsCb;
+        soloRegionsCb = toggles.soloRegionsCb;
 
         // Wire up the same listeners that used to be on the canvas toggles.
         colorCb.addEventListener("change", () => {
@@ -919,6 +948,85 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
           updateTraceOverlay();
         });
         valCb.addEventListener("change", updateValidationOverlay);
+        regionsCb.addEventListener("change", updateRegionOverlay);
+
+        soloRegionsCb.addEventListener("change", () => {
+          if (soloRegionsCb.checked) {
+            // Entering solo mode: save current state
+            soloSavedState = {
+              colorChecked: colorCb.checked,
+              rateChecked: rateCb.checked,
+              valChecked: valCb.checked,
+              regionsChecked: regionsCb.checked,
+              entityAlpha: entityLayer.alpha,
+            };
+
+            // Turn on SAT zones
+            if (!regionsCb.checked) {
+              regionsCb.checked = true;
+              updateRegionOverlay();
+            }
+
+            // Hide item colours
+            if (colorCb.checked) {
+              colorCb.checked = false;
+              setItemColoring(false);
+              if (lastLayout) renderLayoutOnCanvas(lastLayout);
+            }
+
+            // Hide rate labels
+            if (rateCb.checked) {
+              rateCb.checked = false;
+              setRateOverlay(false);
+              if (lastLayout) renderLayoutOnCanvas(lastLayout);
+            }
+
+            // Hide validation overlay
+            if (valCb.checked) {
+              valCb.checked = false;
+              updateValidationOverlay();
+            }
+
+            // Dim entity layer
+            entityLayer.alpha = 0.12;
+
+            // Ensure region overlay is on top after re-render
+            updateRegionOverlay();
+          } else {
+            // Exiting solo mode: restore previous state
+            if (soloSavedState) {
+              entityLayer.alpha = soloSavedState.entityAlpha;
+
+              // Restore regions checkbox
+              if (regionsCb.checked !== soloSavedState.regionsChecked) {
+                regionsCb.checked = soloSavedState.regionsChecked;
+                updateRegionOverlay();
+              }
+
+              // Restore validation
+              if (valCb.checked !== soloSavedState.valChecked) {
+                valCb.checked = soloSavedState.valChecked;
+                updateValidationOverlay();
+              }
+
+              // Restore item colours
+              if (colorCb.checked !== soloSavedState.colorChecked) {
+                colorCb.checked = soloSavedState.colorChecked;
+                setItemColoring(colorCb.checked);
+                if (lastLayout) renderLayoutOnCanvas(lastLayout);
+              }
+
+              // Restore rate labels
+              if (rateCb.checked !== soloSavedState.rateChecked) {
+                rateCb.checked = soloSavedState.rateChecked;
+                setRateOverlay(rateCb.checked);
+                if (lastLayout) renderLayoutOnCanvas(lastLayout);
+              }
+
+              soloSavedState = null;
+            }
+          }
+        });
       },
     });
 
