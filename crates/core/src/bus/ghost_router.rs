@@ -904,7 +904,7 @@ pub fn route_bus_ghost(
             .filter(|info| is_perpendicular(info.spec_a.1, info.spec_b.1))
         {
             if let Some((ents, zone)) =
-                solve_perpendicular_template(&info, &hard, &pre_existing_set)
+                solve_perpendicular_template(&info, &hard, &pre_existing_set, &routed_paths)
             {
                 trace::emit(trace::TraceEvent::GhostClusterSolved {
                     cluster_id: template_zones.len(),
@@ -1248,6 +1248,37 @@ fn ug_for_belt(belt: &str) -> &'static str {
     }
 }
 
+/// Returns true if any spec in `routed_paths` has a turn (different incoming
+/// and outgoing directions) at the given tile. Used to reject per-tile UG
+/// templates: a UG-in/out can't sit on a tile where another spec is turning,
+/// because the turning spec would sideload onto the UG and items would be
+/// dropped (UG belts only accept items entering from behind in their
+/// facing direction, not from a sideload).
+fn any_spec_turns_at(
+    tile: (i32, i32),
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+) -> bool {
+    for path in routed_paths.values() {
+        for (i, &t) in path.iter().enumerate() {
+            if t != tile {
+                continue;
+            }
+            if i == 0 || i + 1 >= path.len() {
+                break;
+            }
+            let dx_in = t.0 - path[i - 1].0;
+            let dy_in = t.1 - path[i - 1].1;
+            let dx_out = path[i + 1].0 - t.0;
+            let dy_out = path[i + 1].1 - t.1;
+            if (dx_in, dy_in) != (dx_out, dy_out) {
+                return true;
+            }
+            break;
+        }
+    }
+    false
+}
+
 /// Solve a perpendicular crossing with a deterministic template.
 ///
 /// One path stays on the surface, the other goes underground via a UG pair.
@@ -1257,6 +1288,7 @@ fn solve_perpendicular_template(
     info: &CrossingInfo,
     hard_obstacles: &FxHashSet<(i32, i32)>,
     pre_existing: &FxHashSet<(i32, i32)>,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
     let (cx, cy) = info.tile;
 
@@ -1290,6 +1322,14 @@ fn solve_perpendicular_template(
     // Check that UG positions are not blocked
     if hard_obstacles.contains(&ug_in) || hard_obstacles.contains(&ug_out) {
         return None; // can't place template here
+    }
+
+    // Reject the template if any spec turns at the UG-in or UG-out tile.
+    // Sideloads onto a UG belt fail (the UG only accepts items from behind
+    // in its facing direction); a turning spec would dump items into the
+    // UG with nowhere to go.
+    if any_spec_turns_at(ug_in, routed_paths) || any_spec_turns_at(ug_out, routed_paths) {
+        return None;
     }
 
     let ug_name = ug_for_belt(bridge_belt);
