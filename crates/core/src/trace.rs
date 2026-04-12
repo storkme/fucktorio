@@ -311,6 +311,18 @@ pub enum TraceEvent {
         same_axis_conflict_count: u32,
         perpendicular_crossing_count: u32,
     },
+
+    // Phase-2 negotiation: emitted once per iteration of the negotiation
+    // loop in `route_bus_ghost`. The loop bumps a per-tile per-axis cost
+    // grid each time it sees same-axis pile-ups, and re-routes until the
+    // conflict count stops improving.
+    GhostNegotiationIteration {
+        iter: u32,
+        same_axis_conflict_count: u32,
+        perpendicular_crossing_count: u32,
+        unroutable_count: u32,
+        cost_grid_size: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------

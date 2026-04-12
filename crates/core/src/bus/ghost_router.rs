@@ -394,9 +394,11 @@ pub fn route_bus_ghost(
         t
     };
 
-    let mut routed_paths: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    #[allow(clippy::needless_late_init)]
+    let routed_paths: FxHashMap<String, Vec<(i32, i32)>>;
     let mut all_ghost_crossings: Vec<(i32, i32)> = Vec::new();
-    let mut unroutable_specs: Vec<String> = Vec::new();
+    #[allow(clippy::needless_late_init)]
+    let unroutable_specs: Vec<String>;
     // Tracks which item each ghost-routed tile carries, so we can distinguish
     // same-item overlaps (not conflicts) from different-item overlaps (real).
     let mut ghost_item_at: FxHashMap<(i32, i32), String> = FxHashMap::default();
@@ -408,98 +410,250 @@ pub fn route_bus_ghost(
         specs.iter().partition(|s| s.key.starts_with("trunk:"));
     let ordered_specs: Vec<&BeltSpec> = trunk_specs_ord.into_iter().chain(horiz_specs_ord).collect();
 
+    // -------------------------------------------------------------------------
+    // Step 5: Negotiation loop — route all specs, measure same-axis conflicts,
+    // bump per-tile per-axis cost, re-route. Converges when no improvement.
+    // -------------------------------------------------------------------------
+    // Snapshot pre-routing state so each iteration starts from the same place.
+    let pre_routing_existing_belts = existing_belts.clone();
+
+    const MAX_NEGOTIATION_ITERATIONS: u32 = 8;
+    // History penalty: accumulated across iterations on tiles that had
+    // same-axis conflicts in previous iterations.
+    const HISTORY_PENALTY_K: u32 = 4;
+    // Present penalty: bumped per spec INSIDE an iteration. Each spec's
+    // routing pays a per-tile cost based on how many already-routed specs
+    // in the current iteration used that tile in the same axis.
+    const PRESENT_PENALTY_K: u32 = 6;
+    const MAX_NO_IMPROVEMENT: u32 = 2;
+
+    let mut history_cost_grid: FxHashMap<(i32, i32), (u32, u32)> = FxHashMap::default();
+    let mut best_paths: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    let mut best_unroutable: Vec<String> = Vec::new();
+    let mut best_same_axis: u32 = u32::MAX;
+    let mut no_improvement_streak: u32 = 0;
+
+    for iter in 0..MAX_NEGOTIATION_ITERATIONS {
+        // Reset per-iteration routing state.
+        let mut iter_routed: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+        let mut iter_existing = pre_routing_existing_belts.clone();
+        let mut iter_unroutable: Vec<String> = Vec::new();
+        // Per-iteration cost grid = history (carried across iters) + present
+        // (rebuilt each iter, bumped after each spec routes).
+        let mut iter_cost_grid: FxHashMap<(i32, i32), (u32, u32)> =
+            history_cost_grid.clone();
+
+        for spec in ordered_specs.iter().copied() {
+            match ghost_astar(
+                spec.start,
+                spec.goal,
+                &hard,
+                &iter_existing,
+                width,
+                height,
+                TURN_PENALTY,
+                &iter_cost_grid,
+            ) {
+                Some((path, _crossings)) => {
+                    // Incrementally bump the present cost for tiles used by
+                    // this spec, in the spec's axis at each tile. Subsequent
+                    // specs in this iteration will pay the bumped cost.
+                    if path.len() >= 2 {
+                        let last_idx = path.len() - 1;
+                        for (i, &tile) in path.iter().enumerate() {
+                            let (dx, dy) = if i < last_idx {
+                                (path[i + 1].0 - tile.0, path[i + 1].1 - tile.1)
+                            } else {
+                                (tile.0 - path[i - 1].0, tile.1 - path[i - 1].1)
+                            };
+                            let entry = iter_cost_grid.entry(tile).or_insert((0, 0));
+                            if dx == 0 && dy != 0 {
+                                entry.0 += PRESENT_PENALTY_K;
+                            } else if dy == 0 && dx != 0 {
+                                entry.1 += PRESENT_PENALTY_K;
+                            }
+                        }
+                    }
+                    for &tile in &path {
+                        iter_existing.insert(tile);
+                    }
+                    iter_routed.insert(spec.key.clone(), path);
+                }
+                None => {
+                    iter_unroutable.push(spec.key.clone());
+                }
+            }
+        }
+
+        // Compute axis counts for this iteration.
+        let mut axis_counts: FxHashMap<(i32, i32), (u32, u32)> = FxHashMap::default();
+        for path in iter_routed.values() {
+            if path.len() < 2 {
+                continue;
+            }
+            let last_idx = path.len() - 1;
+            for (i, &tile) in path.iter().enumerate() {
+                let (dx, dy) = if i < last_idx {
+                    (path[i + 1].0 - tile.0, path[i + 1].1 - tile.1)
+                } else {
+                    (tile.0 - path[i - 1].0, tile.1 - path[i - 1].1)
+                };
+                let entry = axis_counts.entry(tile).or_insert((0, 0));
+                if dx == 0 && dy != 0 {
+                    entry.0 += 1;
+                } else if dy == 0 && dx != 0 {
+                    entry.1 += 1;
+                }
+            }
+        }
+
+        let mut iter_same_axis: u32 = 0;
+        let mut iter_perp: u32 = 0;
+        for &(v, h) in axis_counts.values() {
+            if v >= 2 || h >= 2 {
+                iter_same_axis += 1;
+            }
+            if v >= 1 && h >= 1 {
+                iter_perp += 1;
+            }
+        }
+
+        trace::emit(trace::TraceEvent::GhostNegotiationIteration {
+            iter,
+            same_axis_conflict_count: iter_same_axis,
+            perpendicular_crossing_count: iter_perp,
+            unroutable_count: iter_unroutable.len() as u32,
+            cost_grid_size: history_cost_grid.len() as u32,
+        });
+
+        // Track the best routing across iterations.
+        if iter_same_axis < best_same_axis {
+            best_same_axis = iter_same_axis;
+            best_paths = iter_routed;
+            best_unroutable = iter_unroutable;
+            no_improvement_streak = 0;
+        } else {
+            no_improvement_streak += 1;
+        }
+
+        // Stop conditions.
+        if iter_same_axis == 0 {
+            break;
+        }
+        if no_improvement_streak >= MAX_NO_IMPROVEMENT {
+            break;
+        }
+
+        // Bump the HISTORY cost grid for tiles with same-axis conflicts.
+        // Per-axis: only the over-crowded axis gets a higher penalty, leaving
+        // the other axis free to keep using the tile. This carries across
+        // iterations to discourage repeat conflicts at the same tiles.
+        for (&tile, &(v, h)) in &axis_counts {
+            if v >= 2 {
+                let entry = history_cost_grid.entry(tile).or_insert((0, 0));
+                entry.0 += HISTORY_PENALTY_K * (v - 1);
+            }
+            if h >= 2 {
+                let entry = history_cost_grid.entry(tile).or_insert((0, 0));
+                entry.1 += HISTORY_PENALTY_K * (h - 1);
+            }
+        }
+    }
+
+    // Adopt the best routing as the canonical one.
+    routed_paths = best_paths;
+    unroutable_specs = best_unroutable;
+
+    // -------------------------------------------------------------------------
+    // Materialize entities from the converged routed_paths.
+    // Replays the per-spec materialization logic in spec order so that
+    // existing_belts/ghost_item_at/all_ghost_crossings end up in the same
+    // shape they had before the negotiation refactor.
+    // -------------------------------------------------------------------------
+    existing_belts = pre_routing_existing_belts;
+    ghost_item_at.clear();
+
     for spec in ordered_specs.iter().copied() {
-        match ghost_astar(
-            spec.start,
-            spec.goal,
-            &hard,
-            &existing_belts,
-            width,
-            height,
-            TURN_PENALTY,
-        ) {
-            Some((path, crossings)) => {
-                let turns = count_turns(&path);
-                trace::emit(trace::TraceEvent::GhostSpecRouted {
-                    spec_key: spec.key.clone(),
-                    path_len: path.len(),
-                    crossings: crossings.len(),
-                    turns,
-                    tiles: path.clone(),
-                    crossing_tiles: crossings.clone(),
-                });
+        if let Some(path) = routed_paths.get(&spec.key).cloned() {
+            // Recompute crossings from the final state of existing_belts so
+            // they reflect the converged routing order.
+            let crossings: Vec<(i32, i32)> = path
+                .iter()
+                .copied()
+                .filter(|t| existing_belts.contains(t))
+                .collect();
 
-                // Emit entities via render_path. Vertical specs (trunks) get
-                // South/North direction; otherwise East/West.
-                let direction_hint = if spec.start.1 != spec.goal.1 && spec.start.0 == spec.goal.0 {
-                    if spec.goal.1 > spec.start.1 {
-                        EntityDirection::South
-                    } else {
-                        EntityDirection::North
-                    }
-                } else if spec.start.0 <= spec.goal.0 {
-                    EntityDirection::East
+            let turns = count_turns(&path);
+            trace::emit(trace::TraceEvent::GhostSpecRouted {
+                spec_key: spec.key.clone(),
+                path_len: path.len(),
+                crossings: crossings.len(),
+                turns,
+                tiles: path.clone(),
+                crossing_tiles: crossings.clone(),
+            });
+
+            // Emit entities via render_path. Vertical specs (trunks) get
+            // South/North direction; otherwise East/West.
+            let direction_hint = if spec.start.1 != spec.goal.1 && spec.start.0 == spec.goal.0 {
+                if spec.goal.1 > spec.start.1 {
+                    EntityDirection::South
                 } else {
-                    EntityDirection::West
-                };
-                // Preserve canonical trunk:{item} segment_id for downstream code.
-                let spec_seg_id = if spec.key.starts_with("trunk:") {
-                    Some(format!("trunk:{}", spec.item))
-                } else {
-                    Some(format!("ghost:{}", spec.key))
-                };
-                let path_ents = render_path(
-                    &path,
-                    &spec.item,
-                    spec.belt_name,
-                    direction_hint,
-                    spec_seg_id,
-                    None,
-                );
-                // Skip ghost belt entities on tiles already occupied by
-                // pre-existing belts or same-item ghost belts to avoid
-                // entity overlaps — those connections are intentional.
-                entities.extend(path_ents.into_iter().filter(|e| {
-                    !pre_ghost_belts.contains(&(e.x, e.y))
-                        && !ghost_item_at.contains_key(&(e.x, e.y))
-                }));
-
-                // Add new tiles to existing_belts for subsequent specs
-                for &tile in &path {
-                    existing_belts.insert(tile);
+                    EntityDirection::North
                 }
+            } else if spec.start.0 <= spec.goal.0 {
+                EntityDirection::East
+            } else {
+                EntityDirection::West
+            };
+            let spec_seg_id = if spec.key.starts_with("trunk:") {
+                Some(format!("trunk:{}", spec.item))
+            } else {
+                Some(format!("ghost:{}", spec.key))
+            };
+            let path_ents = render_path(
+                &path,
+                &spec.item,
+                spec.belt_name,
+                direction_hint,
+                spec_seg_id,
+                None,
+            );
+            entities.extend(path_ents.into_iter().filter(|e| {
+                !pre_ghost_belts.contains(&(e.x, e.y))
+                    && !ghost_item_at.contains_key(&(e.x, e.y))
+            }));
 
-                // Filter crossings: only keep tiles that represent real
-                // conflicts (different-item ghost overlaps).
-                // - Pre-existing belt overlaps → connections, not conflicts
-                // - Same-item ghost overlaps → redundant belts, not conflicts
-                // - Different-item ghost overlaps → real SAT crossings
-                all_ghost_crossings.extend(crossings.into_iter().filter(|t| {
-                    if pre_ghost_belts.contains(t) {
-                        return false;
-                    }
-                    match ghost_item_at.get(t) {
-                        Some(existing_item) => *existing_item != spec.item,
-                        None => false, // first ghost at this tile, no conflict
-                    }
-                }));
+            for &tile in &path {
+                existing_belts.insert(tile);
+            }
 
-                // Record this spec's item at each tile
-                for &tile in &path {
-                    ghost_item_at.entry(tile).or_insert_with(|| spec.item.clone());
+            all_ghost_crossings.extend(crossings.into_iter().filter(|t| {
+                if pre_ghost_belts.contains(t) {
+                    return false;
                 }
-                routed_paths.insert(spec.key.clone(), path);
+                match ghost_item_at.get(t) {
+                    Some(existing_item) => *existing_item != spec.item,
+                    None => false,
+                }
+            }));
+
+            for &tile in &path {
+                ghost_item_at.entry(tile).or_insert_with(|| spec.item.clone());
             }
-            None => {
-                trace::emit(trace::TraceEvent::GhostSpecFailed {
-                    spec_key: spec.key.clone(),
-                    from_x: spec.start.0,
-                    from_y: spec.start.1,
-                    to_x: spec.goal.0,
-                    to_y: spec.goal.1,
-                });
-                unroutable_specs.push(spec.key.clone());
-            }
+        }
+    }
+
+    // Emit GhostSpecFailed events for specs that didn't route.
+    for failed_key in &unroutable_specs {
+        if let Some(spec) = ordered_specs.iter().find(|s| &s.key == failed_key) {
+            trace::emit(trace::TraceEvent::GhostSpecFailed {
+                spec_key: failed_key.clone(),
+                from_x: spec.start.0,
+                from_y: spec.start.1,
+                to_x: spec.goal.0,
+                to_y: spec.goal.1,
+            });
         }
     }
 

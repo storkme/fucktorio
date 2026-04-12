@@ -608,6 +608,11 @@ pub fn astar_path(
 ///   and records each traversal as a ghost crossing.
 /// - `turn_penalty`: added cost per direction change. `K=8` produces straight-line-biased
 ///   paths that keep ghost clusters small for the SAT phase.
+/// - `axis_cost_grid`: per-tile per-axis penalty `(vert_penalty, horiz_penalty)`.
+///   Stepping into tile `(x, y)` with a vertical step adds the vert penalty;
+///   horizontal step adds the horiz penalty. Used by the negotiation loop in
+///   `ghost_router::route_bus_ghost` to discourage same-axis pile-ups across
+///   iterations. Empty map = no penalties (single-pass mode).
 ///
 /// Returns `Some((path, ghost_crossing_tiles))` on success, `None` if unreachable.
 /// `path` is a sequence of (x, y) surface tiles (no UG jumps).
@@ -620,6 +625,7 @@ pub fn ghost_astar(
     width: i32,
     height: i32,
     turn_penalty: u32,
+    axis_cost_grid: &FxHashMap<(i32, i32), (u32, u32)>,
 ) -> Option<(Vec<(i32, i32)>, Vec<(i32, i32)>)> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -689,11 +695,20 @@ pub fn ghost_astar(
             if hard_obstacles.contains(&(nx, ny)) && (nx, ny) != goal {
                 continue;
             }
-            let step: u32 = if s.dir == -1 || s.dir == dir {
+            let mut step: u32 = if s.dir == -1 || s.dir == dir {
                 1
             } else {
                 1 + turn_penalty
             };
+            // Add per-axis negotiation penalty for stepping into this tile.
+            // Vertical step (dy != 0) pays the vert penalty; horizontal pays horiz.
+            if let Some(&(vp, hp)) = axis_cost_grid.get(&(nx, ny)) {
+                if dy != 0 {
+                    step += vp;
+                } else if dx != 0 {
+                    step += hp;
+                }
+            }
             let ng = cur_g + step;
             let ns = State { x: nx, y: ny, dir };
             if ng < g_cost.get(&ns).copied().unwrap_or(u32::MAX) {
