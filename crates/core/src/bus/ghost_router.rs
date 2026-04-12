@@ -799,12 +799,18 @@ pub fn route_bus_ghost(
                 let ug_in = (ug_in_x, run_y);
                 let ug_out = (ug_out_x, run_y);
 
-                // Check: endpoints must not be obstacles (unless landing on goal).
-                // Also endpoints shouldn't be trunk tiles (would overlap trunk belts).
+                // Check: endpoints must not be obstacles, must not overlap a
+                // pre-existing belt, must not be a turn point for any spec,
+                // and must not have a perpendicular spec passing through them
+                // (sideloads onto UG-input fail in Factorio).
                 let endpoints_free = !hard.contains(&ug_in)
                     && !hard.contains(&ug_out)
                     && !pre_existing_set.contains(&ug_in)
-                    && !pre_existing_set.contains(&ug_out);
+                    && !pre_existing_set.contains(&ug_out)
+                    && !any_spec_turns_at(ug_in, &routed_paths)
+                    && !any_spec_turns_at(ug_out, &routed_paths)
+                    && !ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths)
+                    && !ug_endpoint_conflicts(ug_out, ug_dir, key, &routed_paths);
 
                 if endpoints_free {
                     // Find the horizontal spec that owns this run (for item/belt info).
@@ -1279,6 +1285,88 @@ fn any_spec_turns_at(
     false
 }
 
+/// Returns true if a UG-in/out at `tile` facing `bridge_dir` would receive
+/// a sideload from a perpendicular spec — either because the tile itself has
+/// a perpendicular spec passing through, or because an adjacent SIDE tile
+/// (perpendicular to the bridge axis) has a belt flowing INTO this tile.
+///
+/// In Factorio, sideloads onto UG-input belts only fill the far lane and
+/// can dump items wrong; we reject any template that would create one.
+fn ug_endpoint_conflicts(
+    tile: (i32, i32),
+    bridge_dir: EntityDirection,
+    bridge_spec_key: &str,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+) -> bool {
+    let bridge_axis_vert = matches!(bridge_dir, EntityDirection::North | EntityDirection::South);
+
+    // 1. The tile itself: if any other spec has it in its path AND its axis
+    //    at the tile differs from the bridge axis, we'd have two
+    //    perpendicular belts at the same tile — conflict.
+    for (key, path) in routed_paths {
+        if key == bridge_spec_key {
+            continue;
+        }
+        for (i, &t) in path.iter().enumerate() {
+            if t != tile {
+                continue;
+            }
+            let last_idx = path.len() - 1;
+            let (_dx, dy) = if i < last_idx {
+                (path[i + 1].0 - t.0, path[i + 1].1 - t.1)
+            } else if i > 0 {
+                (t.0 - path[i - 1].0, t.1 - path[i - 1].1)
+            } else {
+                continue;
+            };
+            let spec_axis_vert = dy != 0;
+            if spec_axis_vert != bridge_axis_vert {
+                return true;
+            }
+            break;
+        }
+    }
+
+    // 2. Adjacent SIDE tiles flowing INTO this tile (sideload). For a
+    //    horizontal bridge, the sides are above/below. For a vertical
+    //    bridge, the sides are left/right.
+    let side_offsets: &[(i32, i32, EntityDirection)] = if bridge_axis_vert {
+        // Vertical bridge: sides are east/west; a sideload comes from
+        // (x-1, y) facing East, or (x+1, y) facing West.
+        &[(-1, 0, EntityDirection::East), (1, 0, EntityDirection::West)]
+    } else {
+        // Horizontal bridge: sides are north/south; a sideload comes from
+        // (x, y-1) facing South, or (x, y+1) facing North.
+        &[(0, -1, EntityDirection::South), (0, 1, EntityDirection::North)]
+    };
+    for &(dx, dy, expected_dir) in side_offsets {
+        let side = (tile.0 + dx, tile.1 + dy);
+        for path in routed_paths.values() {
+            for (i, &t) in path.iter().enumerate() {
+                if t != side {
+                    continue;
+                }
+                // Compute the spec's direction at this side tile.
+                let last_idx = path.len() - 1;
+                let (sdx, sdy) = if i < last_idx {
+                    (path[i + 1].0 - t.0, path[i + 1].1 - t.1)
+                } else if i > 0 {
+                    (t.0 - path[i - 1].0, t.1 - path[i - 1].1)
+                } else {
+                    continue;
+                };
+                let spec_dir = step_direction(sdx, sdy);
+                if spec_dir == expected_dir {
+                    return true; // sideload into our UG-in
+                }
+                break;
+            }
+        }
+    }
+
+    false
+}
+
 /// Solve a perpendicular crossing with a deterministic template.
 ///
 /// One path stays on the surface, the other goes underground via a UG pair.
@@ -1338,7 +1426,7 @@ fn solve_perpendicular_template(
 
 /// Try to place a UG bridge for the second `(item, dir, belt)` triple over
 /// the first one staying on the surface at `crossing`. Returns `None` if the
-/// UG positions are obstructed or land on a turning spec.
+/// UG positions are obstructed or would receive a sideload.
 fn try_bridge(
     crossing: (i32, i32),
     surface: (&String, EntityDirection, &'static str),
@@ -1364,8 +1452,23 @@ fn try_bridge(
         return None;
     }
 
-    // Reject if any spec turns at the UG-in or UG-out tile (sideload-onto-UG fails).
+    // Reject if any spec turns at the UG-in/out tile, or if a perpendicular
+    // belt would sideload into them. Sideloads onto UG belts only fill the
+    // far lane and dump items.
     if any_spec_turns_at(ug_in, routed_paths) || any_spec_turns_at(ug_out, routed_paths) {
+        return None;
+    }
+    // Find a representative key for the bridged spec to exclude from the
+    // conflict check. Any path containing the crossing tile in the bridge
+    // direction at that tile counts as the bridged spec.
+    let bridge_key = routed_paths
+        .iter()
+        .find(|(_, path)| path.contains(&crossing))
+        .map(|(k, _)| k.as_str())
+        .unwrap_or("");
+    if ug_endpoint_conflicts(ug_in, bridge_dir, bridge_key, routed_paths)
+        || ug_endpoint_conflicts(ug_out, bridge_dir, bridge_key, routed_paths)
+    {
         return None;
     }
 
