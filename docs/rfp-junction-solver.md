@@ -227,6 +227,76 @@ Run the SAT solver on small zones, inspect the output, and
 automatically extract recurring patterns into new templates. Grows the
 catalogue without manual effort.
 
+## Investigation findings (2026-04-12)
+
+### What the remaining crossing tiles actually are
+
+After the perpendicular template handles the simple cases (15 zones,
+all 1×3), **141 crossing tiles** remain. Diagnostic classification:
+
+| Specs at tile | Count | Example location |
+|---|---|---|
+| 3 | 43 | (6,120) — mid-bus dense area |
+| 4 | 6 | (4,196) — output merger |
+| 5 | 47 | (31,184) — output merger |
+| 6 | 4 | (31,168) |
+| 7 | 15 | (11,196) — output merger |
+| 8 | 20 | (30,196) — output merger |
+| 2 (same-direction) | 12 | (11,119) — anti-parallel |
+
+These are NOT point crossings. They are tiles where 3–8 ghost-routed
+specs share the same position. They cluster in two areas:
+
+1. **Output merger zone** (y≈178–196): many product belts converge
+   toward the south of the layout. Every tile in this area is shared
+   by many specs.
+
+2. **Mid-bus dense area** (x≈3–11, y≈108–120): return paths from
+   multiple machine rows cross through each other.
+
+### Why these create giant SAT zones
+
+The crossing tiles form long connected chains (same x column, many y
+values) because the overlap extends for the entire length of a spec's
+path. For example:
+
+- `ret:plastic-bar:2:18`: path length 233, **100 crossings**
+- `ret:electronic-circuit:4:144`: path length 95, **93 crossings**
+
+These paths cross through every other spec at the same y-row for their
+entire horizontal run. Every tile of overlap is a "crossing," so the
+crossing set forms continuous ribbons. With merge distance
+ug\_max\_reach+1, these ribbons chain into zones like the 5×21
+(29,135) and the 33×21 (1,178).
+
+### The SAT zones' boundary problem
+
+The resulting SAT zones span 20+ rows and their edges inevitably hit
+machine rows. At the zone boundary:
+
+- Input ports get created where ghost paths enter the zone
+- Output ports get **skipped** where paths exit toward machine rows
+  (the `occupied_by_existing` filter)
+- The SAT solver receives 4 inputs and 1 output → unbalanced flow
+- It creates loops and dead-ends to absorb the excess items
+
+This is not a SAT solver quality issue. The solver is producing the
+best possible output given fundamentally broken boundary conditions.
+No amount of SAT constraint tuning can fix missing output ports.
+
+### The real shape of the problem
+
+The remaining crossings are not "two paths cross at a point." They are
+**long parallel or anti-parallel overlaps** where many specs share the
+same tiles for extended runs. The crossing set treats each shared tile
+as independent, but the correct resolution operates at the spec-run
+level: bridge one spec underground for an entire run, not per-tile.
+
+The per-tile template approach (T1 perpendicular) works beautifully
+for actual point crossings. But the 141 remaining tiles need a
+different decomposition — one that reasons about spec runs, not
+individual tiles.
+
 ## Related
 
 - [`docs/rfp-ghost-cluster-routing.md`](rfp-ghost-cluster-routing.md) —
