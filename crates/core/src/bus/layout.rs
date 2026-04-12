@@ -214,8 +214,10 @@ pub fn build_bus_layout(
         }
 
         // Place power poles from machine positions before routing so the router
-        // sees them as hard obstacles. The greedy row-sweep only needs machine
-        // footprints and the currently-occupied (row-entity) tiles.
+        // sees them as hard obstacles. The occupied set includes row-entity tiles
+        // AND planned fluid-lane columns — the router hasn't placed pipe/PTG
+        // entities yet, but those columns will be occupied once routing runs, so
+        // poles must avoid them now.
         {
             let mut row_occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
             let mut machines_for_poles: Vec<(i32, i32, i32)> = Vec::new();
@@ -230,6 +232,61 @@ pub fn build_bus_layout(
                     machines_for_poles.push((ent.x + sz / 2, ent.y, sz));
                 } else {
                     row_occupied.insert((ent.x, ent.y));
+                }
+            }
+            // Reserve fluid lane tiles so poles don't land on pipe/PTG
+            // entities the router will place later. Covers:
+            //   1. Vertical trunk: pipe/PTG at lane.x on connection ys
+            //   2. Horizontal port connections: the port tile itself and
+            //      the trunk-side pipe tile at port_y. The underground
+            //      stretch between them is empty on the surface, so we
+            //      don't reserve it (doing so over-constrains pole
+            //      placement and breaks coverage near oil refineries).
+            for lane in &cur_lanes {
+                if !lane.is_fluid {
+                    continue;
+                }
+                // Vertical trunk: reserve connection ys + PTG bridge tiles.
+                let mut trunk_ys: Vec<i32> = vec![lane.source_y];
+                trunk_ys.extend(lane.tap_off_ys.iter().copied());
+                for &(_ri, _px, py) in &lane.fluid_output_port_positions {
+                    trunk_ys.push(py);
+                }
+                trunk_ys.sort_unstable();
+                trunk_ys.dedup();
+                // Surface pipe at each connection y, plus PTG entry/exit
+                // tiles between adjacent connections (±1 from each anchor).
+                for &y in &trunk_ys {
+                    row_occupied.insert((lane.x, y));
+                }
+                for pair in trunk_ys.windows(2) {
+                    let (y0, y1) = (pair[0], pair[1]);
+                    if y1 - y0 > 1 {
+                        row_occupied.insert((lane.x, y0 + 1)); // PTG input
+                    }
+                    if y1 - y0 > 2 {
+                        row_occupied.insert((lane.x, y1 - 1)); // PTG output
+                    }
+                }
+                // Horizontal port connections: just the port tile and its
+                // immediate neighbours (PTG entry/exit).
+                let all_ports = lane.fluid_port_positions.iter()
+                    .chain(lane.fluid_output_port_positions.iter());
+                for &(_ri, port_x, port_y) in all_ports {
+                    row_occupied.insert((port_x, port_y));
+                    row_occupied.insert((lane.x, port_y)); // trunk side
+                    // PTG entry/exit tiles (±1 from each anchor)
+                    let (lo, hi) = if port_x < lane.x {
+                        (port_x, lane.x)
+                    } else {
+                        (lane.x, port_x)
+                    };
+                    if hi - lo > 1 {
+                        row_occupied.insert((lo + 1, port_y));
+                    }
+                    if hi - lo > 2 {
+                        row_occupied.insert((hi - 1, port_y));
+                    }
                 }
             }
             let pole_strategy = if machines_for_poles.is_empty() { "empty" } else { "rows" };

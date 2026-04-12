@@ -912,6 +912,7 @@ fn stress_electronic_circuit_60s_red_from_ore() {
 #[test]
 #[ignore]
 #[ntest::timeout(60000)]
+#[allow(clippy::type_complexity)]
 fn diag_ghost_cluster_ac_from_ore() {
     use fucktorio_core::common::{machine_size, machine_tiles};
     use rustc_hash::FxHashMap;
@@ -1206,6 +1207,7 @@ fn diag_ghost_cluster_ac_from_ore() {
 /// `solver::solve` + `layout::build_bus_layout` directly, skipping the 21-check
 /// validator gauntlet and the blueprint round-trip. Needed for tier-5 layouts
 /// where the validator pass alone exceeds the test timeout.
+#[allow(clippy::type_complexity)]
 fn diag_ghost_cluster_helper(
     test_name: &str,
     item: &str,
@@ -1557,6 +1559,7 @@ fn diag_ghost_cluster_stress_processing_unit_20s() {
 #[test]
 #[ignore]
 #[ntest::timeout(60000)]
+#[allow(clippy::type_complexity)]
 fn diag_ghost_cluster_copper_cable_feeders() {
     use fucktorio_core::common::{machine_size, machine_tiles};
     use rustc_hash::FxHashMap;

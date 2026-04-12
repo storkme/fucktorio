@@ -74,7 +74,7 @@ fn transform_port(
     reflect: bool,
 ) -> (u8, u32, bool, u32, u32) {
     // After the full transform, what are (new_w, new_h)?
-    let (tw, th) = if rotation % 2 == 0 { (w, h) } else { (h, w) };
+    let (tw, th) = if rotation.is_multiple_of(2) { (w, h) } else { (h, w) };
 
     // Apply reflection first (flip along vertical axis before rotation).
     // Reflection: N stays N but offset mirrors; E<->W; S stays S but mirrors.
@@ -94,8 +94,8 @@ fn transform_port(
     let (edge, offset) = {
         let mut e = edge;
         let mut o = offset;
-        let mut cur_w = if reflect { w } else { w };
-        let mut cur_h = if reflect { h } else { h };
+        let mut cur_w = w;
+        let mut cur_h = h;
         for _ in 0..rotation {
             // 90° CW: N->E, E->S, S->W, W->N
             // N(offset) -> E(offset), E(offset) -> S(cur_w-1-offset),
@@ -110,9 +110,7 @@ fn transform_port(
             e = ne;
             o = no;
             // After 90° CW, dimensions swap
-            let tmp = cur_w;
-            cur_w = cur_h;
-            cur_h = tmp;
+            std::mem::swap(&mut cur_w, &mut cur_h);
         }
         (e, o)
     };
@@ -163,7 +161,7 @@ pub fn canonical_signature(width: u32, height: u32, ports: &[PortSpec]) -> Strin
                 .collect();
 
             // Derive transformed dimensions
-            let (tw, th) = if rotation % 2 == 0 {
+            let (tw, th) = if rotation.is_multiple_of(2) {
                 (width, height)
             } else {
                 (height, width)

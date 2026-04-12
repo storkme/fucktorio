@@ -20,6 +20,7 @@ interface ShowcaseEntry {
   rate: number;
   inputs: string[];
   machine: string;
+  beltTier?: string;
   tier: number;
   status: "solved" | "partial" | "wip";
   desc: string;
@@ -75,6 +76,25 @@ const SHOWCASE: ShowcaseEntry[] = [
     tier: 4,
     status: "partial",
     desc: "5+ recipes, mixed solid/fluid",
+  },
+  {
+    label: "Advanced Circuit (ores, T1)",
+    item: "advanced-circuit",
+    rate: 5,
+    inputs: [
+      "iron-plate",
+      "copper-plate",
+      "coal",
+      "water",
+      "crude-oil",
+      "iron-ore",
+      "copper-ore",
+    ],
+    machine: "assembling-machine-1",
+    beltTier: "transport-belt",
+    tier: 4,
+    status: "partial",
+    desc: "Full stack from raw ores, tier-1 machines + yellow belts",
   },
 ];
 
@@ -591,7 +611,7 @@ function openPreview(
       try {
         const machine = engine.defaultMachineForItem(entry.item, entry.machine);
         solverResult = engine.solve(entry.item, entry.rate, entry.inputs, machine);
-        layout = engine.buildLayout(solverResult);
+        layout = engine.buildLayout(solverResult, entry.beltTier);
       } catch (err) {
         card.classList.remove("loading");
         entityCountEl.textContent = "error";
