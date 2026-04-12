@@ -165,6 +165,7 @@ fn run_e2e(
     available_inputs: &FxHashSet<String>,
 ) -> Result<E2EResult, String> {
     let _guard = trace::start_trace();
+    fucktorio_core::zone_cache::set_thread_source(Some(test_name));
     let run_params = RunParams { item, rate, machine, belt_tier, available_inputs };
 
     let solver_result = solver::solve(item, rate, available_inputs, machine)
@@ -217,6 +218,7 @@ fn run_e2e(
         dump_snapshot(test_name, &run_params, &result);
     }
 
+    fucktorio_core::zone_cache::set_thread_source(None);
     Ok(result)
 }
 
@@ -1494,7 +1496,7 @@ fn diag_ghost_cluster_stress_ac_45s_from_plates() {
 
 #[test]
 #[ignore]
-#[ntest::timeout(120000)]
+#[ntest::timeout(900000)]
 fn diag_ghost_cluster_stress_processing_unit_20s() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "plastic-bar", "sulfuric-acid"]
         .iter()
@@ -1918,5 +1920,114 @@ fn diag_ghost_cluster_copper_cable_feeders() {
         max_tiles,
         max_crossings,
         overlap_count
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SAT zone cache histogram
+// ---------------------------------------------------------------------------
+
+/// Read `target/sat-zones.jsonl`, group by signature, print a frequency
+/// histogram sorted by descending count, then panic with a top-10 summary.
+///
+/// Run after populating the cache with the full e2e suite:
+///   cargo test --manifest-path crates/core/Cargo.toml --test e2e
+///   cargo test --manifest-path crates/core/Cargo.toml --test e2e -- \
+///       --ignored diag_sat_zone_histogram --exact --nocapture
+#[test]
+#[ignore]
+fn diag_sat_zone_histogram() {
+    use std::collections::HashMap;
+
+    struct ZoneBucket {
+        count: usize,
+        total_width: u64,
+        total_height: u64,
+        total_vars: u64,
+        total_clauses: u64,
+        total_solve_us: u64,
+        sources: Vec<String>,
+    }
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(&manifest)
+        .join("target")
+        .join("sat-zones.jsonl");
+
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Cannot read {}: {e}", path.display()));
+
+    let mut buckets: HashMap<String, ZoneBucket> = HashMap::new();
+    let mut total_records = 0usize;
+
+    for (lineno, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("Bad JSON on line {}: {e}", lineno + 1));
+
+        let sig = v["signature"].as_str().unwrap_or("?").to_string();
+        let width = v["width"].as_u64().unwrap_or(0);
+        let height = v["height"].as_u64().unwrap_or(0);
+        let vars = v["variables"].as_u64().unwrap_or(0);
+        let clauses = v["clauses"].as_u64().unwrap_or(0);
+        let solve_us = v["solve_time_us"].as_u64().unwrap_or(0);
+        let source = v["source"].as_str().map(|s| s.to_string());
+
+        total_records += 1;
+        let bucket = buckets.entry(sig).or_insert(ZoneBucket {
+            count: 0,
+            total_width: 0,
+            total_height: 0,
+            total_vars: 0,
+            total_clauses: 0,
+            total_solve_us: 0,
+            sources: Vec::new(),
+        });
+        bucket.count += 1;
+        bucket.total_width += width;
+        bucket.total_height += height;
+        bucket.total_vars += vars;
+        bucket.total_clauses += clauses;
+        bucket.total_solve_us += solve_us;
+        if let Some(s) = source {
+            if !bucket.sources.contains(&s) && bucket.sources.len() < 3 {
+                bucket.sources.push(s);
+            }
+        }
+    }
+
+    let distinct = buckets.len();
+    let mut rows: Vec<(String, ZoneBucket)> = buckets.into_iter().collect();
+    rows.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+
+    eprintln!("\n=== SAT zone histogram ({total_records} records, {distinct} distinct signatures) ===");
+    eprintln!("{:<40} {:>6}  {:>8}  {:>6}  {:>8}  {:>12}  sources",
+        "signature", "count", "mean_WxH", "mean_v", "mean_cls", "mean_us");
+    eprintln!("{}", "-".repeat(120));
+
+    for (sig, b) in &rows {
+        let n = b.count as f64;
+        let mean_w = b.total_width as f64 / n;
+        let mean_h = b.total_height as f64 / n;
+        let mean_v = b.total_vars as f64 / n;
+        let mean_cls = b.total_clauses as f64 / n;
+        let mean_us = b.total_solve_us as f64 / n;
+        let srcs = b.sources.join(", ");
+        eprintln!("{:<40} {:>6}  {:>5.1}x{:<5.1} {:>6.1}  {:>8.1}  {:>12.1}  {}",
+            sig, b.count, mean_w, mean_h, mean_v, mean_cls, mean_us, srcs);
+    }
+
+    // Build top-10 summary for the panic message
+    let top10: Vec<String> = rows.iter().take(10)
+        .map(|(sig, b)| format!("{}×{}", sig, b.count))
+        .collect();
+    let top10_str = top10.join("; ");
+
+    panic!(
+        "SAT zone histogram: total_records={total_records}, distinct_signatures={distinct}; top-10: {top10_str}"
     );
 }
