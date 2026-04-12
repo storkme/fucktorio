@@ -23,3 +23,5 @@ pub mod snapshot;
 pub mod solver;
 pub mod trace;
 pub mod validate;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod zone_cache;

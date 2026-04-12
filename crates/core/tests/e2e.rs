@@ -1201,6 +1201,11 @@ fn diag_ghost_cluster_ac_from_ore() {
 
 /// Helper for ghost cluster diagnostics: routes failing specs under ghost semantics,
 /// union-finds clusters, and panics with the scoreboard.
+///
+/// When `skip_validation` is `true`, bypasses `run_e2e` and calls
+/// `solver::solve` + `layout::build_bus_layout` directly, skipping the 21-check
+/// validator gauntlet and the blueprint round-trip. Needed for tier-5 layouts
+/// where the validator pass alone exceeds the test timeout.
 fn diag_ghost_cluster_helper(
     test_name: &str,
     item: &str,
@@ -1208,13 +1213,31 @@ fn diag_ghost_cluster_helper(
     machine: &str,
     belt_tier: Option<&str>,
     inputs: &FxHashSet<String>,
+    skip_validation: bool,
 ) {
     use fucktorio_core::common::{machine_size, machine_tiles};
     use rustc_hash::FxHashMap;
     use std::cmp::Reverse;
 
-    let result = run_e2e(test_name, item, rate, machine, belt_tier, inputs)
-        .expect("e2e");
+    let result = if skip_validation {
+        let _guard = trace::start_trace();
+        let solver_result = solver::solve(item, rate, inputs, machine)
+            .unwrap_or_else(|e| panic!("{test_name}: solver: {e}"));
+        let layout = layout::build_bus_layout(&solver_result, belt_tier)
+            .unwrap_or_else(|e| panic!("{test_name}: layout: {e}"));
+        let trace_events = trace::drain_events();
+        let analysis = analysis::analyze(&layout);
+        E2EResult {
+            solver_result,
+            layout: layout.clone(),
+            parsed: layout,
+            issues: Vec::new(),
+            analysis,
+            trace_events,
+        }
+    } else {
+        run_e2e(test_name, item, rate, machine, belt_tier, inputs).expect("e2e")
+    };
 
     // Pull failing specs from trace
     let failures: Vec<(String, (i32, i32), (i32, i32))> = result
@@ -1491,6 +1514,7 @@ fn diag_ghost_cluster_stress_ac_45s_from_plates() {
         "assembling-machine-2",
         None,
         &inputs,
+        false,
     );
 }
 
@@ -1502,13 +1526,17 @@ fn diag_ghost_cluster_stress_processing_unit_20s() {
         .iter()
         .map(|s| s.to_string())
         .collect();
+    // Tried 20/s AM3 — solver+layout alone exceeds 15min on current pipeline.
+    // 1/s AM2 completes in 0.6s but has 0 route failures (too small to
+    // exercise ghost clusters). Middle ground: 5/s AM2.
     diag_ghost_cluster_helper(
         "diag_ghost_cluster_stress_processing_unit_20s",
         "processing-unit",
-        20.0,
-        "assembling-machine-3",
+        5.0,
+        "assembling-machine-2",
         None,
         &inputs,
+        true, // skip validation
     );
 }
 
@@ -1949,11 +1977,22 @@ fn diag_sat_zone_histogram() {
         sources: Vec<String>,
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
-    let path = std::path::PathBuf::from(&manifest)
-        .join("target")
-        .join("sat-zones.jsonl");
+    // Resolve path the same way zone_cache::resolve_cache_path() does.
+    let path = if let Ok(p) = std::env::var("FUCKTORIO_ZONE_CACHE_PATH") {
+        std::path::PathBuf::from(p)
+    } else {
+        let base = std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".cache"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(".cache"));
+        base.join("fucktorio").join("sat-zones.jsonl")
+    };
 
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Cannot read {}: {e}", path.display()));
