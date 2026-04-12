@@ -1,4 +1,4 @@
-//! Ghost A* bus router — Phase 2 of the ghost-cluster routing rewrite.
+//! Ghost A* bus router — Phases 2+3 of the ghost-cluster routing rewrite.
 //!
 //! Gated behind `FUCKTORIO_GHOST_ROUTING=1`.
 //!
@@ -11,7 +11,9 @@
 //!    `ghost_astar`. Belts are transparent — A* ghosts through them and records
 //!    each crossing tile for Phase 3's SAT resolver.
 //! 4. Union-find ghost crossings into clusters.
-//! 5. Merge output rows via the existing `merge_output_rows` helper.
+//! 5. SAT-resolve each cluster: extract boundary ports, build CrossingZones,
+//!    solve, replace ghost surface belts with proper UG pairs.
+//! 6. Merge output rows via the existing `merge_output_rows` helper.
 //!
 //! Returns a `GhostRouteResult` containing all placed entities, ghost crossing
 //! tiles, cluster info, and layout dimensions.
@@ -26,8 +28,9 @@ use crate::bus::bus_router::{
     splitter_for_belt, stamp_family_balancer, trunk_segments, MACHINE_ENTITIES,
 };
 use crate::bus::placer::RowSpan;
-use crate::common::{belt_entity_for_rate, machine_size, machine_tiles};
-use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, SolverResult};
+use crate::common::{belt_entity_for_rate, machine_size, machine_tiles, ug_max_reach};
+use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, PortEdge, PortIo, PortSpec, SolverResult};
+use crate::sat::{self, CrossingZone, ZoneBoundary};
 use crate::trace;
 
 const TURN_PENALTY: u32 = 8;
@@ -84,10 +87,15 @@ pub fn route_bus_ghost(
     // -------------------------------------------------------------------------
     let mut hard: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut existing_belts: FxHashSet<(i32, i32)> = FxHashSet::default();
+    // Tracks belt positions that existed before ghost routing (row templates,
+    // trunks, splitters, balancers).  Crossings against these are not
+    // ghost-vs-ghost conflicts and are filtered out of the crossing set.
+    let mut pre_ghost_belts: FxHashSet<(i32, i32)> = FxHashSet::default();
 
     for e in row_entities {
         if is_belt_like(&e.name) {
             existing_belts.insert((e.x, e.y));
+            pre_ghost_belts.insert((e.x, e.y));
         } else if MACHINE_ENTITIES.contains(&e.name.as_str()) {
             let sz = machine_size(&e.name);
             for t in machine_tiles(e.x, e.y, sz) {
@@ -172,6 +180,7 @@ pub fn route_bus_ghost(
                 };
                 hard.insert((x, y));
                 existing_belts.insert((x, y));
+                pre_ghost_belts.insert((x, y));
                 entities.push(ent);
             }
         }
@@ -212,6 +221,8 @@ pub fn route_bus_ghost(
                 hard.insert((x, tap_y));
                 existing_belts.insert((x, tap_y - 1));
                 existing_belts.insert((x, tap_y));
+                pre_ghost_belts.insert((x, tap_y - 1));
+                pre_ghost_belts.insert((x, tap_y));
             }
         }
     }
@@ -233,6 +244,7 @@ pub fn route_bus_ghost(
             if is_belt_like(&ent.name) {
                 hard.insert((ent.x, ent.y));
                 existing_belts.insert((ent.x, ent.y));
+                pre_ghost_belts.insert((ent.x, ent.y));
             } else {
                 hard.insert((ent.x, ent.y));
             }
@@ -388,6 +400,9 @@ pub fn route_bus_ghost(
     let mut routed_paths: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
     let mut all_ghost_crossings: Vec<(i32, i32)> = Vec::new();
     let mut unroutable_specs: Vec<String> = Vec::new();
+    // Tracks which item each ghost-routed tile carries, so we can distinguish
+    // same-item overlaps (not conflicts) from different-item overlaps (real).
+    let mut ghost_item_at: FxHashMap<(i32, i32), String> = FxHashMap::default();
 
     for spec in &specs {
         match ghost_astar(
@@ -423,13 +438,38 @@ pub fn route_bus_ghost(
                     spec_seg_id,
                     None,
                 );
-                entities.extend(path_ents);
+                // Skip ghost belt entities on tiles already occupied by
+                // pre-existing belts or same-item ghost belts to avoid
+                // entity overlaps — those connections are intentional.
+                entities.extend(path_ents.into_iter().filter(|e| {
+                    !pre_ghost_belts.contains(&(e.x, e.y))
+                        && !ghost_item_at.contains_key(&(e.x, e.y))
+                }));
 
                 // Add new tiles to existing_belts for subsequent specs
                 for &tile in &path {
                     existing_belts.insert(tile);
                 }
-                all_ghost_crossings.extend(crossings);
+
+                // Filter crossings: only keep tiles that represent real
+                // conflicts (different-item ghost overlaps).
+                // - Pre-existing belt overlaps → connections, not conflicts
+                // - Same-item ghost overlaps → redundant belts, not conflicts
+                // - Different-item ghost overlaps → real SAT crossings
+                all_ghost_crossings.extend(crossings.into_iter().filter(|t| {
+                    if pre_ghost_belts.contains(t) {
+                        return false;
+                    }
+                    match ghost_item_at.get(t) {
+                        Some(existing_item) => *existing_item != spec.item,
+                        None => false, // first ghost at this tile, no conflict
+                    }
+                }));
+
+                // Record this spec's item at each tile
+                for &tile in &path {
+                    ghost_item_at.entry(tile).or_insert_with(|| spec.item.clone());
+                }
                 routed_paths.insert(spec.key.clone(), path);
             }
             None => {
@@ -450,40 +490,21 @@ pub fn route_bus_ghost(
     // -------------------------------------------------------------------------
     let crossing_set: FxHashSet<(i32, i32)> = all_ghost_crossings.iter().copied().collect();
 
-    // Two crossings in the same path are in the same cluster.
-    // We union-find by path: collect crossing indices per path, union them all.
+    // Union-find by spatial adjacency: merge crossing tiles close enough that
+    // their UG pairs could interfere.  Threshold = ug_max_reach + 1 so that
+    // separate zones can't produce UG entry/exit pairs that the validator
+    // mis-matches across zone boundaries.
+    let effective_belt = max_belt_tier.unwrap_or("transport-belt");
+    let merge_dist = ug_max_reach(effective_belt) as i32 + 1;
     let crossing_list: Vec<(i32, i32)> = crossing_set.iter().copied().collect();
     let n_tiles = crossing_list.len();
     let mut uf: Vec<usize> = (0..n_tiles).collect();
-    let tile_index: FxHashMap<(i32, i32), usize> = crossing_list
-        .iter()
-        .enumerate()
-        .map(|(i, &t)| (t, i))
-        .collect();
 
-    fn uf_find(p: &mut [usize], i: usize) -> usize {
-        let mut r = i;
-        while p[r] != r {
-            r = p[r];
-        }
-        let mut cur = i;
-        while p[cur] != r {
-            let next = p[cur];
-            p[cur] = r;
-            cur = next;
-        }
-        r
-    }
-
-    for path in routed_paths.values() {
-        let path_crossings: Vec<usize> = path
-            .iter()
-            .filter_map(|t| tile_index.get(t).copied())
-            .collect();
-        if path_crossings.len() >= 2 {
-            for &idx in &path_crossings[1..] {
-                let ra = uf_find(&mut uf, path_crossings[0]);
-                let rb = uf_find(&mut uf, idx);
+    for (i, &(ax, ay)) in crossing_list.iter().enumerate() {
+        for (j, &(bx, by)) in crossing_list.iter().enumerate().skip(i + 1) {
+            if (ax - bx).abs() + (ay - by).abs() <= merge_dist {
+                let ra = uf_find(&mut uf, i);
+                let rb = uf_find(&mut uf, j);
                 if ra != rb {
                     uf[ra] = rb;
                 }
@@ -499,6 +520,64 @@ pub fn route_bus_ghost(
     }
     let cluster_count = cluster_tile_counts.len();
     let max_cluster_tiles = cluster_tile_counts.values().copied().max().unwrap_or(0);
+
+    // -------------------------------------------------------------------------
+    // Step 6b: SAT-resolve ghost clusters (Phase 3)
+    // -------------------------------------------------------------------------
+    let (solved_zones, regions, failed_count) = resolve_clusters(
+        &crossing_list,
+        &mut uf,
+        &routed_paths,
+        &specs,
+        max_belt_tier,
+        &entities,
+        &hard,
+    );
+
+    if failed_count > 0 {
+        return Err(format!(
+            "ghost router: {} of {} clusters failed SAT resolution",
+            failed_count, cluster_count
+        ));
+    }
+
+    // Remove ghost entities inside solved cluster zones, replace with SAT output.
+    // Only ghost-routed entities (segment_id starts with "ghost:") are removed;
+    // trunks, row template belts, splitters, and balancer entities stay in place.
+    if !solved_zones.is_empty() {
+        let zone_bboxes: Vec<&ClusterZone> = solved_zones.iter().map(|(_, z)| z).collect();
+
+        entities.retain(|e| {
+            let in_zone = zone_bboxes.iter().any(|z| z.contains(e.x, e.y));
+            if !in_zone {
+                return true;
+            }
+            // Keep non-ghost entities inside zones
+            let is_ghost = e
+                .segment_id
+                .as_ref()
+                .is_some_and(|s| s.starts_with("ghost:"));
+            !is_ghost
+        });
+
+        // Build set of occupied positions: row_entities + non-ghost entities
+        // in our entity list. SAT output must not overlap these.
+        let mut occupied: FxHashSet<(i32, i32)> =
+            row_entities.iter().map(|e| (e.x, e.y)).collect();
+        for e in entities.iter() {
+            occupied.insert((e.x, e.y));
+        }
+
+        for (sat_entities, _zone) in &solved_zones {
+            // Skip SAT entities that would overlap pre-existing entities
+            entities.extend(
+                sat_entities
+                    .iter()
+                    .filter(|e| !occupied.contains(&(e.x, e.y)))
+                    .cloned(),
+            );
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Step 7: Merge output rows for final products
@@ -550,8 +629,429 @@ pub fn route_bus_ghost(
         unroutable_specs,
         max_y,
         merge_max_x,
-        regions: Vec::new(),
+        regions,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Union-find helper (used by both route_bus_ghost and resolve_clusters)
+// ---------------------------------------------------------------------------
+
+fn uf_find(p: &mut [usize], i: usize) -> usize {
+    let mut r = i;
+    while p[r] != r {
+        r = p[r];
+    }
+    let mut cur = i;
+    while p[cur] != r {
+        let next = p[cur];
+        p[cur] = r;
+        cur = next;
+    }
+    r
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Ghost cluster SAT resolution
+// ---------------------------------------------------------------------------
+
+/// Bounding box for a ghost cluster zone (padded by 1 tile on each side).
+struct ClusterZone {
+    /// Padded bbox left
+    x: i32,
+    /// Padded bbox top
+    y: i32,
+    /// Padded bbox width
+    w: u32,
+    /// Padded bbox height
+    h: u32,
+}
+
+impl ClusterZone {
+    fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && px < self.x + self.w as i32
+            && py >= self.y
+            && py < self.y + self.h as i32
+    }
+
+    fn on_edge(&self, px: i32, py: i32) -> bool {
+        self.contains(px, py)
+            && (px == self.x
+                || px == self.x + self.w as i32 - 1
+                || py == self.y
+                || py == self.y + self.h as i32 - 1)
+    }
+}
+
+/// Direction from a (dx, dy) step.
+fn step_direction(dx: i32, dy: i32) -> EntityDirection {
+    if dx > 0 {
+        EntityDirection::East
+    } else if dx < 0 {
+        EntityDirection::West
+    } else if dy > 0 {
+        EntityDirection::South
+    } else {
+        EntityDirection::North
+    }
+}
+
+/// Which edge of the zone a tile is on (for PortSpec construction).
+fn tile_edge(zone: &ClusterZone, px: i32, py: i32) -> PortEdge {
+    if py == zone.y {
+        PortEdge::N
+    } else if py == zone.y + zone.h as i32 - 1 {
+        PortEdge::S
+    } else if px == zone.x {
+        PortEdge::W
+    } else {
+        PortEdge::E
+    }
+}
+
+/// Offset of a tile along its edge (from top-left corner of the zone).
+fn edge_offset(zone: &ClusterZone, edge: &PortEdge, px: i32, py: i32) -> u32 {
+    match edge {
+        PortEdge::N | PortEdge::S => (px - zone.x) as u32,
+        PortEdge::W | PortEdge::E => (py - zone.y) as u32,
+    }
+}
+
+/// Resolve ghost clusters into SAT crossing zones.
+///
+/// For each cluster: compute padded bbox, extract boundary ports from paths
+/// that pass through the zone, build a CrossingZone, and SAT-solve it.
+///
+/// Returns solved entity lists per zone (with their bboxes), LayoutRegions
+/// for telemetry, and the count of failed clusters.
+fn resolve_clusters(
+    crossing_list: &[(i32, i32)],
+    uf: &mut [usize],
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    specs: &[BeltSpec],
+    max_belt_tier: Option<&str>,
+    all_entities: &[PlacedEntity],
+    hard_obstacles: &FxHashSet<(i32, i32)>,
+) -> (Vec<(Vec<PlacedEntity>, ClusterZone)>, Vec<LayoutRegion>, usize) {
+    let n_tiles = crossing_list.len();
+    if n_tiles == 0 {
+        return (Vec::new(), Vec::new(), 0);
+    }
+
+    // Build spec lookup: key → &BeltSpec
+    let spec_map: FxHashMap<&str, &BeltSpec> = specs.iter().map(|s| (s.key.as_str(), s)).collect();
+
+    // Group crossing tiles by UF root
+    let mut cluster_tiles: FxHashMap<usize, Vec<(i32, i32)>> = FxHashMap::default();
+    for (i, &tile) in crossing_list.iter().enumerate() {
+        let root = uf_find(uf, i);
+        cluster_tiles
+            .entry(root)
+            .or_default()
+            .push(tile);
+    }
+
+    // Build zones from clusters
+    let mut zones: Vec<(usize, ClusterZone, FxHashSet<(i32, i32)>)> = Vec::new();
+    for (&root, tiles) in &cluster_tiles {
+        let min_x = tiles.iter().map(|t| t.0).min().unwrap();
+        let max_x = tiles.iter().map(|t| t.0).max().unwrap();
+        let min_y = tiles.iter().map(|t| t.1).min().unwrap();
+        let max_y = tiles.iter().map(|t| t.1).max().unwrap();
+
+        // +2 padding on each side: gives the SAT solver room for UG
+        // entry/exit pairs around each crossing point.
+        let zone = ClusterZone {
+            x: min_x - 2,
+            y: min_y - 2,
+            w: (max_x - min_x + 5) as u32,
+            h: (max_y - min_y + 5) as u32,
+        };
+        let tile_set: FxHashSet<(i32, i32)> = tiles.iter().copied().collect();
+        zones.push((root, zone, tile_set));
+    }
+
+    // Check for overlapping padded bboxes and merge if needed
+    // (iterate until no merges happen)
+    loop {
+        let mut merged = false;
+        let mut i = 0;
+        while i < zones.len() {
+            let mut j = i + 1;
+            while j < zones.len() {
+                // Check if zones[i] and zones[j] padded bboxes overlap
+                let (_, zi, _) = &zones[i];
+                let (_, zj, _) = &zones[j];
+                let i_x2 = zi.x + zi.w as i32;
+                let i_y2 = zi.y + zi.h as i32;
+                let j_x2 = zj.x + zj.w as i32;
+                let j_y2 = zj.y + zj.h as i32;
+
+                if zi.x < j_x2 && zj.x < i_x2 && zi.y < j_y2 && zj.y < i_y2 {
+                    // Merge j into i: compute merged bbox from immutable refs
+                    let new_min_x = zi.x.min(zj.x);
+                    let new_min_y = zi.y.min(zj.y);
+                    let new_max_x = i_x2.max(j_x2);
+                    let new_max_y = i_y2.max(j_y2);
+                    let tiles_j = zones[j].2.clone();
+
+                    // Now mutate zones[i]
+                    zones[i].1 = ClusterZone {
+                        x: new_min_x,
+                        y: new_min_y,
+                        w: (new_max_x - new_min_x) as u32,
+                        h: (new_max_y - new_min_y) as u32,
+                    };
+                    zones[i].2.extend(tiles_j);
+                    zones.remove(j);
+                    merged = true;
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+        if !merged {
+            break;
+        }
+    }
+
+    let mut solved_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
+    let mut regions: Vec<LayoutRegion> = Vec::new();
+    let mut failed_count = 0;
+
+    // Determine belt tier for SAT solver
+    let effective_belt = max_belt_tier.unwrap_or("transport-belt");
+    let max_reach = ug_max_reach(effective_belt);
+
+    // Pre-existing entity positions — boundary ports must not land here
+    let pre_existing_positions: FxHashSet<(i32, i32)> = all_entities
+        .iter()
+        .filter(|e| !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:")))
+        .map(|e| (e.x, e.y))
+        .collect();
+
+    for (cluster_idx, (_root_id, zone, _cluster_tile_set)) in zones.into_iter().enumerate() {
+        // Collect all paths that have any tile inside this zone's padded bbox
+        let mut boundaries: Vec<ZoneBoundary> = Vec::new();
+        let mut port_specs: Vec<PortSpec> = Vec::new();
+
+        for (key, path) in routed_paths {
+            let spec = match spec_map.get(key.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Check if this path intersects the zone at all
+            let touches_zone = path.iter().any(|&(px, py)| zone.contains(px, py));
+            if !touches_zone {
+                continue;
+            }
+
+            // Walk the path and find entry/exit boundary ports
+            for i in 0..path.len() {
+                let (px, py) = path[i];
+                if !zone.contains(px, py) {
+                    continue;
+                }
+
+                // Entry: previous tile is outside the zone (or this is the first tile)
+                let prev_outside = if i == 0 {
+                    true
+                } else {
+                    let (ppx, ppy) = path[i - 1];
+                    !zone.contains(ppx, ppy)
+                };
+
+                // Exit: next tile is outside the zone (or this is the last tile)
+                let next_outside = if i == path.len() - 1 {
+                    true
+                } else {
+                    let (npx, npy) = path[i + 1];
+                    !zone.contains(npx, npy)
+                };
+
+                // Skip boundary ports at positions occupied by hard obstacles
+                // or pre-existing entities — those would conflict with the
+                // SAT solution or get filtered out, breaking connectivity.
+                let occupied_by_existing =
+                    hard_obstacles.contains(&(px, py)) || pre_existing_positions.contains(&(px, py));
+
+                if prev_outside && zone.on_edge(px, py) && !occupied_by_existing {
+                    // Entry port: direction is the direction of travel INTO the zone
+                    let dir = if i == 0 {
+                        if path.len() > 1 {
+                            let (npx, npy) = path[i + 1];
+                            step_direction(npx - px, npy - py)
+                        } else {
+                            if spec.start.0 <= spec.goal.0 {
+                                EntityDirection::East
+                            } else {
+                                EntityDirection::West
+                            }
+                        }
+                    } else {
+                        let (ppx, ppy) = path[i - 1];
+                        step_direction(px - ppx, py - ppy)
+                    };
+
+                    let edge = tile_edge(&zone, px, py);
+                    let offset = edge_offset(&zone, &edge, px, py);
+                    boundaries.push(ZoneBoundary {
+                        x: px,
+                        y: py,
+                        direction: dir,
+                        item: spec.item.clone(),
+                        is_input: true,
+                    });
+                    port_specs.push(PortSpec {
+                        edge,
+                        offset,
+                        io: PortIo::Input,
+                        item: Some(spec.item.clone()),
+                        direction: Some(dir),
+                    });
+                }
+
+                if next_outside && zone.on_edge(px, py) && !occupied_by_existing {
+                    // Exit port: direction of travel OUT of the zone
+                    let dir = if i == path.len() - 1 {
+                        if path.len() > 1 {
+                            let (ppx, ppy) = path[i - 1];
+                            step_direction(px - ppx, py - ppy)
+                        } else {
+                            if spec.start.0 <= spec.goal.0 {
+                                EntityDirection::East
+                            } else {
+                                EntityDirection::West
+                            }
+                        }
+                    } else {
+                        let (npx, npy) = path[i + 1];
+                        step_direction(npx - px, npy - py)
+                    };
+
+                    let edge = tile_edge(&zone, px, py);
+                    let offset = edge_offset(&zone, &edge, px, py);
+                    boundaries.push(ZoneBoundary {
+                        x: px,
+                        y: py,
+                        direction: dir,
+                        item: spec.item.clone(),
+                        is_input: false,
+                    });
+                    port_specs.push(PortSpec {
+                        edge,
+                        offset,
+                        io: PortIo::Output,
+                        item: Some(spec.item.clone()),
+                        direction: Some(dir),
+                    });
+                }
+            }
+        }
+
+        if boundaries.is_empty() {
+            continue;
+        }
+
+        // Mark occupied tiles inside the zone as forced-empty so the SAT
+        // solver doesn't place entities on top of hard obstacles (machines,
+        // poles, pipes) or pre-existing belts (trunks, row templates).
+        let boundary_set: FxHashSet<(i32, i32)> =
+            boundaries.iter().map(|b| (b.x, b.y)).collect();
+        let mut forced_empty_set: FxHashSet<(i32, i32)> = FxHashSet::default();
+
+        // Hard obstacles (machines, poles, pipes, fluid lanes)
+        for &(hx, hy) in hard_obstacles {
+            if zone.contains(hx, hy) && !boundary_set.contains(&(hx, hy)) {
+                forced_empty_set.insert((hx, hy));
+            }
+        }
+        // Pre-existing non-ghost entities (trunks, row template belts, splitters)
+        for e in all_entities {
+            if zone.contains(e.x, e.y)
+                && !e
+                    .segment_id
+                    .as_ref()
+                    .is_some_and(|s| s.starts_with("ghost:"))
+                && !boundary_set.contains(&(e.x, e.y))
+            {
+                forced_empty_set.insert((e.x, e.y));
+            }
+        }
+        let forced_empty: Vec<(i32, i32)> = forced_empty_set.into_iter().collect();
+
+        let crossing_zone = CrossingZone {
+            x: zone.x,
+            y: zone.y,
+            width: zone.w,
+            height: zone.h,
+            boundaries: boundaries.clone(),
+            forced_empty,
+        };
+
+        match sat::solve_crossing_zone(&crossing_zone, max_reach, effective_belt) {
+            Some(solution) => {
+                trace::emit(trace::TraceEvent::GhostClusterSolved {
+                    cluster_id: cluster_idx,
+                    zone_x: zone.x,
+                    zone_y: zone.y,
+                    zone_w: zone.w,
+                    zone_h: zone.h,
+                    boundary_count: boundaries.len(),
+                    variables: solution.stats.variables,
+                    clauses: solution.stats.clauses,
+                    solve_time_us: solution.stats.solve_time_us,
+                });
+
+                let input_items: Vec<String> = boundaries
+                    .iter()
+                    .filter(|b| b.is_input)
+                    .map(|b| b.item.clone())
+                    .collect::<FxHashSet<_>>()
+                    .into_iter()
+                    .collect();
+                let output_items: Vec<String> = boundaries
+                    .iter()
+                    .filter(|b| !b.is_input)
+                    .map(|b| b.item.clone())
+                    .collect::<FxHashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                regions.push(LayoutRegion {
+                    kind: "ghost_cluster".to_string(),
+                    x: zone.x,
+                    y: zone.y,
+                    width: zone.w as i32,
+                    height: zone.h as i32,
+                    inputs: input_items,
+                    outputs: output_items,
+                    ports: port_specs,
+                    variables: solution.stats.variables,
+                    clauses: solution.stats.clauses,
+                    solve_time_us: solution.stats.solve_time_us,
+                });
+
+                solved_zones.push((solution.entities, zone));
+            }
+            None => {
+                trace::emit(trace::TraceEvent::GhostClusterFailed {
+                    cluster_id: cluster_idx,
+                    zone_x: zone.x,
+                    zone_y: zone.y,
+                    zone_w: zone.w,
+                    zone_h: zone.h,
+                    boundary_count: boundaries.len(),
+                });
+                failed_count += 1;
+            }
+        }
+    }
+
+    (solved_zones, regions, failed_count)
 }
 
 fn is_belt_like(name: &str) -> bool {

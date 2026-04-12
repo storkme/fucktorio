@@ -146,6 +146,12 @@ pub struct PortSpec {
     pub edge: PortEdge,
     pub offset: u32,
     pub io: PortIo,
+    /// Item carried through this port (for visualisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Flow direction at this port (for visualisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<EntityDirection>,
 }
 
 /// Metadata about a SAT-solved region in the layout.

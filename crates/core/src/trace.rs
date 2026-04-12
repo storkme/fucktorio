@@ -279,6 +279,27 @@ pub enum TraceEvent {
         to_x: i32,
         to_y: i32,
     },
+
+    // Ghost routing (Phase 3) — emitted by resolve_clusters in ghost_router.rs
+    GhostClusterSolved {
+        cluster_id: usize,
+        zone_x: i32,
+        zone_y: i32,
+        zone_w: u32,
+        zone_h: u32,
+        boundary_count: usize,
+        variables: u32,
+        clauses: u32,
+        solve_time_us: u64,
+    },
+    GhostClusterFailed {
+        cluster_id: usize,
+        zone_x: i32,
+        zone_y: i32,
+        zone_w: u32,
+        zone_h: u32,
+        boundary_count: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------

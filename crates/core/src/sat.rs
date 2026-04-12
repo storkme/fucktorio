@@ -382,6 +382,7 @@ impl CrossingEncoder {
                 }
             }
         }
+
     }
 
     // -- Underground belt pairing and propagation ---------------------------
@@ -418,21 +419,14 @@ impl CrossingEncoder {
                     if self.in_bounds(nx, ny) {
                         let n = self.tiles[self.idx(nx as u32, ny as u32)];
 
-                        // ug_in facing d -> next has underground[d] OR
-                        // next is ug_out facing d (adjacent pair, distance=1)
+                        // ug_in facing d -> next tile MUST have underground[d].
+                        // Distance-1 pairs (ug_in directly adjacent to ug_out with
+                        // no underground passage) are forbidden — they're pointless
+                        // and confuse the validator's UG pairing algorithm.
                         cnf.add(&[
                             t.is_ug_in.negative(),
                             t.out_dir[d].negative(),
                             n.underground[d].positive(),
-                            n.is_ug_out.positive(),
-                        ]);
-
-                        // If next is ug_out (from the clause above), it must face d.
-                        cnf.add(&[
-                            t.is_ug_in.negative(),
-                            t.out_dir[d].negative(),
-                            n.is_ug_out.negative(),
-                            n.out_dir[d].positive(),
                         ]);
 
                         // underground[d] propagation: next has underground[d]

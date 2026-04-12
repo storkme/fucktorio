@@ -283,23 +283,64 @@ tiles. This is the expected SAT input for Phase 3. Varisat handles
 ~1000-2000 variables in <100ms. Bifurcation (#138) can decompose if
 needed.
 
-### Phase 3 — Cluster SAT resolution
+### Phase 3 — Cluster SAT resolution (DONE)
 
-Feed ghost clusters from Phase 2 into `sat::solve_crossing_zone`. For
-each cluster: extract boundary ports from ghost path endpoints, build a
-`CrossingZone`, solve, replace ghost-crossing surface belts with
-SAT-solved entities (surface belts + UG pairs). Unsolvable clusters are
-hard failures with diagnostic output.
+Implemented as `resolve_clusters()` in `ghost_router.rs`. After union-find,
+groups crossing tiles by root, computes padded bounding boxes (+1 tile each
+side), walks each path through the zone to extract entry/exit boundary ports,
+builds `CrossingZone` structs, and calls `sat::solve_crossing_zone`. Ghost
+surface belts inside solved zones are filtered out and replaced with
+SAT-solved entities. Unsolvable clusters are hard failures.
 
-**Solve clusters in parallel from day one.** Each cluster is independent;
-`clusters.par_iter().map(sat::solve_crossing_zone)` gives linear speedup.
-Related: #139 (parallelise validators the same way).
+**Boundary extraction** (the main Phase 3 design question): for each path
+that has any tile inside the padded bbox, walk tile-by-tile. When a tile is
+on the bbox edge and the previous tile is outside, that's an input port.
+When a tile is on the bbox edge and the next tile is outside, that's an
+output port. Direction comes from the path step direction; item from the
+BeltSpec. Overlapping cluster bboxes are merged before solving.
 
-**Main design question:** boundary extraction — how to derive
-`ZoneBoundary` entries from the ghost cluster's edge tiles. Each ghost
-path entering/exiting the cluster bbox defines a port (item, direction,
-position on boundary). The ghost router records which spec placed each
-crossing tile and specs carry item names + directional intent.
+**Key result on `tier4_advanced_circuit_from_ore_am1`:** 18 clusters
+solved, 93 validator errors (down from 545 ghost-crossing errors in
+Phase 2). Parallel solving deferred (#139).
+
+**Phase 3 investigation findings** — three crossing-filter refinements
+were added during investigation:
+
+1. *Item-aware crossing filter*: same-item ghost overlaps (e.g. two
+   tap-offs sharing tiles) are not real conflicts. Only different-item
+   ghost-vs-ghost overlaps become SAT crossings. Reduced crossing count
+   from 348 to ~60 tiles across 18 small clusters.
+
+2. *Pre-ghost-belt exclusion*: crossings against pre-existing entities
+   (row templates, trunks, splitters) are connections, not conflicts.
+   Ghost entities are not rendered on top of pre-existing belts.
+
+3. *Spatial adjacency union-find*: per-path merging created a 348-tile
+   mega-cluster. Changed to Manhattan distance ≤ ug\_max\_reach+1 for
+   small, local clusters.
+
+**Remaining 93 errors** — 15 are unrelated fluid-connectivity. The 78
+belt errors come from zones that straddle the bus/machine-row boundary:
+
+```
+     28 29 30 31 32 33 34
+ 28:  .  · ↓c U↓ →c ↓c  .     SAT zone extends to x=33
+ 29:  .  · →c →c ↑c ←c  .     2x2 loop at (31-32, 28-29)
+ 30:  → →c ↑c U↑  ▸  ▸  ▸     row template belts at x=32+
+ 31:  .  ·  · →c ↑c  ⊥  .     inserter at x=33
+ 32:  .  ·  · ↓P ███ ·  .     machine at x=32
+```
+
+The crossing tile is at ~x=31 with +2 padding extending to x=33 (machine
+territory). Machine footprints become forced\_empty, leaving the SAT
+solver a narrow 2-3 tile corridor that produces loops and item isolation.
+Shrinking zones causes UNSAT; growing them doesn't help because the
+machine boundary is fixed. Attempts to add anti-loop SAT constraints or
+filter boundary ports shifted errors rather than reducing them.
+
+The fix requires either (a) resolving bus-edge crossings with inline UG
+bridging instead of SAT, or (b) adjusting the bus layout to prevent
+crossings near the machine boundary.
 
 ### Phase 4 — Gate flip + cleanup
 

@@ -908,7 +908,7 @@ fn route_bus(
                         crate::models::PortEdge::W | crate::models::PortEdge::E => ly,
                     };
 
-                    Some(crate::models::PortSpec { edge, offset, io })
+                    Some(crate::models::PortSpec { edge, offset, io, item: None, direction: None })
                 })
                 .collect();
 

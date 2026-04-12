@@ -13,6 +13,7 @@
 //!   Automatic on failure — any test with validation errors dumps a snapshot.
 
 use fucktorio_core::analysis::{self, BlueprintAnalysis};
+use fucktorio_core::models::EntityDirection;
 use fucktorio_core::blueprint;
 use fucktorio_core::blueprint_parser;
 use fucktorio_core::bus::layout;
@@ -903,6 +904,8 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
             let mut unroutable_count = 0;
             let mut ghost_spec_routed = 0;
             let mut ghost_spec_failed = 0;
+            let mut clusters_solved = 0;
+            let mut clusters_failed = 0;
 
             for ev in &result.trace_events {
                 match ev {
@@ -919,11 +922,15 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                     }
                     TraceEvent::GhostSpecRouted { .. } => ghost_spec_routed += 1,
                     TraceEvent::GhostSpecFailed { .. } => ghost_spec_failed += 1,
+                    TraceEvent::GhostClusterSolved { zone_x, zone_y, zone_w, zone_h, boundary_count, .. } => {
+                        clusters_solved += 1;
+                        eprintln!("  cluster solved: zone ({},{}) {}x{}, {} boundaries", zone_x, zone_y, zone_w, zone_h, boundary_count);
+                    }
+                    TraceEvent::GhostClusterFailed { .. } => clusters_failed += 1,
                     _ => {}
                 }
             }
 
-            let _total_warnings = result.issues.len();
             let errors: Vec<_> = result.issues.iter()
                 .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Error))
                 .collect();
@@ -931,16 +938,16 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                 .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Warning))
                 .collect();
 
-            // Always panic with the diagnostic scoreboard (Phase 2 output has
-            // ghost crossings that the validator flags — that's expected).
-            panic!(
-                "ghost routing diagnostic:\n  \
+            eprintln!(
+                "ghost routing scoreboard (Phase 3):\n  \
                  layout entities: {}\n  \
                  specs routed:    {}\n  \
                  specs failed:    {}\n  \
                  unroutable:      {}\n  \
                  ghost clusters:  {}\n  \
                  max cluster tiles: {}\n  \
+                 clusters solved: {}\n  \
+                 clusters failed: {}\n  \
                  validator errors:  {}\n  \
                  validator warnings: {}\n",
                 entity_count,
@@ -949,9 +956,200 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                 unroutable_count,
                 cluster_count,
                 max_cluster_tiles,
+                clusters_solved,
+                clusters_failed,
                 errors.len(),
                 warnings.len(),
             );
+
+            // Dump errors by check type for investigation
+            let mut by_check: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            for issue in &result.issues {
+                by_check.entry(issue.category.clone()).or_default().push(issue.message.clone());
+            }
+            for (check, msgs) in &by_check {
+                eprintln!("  [{check}] ({} issues):", msgs.len());
+                for m in msgs.iter().take(5) {
+                    eprintln!("    - {m}");
+                }
+                if msgs.len() > 5 {
+                    eprintln!("    ... and {} more", msgs.len() - 5);
+                }
+            }
+
+            // ASCII zone visualisation: show each solved zone as a grid
+            // with boundary ports, SAT entities, pre-existing entities, and
+            // a 1-tile halo showing what's just outside the zone.
+            for region in &result.layout.regions {
+                if region.kind != "ghost_cluster" { continue; }
+                let zx = region.x;
+                let zy = region.y;
+                let zw = region.width;
+                let zh = region.height;
+
+                // Gather issues inside this zone for annotation
+                let zone_issues: Vec<_> = result.issues.iter()
+                    .filter(|i| {
+                        let ix = i.x.unwrap_or(-999);
+                        let iy = i.y.unwrap_or(-999);
+                        ix >= zx - 1 && ix < zx + zw + 1 && iy >= zy - 1 && iy < zy + zh + 1
+                    })
+                    .collect();
+
+                eprintln!("\n  ╔══ Zone ({},{}) {}x{}, {} vars, {} clauses ══",
+                    zx, zy, zw, zh, region.variables, region.clauses);
+                if !zone_issues.is_empty() {
+                    for issue in &zone_issues {
+                        eprintln!("  ║ ⚠ {}", issue.message);
+                    }
+                }
+
+                // Render grid with 1-tile halo
+                let halo = 1;
+                let x0 = zx - halo;
+                let y0 = zy - halo;
+                let x1 = zx + zw + halo;
+                let y1 = zy + zh + halo;
+
+                // Build entity lookup for this area
+                let mut ent_at: std::collections::HashMap<(i32, i32), Vec<&_>> = std::collections::HashMap::new();
+                for e in &result.layout.entities {
+                    if e.x >= x0 && e.x < x1 && e.y >= y0 && e.y < y1 {
+                        ent_at.entry((e.x, e.y)).or_default().push(e);
+                    }
+                }
+
+                // Header with x coordinates
+                eprint!("  ║     ");
+                for x in x0..x1 {
+                    eprint!("{:>3}", x % 100);
+                }
+                eprintln!();
+
+                for y in y0..y1 {
+                    let in_zone = y >= zy && y < zy + zh;
+                    let border = if in_zone { "║" } else { "║" };
+                    eprint!("  {border} {:>3}: ", y);
+
+                    for x in x0..x1 {
+                        let in_z = x >= zx && x < zx + zw && y >= zy && y < zy + zh;
+                        let ents = ent_at.get(&(x, y));
+
+                        let ch = match ents {
+                            None => {
+                                if in_z { " · " } else { " . " }
+                            }
+                            Some(es) => {
+                                let e = es[0]; // first entity
+                                let is_sat = e.segment_id.as_ref()
+                                    .is_some_and(|s| s.starts_with("crossing:"));
+                                let is_ghost = e.segment_id.as_ref()
+                                    .is_some_and(|s| s.starts_with("ghost:"));
+                                let is_ug = e.name.contains("underground");
+                                let dir_ch = match e.direction {
+                                    EntityDirection::North => '↑',
+                                    EntityDirection::South => '↓',
+                                    EntityDirection::East => '→',
+                                    EntityDirection::West => '←',
+                                };
+                                let item_ch = match e.carries.as_deref() {
+                                    Some("iron-ore") => 'i',
+                                    Some("iron-plate") => 'I',
+                                    Some("copper-ore") => 'c',
+                                    Some("copper-plate") => 'C',
+                                    Some("copper-cable") => 'w', // wire
+                                    Some("coal") => 'k',
+                                    Some("plastic-bar") => 'P',
+                                    Some("electronic-circuit") => 'E',
+                                    Some("advanced-circuit") => 'A',
+                                    Some("sulfuric-acid") => 'S',
+                                    Some("petroleum-gas") => 'G',
+                                    _ => '?',
+                                };
+
+                                if es.len() > 1 {
+                                    "XX!" // overlap
+                                } else if is_ug {
+                                    if e.io_type.as_deref() == Some("input") {
+                                        // Use static strings for the known cases
+                                        match (dir_ch, item_ch) {
+                                            _ => "U↓ " // simplified
+                                        }
+                                    } else {
+                                        "U↑ "
+                                    }
+                                } else if is_sat {
+                                    // SAT entity: direction + item
+                                    match (dir_ch, item_ch) {
+                                        ('→', 'c') => "→c ",
+                                        ('←', 'c') => "←c ",
+                                        ('↓', 'c') => "↓c ",
+                                        ('↑', 'c') => "↑c ",
+                                        ('→', 'C') => "→C ",
+                                        ('←', 'C') => "←C ",
+                                        ('↓', 'C') => "↓C ",
+                                        ('↑', 'C') => "↑C ",
+                                        ('→', 'P') => "→P ",
+                                        ('←', 'P') => "←P ",
+                                        ('↓', 'P') => "↓P ",
+                                        ('↑', 'P') => "↑P ",
+                                        ('→', 'i') => "→i ",
+                                        ('←', 'i') => "←i ",
+                                        ('↓', 'i') => "↓i ",
+                                        ('↑', 'i') => "↑i ",
+                                        ('→', 'I') => "→I ",
+                                        ('←', 'I') => "←I ",
+                                        ('↓', 'I') => "↓I ",
+                                        ('↑', 'I') => "↑I ",
+                                        ('→', 'w') => "→w ",
+                                        ('←', 'w') => "←w ",
+                                        ('↓', 'w') => "↓w ",
+                                        ('↑', 'w') => "↑w ",
+                                        ('→', 'E') => "→E ",
+                                        ('←', 'E') => "←E ",
+                                        ('↓', 'E') => "↓E ",
+                                        ('↑', 'E') => "↑E ",
+                                        _ => " S ",
+                                    }
+                                } else if is_ghost {
+                                    // Ghost entity (outside zone)
+                                    match (dir_ch, item_ch) {
+                                        ('→', _) => " → ",
+                                        ('←', _) => " ← ",
+                                        ('↓', _) => " ↓ ",
+                                        ('↑', _) => " ↑ ",
+                                        _ => " g ",
+                                    }
+                                } else {
+                                    // Pre-existing entity (row template, trunk, etc)
+                                    match &*e.name {
+                                        n if n.contains("machine") || n.contains("furnace") || n.contains("refinery") => "███",
+                                        n if n.contains("inserter") => " ⊥ ",
+                                        n if n.contains("pole") => " ◉ ",
+                                        n if n.contains("splitter") => " ╫ ",
+                                        _ => match (dir_ch, item_ch) {
+                                            ('→', _) => " ▸ ",
+                                            ('←', _) => " ◂ ",
+                                            ('↓', _) => " ▾ ",
+                                            ('↑', _) => " ▴ ",
+                                            _ => " ■ ",
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        eprint!("{ch}");
+                    }
+                    eprintln!();
+                }
+                eprintln!("  ╚══ Legend: →↓←↑=belt dir, UPPERCASE=SAT, ▸▾◂▴=pre-existing, ·=empty(zone), .=empty(halo) ══");
+            }
+
+            // Phase 3 assertions: SAT must have resolved all clusters
+            assert_eq!(clusters_failed, 0, "all ghost clusters should be SAT-solved");
+            assert!(clusters_solved > 0, "expected at least one cluster to solve");
+            assert_eq!(unroutable_count, 0, "no specs should be unroutable");
+            assert_produces(&result, "advanced-circuit", 5.0);
         }
     }
 }
