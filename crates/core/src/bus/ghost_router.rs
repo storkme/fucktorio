@@ -486,17 +486,65 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
-    // Step 6: Union-find ghost crossings into clusters
+    // Step 6: Resolve ghost crossings — templates first, SAT fallback
     // -------------------------------------------------------------------------
     let crossing_set: FxHashSet<(i32, i32)> = all_ghost_crossings.iter().copied().collect();
-
-    // Union-find by spatial adjacency: merge crossing tiles close enough that
-    // their UG pairs could interfere.  Threshold = ug_max_reach + 1 so that
-    // separate zones can't produce UG entry/exit pairs that the validator
-    // mis-matches across zone boundaries.
     let effective_belt = max_belt_tier.unwrap_or("transport-belt");
+
+    // Pre-existing entity positions (for template/SAT overlap avoidance)
+    let pre_existing_set: FxHashSet<(i32, i32)> = entities
+        .iter()
+        .filter(|e| !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:")))
+        .map(|e| (e.x, e.y))
+        .chain(row_entities.iter().map(|e| (e.x, e.y)))
+        .collect();
+
+    // Step 6a: Try perpendicular crossing templates on individual tiles.
+    // Solved tiles are removed from the crossing set before clustering.
+    let mut template_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
+    let mut template_regions: Vec<LayoutRegion> = Vec::new();
+    let mut remaining_crossings: FxHashSet<(i32, i32)> = FxHashSet::default();
+
+    for &tile in &crossing_set {
+        let single_set: FxHashSet<(i32, i32)> = [tile].into_iter().collect();
+        if let Some(info) = classify_perpendicular(&single_set, &routed_paths, &specs) {
+            if let Some((ents, zone)) =
+                solve_perpendicular_template(&info, &hard, &pre_existing_set)
+            {
+                trace::emit(trace::TraceEvent::GhostClusterSolved {
+                    cluster_id: template_zones.len(),
+                    zone_x: zone.x,
+                    zone_y: zone.y,
+                    zone_w: zone.w,
+                    zone_h: zone.h,
+                    boundary_count: 4,
+                    variables: 0,
+                    clauses: 0,
+                    solve_time_us: 0,
+                });
+                template_regions.push(LayoutRegion {
+                    kind: "junction_template".to_string(),
+                    x: zone.x,
+                    y: zone.y,
+                    width: zone.w as i32,
+                    height: zone.h as i32,
+                    inputs: vec![info.spec_a.0.clone(), info.spec_b.0.clone()],
+                    outputs: vec![info.spec_a.0, info.spec_b.0],
+                    ports: Vec::new(),
+                    variables: 0,
+                    clauses: 0,
+                    solve_time_us: 0,
+                });
+                template_zones.push((ents, zone));
+                continue; // tile solved — don't add to remaining
+            }
+        }
+        remaining_crossings.insert(tile);
+    }
+
+    // Step 6b: Cluster remaining unsolved crossings and SAT-solve them.
     let merge_dist = ug_max_reach(effective_belt) as i32 + 1;
-    let crossing_list: Vec<(i32, i32)> = crossing_set.iter().copied().collect();
+    let crossing_list: Vec<(i32, i32)> = remaining_crossings.iter().copied().collect();
     let n_tiles = crossing_list.len();
     let mut uf: Vec<usize> = (0..n_tiles).collect();
 
@@ -512,19 +560,15 @@ pub fn route_bus_ghost(
         }
     }
 
-    // Count clusters and their sizes
     let mut cluster_tile_counts: FxHashMap<usize, usize> = FxHashMap::default();
     for i in 0..n_tiles {
         let root = uf_find(&mut uf, i);
         *cluster_tile_counts.entry(root).or_insert(0) += 1;
     }
-    let cluster_count = cluster_tile_counts.len();
+    let cluster_count = cluster_tile_counts.len() + template_zones.len();
     let max_cluster_tiles = cluster_tile_counts.values().copied().max().unwrap_or(0);
 
-    // -------------------------------------------------------------------------
-    // Step 6b: SAT-resolve ghost clusters (Phase 3)
-    // -------------------------------------------------------------------------
-    let (solved_zones, regions, failed_count) = resolve_clusters(
+    let (mut sat_zones, mut sat_regions, failed_count) = resolve_clusters(
         &crossing_list,
         &mut uf,
         &routed_paths,
@@ -533,6 +577,12 @@ pub fn route_bus_ghost(
         &entities,
         &hard,
     );
+
+    // Merge template and SAT results
+    let mut solved_zones = template_zones;
+    solved_zones.append(&mut sat_zones);
+    let mut regions = template_regions;
+    regions.append(&mut sat_regions);
 
     if failed_count > 0 {
         return Err(format!(
@@ -716,6 +766,199 @@ fn edge_offset(zone: &ClusterZone, edge: &PortEdge, px: i32, py: i32) -> u32 {
         PortEdge::N | PortEdge::S => (px - zone.x) as u32,
         PortEdge::W | PortEdge::E => (py - zone.y) as u32,
     }
+}
+
+/// Classify a cluster's crossing pattern by examining which paths pass
+/// through its tiles and their directions.
+struct CrossingInfo {
+    /// The single crossing tile (only set for single-tile clusters).
+    tile: (i32, i32),
+    /// The two specs that cross, with their direction at the crossing tile.
+    spec_a: (String, EntityDirection), // (item, direction)
+    spec_b: (String, EntityDirection),
+    /// Belt name for each spec (for entity construction).
+    belt_a: &'static str,
+    belt_b: &'static str,
+}
+
+/// Check if two directions are perpendicular.
+fn is_perpendicular(a: EntityDirection, b: EntityDirection) -> bool {
+    matches!(
+        (a, b),
+        (EntityDirection::East | EntityDirection::West, EntityDirection::North | EntityDirection::South)
+        | (EntityDirection::North | EntityDirection::South, EntityDirection::East | EntityDirection::West)
+    )
+}
+
+fn is_horizontal(d: EntityDirection) -> bool {
+    matches!(d, EntityDirection::East | EntityDirection::West)
+}
+
+/// Try to classify a single-tile cluster as a perpendicular crossing.
+fn classify_perpendicular(
+    cluster_tiles: &FxHashSet<(i32, i32)>,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    specs: &[BeltSpec],
+) -> Option<CrossingInfo> {
+    // Must be exactly 1 crossing tile
+    if cluster_tiles.len() != 1 {
+        return None;
+    }
+    let &tile = cluster_tiles.iter().next().unwrap();
+    let (cx, cy) = tile;
+
+    // Find specs whose paths pass through this tile
+    let spec_map: FxHashMap<&str, &BeltSpec> = specs.iter().map(|s| (s.key.as_str(), s)).collect();
+    let mut crossing_specs: Vec<(&BeltSpec, EntityDirection)> = Vec::new();
+
+    for (key, path) in routed_paths {
+        let spec = match spec_map.get(key.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        // Find this tile in the path and compute direction
+        for (i, &(px, py)) in path.iter().enumerate() {
+            if px == cx && py == cy {
+                // Compute direction at this point
+                let dir = if i + 1 < path.len() {
+                    let (nx, ny) = path[i + 1];
+                    step_direction(nx - px, ny - py)
+                } else if i > 0 {
+                    let (px2, py2) = path[i - 1];
+                    step_direction(px - px2, py - py2)
+                } else {
+                    continue;
+                };
+                crossing_specs.push((spec, dir));
+                break;
+            }
+        }
+    }
+
+    // Must be exactly 2 specs crossing perpendicularly
+    if crossing_specs.len() != 2 {
+        return None;
+    }
+    let (sa, da) = crossing_specs[0];
+    let (sb, db) = crossing_specs[1];
+
+    if !is_perpendicular(da, db) {
+        return None;
+    }
+
+    Some(CrossingInfo {
+        tile,
+        spec_a: (sa.item.clone(), da),
+        spec_b: (sb.item.clone(), db),
+        belt_a: sa.belt_name,
+        belt_b: sb.belt_name,
+    })
+}
+
+fn ug_for_belt(belt: &str) -> &'static str {
+    match belt {
+        "fast-transport-belt" => "fast-underground-belt",
+        "express-transport-belt" => "express-underground-belt",
+        _ => "underground-belt",
+    }
+}
+
+/// Solve a perpendicular crossing with a deterministic template.
+///
+/// One path stays on the surface, the other goes underground via a UG pair.
+/// Prefers bridging the vertical path so horizontal connections to row inputs
+/// stay on the surface.
+fn solve_perpendicular_template(
+    info: &CrossingInfo,
+    hard_obstacles: &FxHashSet<(i32, i32)>,
+    pre_existing: &FxHashSet<(i32, i32)>,
+) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
+    let (cx, cy) = info.tile;
+
+    // Decide which path to bridge (put underground).
+    // Prefer bridging vertical so horizontal row connections stay on surface.
+    // If the horizontal path is blocked, bridge it instead.
+    let (surface_item, surface_dir, surface_belt, bridge_item, bridge_dir, bridge_belt) =
+        if is_horizontal(info.spec_a.1) {
+            // A is horizontal (surface), B is vertical (bridge)
+            (&info.spec_a.0, info.spec_a.1, info.belt_a, &info.spec_b.0, info.spec_b.1, info.belt_b)
+        } else {
+            // B is horizontal (surface), A is vertical (bridge)
+            (&info.spec_b.0, info.spec_b.1, info.belt_b, &info.spec_a.0, info.spec_a.1, info.belt_a)
+        };
+
+    // Compute UG entry/exit positions for the bridged path
+    let (dx, dy) = match bridge_dir {
+        EntityDirection::North => (0, -1),
+        EntityDirection::South => (0, 1),
+        EntityDirection::East => (1, 0),
+        EntityDirection::West => (-1, 0),
+    };
+    // UG-in is one tile BEFORE the crossing (opposite of travel direction)
+    let ug_in = (cx - dx, cy - dy);
+    // UG-out is one tile AFTER the crossing (in travel direction)
+    let ug_out = (cx + dx, cy + dy);
+
+    // Check that UG positions are not blocked
+    if hard_obstacles.contains(&ug_in) || hard_obstacles.contains(&ug_out) {
+        return None; // can't place template here
+    }
+
+    let ug_name = ug_for_belt(bridge_belt);
+    let seg = Some(format!("junction:{}:{},{}", bridge_item, cx, cy));
+
+    let mut entities = Vec::new();
+
+    // Surface belt at the crossing tile (the non-bridged path)
+    if !pre_existing.contains(&(cx, cy)) {
+        entities.push(PlacedEntity {
+            name: surface_belt.to_string(),
+            x: cx,
+            y: cy,
+            direction: surface_dir,
+            carries: Some(surface_item.clone()),
+            segment_id: seg.clone(),
+            ..Default::default()
+        });
+    }
+
+    // UG-input (before crossing)
+    if !pre_existing.contains(&ug_in) {
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x: ug_in.0,
+            y: ug_in.1,
+            direction: bridge_dir,
+            io_type: Some("input".to_string()),
+            carries: Some(bridge_item.clone()),
+            segment_id: seg.clone(),
+            ..Default::default()
+        });
+    }
+
+    // UG-output (after crossing)
+    if !pre_existing.contains(&ug_out) {
+        entities.push(PlacedEntity {
+            name: ug_name.to_string(),
+            x: ug_out.0,
+            y: ug_out.1,
+            direction: bridge_dir,
+            io_type: Some("output".to_string()),
+            carries: Some(bridge_item.clone()),
+            segment_id: seg.clone(),
+            ..Default::default()
+        });
+    }
+
+    // Zone bbox: 3x3 centered on the crossing (or 3x1/1x3 oriented)
+    let zone = ClusterZone {
+        x: cx.min(ug_in.0).min(ug_out.0),
+        y: cy.min(ug_in.1).min(ug_out.1),
+        w: ((cx - ug_in.0).abs().max((cx - ug_out.0).abs()) * 2 + 1) as u32,
+        h: ((cy - ug_in.1).abs().max((cy - ug_out.1).abs()) * 2 + 1) as u32,
+    };
+
+    Some((entities, zone))
 }
 
 /// Resolve ghost clusters into SAT crossing zones.
