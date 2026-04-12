@@ -98,7 +98,9 @@ pub fn build_bus_layout(
     let mut regions: Vec<crate::models::LayoutRegion>;
     // Pole entities computed from row positions before routing so poles are
     // visible to the router as hard obstacles. Updated each loop iteration
-    // when rows are re-placed.
+    // when rows are re-placed. The initial value is immediately overwritten
+    // on the first loop iteration before any read.
+    #[allow(unused_assignments)]
     let mut pole_entities: Vec<PlacedEntity> = Vec::new();
 
     let mut attempt: u32 = 0;
@@ -378,37 +380,9 @@ pub fn build_bus_layout(
         row_entities.into_iter().filter(|e| !bus_occupied.contains(&(e.x, e.y))).collect()
     };
 
-    // Collect occupied tiles and machine footprint info for pole placement.
-    // For each machine we record (center_x, top_y, size).
-    let mut occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
-    let mut machines: Vec<(i32, i32, i32)> = Vec::new();
-    for ent in row_entities.iter().chain(bus_entities.iter()) {
-        if MACHINE_ENTITIES.contains(&ent.name.as_str()) {
-            let sz = crate::common::machine_size(&ent.name) as i32;
-            for dx in 0..sz {
-                for dy in 0..sz {
-                    occupied.insert((ent.x + dx, ent.y + dy));
-                }
-            }
-            machines.push((ent.x + sz / 2, ent.y, sz));
-        } else {
-            occupied.insert((ent.x, ent.y));
-        }
-    }
-
     let width = row_width.max(actual_bw).max(merge_max_x);
 
-    // Place power poles as regular horizontal lines, one per machine row.
-    let pole_strategy = if machines.is_empty() { "empty" } else { "rows" };
-    let pole_entities = place_poles(&machines, &occupied);
-    crate::trace::emit(crate::trace::TraceEvent::PolesPlaced {
-        count: pole_entities.len(),
-        strategy: pole_strategy.to_string(),
-    });
-    crate::trace::emit(crate::trace::TraceEvent::PhaseComplete {
-        phase: "poles_placed".into(),
-        entity_count: pole_entities.len(),
-    });
+    // Emit a post-routing snapshot showing poles already placed before routing.
     if crate::trace::is_active() {
         let mut snap_entities = row_entities.clone();
         snap_entities.extend(bus_entities.clone());
