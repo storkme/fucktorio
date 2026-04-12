@@ -332,45 +332,46 @@ pub fn route_bus_ghost(
         }
 
         // Feeder specs for family balancer lanes
+        // Feeder specs for family-balanced lanes — generate once per family
+        // (when this lane is the leftmost of its family). Producers are stored
+        // on `LaneFamily.producer_rows`, not on the lane itself.
         if let Some(family_id) = lane.family_id {
             if let Some(fam) = families.get(family_id) {
-                let mut all_producers = Vec::new();
-                if let Some(pr) = lane.producer_row {
-                    all_producers.push(pr);
-                }
-                all_producers.extend(&lane.extra_producer_rows);
+                let is_first_lane_in_family = fam
+                    .lane_xs
+                    .iter()
+                    .copied()
+                    .min()
+                    .map(|min_x| min_x == lane.x)
+                    .unwrap_or(false);
+                if is_first_lane_in_family {
+                    let templates = crate::bus::balancer_library::balancer_templates();
+                    let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
+                    if let Some(template) = templates.get(&(n, m)) {
+                        let origin_x = fam.lane_xs.iter().copied().min().unwrap_or(x);
+                        let origin_y = fam.balancer_y_start;
+                        let mut inputs: Vec<(i32, i32)> = template.input_tiles.to_vec();
+                        inputs.sort_by_key(|t| t.0);
+                        let feeder_belt = belt_entity_for_rate(fam.total_rate, max_belt_tier);
 
-                // Get the balancer's input tiles
-                let templates = crate::bus::balancer_library::balancer_templates();
-                let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
-                if let Some(template) = templates.get(&(n, m)) {
-                    let origin_x = fam.lane_xs.iter().copied().min().unwrap_or(x);
-                    let origin_y = fam.balancer_y_start;
-
-                    let mut inputs: Vec<(i32, i32)> = template.input_tiles.to_vec();
-                    inputs.sort_by_key(|t| t.0);
-
-                    let feeder_belt = belt_entity_for_rate(fam.total_rate, max_belt_tier);
-
-                    for (i, &pri) in all_producers.iter().enumerate() {
-                        if pri >= row_spans.len() {
-                            continue;
-                        }
-                        let out_y = row_spans[pri].output_belt_y;
-                        if let Some(&(input_x_rel, _input_y_rel)) = inputs.get(i) {
-                            let input_x = origin_x + input_x_rel;
-                            let input_y = origin_y;
-                            let feeder_key = format!(
-                                "feeder:{}:{}:{}",
-                                lane.item, input_x, out_y
-                            );
-                            specs.push(BeltSpec {
-                                key: feeder_key,
-                                start: (bw - 1, out_y),
-                                goal: (input_x, input_y),
-                                item: lane.item.clone(),
-                                belt_name: feeder_belt,
-                            });
+                        for (i, &pri) in fam.producer_rows.iter().enumerate() {
+                            if pri >= row_spans.len() {
+                                continue;
+                            }
+                            let out_y = row_spans[pri].output_belt_y;
+                            if let Some(&(input_x_rel, _input_y_rel)) = inputs.get(i) {
+                                let input_x = origin_x + input_x_rel;
+                                let input_y = origin_y;
+                                let feeder_key =
+                                    format!("feeder:{}:{}:{}", lane.item, input_x, out_y);
+                                specs.push(BeltSpec {
+                                    key: feeder_key,
+                                    start: (bw - 1, out_y),
+                                    goal: (input_x, input_y),
+                                    item: lane.item.clone(),
+                                    belt_name: feeder_belt,
+                                });
+                            }
                         }
                     }
                 }
