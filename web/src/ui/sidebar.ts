@@ -513,11 +513,6 @@ export interface SidebarOptions {
 export interface DisplayToggles {
   colorCb: HTMLInputElement;
   rateCb: HTMLInputElement;
-  debugCb: HTMLInputElement;
-  valCb: HTMLInputElement;
-  regionsCb: HTMLInputElement;
-  soloRegionsCb: HTMLInputElement;
-  ghostCb: HTMLInputElement;
 }
 
 export function renderSidebar(
@@ -713,7 +708,7 @@ export function renderSidebar(
 
   const colorCb = document.createElement("input");
   colorCb.type = "checkbox";
-  colorCb.checked = true;
+  colorCb.checked = false;
   const colorToggle = document.createElement("label");
   colorToggle.className = "sb-toggle";
   colorToggle.appendChild(colorCb);
@@ -729,58 +724,13 @@ export function renderSidebar(
   rateToggle.appendChild(document.createTextNode("Rates"));
   togglesWrap.appendChild(rateToggle);
 
-  const debugCb = document.createElement("input");
-  debugCb.type = "checkbox";
-  debugCb.checked = false;
-  const debugToggle = document.createElement("label");
-  debugToggle.className = "sb-toggle";
-  debugToggle.appendChild(debugCb);
-  debugToggle.appendChild(document.createTextNode("Debug"));
-  togglesWrap.appendChild(debugToggle);
-
-  const valCb = document.createElement("input");
-  valCb.type = "checkbox";
-  valCb.checked = false;
-  const valToggle = document.createElement("label");
-  valToggle.className = "sb-toggle";
-  valToggle.appendChild(valCb);
-  valToggle.appendChild(document.createTextNode("Validation"));
-  togglesWrap.appendChild(valToggle);
-
-  const regionsCb = document.createElement("input");
-  regionsCb.type = "checkbox";
-  regionsCb.checked = false;
-  const regionsToggle = document.createElement("label");
-  regionsToggle.className = "sb-toggle";
-  regionsToggle.appendChild(regionsCb);
-  regionsToggle.appendChild(document.createTextNode("SAT Zones"));
-  togglesWrap.appendChild(regionsToggle);
-
-  const soloRegionsCb = document.createElement("input");
-  soloRegionsCb.type = "checkbox";
-  soloRegionsCb.checked = false;
-  const soloRegionsToggle = document.createElement("label");
-  soloRegionsToggle.className = "sb-toggle";
-  soloRegionsToggle.appendChild(soloRegionsCb);
-  soloRegionsToggle.appendChild(document.createTextNode("Solo regions"));
-  togglesWrap.appendChild(soloRegionsToggle);
-
-  const ghostCb = document.createElement("input");
-  ghostCb.type = "checkbox";
-  ghostCb.checked = false;
-  const ghostToggle = document.createElement("label");
-  ghostToggle.className = "sb-toggle";
-  ghostToggle.appendChild(ghostCb);
-  ghostToggle.appendChild(document.createTextNode("Ghost routes"));
-  togglesWrap.appendChild(ghostToggle);
-
   displayBody.appendChild(togglesWrap);
   // Mark display section so snapshot mode doesn't disable its controls
   displaySection.setAttribute("data-snapshot-keep", "");
   inner.appendChild(displaySection);
 
   // Expose toggles to main.ts
-  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb, regionsCb, soloRegionsCb, ghostCb });
+  options?.onDisplayToggles?.({ colorCb, rateCb });
 
   el.appendChild(inner);
 

@@ -157,21 +157,40 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   }
 
   // --- Cursor tile position overlay ---
-  const coordsEl = document.createElement("div");
-  coordsEl.style.cssText = "position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#aaa;font:11px monospace;padding:3px 7px;border-radius:3px;pointer-events:none;z-index:10";
-  coordsEl.textContent = "x:\u2013 y:\u2013";
+  // --- Canvas overlay controls (bottom-right, pinned) ---
+  const overlayPanel = document.createElement("div");
+  overlayPanel.style.cssText = "position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#aaa;font:11px monospace;padding:4px 8px;border-radius:3px;z-index:10;display:flex;flex-direction:column;gap:2px;user-select:none";
   container.style.position = "relative";
-  container.appendChild(coordsEl);
 
-  // Display toggles are created by the sidebar and wired via onDisplayToggles callback.
-  // Forward-declare checkbox references — they get populated by onDisplayToggles.
+  const coordsEl = document.createElement("div");
+  coordsEl.style.cssText = "color:#aaa;font:11px monospace;pointer-events:none";
+  coordsEl.textContent = "x:\u2013 y:\u2013";
+  overlayPanel.appendChild(coordsEl);
+
+  function makeOverlayToggle(label: string, checked = false): HTMLInputElement {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = checked;
+    cb.style.cssText = "accent-color:#569cd6;width:12px;height:12px;margin:0;vertical-align:middle";
+    const lbl = document.createElement("label");
+    lbl.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;font-size:10px;color:#888";
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(label));
+    overlayPanel.appendChild(lbl);
+    return cb;
+  }
+
+  const debugCb = makeOverlayToggle("Debug");
+  const valCb = makeOverlayToggle("Validation");
+  const regionsCb = makeOverlayToggle("SAT Zones");
+  const soloRegionsCb = makeOverlayToggle("Solo regions");
+  const ghostCb = makeOverlayToggle("Ghost routes");
+
+  container.appendChild(overlayPanel);
+
+  // Sidebar toggles — populated via onDisplayToggles callback.
   let colorCb: HTMLInputElement;
   let rateCb: HTMLInputElement;
-  let debugCb: HTMLInputElement;
-  let valCb: HTMLInputElement;
-  let regionsCb: HTMLInputElement;
-  let soloRegionsCb: HTMLInputElement;
-  let ghostCb: HTMLInputElement;
 
   // Solo-regions flag: true whenever solo mode is active (persists across re-renders)
   let soloRegionsActive = false;
@@ -847,7 +866,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     for (const e of layout.entities) {
       if (e.carries) items.add(e.carries);
     }
-    if (items.size === 0) {
+    if (items.size === 0 || !colorCb.checked) {
       legendEl.style.display = "none";
       return;
     }
@@ -990,109 +1009,109 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       onDisplayToggles: (toggles: DisplayToggles) => {
         colorCb = toggles.colorCb;
         rateCb = toggles.rateCb;
-        debugCb = toggles.debugCb;
-        valCb = toggles.valCb;
-        regionsCb = toggles.regionsCb;
-        soloRegionsCb = toggles.soloRegionsCb;
-        ghostCb = toggles.ghostCb;
 
-        // Wire up the same listeners that used to be on the canvas toggles.
         colorCb.addEventListener("change", () => {
           setItemColoring(colorCb.checked);
-          if (lastLayout) renderLayoutOnCanvas(lastLayout);
+          if (!colorCb.checked) {
+            legendEl.style.display = "none";
+          } else if (lastLayout) {
+            renderLayoutOnCanvas(lastLayout);
+          }
         });
         rateCb.addEventListener("change", () => {
           setRateOverlay(rateCb.checked);
           if (lastLayout) renderLayoutOnCanvas(lastLayout);
         });
-        debugCb.addEventListener("change", () => {
-          tracePhaseIndex = -1;
-          updateTraceOverlay();
-        });
-        valCb.addEventListener("change", updateValidationOverlay);
-        regionsCb.addEventListener("change", updateRegionOverlay);
-        ghostCb.addEventListener("change", updateGhostOverlay);
-
-        soloRegionsCb.addEventListener("change", () => {
-          if (soloRegionsCb.checked) {
-            soloRegionsActive = true;
-            // Entering solo mode: save current state
-            soloSavedState = {
-              colorChecked: colorCb.checked,
-              rateChecked: rateCb.checked,
-              valChecked: valCb.checked,
-              regionsChecked: regionsCb.checked,
-              entityAlpha: entityLayer.alpha,
-            };
-
-            // Turn on SAT zones
-            if (!regionsCb.checked) {
-              regionsCb.checked = true;
-              updateRegionOverlay();
-            }
-
-            // Hide item colours
-            if (colorCb.checked) {
-              colorCb.checked = false;
-              setItemColoring(false);
-              if (lastLayout) renderLayoutOnCanvas(lastLayout);
-            }
-
-            // Hide rate labels
-            if (rateCb.checked) {
-              rateCb.checked = false;
-              setRateOverlay(false);
-              if (lastLayout) renderLayoutOnCanvas(lastLayout);
-            }
-
-            // Hide validation overlay
-            if (valCb.checked) {
-              valCb.checked = false;
-              updateValidationOverlay();
-            }
-
-            // Dim entity layer
-            entityLayer.alpha = 0.12;
-
-            // Ensure region overlay is on top after re-render
-            updateRegionOverlay();
-          } else {
-            soloRegionsActive = false;
-            // Exiting solo mode: restore previous state
-            if (soloSavedState) {
-              entityLayer.alpha = soloSavedState.entityAlpha;
-
-              // Restore regions checkbox
-              if (regionsCb.checked !== soloSavedState.regionsChecked) {
-                regionsCb.checked = soloSavedState.regionsChecked;
-                updateRegionOverlay();
-              }
-
-              // Restore validation
-              if (valCb.checked !== soloSavedState.valChecked) {
-                valCb.checked = soloSavedState.valChecked;
-                updateValidationOverlay();
-              }
-
-              // Restore item colours
-              if (colorCb.checked !== soloSavedState.colorChecked) {
-                colorCb.checked = soloSavedState.colorChecked;
-                setItemColoring(colorCb.checked);
-                if (lastLayout) renderLayoutOnCanvas(lastLayout);
-              }
-
-              // Restore rate labels
-              if (rateCb.checked !== soloSavedState.rateChecked) {
-                rateCb.checked = soloSavedState.rateChecked;
-                setRateOverlay(rateCb.checked);
-                if (lastLayout) renderLayoutOnCanvas(lastLayout);
-              }
-
-              soloSavedState = null;
-            }
-          }
-        });
       },
+    });
+
+    // Wire overlay panel toggles (created above, independent of sidebar)
+    debugCb.addEventListener("change", () => {
+      tracePhaseIndex = -1;
+      updateTraceOverlay();
+    });
+    valCb.addEventListener("change", updateValidationOverlay);
+    regionsCb.addEventListener("change", updateRegionOverlay);
+    ghostCb.addEventListener("change", updateGhostOverlay);
+
+    soloRegionsCb.addEventListener("change", () => {
+      if (soloRegionsCb.checked) {
+        soloRegionsActive = true;
+        // Entering solo mode: save current state
+        soloSavedState = {
+          colorChecked: colorCb.checked,
+          rateChecked: rateCb.checked,
+          valChecked: valCb.checked,
+          regionsChecked: regionsCb.checked,
+          entityAlpha: entityLayer.alpha,
+        };
+
+        // Turn on SAT zones
+        if (!regionsCb.checked) {
+          regionsCb.checked = true;
+          updateRegionOverlay();
+        }
+
+        // Hide item colours
+        if (colorCb.checked) {
+          colorCb.checked = false;
+          setItemColoring(false);
+          if (lastLayout) renderLayoutOnCanvas(lastLayout);
+        }
+
+        // Hide rate labels
+        if (rateCb.checked) {
+          rateCb.checked = false;
+          setRateOverlay(false);
+          if (lastLayout) renderLayoutOnCanvas(lastLayout);
+        }
+
+        // Hide validation overlay
+        if (valCb.checked) {
+          valCb.checked = false;
+          updateValidationOverlay();
+        }
+
+        // Dim entity layer
+        entityLayer.alpha = 0.12;
+
+        // Ensure region overlay is on top after re-render
+        updateRegionOverlay();
+      } else {
+        soloRegionsActive = false;
+        // Exiting solo mode: restore previous state
+        if (soloSavedState) {
+          entityLayer.alpha = soloSavedState.entityAlpha;
+
+          // Restore regions checkbox
+          if (regionsCb.checked !== soloSavedState.regionsChecked) {
+            regionsCb.checked = soloSavedState.regionsChecked;
+            updateRegionOverlay();
+          }
+
+          // Restore validation
+          if (valCb.checked !== soloSavedState.valChecked) {
+            valCb.checked = soloSavedState.valChecked;
+            updateValidationOverlay();
+          }
+
+          // Restore item colours
+          if (colorCb.checked !== soloSavedState.colorChecked) {
+            colorCb.checked = soloSavedState.colorChecked;
+            setItemColoring(colorCb.checked);
+            if (lastLayout) renderLayoutOnCanvas(lastLayout);
+          }
+
+          // Restore rate labels
+          if (rateCb.checked !== soloSavedState.rateChecked) {
+            rateCb.checked = soloSavedState.rateChecked;
+            setRateOverlay(rateCb.checked);
+            if (lastLayout) renderLayoutOnCanvas(lastLayout);
+          }
+
+          soloSavedState = null;
+        }
+      }
     });
 
     initCorpusPanel(corpusPanel, renderLayoutOnCanvas);
