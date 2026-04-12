@@ -17,7 +17,7 @@ import {
 } from "./ui/snapshotLoader";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
-import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
+import { renderTraceOverlay, renderGhostRoutingOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
 import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
 import { renderRegionOverlay } from "./renderer/regionOverlay";
 
@@ -171,6 +171,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let valCb: HTMLInputElement;
   let regionsCb: HTMLInputElement;
   let soloRegionsCb: HTMLInputElement;
+  let ghostCb: HTMLInputElement;
 
   // Solo-regions flag: true whenever solo mode is active (persists across re-renders)
   let soloRegionsActive = false;
@@ -185,6 +186,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   let traceOverlayLayer: Container | null = null;
   let tracePhaseIndex = -1; // -1 = show all phases
+  let ghostOverlayLayer: Container | null = null;
+  let ghostEntityAlphaSaved: number | null = null; // saved entity alpha before ghost mode
   let snapshotActive = false; // true when entities are from a PhaseSnapshot
   let prevSnapshotEntities: Set<string> | null = null;
 
@@ -476,6 +479,55 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     if (!lastLayout.regions || lastLayout.regions.length === 0) return;
     regionOverlayLayer = renderRegionOverlay(lastLayout);
     entityLayer.addChild(regionOverlayLayer);
+  }
+
+  function updateGhostOverlay(): void {
+    if (ghostOverlayLayer) {
+      viewport.removeChild(ghostOverlayLayer);
+      ghostOverlayLayer.destroy();
+      ghostOverlayLayer = null;
+    }
+
+    if (!ghostCb?.checked) {
+      // Restore entity layer alpha when ghost mode is off
+      if (ghostEntityAlphaSaved !== null) {
+        entityLayer.alpha = ghostEntityAlphaSaved;
+        ghostEntityAlphaSaved = null;
+      }
+      return;
+    }
+
+    if (!lastLayout?.trace?.length) return;
+    const events = lastLayout.trace as TraceEvent[];
+    const hasGhostEvents = events.some(e =>
+      e.phase === "GhostSpecRouted" ||
+      e.phase === "GhostSpecFailed" ||
+      e.phase === "GhostClusterSolved" ||
+      e.phase === "GhostClusterFailed" ||
+      e.phase === "GhostRoutingComplete",
+    );
+    if (!hasGhostEvents) return;
+
+    // Save and hide entity layer
+    if (ghostEntityAlphaSaved === null) {
+      ghostEntityAlphaSaved = entityLayer.alpha;
+    }
+    entityLayer.alpha = 0;
+
+    ghostOverlayLayer = renderGhostRoutingOverlay(
+      events,
+      lastLayout.width ?? 0,
+      lastLayout.height ?? 0,
+      viewport,
+      (text) => {
+        if (text) {
+          tooltip.innerHTML = `<span style="color:#8af">GHOST</span> ${text}`;
+          tooltip.style.display = "block";
+        } else {
+          tooltip.style.display = "none";
+        }
+      },
+    );
   }
 
   // --- Item color legend (bottom-left) ---
@@ -835,6 +887,9 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     updateTraceOverlay();
     updateValidationOverlay();
     updateRegionOverlay();
+    // Reset ghost overlay alpha tracking when a new layout is loaded
+    ghostEntityAlphaSaved = null;
+    updateGhostOverlay();
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {
@@ -939,6 +994,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         valCb = toggles.valCb;
         regionsCb = toggles.regionsCb;
         soloRegionsCb = toggles.soloRegionsCb;
+        ghostCb = toggles.ghostCb;
 
         // Wire up the same listeners that used to be on the canvas toggles.
         colorCb.addEventListener("change", () => {
@@ -955,6 +1011,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         });
         valCb.addEventListener("change", updateValidationOverlay);
         regionsCb.addEventListener("change", updateRegionOverlay);
+        ghostCb.addEventListener("change", updateGhostOverlay);
 
         soloRegionsCb.addEventListener("change", () => {
           if (soloRegionsCb.checked) {

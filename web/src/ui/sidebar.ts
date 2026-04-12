@@ -517,6 +517,7 @@ export interface DisplayToggles {
   valCb: HTMLInputElement;
   regionsCb: HTMLInputElement;
   soloRegionsCb: HTMLInputElement;
+  ghostCb: HTMLInputElement;
 }
 
 export function renderSidebar(
@@ -764,13 +765,22 @@ export function renderSidebar(
   soloRegionsToggle.appendChild(document.createTextNode("Solo regions"));
   togglesWrap.appendChild(soloRegionsToggle);
 
+  const ghostCb = document.createElement("input");
+  ghostCb.type = "checkbox";
+  ghostCb.checked = false;
+  const ghostToggle = document.createElement("label");
+  ghostToggle.className = "sb-toggle";
+  ghostToggle.appendChild(ghostCb);
+  ghostToggle.appendChild(document.createTextNode("Ghost routes"));
+  togglesWrap.appendChild(ghostToggle);
+
   displayBody.appendChild(togglesWrap);
   // Mark display section so snapshot mode doesn't disable its controls
   displaySection.setAttribute("data-snapshot-keep", "");
   inner.appendChild(displaySection);
 
   // Expose toggles to main.ts
-  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb, regionsCb, soloRegionsCb });
+  options?.onDisplayToggles?.({ colorCb, rateCb, debugCb, valCb, regionsCb, soloRegionsCb, ghostCb });
 
   el.appendChild(inner);
 

@@ -291,6 +291,214 @@ export function renderTraceOverlay(
   return layer;
 }
 
+// ─── Ghost routing overlay ──────────────────────────────────────────────────
+
+type GhostClusterSolvedEvent = Extract<TraceEvent, { phase: "GhostClusterSolved" }>;
+type GhostClusterFailedEvent = Extract<TraceEvent, { phase: "GhostClusterFailed" }>;
+
+const GHOST_PALETTE = [
+  0x569cd6, 0xd0a040, 0x6ac080, 0xc06090, 0x70b0e0,
+  0xb080d0, 0xe07050, 0x60c0c0, 0xd0d060, 0x80b060,
+  0xe0a060, 0x60a0d0, 0xd060a0, 0xa0d060, 0x9060d0,
+];
+
+/** Deterministic color assignment by item name. */
+function ghostColorForItem(item: string, colorMap: Map<string, number>): number {
+  if (colorMap.has(item)) return colorMap.get(item)!;
+  const color = GHOST_PALETTE[colorMap.size % GHOST_PALETTE.length];
+  colorMap.set(item, color);
+  return color;
+}
+
+/**
+ * Render a standalone ghost routing overlay.
+ * Shows paths colored by item, crossing heatmap, cluster zones, and failures.
+ * Call with `parent` = the viewport or entity layer to receive the new Container.
+ */
+export function renderGhostRoutingOverlay(
+  events: TraceEvent[],
+  layoutWidth: number,
+  layoutHeight: number,
+  parent: Container,
+  onHover: (text: string | null) => void,
+): Container {
+  const layer = new Container();
+
+  // Build item→color map by order of first appearance
+  const colorMap = new Map<string, number>();
+
+  // Collect all GhostSpecRouted events and extract item name from spec_key
+  const routedEvents = events.filter((e): e is GhostSpecRoutedEvent => e.phase === "GhostSpecRouted");
+  const failedEvents = events.filter((e): e is GhostSpecFailedEvent => e.phase === "GhostSpecFailed");
+
+  // Extract item name from spec_key (format: "item-name:from_x,from_y->to_x,to_y" or similar)
+  function itemFromSpecKey(specKey: string): string {
+    // spec_key is typically "item-name:..." or just "item-name"
+    const colonIdx = specKey.indexOf(":");
+    return colonIdx >= 0 ? specKey.slice(0, colonIdx) : specKey;
+  }
+
+  // Pre-populate color map in order of appearance
+  for (const evt of routedEvents) {
+    const item = itemFromSpecKey(evt.data.spec_key);
+    ghostColorForItem(item, colorMap);
+  }
+  for (const evt of failedEvents) {
+    const item = itemFromSpecKey(evt.data.spec_key);
+    ghostColorForItem(item, colorMap);
+  }
+
+  // --- Crossing heatmap ---
+  // Map "x,y" -> set of distinct item names traversing that tile
+  const tileItems = new Map<string, Set<string>>();
+  for (const evt of routedEvents) {
+    const item = itemFromSpecKey(evt.data.spec_key);
+    if (evt.data.tiles) {
+      for (const [tx, ty] of evt.data.tiles) {
+        const key = `${tx},${ty}`;
+        if (!tileItems.has(key)) tileItems.set(key, new Set());
+        tileItems.get(key)!.add(item);
+      }
+    }
+  }
+
+  // Draw crossing hotspots (tiles with 2+ distinct items)
+  const heatG = new Graphics();
+  for (const [key, items] of tileItems) {
+    if (items.size < 2) continue;
+    const [tx, ty] = key.split(",").map(Number);
+    const alpha = Math.min(0.3 + items.size * 0.12, 0.9);
+    heatG.rect(tx * TILE_PX, ty * TILE_PX, TILE_PX, TILE_PX)
+      .fill({ color: 0xff6600, alpha });
+  }
+  layer.addChild(heatG);
+
+  // --- Cluster zones ---
+  for (const evt of events) {
+    if (evt.phase !== "GhostClusterSolved" && evt.phase !== "GhostClusterFailed") continue;
+    const isFailed = evt.phase === "GhostClusterFailed";
+    const d = isFailed
+      ? (evt as GhostClusterFailedEvent).data
+      : (evt as GhostClusterSolvedEvent).data;
+    const solvedData = isFailed ? null : (evt as GhostClusterSolvedEvent).data;
+    const color = isFailed ? 0xff4444 : 0x44aaff;
+    const zg = new Graphics();
+    zg.rect(d.zone_x * TILE_PX, d.zone_y * TILE_PX, d.zone_w * TILE_PX, d.zone_h * TILE_PX)
+      .fill({ color, alpha: isFailed ? 0.18 : 0.1 })
+      .stroke({ width: isFailed ? 2 : 1, color, alpha: isFailed ? 0.95 : 0.65 });
+    zg.eventMode = "static";
+    const solveInfo = solvedData
+      ? ` vars=${solvedData.variables} clauses=${solvedData.clauses} ${(solvedData.solve_time_us / 1000).toFixed(1)}ms`
+      : "";
+    const label = `Cluster #${d.cluster_id}: ${d.zone_w}x${d.zone_h} @ (${d.zone_x},${d.zone_y}) ${d.boundary_count} ports${solveInfo}${isFailed ? " FAILED" : ""}`;
+    zg.on("pointerenter", () => onHover(label));
+    zg.on("pointerleave", () => onHover(null));
+    layer.addChild(zg);
+
+    // Zone dimension label
+    const zoneStyle = new TextStyle({ fontSize: 9, fill: isFailed ? "#ff8888" : "#88ccff", fontFamily: "monospace" });
+    const zoneText = new Text({ text: `#${d.cluster_id} ${d.zone_w}×${d.zone_h}`, style: zoneStyle });
+    zoneText.x = d.zone_x * TILE_PX + 2;
+    zoneText.y = d.zone_y * TILE_PX + 2;
+    layer.addChild(zoneText);
+  }
+
+  // --- Routed paths ---
+  for (const evt of routedEvents) {
+    const d = evt.data;
+    const item = itemFromSpecKey(d.spec_key);
+    const color = ghostColorForItem(item, colorMap);
+
+    const pg = new Graphics();
+    if (d.tiles && d.tiles.length > 1) {
+      pg.setStrokeStyle({ width: 3, color, alpha: 0.8 });
+      pg.moveTo(d.tiles[0][0] * TILE_PX + TILE_PX / 2, d.tiles[0][1] * TILE_PX + TILE_PX / 2);
+      for (let i = 1; i < d.tiles.length; i++) {
+        pg.lineTo(d.tiles[i][0] * TILE_PX + TILE_PX / 2, d.tiles[i][1] * TILE_PX + TILE_PX / 2);
+      }
+      pg.stroke();
+    }
+    // Start dot
+    if (d.tiles && d.tiles.length > 0) {
+      const [sx, sy] = d.tiles[0];
+      pg.circle(sx * TILE_PX + TILE_PX / 2, sy * TILE_PX + TILE_PX / 2, TILE_PX * 0.25)
+        .fill({ color, alpha: 0.9 });
+    }
+    pg.eventMode = "static";
+    pg.on("pointerenter", () => onHover(`Ghost path: ${d.spec_key} len=${d.path_len} crossings=${d.crossings} turns=${d.turns}`));
+    pg.on("pointerleave", () => onHover(null));
+    layer.addChild(pg);
+  }
+
+  // --- Failed specs ---
+  for (const evt of failedEvents) {
+    const d = evt.data;
+    const fg = new Graphics();
+    const cx = d.from_x * TILE_PX + TILE_PX / 2;
+    const cy = d.from_y * TILE_PX + TILE_PX / 2;
+    const hs = TILE_PX * 0.3;
+    fg.moveTo(cx - hs, cy - hs).lineTo(cx + hs, cy + hs).stroke({ width: 2, color: 0xff3333 });
+    fg.moveTo(cx + hs, cy - hs).lineTo(cx - hs, cy + hs).stroke({ width: 2, color: 0xff3333 });
+    drawDashedLine(fg, cx, cy, d.to_x * TILE_PX + TILE_PX / 2, d.to_y * TILE_PX + TILE_PX / 2,
+      6, 4, { width: 1.5, color: 0xff3333, alpha: 0.7 });
+    fg.eventMode = "static";
+    fg.on("pointerenter", () => onHover(`Ghost failed: ${d.spec_key} (${d.from_x},${d.from_y})\u2192(${d.to_x},${d.to_y})`));
+    fg.on("pointerleave", () => onHover(null));
+    layer.addChild(fg);
+  }
+
+  // --- Item color legend ---
+  let legendY = 8;
+  for (const [item, color] of colorMap) {
+    const hexStr = `#${color.toString(16).padStart(6, "0")}`;
+    const swatch = new Graphics();
+    swatch.rect(8, legendY, 12, 10).fill({ color });
+    layer.addChild(swatch);
+    const lbl = new Text({ text: item, style: new TextStyle({ fontSize: 10, fill: hexStr, fontFamily: "monospace" }) });
+    lbl.x = 24;
+    lbl.y = legendY;
+    layer.addChild(lbl);
+    legendY += 13;
+  }
+
+  // --- Summary label ---
+  const ghostComplete = events.find((e): e is GhostRoutingCompleteEvent => e.phase === "GhostRoutingComplete");
+  const crossingTileCount = [...tileItems.values()].filter(s => s.size >= 2).length;
+  const clusterCount = events.filter(e => e.phase === "GhostClusterSolved" || e.phase === "GhostClusterFailed").length;
+  const summaryText = ghostComplete
+    ? `Ghost: ${ghostComplete.data.entity_count} specs, ${crossingTileCount} crossing tiles, ${ghostComplete.data.cluster_count} clusters`
+    : `Ghost: ${routedEvents.length} routed, ${failedEvents.length} failed, ${crossingTileCount} crossing tiles, ${clusterCount} clusters`;
+
+  const summaryStyle = new TextStyle({ fontSize: 11, fill: "#ffffff", fontFamily: "monospace", fontWeight: "bold" });
+  const summaryLabel = new Text({ text: summaryText, style: summaryStyle });
+  summaryLabel.x = 4;
+  summaryLabel.y = 4;
+
+  // Background pill for the summary
+  const summaryBg = new Graphics();
+  summaryBg.rect(0, 0, summaryLabel.width + 12, summaryLabel.height + 6)
+    .fill({ color: 0x000000, alpha: 0.65 });
+  summaryBg.y = 0;
+
+  // We'll position these relative to top-left of layout area; place at y offset from legend
+  summaryBg.x = 4;
+  summaryBg.y = legendY + 4;
+  summaryLabel.x = 10;
+  summaryLabel.y = legendY + 7;
+
+  layer.addChild(summaryBg);
+  layer.addChild(summaryLabel);
+
+  // Unused params (kept for API symmetry with renderTraceOverlay)
+  void layoutWidth;
+  void layoutHeight;
+
+  parent.addChild(layer);
+  return layer;
+}
+
+// ─── Phase utilities ────────────────────────────────────────────────────────
+
 /** Get phase boundaries from trace events. Returns phase names and the event index where each starts. */
 export function getTracePhases(events: TraceEvent[]): { name: string; eventIndex: number }[] {
   const phases: { name: string; eventIndex: number }[] = [];
