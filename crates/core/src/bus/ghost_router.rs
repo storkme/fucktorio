@@ -504,6 +504,67 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
+    // Phase-1 instrumentation: per-tile axis occupancy
+    // -------------------------------------------------------------------------
+    // For each tile in routed_paths, determine the spec's outgoing axis
+    // (vertical N/S or horizontal E/W). Last tile uses incoming direction.
+    // Aggregate counts per tile and emit a summary trace event so the web
+    // overlay can visualize same-axis conflicts vs perpendicular crossings.
+    {
+        use crate::trace::GhostAxisOccupancyTile;
+
+        let mut axis_counts: FxHashMap<(i32, i32), (u32, u32)> = FxHashMap::default();
+        for path in routed_paths.values() {
+            if path.len() < 2 {
+                continue;
+            }
+            let last_idx = path.len() - 1;
+            for (i, &tile) in path.iter().enumerate() {
+                let (dx, dy) = if i < last_idx {
+                    (path[i + 1].0 - tile.0, path[i + 1].1 - tile.1)
+                } else {
+                    (tile.0 - path[i - 1].0, tile.1 - path[i - 1].1)
+                };
+                let entry = axis_counts.entry(tile).or_insert((0, 0));
+                if dx == 0 && dy != 0 {
+                    entry.0 += 1; // vertical
+                } else if dy == 0 && dx != 0 {
+                    entry.1 += 1; // horizontal
+                }
+            }
+        }
+
+        let mut tiles: Vec<GhostAxisOccupancyTile> = Vec::new();
+        let mut same_axis_conflict_count: u32 = 0;
+        let mut perpendicular_crossing_count: u32 = 0;
+        for (&(x, y), &(v, h)) in &axis_counts {
+            let same_axis = v >= 2 || h >= 2;
+            let perp = v >= 1 && h >= 1;
+            if same_axis {
+                same_axis_conflict_count += 1;
+            }
+            if perp {
+                perpendicular_crossing_count += 1;
+            }
+            if same_axis || perp {
+                tiles.push(GhostAxisOccupancyTile {
+                    x,
+                    y,
+                    vert_count: v,
+                    horiz_count: h,
+                });
+            }
+        }
+        tiles.sort_by_key(|t| (t.y, t.x));
+
+        trace::emit(trace::TraceEvent::GhostAxisOccupancy {
+            tiles,
+            same_axis_conflict_count,
+            perpendicular_crossing_count,
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // Step 6: Resolve ghost crossings — templates first, SAT fallback
     // -------------------------------------------------------------------------
     let crossing_set: FxHashSet<(i32, i32)> = all_ghost_crossings.iter().copied().collect();

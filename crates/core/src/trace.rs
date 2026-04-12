@@ -302,11 +302,32 @@ pub enum TraceEvent {
         zone_h: u32,
         boundary_count: usize,
     },
+
+    // Phase-1 instrumentation: emitted after all ghost specs are routed but
+    // before crossing resolution. Reports per-tile axis occupancy so we can
+    // see same-axis conflicts (Phase 2 negotiation target).
+    GhostAxisOccupancy {
+        tiles: Vec<GhostAxisOccupancyTile>,
+        same_axis_conflict_count: u32,
+        perpendicular_crossing_count: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Summary structs (lightweight, serializable versions of internal types)
 // ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostAxisOccupancyTile {
+    pub x: i32,
+    pub y: i32,
+    /// Number of routed specs whose axis at this tile is Vertical (N/S).
+    pub vert_count: u32,
+    /// Number of routed specs whose axis at this tile is Horizontal (E/W).
+    pub horiz_count: u32,
+}
 
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]

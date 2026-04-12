@@ -373,6 +373,55 @@ export function renderGhostRoutingOverlay(
   }
   layer.addChild(heatG);
 
+  // --- Axis occupancy (Phase-1 instrumentation) ---
+  // Red square = same-axis conflict (>=2 N/S OR >=2 E/W specs at this tile).
+  // Blue dot   = perpendicular crossing (>=1 N/S AND >=1 E/W spec at this tile).
+  // A tile can be both — render both layers; the hover hit-rect covers either.
+  const axisEvent = events.find(
+    (e): e is Extract<TraceEvent, { phase: "GhostAxisOccupancy" }> =>
+      e.phase === "GhostAxisOccupancy",
+  );
+  let axisSummary = "";
+  if (axisEvent) {
+    const axisG = new Graphics();
+    const dotG = new Graphics();
+    for (const tile of axisEvent.data.tiles) {
+      const sameAxis = tile.vert_count >= 2 || tile.horiz_count >= 2;
+      const perp = tile.vert_count >= 1 && tile.horiz_count >= 1;
+      if (sameAxis) {
+        const maxSame = Math.max(tile.vert_count, tile.horiz_count);
+        const alpha = Math.min(0.25 + maxSame * 0.15, 0.85);
+        axisG.rect(tile.x * TILE_PX, tile.y * TILE_PX, TILE_PX, TILE_PX)
+          .fill({ color: 0xff2222, alpha });
+      }
+      if (perp) {
+        dotG.circle(tile.x * TILE_PX + TILE_PX / 2, tile.y * TILE_PX + TILE_PX / 2, TILE_PX * 0.22)
+          .fill({ color: 0x3399ff, alpha: 0.9 })
+          .stroke({ width: 1, color: 0x0a2a55, alpha: 0.9 });
+      }
+    }
+    // Hit-rect layer (separate so dots and squares don't fight for hover hits).
+    const hitLayer = new Container();
+    for (const tile of axisEvent.data.tiles) {
+      const hit = new Graphics();
+      hit.rect(tile.x * TILE_PX, tile.y * TILE_PX, TILE_PX, TILE_PX)
+        .fill({ color: 0xffffff, alpha: 0.001 });
+      hit.eventMode = "static";
+      const tags =
+        (tile.vert_count >= 2 || tile.horiz_count >= 2 ? " [same-axis]" : "") +
+        (tile.vert_count >= 1 && tile.horiz_count >= 1 ? " [perpendicular]" : "");
+      const label = `Axis (${tile.x},${tile.y}): V=${tile.vert_count} H=${tile.horiz_count}${tags}`;
+      hit.on("pointerenter", () => onHover(label));
+      hit.on("pointerleave", () => onHover(null));
+      hitLayer.addChild(hit);
+    }
+    layer.addChild(axisG);
+    layer.addChild(dotG);
+    layer.addChild(hitLayer);
+
+    axisSummary = ` | axis: ${axisEvent.data.same_axis_conflict_count} same, ${axisEvent.data.perpendicular_crossing_count} perp`;
+  }
+
   // --- Cluster zones ---
   for (const evt of events) {
     if (evt.phase !== "GhostClusterSolved" && evt.phase !== "GhostClusterFailed") continue;
@@ -465,9 +514,10 @@ export function renderGhostRoutingOverlay(
   const ghostComplete = events.find((e): e is GhostRoutingCompleteEvent => e.phase === "GhostRoutingComplete");
   const crossingTileCount = [...tileItems.values()].filter(s => s.size >= 2).length;
   const clusterCount = events.filter(e => e.phase === "GhostClusterSolved" || e.phase === "GhostClusterFailed").length;
-  const summaryText = ghostComplete
+  const summaryText = (ghostComplete
     ? `Ghost: ${ghostComplete.data.entity_count} specs, ${crossingTileCount} crossing tiles, ${ghostComplete.data.cluster_count} clusters`
-    : `Ghost: ${routedEvents.length} routed, ${failedEvents.length} failed, ${crossingTileCount} crossing tiles, ${clusterCount} clusters`;
+    : `Ghost: ${routedEvents.length} routed, ${failedEvents.length} failed, ${crossingTileCount} crossing tiles, ${clusterCount} clusters`)
+    + axisSummary;
 
   const summaryStyle = new TextStyle({ fontSize: 11, fill: "#ffffff", fontFamily: "monospace", fontWeight: "bold" });
   const summaryLabel = new Text({ text: summaryText, style: summaryStyle });
