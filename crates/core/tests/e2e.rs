@@ -594,6 +594,36 @@ fn tier4_advanced_circuit_from_plates() {
     assert_round_trip(&result);
 }
 
+/// Advanced circuit, rate 5/s, AM1, yellow belts, from raw ores + crude oil.
+/// This is the "hello-world fully-from-ore AC" goal — cheapest machine tier,
+/// cheapest belt tier, everything upstream of the factory is raw resources.
+/// Currently failing; see docs/tier2-from-ore-followup.md and tracking work.
+#[test]
+#[ignore] // Goal: make this green. See tier4_advanced_circuit_from_ore_am1.
+#[ntest::timeout(30000)]
+fn tier4_advanced_circuit_from_ore_am1() {
+    let inputs: FxHashSet<String> = [
+        "iron-ore", "copper-ore", "coal", "water", "crude-oil",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let result = run_e2e(
+        "tier4_advanced_circuit_from_ore_am1",
+        "advanced-circuit",
+        5.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    )
+    .unwrap_or_else(|e| panic!("tier4_advanced_circuit_from_ore_am1: {e}"));
+
+    assert_no_errors(&result);
+    assert_no_warnings(&result);
+    assert_produces(&result, "advanced-circuit", 5.0);
+    assert_round_trip(&result);
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostic: find which validator hangs on large layouts
 // ---------------------------------------------------------------------------
@@ -859,4 +889,1034 @@ fn stress_electronic_circuit_60s_red_from_ore() {
     ).expect("e2e pipeline");
     assert_produces(&result, "electronic-circuit", 60.0);
     report_stress_scoreboard("stress_electronic_circuit_60s_red_from_ore", &result);
+}
+
+// ---------------------------------------------------------------------------
+// Ghost-cluster sizing diagnostic
+//
+// Proposed unified routing scheme: allow belts to "ghost through" each other
+// when perpendicular, route every lane with turn-biased A* whose obstacle set
+// excludes belts (but still respects machines, poles, pipes, inserters), then
+// SAT-solve the resulting ghost-crossing clusters. Open question: how big do
+// those clusters get on a realistic case like AC-from-ore before we commit?
+//
+// This diagnostic routes every currently-failing `ret:` spec under ghost
+// semantics, union-finds paths that share a tile, and reports cluster sizes.
+// If max cluster is bounded (say <50 tiles), the unified scheme is tractable.
+// If it's huge, we know the approach needs component boundaries before
+// anything gets rewritten.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn diag_ghost_cluster_ac_from_ore() {
+    use fucktorio_core::common::{machine_size, machine_tiles};
+    use rustc_hash::FxHashMap;
+    use std::cmp::Reverse;
+
+    let inputs: FxHashSet<String> = [
+        "iron-ore", "copper-ore", "coal", "water", "crude-oil",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let result = run_e2e(
+        "diag_ghost_cluster_ac_from_ore",
+        "advanced-circuit",
+        5.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    )
+    .expect("e2e");
+
+    // --- Pull failing ret:/feeder:/tap: specs from trace ---
+    let failures: Vec<(String, (i32, i32), (i32, i32))> = result
+        .trace_events
+        .iter()
+        .filter_map(|ev| match ev {
+            TraceEvent::RouteFailure {
+                spec_key,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => Some((spec_key.clone(), (*from_x, *from_y), (*to_x, *to_y))),
+            _ => None,
+        })
+        .collect();
+
+    eprintln!("route failures in current pipeline: {}", failures.len());
+    for (k, s, g) in &failures {
+        eprintln!("  {} : {:?} -> {:?}", k, s, g);
+    }
+
+    // --- Build obstacle grid: everything except belts ---
+    let is_belt_like = |name: &str| -> bool {
+        matches!(
+            name,
+            "transport-belt"
+                | "fast-transport-belt"
+                | "express-transport-belt"
+                | "underground-belt"
+                | "fast-underground-belt"
+                | "express-underground-belt"
+                | "splitter"
+                | "fast-splitter"
+                | "express-splitter"
+        )
+    };
+
+    let mut hard: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut existing_belts: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for e in &result.layout.entities {
+        if is_belt_like(&e.name) {
+            existing_belts.insert((e.x, e.y));
+        } else {
+            // Machines and other multi-tile entities: use machine_size for
+            // footprint; single-tile things (pipes, inserters, poles) fall
+            // through to size=1 from machine_size's default.
+            let sz = machine_size(&e.name);
+            for t in machine_tiles(e.x, e.y, sz) {
+                hard.insert(t);
+            }
+        }
+    }
+
+    eprintln!(
+        "layout: {} entities, {} belts, {} hard obstacle tiles",
+        result.layout.entities.len(),
+        existing_belts.len(),
+        hard.len()
+    );
+
+    let width = result.layout.width.max(200);
+    let height = result.layout.height.max(300);
+
+    // --- Simple turn-biased A* ---
+    // State = (x, y, incoming_dir).  Straight step = 1, turn = 1 + penalty.
+    // No underground belts (we're measuring raw ghost semantics).
+    fn astar(
+        start: (i32, i32),
+        goal: (i32, i32),
+        hard: &FxHashSet<(i32, i32)>,
+        width: i32,
+        height: i32,
+        turn_penalty: u32,
+    ) -> Option<Vec<(i32, i32)>> {
+        use rustc_hash::FxHashMap;
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        struct State {
+            x: i32,
+            y: i32,
+            dir: i8, // -1 = unset, 0=E 1=S 2=W 3=N
+        }
+        let dirs: [(i32, i32, i8); 4] = [(1, 0, 0), (0, 1, 1), (-1, 0, 2), (0, -1, 3)];
+        let h = |x: i32, y: i32| ((x - goal.0).abs() + (y - goal.1).abs()) as u32;
+
+        let mut heap: BinaryHeap<Reverse<(u32, State)>> = BinaryHeap::new();
+        let mut g: FxHashMap<State, u32> = FxHashMap::default();
+        let mut parent: FxHashMap<State, State> = FxHashMap::default();
+
+        let start_state = State {
+            x: start.0,
+            y: start.1,
+            dir: -1,
+        };
+        heap.push(Reverse((h(start.0, start.1), start_state)));
+        g.insert(start_state, 0);
+
+        while let Some(Reverse((_, s))) = heap.pop() {
+            if (s.x, s.y) == goal {
+                let mut path = vec![(s.x, s.y)];
+                let mut cur = s;
+                while let Some(&p) = parent.get(&cur) {
+                    path.push((p.x, p.y));
+                    cur = p;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            let cur_g = g[&s];
+            for &(dx, dy, dir) in &dirs {
+                let nx = s.x + dx;
+                let ny = s.y + dy;
+                if nx < 0 || nx >= width || ny < 0 || ny >= height {
+                    continue;
+                }
+                if hard.contains(&(nx, ny)) && (nx, ny) != goal {
+                    continue;
+                }
+                let step = if s.dir == -1 || s.dir == dir {
+                    1
+                } else {
+                    1 + turn_penalty
+                };
+                let ns = State { x: nx, y: ny, dir };
+                let ng = cur_g + step;
+                if g.get(&ns).copied().unwrap_or(u32::MAX) > ng {
+                    g.insert(ns, ng);
+                    parent.insert(ns, s);
+                    heap.push(Reverse((ng + h(nx, ny), ns)));
+                }
+            }
+        }
+        None
+    }
+
+    // --- Route each failing spec ---
+    let turn_penalty = 8;
+    let mut routed: Vec<(String, Vec<(i32, i32)>)> = Vec::new();
+    let mut unroutable: Vec<String> = Vec::new();
+    for (key, start, goal) in &failures {
+        match astar(*start, *goal, &hard, width, height, turn_penalty) {
+            Some(path) => routed.push((key.clone(), path)),
+            None => unroutable.push(key.clone()),
+        }
+    }
+
+    eprintln!(
+        "\nunder ghost semantics: {}/{} routed, {} still unroutable",
+        routed.len(),
+        failures.len(),
+        unroutable.len()
+    );
+    for k in &unroutable {
+        eprintln!("  STILL FAILS: {}", k);
+    }
+
+    // --- Per-path stats ---
+    let count_turns = |path: &[(i32, i32)]| -> usize {
+        let mut t = 0;
+        for w in path.windows(3) {
+            let d1 = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let d2 = (w[2].0 - w[1].0, w[2].1 - w[1].1);
+            if d1 != d2 {
+                t += 1;
+            }
+        }
+        t
+    };
+
+    eprintln!("\nper-path (len / crossings / turns):");
+    for (key, path) in &routed {
+        let crossings = path.iter().filter(|t| existing_belts.contains(t)).count();
+        let turns = count_turns(path);
+        eprintln!(
+            "  {}: len={} crossings={} turns={}",
+            key,
+            path.len(),
+            crossings,
+            turns
+        );
+    }
+
+    // --- Union-find over paths that share tiles ---
+    fn find(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut cur = i;
+        while p[cur] != r {
+            let next = p[cur];
+            p[cur] = r;
+            cur = next;
+        }
+        r
+    }
+
+    let mut uf: Vec<usize> = (0..routed.len()).collect();
+    let mut tile_owner: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        for &tile in path {
+            if let Some(&j) = tile_owner.get(&tile) {
+                let ri = find(&mut uf, i);
+                let rj = find(&mut uf, j);
+                if ri != rj {
+                    uf[ri] = rj;
+                }
+            } else {
+                tile_owner.insert(tile, i);
+            }
+        }
+    }
+
+    // Cluster aggregation: for each root, sum unique path tiles + count paths
+    let mut cluster_tiles: FxHashMap<usize, FxHashSet<(i32, i32)>> = FxHashMap::default();
+    let mut cluster_paths: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut cluster_crossings: FxHashMap<usize, usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        let r = find(&mut uf, i);
+        let entry = cluster_tiles.entry(r).or_default();
+        for &t in path {
+            entry.insert(t);
+        }
+        *cluster_paths.entry(r).or_insert(0) += 1;
+        *cluster_crossings.entry(r).or_insert(0) +=
+            path.iter().filter(|t| existing_belts.contains(t)).count();
+    }
+
+    let mut clusters: Vec<(usize, usize, usize)> = cluster_paths
+        .iter()
+        .map(|(&r, &p)| {
+            (
+                p,
+                cluster_tiles.get(&r).map(|s| s.len()).unwrap_or(0),
+                cluster_crossings.get(&r).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    clusters.sort_by_key(|&(_, t, _)| Reverse(t));
+
+    eprintln!("\n=== ghost clusters ({}): ===", clusters.len());
+    eprintln!("  paths  tiles  crossings");
+    for (p, t, c) in &clusters {
+        eprintln!("  {:5}  {:5}  {:5}", p, t, c);
+    }
+    let max_tiles = clusters.iter().map(|(_, t, _)| *t).max().unwrap_or(0);
+    let max_crossings = clusters.iter().map(|(_, _, c)| *c).max().unwrap_or(0);
+    eprintln!(
+        "\nmax cluster: {} tiles, {} crossings",
+        max_tiles, max_crossings
+    );
+
+    // Use expect_err path so this always panics with a clean message.
+    panic!(
+        "ghost-cluster diagnostic: {} routed / {} failures, {} clusters, max {} tiles / {} crossings",
+        routed.len(),
+        failures.len(),
+        clusters.len(),
+        max_tiles,
+        max_crossings
+    );
+}
+
+/// Helper for ghost cluster diagnostics: routes failing specs under ghost semantics,
+/// union-finds clusters, and panics with the scoreboard.
+fn diag_ghost_cluster_helper(
+    test_name: &str,
+    item: &str,
+    rate: f64,
+    machine: &str,
+    belt_tier: Option<&str>,
+    inputs: &FxHashSet<String>,
+) {
+    use fucktorio_core::common::{machine_size, machine_tiles};
+    use rustc_hash::FxHashMap;
+    use std::cmp::Reverse;
+
+    let result = run_e2e(test_name, item, rate, machine, belt_tier, inputs)
+        .expect("e2e");
+
+    // Pull failing specs from trace
+    let failures: Vec<(String, (i32, i32), (i32, i32))> = result
+        .trace_events
+        .iter()
+        .filter_map(|ev| match ev {
+            TraceEvent::RouteFailure {
+                spec_key,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => Some((spec_key.clone(), (*from_x, *from_y), (*to_x, *to_y))),
+            _ => None,
+        })
+        .collect();
+
+    eprintln!("route failures in current pipeline: {}", failures.len());
+    for (k, s, g) in &failures {
+        eprintln!("  {} : {:?} -> {:?}", k, s, g);
+    }
+
+    // Build obstacle grid: everything except belts
+    let is_belt_like = |name: &str| -> bool {
+        matches!(
+            name,
+            "transport-belt"
+                | "fast-transport-belt"
+                | "express-transport-belt"
+                | "underground-belt"
+                | "fast-underground-belt"
+                | "express-underground-belt"
+                | "splitter"
+                | "fast-splitter"
+                | "express-splitter"
+        )
+    };
+
+    let mut hard: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut existing_belts: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for e in &result.layout.entities {
+        if is_belt_like(&e.name) {
+            existing_belts.insert((e.x, e.y));
+        } else {
+            let sz = machine_size(&e.name);
+            for t in machine_tiles(e.x, e.y, sz) {
+                hard.insert(t);
+            }
+        }
+    }
+
+    eprintln!(
+        "layout: {} entities, {} belts, {} hard obstacle tiles",
+        result.layout.entities.len(),
+        existing_belts.len(),
+        hard.len()
+    );
+
+    let width = result.layout.width.max(200);
+    let height = result.layout.height.max(300);
+
+    // Simple turn-biased A*
+    fn astar(
+        start: (i32, i32),
+        goal: (i32, i32),
+        hard: &FxHashSet<(i32, i32)>,
+        width: i32,
+        height: i32,
+        turn_penalty: u32,
+    ) -> Option<Vec<(i32, i32)>> {
+        use rustc_hash::FxHashMap;
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        struct State {
+            x: i32,
+            y: i32,
+            dir: i8,
+        }
+        let dirs: [(i32, i32, i8); 4] = [(1, 0, 0), (0, 1, 1), (-1, 0, 2), (0, -1, 3)];
+        let h = |x: i32, y: i32| ((x - goal.0).abs() + (y - goal.1).abs()) as u32;
+
+        let mut heap: BinaryHeap<Reverse<(u32, State)>> = BinaryHeap::new();
+        let mut g: FxHashMap<State, u32> = FxHashMap::default();
+        let mut parent: FxHashMap<State, State> = FxHashMap::default();
+
+        let start_state = State {
+            x: start.0,
+            y: start.1,
+            dir: -1,
+        };
+        heap.push(Reverse((h(start.0, start.1), start_state)));
+        g.insert(start_state, 0);
+
+        while let Some(Reverse((_, s))) = heap.pop() {
+            if (s.x, s.y) == goal {
+                let mut path = vec![(s.x, s.y)];
+                let mut cur = s;
+                while let Some(&p) = parent.get(&cur) {
+                    path.push((p.x, p.y));
+                    cur = p;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            let cur_g = g[&s];
+            for &(dx, dy, dir) in &dirs {
+                let nx = s.x + dx;
+                let ny = s.y + dy;
+                if nx < 0 || nx >= width || ny < 0 || ny >= height {
+                    continue;
+                }
+                if hard.contains(&(nx, ny)) && (nx, ny) != goal {
+                    continue;
+                }
+                let step = if s.dir == -1 || s.dir == dir {
+                    1
+                } else {
+                    1 + turn_penalty
+                };
+                let ns = State { x: nx, y: ny, dir };
+                let ng = cur_g + step;
+                if g.get(&ns).copied().unwrap_or(u32::MAX) > ng {
+                    g.insert(ns, ng);
+                    parent.insert(ns, s);
+                    heap.push(Reverse((ng + h(nx, ny), ns)));
+                }
+            }
+        }
+        None
+    }
+
+    // Route each failing spec
+    let turn_penalty = 8;
+    let mut routed: Vec<(String, Vec<(i32, i32)>)> = Vec::new();
+    let mut unroutable: Vec<String> = Vec::new();
+    for (key, start, goal) in &failures {
+        match astar(*start, *goal, &hard, width, height, turn_penalty) {
+            Some(path) => routed.push((key.clone(), path)),
+            None => unroutable.push(key.clone()),
+        }
+    }
+
+    eprintln!(
+        "\nunder ghost semantics: {}/{} routed, {} still unroutable",
+        routed.len(),
+        failures.len(),
+        unroutable.len()
+    );
+    for k in &unroutable {
+        eprintln!("  STILL FAILS: {}", k);
+    }
+
+    // Per-path stats
+    let count_turns = |path: &[(i32, i32)]| -> usize {
+        let mut t = 0;
+        for w in path.windows(3) {
+            let d1 = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let d2 = (w[2].0 - w[1].0, w[2].1 - w[1].1);
+            if d1 != d2 {
+                t += 1;
+            }
+        }
+        t
+    };
+
+    eprintln!("\nper-path (len / crossings / turns):");
+    for (key, path) in &routed {
+        let crossings = path.iter().filter(|t| existing_belts.contains(t)).count();
+        let turns = count_turns(path);
+        eprintln!(
+            "  {}: len={} crossings={} turns={}",
+            key,
+            path.len(),
+            crossings,
+            turns
+        );
+    }
+
+    // Union-find over paths that share tiles
+    fn find(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut cur = i;
+        while p[cur] != r {
+            let next = p[cur];
+            p[cur] = r;
+            cur = next;
+        }
+        r
+    }
+
+    let mut uf: Vec<usize> = (0..routed.len()).collect();
+    let mut tile_owner: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        for &tile in path {
+            if let Some(&j) = tile_owner.get(&tile) {
+                let ri = find(&mut uf, i);
+                let rj = find(&mut uf, j);
+                if ri != rj {
+                    uf[ri] = rj;
+                }
+            } else {
+                tile_owner.insert(tile, i);
+            }
+        }
+    }
+
+    // Cluster aggregation
+    let mut cluster_tiles: FxHashMap<usize, FxHashSet<(i32, i32)>> = FxHashMap::default();
+    let mut cluster_paths: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut cluster_crossings: FxHashMap<usize, usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        let r = find(&mut uf, i);
+        let entry = cluster_tiles.entry(r).or_default();
+        for &t in path {
+            entry.insert(t);
+        }
+        *cluster_paths.entry(r).or_insert(0) += 1;
+        *cluster_crossings.entry(r).or_insert(0) +=
+            path.iter().filter(|t| existing_belts.contains(t)).count();
+    }
+
+    let mut clusters: Vec<(usize, usize, usize)> = cluster_paths
+        .iter()
+        .map(|(&r, &p)| {
+            (
+                p,
+                cluster_tiles.get(&r).map(|s| s.len()).unwrap_or(0),
+                cluster_crossings.get(&r).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    clusters.sort_by_key(|&(_, t, _)| Reverse(t));
+
+    eprintln!("\n=== ghost clusters ({}): ===", clusters.len());
+    eprintln!("  paths  tiles  crossings");
+    for (p, t, c) in &clusters {
+        eprintln!("  {:5}  {:5}  {:5}", p, t, c);
+    }
+    let max_tiles = clusters.iter().map(|(_, t, _)| *t).max().unwrap_or(0);
+    let max_crossings = clusters.iter().map(|(_, _, c)| *c).max().unwrap_or(0);
+    eprintln!(
+        "\nmax cluster: {} tiles, {} crossings",
+        max_tiles, max_crossings
+    );
+
+    panic!(
+        "ghost-cluster diagnostic: {} routed / {} failures, {} clusters, max {} tiles / {} crossings",
+        routed.len(),
+        failures.len(),
+        clusters.len(),
+        max_tiles,
+        max_crossings
+    );
+}
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn diag_ghost_cluster_stress_ac_45s_from_plates() {
+    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "plastic-bar"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    diag_ghost_cluster_helper(
+        "diag_ghost_cluster_stress_ac_45s_from_plates",
+        "advanced-circuit",
+        45.0,
+        "assembling-machine-2",
+        None,
+        &inputs,
+    );
+}
+
+#[test]
+#[ignore]
+#[ntest::timeout(120000)]
+fn diag_ghost_cluster_stress_processing_unit_20s() {
+    let inputs: FxHashSet<String> = ["iron-plate", "copper-plate", "plastic-bar", "sulfuric-acid"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    diag_ghost_cluster_helper(
+        "diag_ghost_cluster_stress_processing_unit_20s",
+        "processing-unit",
+        20.0,
+        "assembling-machine-3",
+        None,
+        &inputs,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ghost-cluster sizing: copper-cable feeder paths
+//
+// The (5,7) balancer template is missing so `render_family_input_paths` never
+// schedules feeder A* specs for copper-cable.  Those dead-end output belts
+// don't appear as RouteFailure events, so `diag_ghost_cluster_ac_from_ore`
+// misses them entirely.
+//
+// Synthesise the feeder specs by hand from the LanesPlanned trace (FamilyInfo
+// gives producer_rows, lane_xs, balancer_y_start, bus_width), route under
+// ghost A*, and report cluster sizes.  Also check whether any feeder tile-set
+// overlaps with the 4 ret: paths from the sibling diagnostic.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn diag_ghost_cluster_copper_cable_feeders() {
+    use fucktorio_core::common::{machine_size, machine_tiles};
+    use rustc_hash::FxHashMap;
+    use std::cmp::Reverse;
+
+    let inputs: FxHashSet<String> = [
+        "iron-ore", "copper-ore", "coal", "water", "crude-oil",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let result = run_e2e(
+        "diag_ghost_cluster_copper_cable_feeders",
+        "advanced-circuit",
+        5.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    )
+    .expect("e2e");
+
+    // --- Belt-like predicate ---
+    let is_belt_like = |name: &str| -> bool {
+        matches!(
+            name,
+            "transport-belt"
+                | "fast-transport-belt"
+                | "express-transport-belt"
+                | "underground-belt"
+                | "fast-underground-belt"
+                | "express-underground-belt"
+                | "splitter"
+                | "fast-splitter"
+                | "express-splitter"
+        )
+    };
+
+    // --- Obstacle grid ---
+    let mut hard: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut existing_belts: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for e in &result.layout.entities {
+        if is_belt_like(&e.name) {
+            existing_belts.insert((e.x, e.y));
+        } else {
+            let sz = machine_size(&e.name);
+            for t in machine_tiles(e.x, e.y, sz) {
+                hard.insert(t);
+            }
+        }
+    }
+
+    let width = result.layout.width.max(200);
+    let height = result.layout.height.max(300);
+
+    eprintln!(
+        "layout: {} entities, {} belts, {} hard obstacle tiles",
+        result.layout.entities.len(),
+        existing_belts.len(),
+        hard.len()
+    );
+
+    // --- Extract copper-cable family info from LanesPlanned ---
+    let (cc_family, bus_width) = result
+        .trace_events
+        .iter()
+        .find_map(|ev| {
+            if let TraceEvent::LanesPlanned { families, bus_width, .. } = ev {
+                let fam = families.iter().find(|f| f.item == "copper-cable")?;
+                Some((fam.clone(), *bus_width))
+            } else {
+                None
+            }
+        })
+        .expect("LanesPlanned event with copper-cable family");
+
+    eprintln!(
+        "copper-cable family: shape={:?}, {} producers, lane_xs={:?}, balancer_y_start={}, bw={}",
+        cc_family.shape, cc_family.producer_rows.len(), cc_family.lane_xs, cc_family.balancer_y_start, bus_width
+    );
+
+    // --- Derive output_belt_y per producer row ---
+    // RowInfo in trace gives y_start/y_end but not output_belt_y directly.
+    // Recover it from actual belt entities carrying copper-cable at x=bw-1.
+    let row_y_ranges: Vec<(i32, i32)> = result
+        .trace_events
+        .iter()
+        .find_map(|ev| {
+            if let TraceEvent::RowsPlaced { rows } = ev {
+                Some(rows.iter().map(|r| (r.y_start, r.y_end)).collect())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    let producer_out_ys: Vec<(usize, i32)> = cc_family
+        .producer_rows
+        .iter()
+        .map(|&ri| {
+            let out_y = if ri < row_y_ranges.len() {
+                let (ys, ye) = row_y_ranges[ri];
+                // Search for a copper-cable belt at x=bw-1 within this row
+                let found = result
+                    .layout
+                    .entities
+                    .iter()
+                    .filter(|e| {
+                        is_belt_like(&e.name)
+                            && e.carries.as_deref() == Some("copper-cable")
+                            && e.y >= ys
+                            && e.y <= ye
+                            && e.x == bus_width - 1
+                    })
+                    .map(|e| e.y)
+                    .max();
+                // Fall back to y_start+2 (standard output belt offset)
+                found.unwrap_or(ys + 2)
+            } else {
+                0
+            };
+            (ri, out_y)
+        })
+        .collect();
+
+    eprintln!("producer rows and output_belt_ys: {:?}", producer_out_ys);
+
+    // --- Synthesise feeder specs ---
+    // Mirrors bus_router.rs lines 2557-2597:
+    //   start = (bw-1, out_y)
+    //   goal  = (input_x+1, out_y)
+    // where input_x = min(lane_xs) + input_tile_dx.
+    //
+    // The (5,7) template is missing so we have no real input_tiles.
+    // Use x=3 as a proxy landing column — enough for cluster-size measurement.
+    let fake_landing_x: i32 = 4; // goal = fake_input_x+1 = 4
+
+    let mut specs: Vec<(String, (i32, i32), (i32, i32))> = Vec::new();
+    for (ri, out_y) in &producer_out_ys {
+        let start_x = bus_width - 1;
+        let goal_x = fake_landing_x;
+        if goal_x >= start_x {
+            eprintln!(
+                "  row {}: degenerate feeder (start_x={} <= goal_x={}), skip",
+                ri, start_x, goal_x
+            );
+            continue;
+        }
+        let key = format!("feeder:copper-cable:{}:{}", fake_landing_x - 1, out_y);
+        specs.push((key, (start_x, *out_y), (goal_x, *out_y)));
+    }
+
+    eprintln!("\nsynthesised {} feeder specs:", specs.len());
+    for (k, s, g) in &specs {
+        eprintln!("  {} : {:?} -> {:?}", k, s, g);
+    }
+
+    // --- Turn-biased ghost A* (identical to sibling diagnostic) ---
+    fn astar(
+        start: (i32, i32),
+        goal: (i32, i32),
+        hard: &FxHashSet<(i32, i32)>,
+        width: i32,
+        height: i32,
+        turn_penalty: u32,
+    ) -> Option<Vec<(i32, i32)>> {
+        use rustc_hash::FxHashMap;
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        struct State {
+            x: i32,
+            y: i32,
+            dir: i8,
+        }
+        let dirs: [(i32, i32, i8); 4] = [(1, 0, 0), (0, 1, 1), (-1, 0, 2), (0, -1, 3)];
+        let h = |x: i32, y: i32| ((x - goal.0).abs() + (y - goal.1).abs()) as u32;
+
+        let mut heap: BinaryHeap<Reverse<(u32, State)>> = BinaryHeap::new();
+        let mut g: FxHashMap<State, u32> = FxHashMap::default();
+        let mut parent: FxHashMap<State, State> = FxHashMap::default();
+
+        let start_state = State { x: start.0, y: start.1, dir: -1 };
+        heap.push(Reverse((h(start.0, start.1), start_state)));
+        g.insert(start_state, 0);
+
+        while let Some(Reverse((_, s))) = heap.pop() {
+            if (s.x, s.y) == goal {
+                let mut path = vec![(s.x, s.y)];
+                let mut cur = s;
+                while let Some(&p) = parent.get(&cur) {
+                    path.push((p.x, p.y));
+                    cur = p;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            let cur_g = g[&s];
+            for &(dx, dy, dir) in &dirs {
+                let nx = s.x + dx;
+                let ny = s.y + dy;
+                if nx < 0 || nx >= width || ny < 0 || ny >= height {
+                    continue;
+                }
+                if hard.contains(&(nx, ny)) && (nx, ny) != goal {
+                    continue;
+                }
+                let step = if s.dir == -1 || s.dir == dir {
+                    1
+                } else {
+                    1 + turn_penalty
+                };
+                let ns = State { x: nx, y: ny, dir };
+                let ng = cur_g + step;
+                if g.get(&ns).copied().unwrap_or(u32::MAX) > ng {
+                    g.insert(ns, ng);
+                    parent.insert(ns, s);
+                    heap.push(Reverse((ng + h(nx, ny), ns)));
+                }
+            }
+        }
+        None
+    }
+
+    let turn_penalty = 8;
+    let mut routed: Vec<(String, Vec<(i32, i32)>)> = Vec::new();
+    let mut unroutable: Vec<String> = Vec::new();
+    for (key, start, goal) in &specs {
+        match astar(*start, *goal, &hard, width, height, turn_penalty) {
+            Some(path) => routed.push((key.clone(), path)),
+            None => unroutable.push(key.clone()),
+        }
+    }
+
+    eprintln!(
+        "\nunder ghost semantics: {}/{} routed, {} still unroutable",
+        routed.len(),
+        specs.len(),
+        unroutable.len()
+    );
+    for k in &unroutable {
+        eprintln!("  STILL FAILS: {}", k);
+    }
+
+    // --- Per-path stats ---
+    let count_turns = |path: &[(i32, i32)]| -> usize {
+        let mut t = 0;
+        for w in path.windows(3) {
+            let d1 = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let d2 = (w[2].0 - w[1].0, w[2].1 - w[1].1);
+            if d1 != d2 {
+                t += 1;
+            }
+        }
+        t
+    };
+
+    eprintln!("\nper-path (len / crossings / turns):");
+    for (key, path) in &routed {
+        let crossings = path.iter().filter(|t| existing_belts.contains(t)).count();
+        let turns = count_turns(path);
+        eprintln!(
+            "  {}: len={} crossings={} turns={}",
+            key,
+            path.len(),
+            crossings,
+            turns
+        );
+    }
+
+    // --- Union-find ---
+    fn find(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut cur = i;
+        while p[cur] != r {
+            let next = p[cur];
+            p[cur] = r;
+            cur = next;
+        }
+        r
+    }
+
+    let mut uf: Vec<usize> = (0..routed.len()).collect();
+    let mut tile_owner: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        for &tile in path {
+            if let Some(&j) = tile_owner.get(&tile) {
+                let ri = find(&mut uf, i);
+                let rj = find(&mut uf, j);
+                if ri != rj {
+                    uf[ri] = rj;
+                }
+            } else {
+                tile_owner.insert(tile, i);
+            }
+        }
+    }
+
+    let mut cluster_tiles: FxHashMap<usize, FxHashSet<(i32, i32)>> = FxHashMap::default();
+    let mut cluster_paths: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut cluster_crossings: FxHashMap<usize, usize> = FxHashMap::default();
+    for (i, (_, path)) in routed.iter().enumerate() {
+        let r = find(&mut uf, i);
+        let entry = cluster_tiles.entry(r).or_default();
+        for &t in path {
+            entry.insert(t);
+        }
+        *cluster_paths.entry(r).or_insert(0) += 1;
+        *cluster_crossings.entry(r).or_insert(0) +=
+            path.iter().filter(|t| existing_belts.contains(t)).count();
+    }
+
+    let mut clusters: Vec<(usize, usize, usize)> = cluster_paths
+        .iter()
+        .map(|(&r, &p)| {
+            (
+                p,
+                cluster_tiles.get(&r).map(|s| s.len()).unwrap_or(0),
+                cluster_crossings.get(&r).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    clusters.sort_by_key(|&(_, t, _)| Reverse(t));
+
+    eprintln!("\n=== ghost clusters ({}): ===", clusters.len());
+    eprintln!("  paths  tiles  crossings");
+    for (p, t, c) in &clusters {
+        eprintln!("  {:5}  {:5}  {:5}", p, t, c);
+    }
+    let max_tiles = clusters.iter().map(|(_, t, _)| *t).max().unwrap_or(0);
+    let max_crossings = clusters.iter().map(|(_, _, c)| *c).max().unwrap_or(0);
+
+    // --- Cross-check against ret: failure tile-set ---
+    // Re-route the ret: failures from the same layout to see if any feeder
+    // path shares a tile (which would merge clusters in a unified pass).
+    let ret_failures: Vec<(String, (i32, i32), (i32, i32))> = result
+        .trace_events
+        .iter()
+        .filter_map(|ev| match ev {
+            TraceEvent::RouteFailure {
+                spec_key,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => Some((spec_key.clone(), (*from_x, *from_y), (*to_x, *to_y))),
+            _ => None,
+        })
+        .collect();
+
+    let mut ret_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut ret_routed_count = 0;
+    for (_, start, goal) in &ret_failures {
+        if let Some(path) = astar(*start, *goal, &hard, width, height, turn_penalty) {
+            for t in &path {
+                ret_tiles.insert(*t);
+            }
+            ret_routed_count += 1;
+        }
+    }
+
+    let feeder_tiles: FxHashSet<(i32, i32)> =
+        routed.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+    let overlap_count = feeder_tiles.intersection(&ret_tiles).count();
+
+    eprintln!(
+        "\ncross-check with ret: paths ({}/{} routed): {} overlapping tiles",
+        ret_routed_count,
+        ret_failures.len(),
+        overlap_count
+    );
+    if overlap_count > 0 {
+        eprintln!("  NOTE: feeder+ret: clusters would merge in a unified routing pass");
+    } else {
+        eprintln!("  feeder clusters are disjoint from ret: clusters — SAT budgets stay independent");
+    }
+
+    eprintln!("\nmax cluster: {} tiles, {} crossings", max_tiles, max_crossings);
+
+    panic!(
+        "ghost-cluster feeder diagnostic: {}/{} feeders routed, {} clusters, max {} tiles / {} crossings, {} ret:-overlap tiles",
+        routed.len(),
+        specs.len(),
+        clusters.len(),
+        max_tiles,
+        max_crossings,
+        overlap_count
+    );
 }
