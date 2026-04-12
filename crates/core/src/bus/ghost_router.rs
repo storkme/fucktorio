@@ -118,7 +118,8 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
-    // Step 2: Place trunk belts and splitter stamps as hard obstacles
+    // Step 2: Place splitter stamps as hard obstacles. Trunks are routed via
+    // ghost_astar in Step 4 so horizontal specs can walk through them.
     // -------------------------------------------------------------------------
     for lane in lanes {
         if lane.is_fluid {
@@ -129,61 +130,6 @@ pub fn route_bus_ghost(
         let belt_name = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
         let trunk_seg_id = Some(format!("trunk:{}", lane.item));
         let last_tap_y = lane.tap_off_ys.iter().copied().max();
-
-        // Compute skip_ys for trunk: tap_off_ys + splitter rows + balancer_y + family_balancer_range
-        let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
-        for &ty in &lane.tap_off_ys {
-            if lane.tap_off_ys.len() > 1 && Some(ty) != last_tap_y {
-                skip_ys.insert(ty - 1); // splitter row above tap
-            }
-        }
-        if let Some(by) = lane.balancer_y {
-            skip_ys.insert(by);
-        }
-        if let Some((by_start, by_end)) = lane.family_balancer_range {
-            for y in by_start..=by_end {
-                skip_ys.insert(y);
-            }
-        }
-
-        let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
-        for &pri in &lane.extra_producer_rows {
-            if pri < row_spans.len() {
-                all_ys.push(row_spans[pri].output_belt_y);
-            }
-        }
-        if let Some(pr) = lane.producer_row {
-            if pr < row_spans.len() {
-                all_ys.push(row_spans[pr].output_belt_y);
-            }
-        }
-        let start_y = lane.source_y;
-        let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
-        let end_y = if let Some(by) = lane.balancer_y {
-            end_y.max(by + 1)
-        } else {
-            end_y
-        };
-
-        // Place trunk surface belts for each contiguous segment
-        for (seg_start, seg_end) in trunk_segments(start_y, end_y, &skip_ys) {
-            for y in seg_start..=seg_end {
-                let ent = PlacedEntity {
-                    name: belt_name.to_string(),
-                    x,
-                    y,
-                    direction: EntityDirection::South,
-                    carries: Some(lane.item.clone()),
-                    segment_id: trunk_seg_id.clone(),
-                    rate: Some(lane.rate),
-                    ..Default::default()
-                };
-                hard.insert((x, y));
-                existing_belts.insert((x, y));
-                pre_ghost_belts.insert((x, y));
-                entities.push(ent);
-            }
-        }
 
         // Place splitter stamps for non-last tap-offs
         if lane.tap_off_ys.len() > 1 {
@@ -266,6 +212,56 @@ pub fn route_bus_ghost(
         let has_producers = lane.producer_row.is_some() || !lane.extra_producer_rows.is_empty();
         let last_tap_y = lane.tap_off_ys.iter().copied().max();
         let horiz_belt = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
+        let trunk_belt = horiz_belt;
+
+        // Trunk specs — routed first per lane so horizontals see them in
+        // existing_belts. Turn penalty keeps them straight vertical lines.
+        {
+            let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+            for &ty in &lane.tap_off_ys {
+                if lane.tap_off_ys.len() > 1 && Some(ty) != last_tap_y {
+                    skip_ys.insert(ty - 1);
+                }
+            }
+            if let Some(by) = lane.balancer_y {
+                skip_ys.insert(by);
+            }
+            if let Some((by_start, by_end)) = lane.family_balancer_range {
+                for y in by_start..=by_end {
+                    skip_ys.insert(y);
+                }
+            }
+
+            let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
+            for &pri in &lane.extra_producer_rows {
+                if pri < row_spans.len() {
+                    all_ys.push(row_spans[pri].output_belt_y);
+                }
+            }
+            if let Some(pr) = lane.producer_row {
+                if pr < row_spans.len() {
+                    all_ys.push(row_spans[pr].output_belt_y);
+                }
+            }
+            let start_y = lane.source_y;
+            let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
+            let end_y = if let Some(by) = lane.balancer_y {
+                end_y.max(by + 1)
+            } else {
+                end_y
+            };
+
+            for (seg_start, seg_end) in trunk_segments(start_y, end_y, &skip_ys) {
+                let trunk_key = format!("trunk:{}:{}:{}", lane.item, x, seg_start);
+                specs.push(BeltSpec {
+                    key: trunk_key,
+                    start: (x, seg_start),
+                    goal: (x, seg_end),
+                    item: lane.item.clone(),
+                    belt_name: trunk_belt,
+                });
+            }
+        }
 
         // Tap-off specs
         if has_consumers {
@@ -404,7 +400,14 @@ pub fn route_bus_ghost(
     // same-item overlaps (not conflicts) from different-item overlaps (real).
     let mut ghost_item_at: FxHashMap<(i32, i32), String> = FxHashMap::default();
 
-    for spec in &specs {
+    // Reorder specs: route ALL trunk specs first (across all lanes), then
+    // horizontal specs. This ensures trunks have continuous tiles in
+    // existing_belts before any horizontal spec claims tiles on their column.
+    let (trunk_specs_ord, horiz_specs_ord): (Vec<&BeltSpec>, Vec<&BeltSpec>) =
+        specs.iter().partition(|s| s.key.starts_with("trunk:"));
+    let ordered_specs: Vec<&BeltSpec> = trunk_specs_ord.into_iter().chain(horiz_specs_ord).collect();
+
+    for spec in ordered_specs.iter().copied() {
         match ghost_astar(
             spec.start,
             spec.goal,
@@ -425,13 +428,25 @@ pub fn route_bus_ghost(
                     crossing_tiles: crossings.clone(),
                 });
 
-                // Emit entities via render_path
-                let direction_hint = if spec.start.0 <= spec.goal.0 {
+                // Emit entities via render_path. Vertical specs (trunks) get
+                // South/North direction; otherwise East/West.
+                let direction_hint = if spec.start.1 != spec.goal.1 && spec.start.0 == spec.goal.0 {
+                    if spec.goal.1 > spec.start.1 {
+                        EntityDirection::South
+                    } else {
+                        EntityDirection::North
+                    }
+                } else if spec.start.0 <= spec.goal.0 {
                     EntityDirection::East
                 } else {
                     EntityDirection::West
                 };
-                let spec_seg_id = Some(format!("ghost:{}", spec.key));
+                // Preserve canonical trunk:{item} segment_id for downstream code.
+                let spec_seg_id = if spec.key.starts_with("trunk:") {
+                    Some(format!("trunk:{}", spec.item))
+                } else {
+                    Some(format!("ghost:{}", spec.key))
+                };
                 let path_ents = render_path(
                     &path,
                     &spec.item,
@@ -500,13 +515,175 @@ pub fn route_bus_ghost(
         .chain(row_entities.iter().map(|e| (e.x, e.y)))
         .collect();
 
-    // Step 6a: Try perpendicular crossing templates on individual tiles.
-    // Solved tiles are removed from the crossing set before clustering.
+    // Step 6a-pre: Corridor template — detect runs of adjacent horizontal
+    // crossings where one horizontal spec crosses N adjacent vertical trunks.
+    // Emit a single long UG bridge for the horizontal instead of N separate
+    // per-tile templates that would conflict.
     let mut template_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
     let mut template_regions: Vec<LayoutRegion> = Vec::new();
     let mut remaining_crossings: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut corridor_handled: FxHashSet<(i32, i32)> = FxHashSet::default();
+
+    // Group crossings by (horizontal spec, y) and find runs of adjacent x.
+    // For each horizontal spec, iterate its path tiles and collect crossing
+    // tiles that form a consecutive-x run with a consistent horizontal direction.
+    let max_reach = ug_max_reach(max_belt_tier.unwrap_or("transport-belt")) as i32;
+    // Max span of UG pair (distance between UG-in and UG-out, inclusive).
+    // For transport-belt max_reach=4, so UG can span 5 tiles covering 4 trunks.
+    let max_corridor_span = max_reach + 1;
+
+    for (key, path) in &routed_paths {
+        if path.len() < 2 {
+            continue;
+        }
+        // Determine overall direction from start to a consistent segment
+        // (we only care about horizontal specs).
+        let first_dx = path[1].0 - path[0].0;
+        let first_dy = path[1].1 - path[0].1;
+        if first_dy != 0 || first_dx == 0 {
+            continue; // not a horizontal spec start
+        }
+
+        // Walk the path and find consecutive-x runs of crossings at same y.
+        let mut i = 0;
+        while i < path.len() {
+            let (px, py) = path[i];
+            if !crossing_set.contains(&(px, py)) {
+                i += 1;
+                continue;
+            }
+            // Collect a run
+            let run_y = py;
+            let run_start_x = px;
+            let mut run_len = 1;
+            let mut j = i + 1;
+            let step_dx: i32 = if path.get(i + 1).map(|t| t.0 - px).unwrap_or(0) > 0 { 1 } else { -1 };
+            while j < path.len() {
+                let (nx, ny) = path[j];
+                if ny != run_y {
+                    break;
+                }
+                if nx != run_start_x + step_dx * run_len {
+                    break;
+                }
+                if !crossing_set.contains(&(nx, ny)) {
+                    break;
+                }
+                run_len += 1;
+                j += 1;
+            }
+
+            if (2..max_corridor_span).contains(&run_len) {
+                // Try corridor template.
+                // For direction East (dx=1): UG-in at (run_start_x-1, y), UG-out at (run_start_x+run_len, y)
+                // For direction West (dx=-1): UG-in at (run_start_x+1, y), UG-out at (run_start_x-run_len, y)
+                let ug_dir = if step_dx > 0 { EntityDirection::East } else { EntityDirection::West };
+                let ug_in_x = run_start_x - step_dx;
+                let ug_out_x = run_start_x + step_dx * run_len;
+                let ug_in = (ug_in_x, run_y);
+                let ug_out = (ug_out_x, run_y);
+
+                // Check: endpoints must not be obstacles (unless landing on goal).
+                // Also endpoints shouldn't be trunk tiles (would overlap trunk belts).
+                let endpoints_free = !hard.contains(&ug_in)
+                    && !hard.contains(&ug_out)
+                    && !pre_existing_set.contains(&ug_in)
+                    && !pre_existing_set.contains(&ug_out);
+
+                if endpoints_free {
+                    // Find the horizontal spec that owns this run (for item/belt info).
+                    let horiz_spec = specs.iter().find(|s| &s.key == key);
+                    if let Some(hspec) = horiz_spec {
+                        let ug_name = ug_for_belt(hspec.belt_name);
+                        let seg = Some(format!("corridor:{}:{},{}", hspec.item, ug_in.0, run_y));
+                        let mut ents = vec![PlacedEntity {
+                            name: ug_name.to_string(),
+                            x: ug_in.0,
+                            y: ug_in.1,
+                            direction: ug_dir,
+                            io_type: Some("input".to_string()),
+                            carries: Some(hspec.item.clone()),
+                            segment_id: seg.clone(),
+                            ..Default::default()
+                        }];
+                        ents.push(PlacedEntity {
+                            name: ug_name.to_string(),
+                            x: ug_out.0,
+                            y: ug_out.1,
+                            direction: ug_dir,
+                            io_type: Some("output".to_string()),
+                            carries: Some(hspec.item.clone()),
+                            segment_id: seg.clone(),
+                            ..Default::default()
+                        });
+                        let (zx, zy, zw, zh) = {
+                            let xs = [ug_in.0, ug_out.0];
+                            let min_x = *xs.iter().min().unwrap();
+                            let max_x = *xs.iter().max().unwrap();
+                            (min_x, run_y, (max_x - min_x + 1) as u32, 1u32)
+                        };
+                        let zone = ClusterZone { x: zx, y: zy, w: zw, h: zh };
+                        trace::emit(trace::TraceEvent::GhostClusterSolved {
+                            cluster_id: template_zones.len(),
+                            zone_x: zone.x,
+                            zone_y: zone.y,
+                            zone_w: zone.w,
+                            zone_h: zone.h,
+                            boundary_count: 2,
+                            variables: 0,
+                            clauses: 0,
+                            solve_time_us: 0,
+                        });
+                        template_regions.push(LayoutRegion {
+                            kind: "corridor_template".to_string(),
+                            x: zone.x,
+                            y: zone.y,
+                            width: zone.w as i32,
+                            height: zone.h as i32,
+                            inputs: vec![hspec.item.clone()],
+                            outputs: vec![hspec.item.clone()],
+                            ports: Vec::new(),
+                            variables: 0,
+                            clauses: 0,
+                            solve_time_us: 0,
+                        });
+                        template_zones.push((ents, zone));
+                        // Mark all run tiles as corridor-handled and remove
+                        // the horizontal spec's surface belts at those tiles
+                        // (they're now underground via the UG bridge).
+                        let mut run_tiles: FxHashSet<(i32, i32)> = FxHashSet::default();
+                        for k in 0..run_len {
+                            let x = run_start_x + step_dx * k;
+                            run_tiles.insert((x, run_y));
+                            corridor_handled.insert((x, run_y));
+                        }
+                        // Remove ghost-routed surface belts at run tiles (they
+                        // were placed by render_path; the corridor template
+                        // tunnels under them).
+                        entities.retain(|e| {
+                            if !run_tiles.contains(&(e.x, e.y)) {
+                                return true;
+                            }
+                            // Keep non-ghost entities (e.g. trunks routed via ghost
+                            // are kept — they have segment_id "trunk:..." not "ghost:...")
+                            !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:"))
+                        });
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    // Step 6a: Try per-tile perpendicular crossing templates on individual tiles
+    // not already handled by a corridor template.
 
     for &tile in &crossing_set {
+        if corridor_handled.contains(&tile) {
+            continue;
+        }
         if let Some(info) = classify_crossing(tile, &routed_paths, &specs)
             .filter(|info| is_perpendicular(info.spec_a.1, info.spec_b.1))
         {
