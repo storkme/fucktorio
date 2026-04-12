@@ -879,17 +879,68 @@ pub fn route_bus_ghost(
                             run_tiles.insert((x, run_y));
                             corridor_handled.insert((x, run_y));
                         }
-                        // Remove ghost-routed surface belts at run tiles (they
-                        // were placed by render_path; the corridor template
-                        // tunnels under them).
+                        // Remove ONLY the bridged spec's surface belts at the
+                        // run tiles. Other ghost-routed belts (e.g. another
+                        // spec's perpendicular crossing) must stay. The
+                        // bridged spec's segment_id is "ghost:{key}".
+                        let bridged_seg = format!("ghost:{}", key);
                         entities.retain(|e| {
                             if !run_tiles.contains(&(e.x, e.y)) {
                                 return true;
                             }
-                            // Keep non-ghost entities (e.g. trunks routed via ghost
-                            // are kept — they have segment_id "trunk:..." not "ghost:...")
-                            !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:"))
+                            e.segment_id.as_deref() != Some(bridged_seg.as_str())
                         });
+
+                        // Re-add surface belts for perpendicular specs whose
+                        // path was filtered out at materialization (because
+                        // the bridged spec claimed the tile first). Only
+                        // re-add if the tile is now empty — if a trunk or
+                        // other entity is still there, leave it alone.
+                        let occupied_after_removal: FxHashSet<(i32, i32)> =
+                            entities.iter().map(|e| (e.x, e.y)).collect();
+                        for &run_tile in &run_tiles {
+                            if occupied_after_removal.contains(&run_tile) {
+                                continue;
+                            }
+                            for (other_key, other_path) in &routed_paths {
+                                if other_key == key {
+                                    continue;
+                                }
+                                let pos = other_path.iter().position(|&t| t == run_tile);
+                                let pi = match pos {
+                                    Some(p) => p,
+                                    None => continue,
+                                };
+                                let last_idx = other_path.len() - 1;
+                                let (odx, ody) = if pi < last_idx {
+                                    (other_path[pi + 1].0 - run_tile.0, other_path[pi + 1].1 - run_tile.1)
+                                } else if pi > 0 {
+                                    (run_tile.0 - other_path[pi - 1].0, run_tile.1 - other_path[pi - 1].1)
+                                } else {
+                                    continue;
+                                };
+                                let dir = step_direction(odx, ody);
+                                let other_spec = specs.iter().find(|s| &s.key == other_key);
+                                if let Some(os) = other_spec {
+                                    // Use a non-ghost segment_id so the
+                                    // post-template retain (which strips
+                                    // "ghost:*" inside solved zones) keeps it.
+                                    entities.push(PlacedEntity {
+                                        name: os.belt_name.to_string(),
+                                        x: run_tile.0,
+                                        y: run_tile.1,
+                                        direction: dir,
+                                        carries: Some(os.item.clone()),
+                                        segment_id: Some(format!(
+                                            "corridor-perp:{}:{},{}",
+                                            os.item, run_tile.0, run_tile.1
+                                        )),
+                                        ..Default::default()
+                                    });
+                                    break;
+                                }
+                            }
+                        }
                         i = j;
                         continue;
                     }
