@@ -1195,6 +1195,34 @@ fn resolve_clusters(
             }
         }
 
+        // ── Flow-balance filter ──────────────────────────────────────
+        // 1. Deduplicate ports at the same (x, y, direction, is_input).
+        // 2. For each item, check that it has at least one input AND one
+        //    output.  Drop all ports for items that are unbalanced — the
+        //    SAT solver cannot route items that have no exit (it creates
+        //    loops) or no entrance (dead ends).
+        {
+            // Dedup
+            let mut seen: FxHashSet<(i32, i32, u8, bool)> = FxHashSet::default();
+            let mut deduped_b: Vec<ZoneBoundary> = Vec::new();
+            let mut deduped_p: Vec<PortSpec> = Vec::new();
+            for (b, p) in boundaries.into_iter().zip(port_specs.into_iter()) {
+                let dir_byte = match b.direction {
+                    EntityDirection::North => 0,
+                    EntityDirection::East => 1,
+                    EntityDirection::South => 2,
+                    EntityDirection::West => 3,
+                };
+                if seen.insert((b.x, b.y, dir_byte, b.is_input)) {
+                    deduped_b.push(b);
+                    deduped_p.push(p);
+                }
+            }
+
+            boundaries = deduped_b;
+            port_specs = deduped_p;
+        }
+
         if boundaries.is_empty() {
             continue;
         }
