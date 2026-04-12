@@ -307,6 +307,34 @@ pub fn build_bus_layout(
         row_entities_with_poles.extend(pole_entities.clone());
 
         // Route bus lanes
+        let use_ghost = std::env::var("FUCKTORIO_GHOST_ROUTING")
+            .is_ok_and(|v| v == "1");
+
+        if use_ghost {
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_ghost = std::time::Instant::now();
+            let ghost_result = crate::bus::ghost_router::route_bus_ghost(
+                &cur_lanes,
+                &cur_row_spans,
+                cur_total_height,
+                actual_bw,
+                max_belt_tier,
+                solver_result,
+                &cur_families,
+                &cur_row_entities,
+            )?;
+            bus_entities = ghost_result.entities;
+            max_y = ghost_result.max_y;
+            merge_max_x = ghost_result.merge_max_x;
+            regions = ghost_result.regions;
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
+                phase: "ghost_routing".to_string(),
+                duration_ms: t_ghost.elapsed().as_millis() as u64,
+            });
+            break; // ghost routing is single-pass — no retry loop needed
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         let t_route_bus = std::time::Instant::now();
         let mut dropped: Vec<crate::bus::bus_router::DroppedBridge> = Vec::new();

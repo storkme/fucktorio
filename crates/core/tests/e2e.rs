@@ -872,6 +872,90 @@ fn stress_processing_unit_20s_from_plates() {
     report_stress_scoreboard("stress_processing_unit_20s_from_plates", &result);
 }
 
+/// Ghost routing (Phase 2) diagnostic for advanced-circuit from ore at 5/s AM1.
+/// Gated behind FUCKTORIO_GHOST_ROUTING=1. Always panics with the scoreboard
+/// (ghost crossings are expected — Phase 3 will SAT-resolve them).
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn tier4_advanced_circuit_from_ore_am1_ghost() {
+    std::env::set_var("FUCKTORIO_GHOST_ROUTING", "1");
+    let inputs: FxHashSet<String> = [
+        "iron-ore", "copper-ore", "coal", "water", "crude-oil",
+    ].iter().map(|s| s.to_string()).collect();
+    let result = run_e2e(
+        "tier4_ghost",
+        "advanced-circuit",
+        5.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    );
+    std::env::remove_var("FUCKTORIO_GHOST_ROUTING");
+
+    match result {
+        Err(e) => panic!("ghost routing pipeline failed: {}", e),
+        Ok(result) => {
+            // Extract ghost routing stats from trace events
+            let mut entity_count = 0;
+            let mut cluster_count = 0;
+            let mut max_cluster_tiles = 0;
+            let mut unroutable_count = 0;
+            let mut ghost_spec_routed = 0;
+            let mut ghost_spec_failed = 0;
+
+            for ev in &result.trace_events {
+                match ev {
+                    TraceEvent::GhostRoutingComplete {
+                        entity_count: ec,
+                        cluster_count: cc,
+                        max_cluster_tiles: mt,
+                        unroutable_count: uc,
+                    } => {
+                        entity_count = *ec;
+                        cluster_count = *cc;
+                        max_cluster_tiles = *mt;
+                        unroutable_count = *uc;
+                    }
+                    TraceEvent::GhostSpecRouted { .. } => ghost_spec_routed += 1,
+                    TraceEvent::GhostSpecFailed { .. } => ghost_spec_failed += 1,
+                    _ => {}
+                }
+            }
+
+            let _total_warnings = result.issues.len();
+            let errors: Vec<_> = result.issues.iter()
+                .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Error))
+                .collect();
+            let warnings: Vec<_> = result.issues.iter()
+                .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Warning))
+                .collect();
+
+            // Always panic with the diagnostic scoreboard (Phase 2 output has
+            // ghost crossings that the validator flags — that's expected).
+            panic!(
+                "ghost routing diagnostic:\n  \
+                 layout entities: {}\n  \
+                 specs routed:    {}\n  \
+                 specs failed:    {}\n  \
+                 unroutable:      {}\n  \
+                 ghost clusters:  {}\n  \
+                 max cluster tiles: {}\n  \
+                 validator errors:  {}\n  \
+                 validator warnings: {}\n",
+                entity_count,
+                ghost_spec_routed,
+                ghost_spec_failed,
+                unroutable_count,
+                cluster_count,
+                max_cluster_tiles,
+                errors.len(),
+                warnings.len(),
+            );
+        }
+    }
+}
+
 /// Baseline (Phase 1, 2026-04-11): entities=9190, warnings=0, zones_solved=13,
 /// bands=3 (1 crossing, 2 non-crossing), total_gap_tiles=22, mean_gap=7.33,
 /// max_gap=12, max_trunks/band=14.

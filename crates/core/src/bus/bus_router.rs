@@ -471,7 +471,7 @@ const UNDERGROUND_MAP: &[(&str, &str)] = &[
     ("express-transport-belt", "express-underground-belt"),
 ];
 
-fn splitter_for_belt(belt: &str) -> &'static str {
+pub(crate) fn splitter_for_belt(belt: &str) -> &'static str {
     SPLITTER_MAP.iter()
         .find(|(b, _)| *b == belt)
         .map(|(_, s)| *s)
@@ -1491,7 +1491,7 @@ pub(crate) fn route_lane(
     }
 }
 
-fn is_intermediate(lane: &BusLane) -> bool {
+pub(crate) fn is_intermediate(lane: &BusLane) -> bool {
     let has_producers = lane.producer_row.is_some() || !lane.extra_producer_rows.is_empty();
     let has_consumers = !lane.consumer_rows.is_empty();
     has_producers && has_consumers
@@ -2053,7 +2053,7 @@ fn route_intermediate_lane(
 }
 
 /// Split [start_y, end_y] into contiguous segments excluding skip_ys.
-fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i32, i32)> {
+pub(crate) fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>) -> Vec<(i32, i32)> {
     let mut segments: Vec<(i32, i32)> = Vec::new();
     let mut seg_start: Option<i32> = None;
     for y in start_y..=end_y {

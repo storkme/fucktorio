@@ -258,6 +258,27 @@ pub enum TraceEvent {
         trunk_count: usize,
         distinct_items: usize,
     },
+
+    // Ghost routing (Phase 2) — emitted by route_bus_ghost in ghost_router.rs
+    GhostRoutingComplete {
+        entity_count: usize,
+        cluster_count: usize,
+        max_cluster_tiles: usize,
+        unroutable_count: usize,
+    },
+    GhostSpecRouted {
+        spec_key: String,
+        path_len: usize,
+        crossings: usize,
+        turns: usize,
+    },
+    GhostSpecFailed {
+        spec_key: String,
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+    },
 }
 
 // ---------------------------------------------------------------------------
