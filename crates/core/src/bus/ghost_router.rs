@@ -1290,44 +1290,81 @@ fn solve_perpendicular_template(
     pre_existing: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
-    let (cx, cy) = info.tile;
-
-    // Decide which path to bridge (put underground).
-    // For perpendicular: prefer bridging vertical so horizontal row
-    // connections stay on the surface.
-    // For same-direction: bridge spec B (arbitrary choice).
     let perpendicular = is_perpendicular(info.spec_a.1, info.spec_b.1);
-    let (surface_item, surface_dir, surface_belt, bridge_item, bridge_dir, bridge_belt) =
-        if perpendicular && is_horizontal(info.spec_a.1) {
-            (&info.spec_a.0, info.spec_a.1, info.belt_a, &info.spec_b.0, info.spec_b.1, info.belt_b)
-        } else if perpendicular {
-            (&info.spec_b.0, info.spec_b.1, info.belt_b, &info.spec_a.0, info.spec_a.1, info.belt_a)
-        } else {
-            // Same-direction: bridge spec B
-            (&info.spec_a.0, info.spec_a.1, info.belt_a, &info.spec_b.0, info.spec_b.1, info.belt_b)
-        };
+    if !perpendicular {
+        // Same-direction crossings — single attempt, bridge spec_b arbitrarily.
+        return try_bridge(
+            info.tile,
+            (&info.spec_a.0, info.spec_a.1, info.belt_a),
+            (&info.spec_b.0, info.spec_b.1, info.belt_b),
+            hard_obstacles,
+            pre_existing,
+            routed_paths,
+        );
+    }
 
-    // Compute UG entry/exit positions for the bridged path
+    // Perpendicular: try BOTH bridge directions and pick the first that works.
+    // Prefer bridging the vertical first (keeps horizontal connections on the
+    // surface for row inputs), but fall back to bridging the horizontal if
+    // the vertical option is blocked or has UG-position turn conflicts.
+    let (h_spec, v_spec) = if is_horizontal(info.spec_a.1) {
+        (&info.spec_a, &info.spec_b)
+    } else {
+        (&info.spec_b, &info.spec_a)
+    };
+
+    let bridge_vertical_first = try_bridge(
+        info.tile,
+        (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
+        (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
+        hard_obstacles,
+        pre_existing,
+        routed_paths,
+    );
+    if bridge_vertical_first.is_some() {
+        return bridge_vertical_first;
+    }
+
+    // Fall back to bridging the horizontal (vertical stays on surface).
+    try_bridge(
+        info.tile,
+        (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
+        (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
+        hard_obstacles,
+        pre_existing,
+        routed_paths,
+    )
+}
+
+/// Try to place a UG bridge for the second `(item, dir, belt)` triple over
+/// the first one staying on the surface at `crossing`. Returns `None` if the
+/// UG positions are obstructed or land on a turning spec.
+fn try_bridge(
+    crossing: (i32, i32),
+    surface: (&String, EntityDirection, &'static str),
+    bridge: (&String, EntityDirection, &'static str),
+    hard_obstacles: &FxHashSet<(i32, i32)>,
+    pre_existing: &FxHashSet<(i32, i32)>,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
+    let (cx, cy) = crossing;
+    let (surface_item, surface_dir, surface_belt) = surface;
+    let (bridge_item, bridge_dir, bridge_belt) = bridge;
+
     let (dx, dy) = match bridge_dir {
         EntityDirection::North => (0, -1),
         EntityDirection::South => (0, 1),
         EntityDirection::East => (1, 0),
         EntityDirection::West => (-1, 0),
     };
-    // UG-in is one tile BEFORE the crossing (opposite of travel direction)
     let ug_in = (cx - dx, cy - dy);
-    // UG-out is one tile AFTER the crossing (in travel direction)
     let ug_out = (cx + dx, cy + dy);
 
-    // Check that UG positions are not blocked
     if hard_obstacles.contains(&ug_in) || hard_obstacles.contains(&ug_out) {
-        return None; // can't place template here
+        return None;
     }
 
-    // Reject the template if any spec turns at the UG-in or UG-out tile.
-    // Sideloads onto a UG belt fail (the UG only accepts items from behind
-    // in its facing direction); a turning spec would dump items into the
-    // UG with nowhere to go.
+    // Reject if any spec turns at the UG-in or UG-out tile (sideload-onto-UG fails).
     if any_spec_turns_at(ug_in, routed_paths) || any_spec_turns_at(ug_out, routed_paths) {
         return None;
     }
@@ -1337,7 +1374,6 @@ fn solve_perpendicular_template(
 
     let mut entities = Vec::new();
 
-    // Surface belt at the crossing tile (the non-bridged path)
     if !pre_existing.contains(&(cx, cy)) {
         entities.push(PlacedEntity {
             name: surface_belt.to_string(),
@@ -1350,7 +1386,6 @@ fn solve_perpendicular_template(
         });
     }
 
-    // UG-input (before crossing)
     if !pre_existing.contains(&ug_in) {
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
@@ -1364,7 +1399,6 @@ fn solve_perpendicular_template(
         });
     }
 
-    // UG-output (after crossing)
     if !pre_existing.contains(&ug_out) {
         entities.push(PlacedEntity {
             name: ug_name.to_string(),
@@ -1378,7 +1412,6 @@ fn solve_perpendicular_template(
         });
     }
 
-    // Zone bbox: 3x3 centered on the crossing (or 3x1/1x3 oriented)
     let zone = ClusterZone {
         x: cx.min(ug_in.0).min(ug_out.0),
         y: cy.min(ug_in.1).min(ug_out.1),
