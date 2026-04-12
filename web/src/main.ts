@@ -172,6 +172,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let regionsCb: HTMLInputElement;
   let soloRegionsCb: HTMLInputElement;
 
+  // Solo-regions flag: true whenever solo mode is active (persists across re-renders)
+  let soloRegionsActive = false;
   // Solo-regions state: saved toggle states before solo mode was enabled
   let soloSavedState: {
     colorChecked: boolean;
@@ -841,6 +843,10 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       viewport.fit(true, pxW * 1.1, pxH * 1.2);
       viewport.moveCenter(pxW / 2, pxH / 2);
     }
+    // Re-apply solo-regions dimming after entity layer rebuild
+    if (soloRegionsActive) {
+      entityLayer.alpha = 0.12;
+    }
   }
 
   // Ctrl+C: copy selection JSON when entities are selected
@@ -952,6 +958,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
         soloRegionsCb.addEventListener("change", () => {
           if (soloRegionsCb.checked) {
+            soloRegionsActive = true;
             // Entering solo mode: save current state
             soloSavedState = {
               colorChecked: colorCb.checked,
@@ -993,6 +1000,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
             // Ensure region overlay is on top after re-render
             updateRegionOverlay();
           } else {
+            soloRegionsActive = false;
             // Exiting solo mode: restore previous state
             if (soloSavedState) {
               entityLayer.alpha = soloSavedState.entityAlpha;
