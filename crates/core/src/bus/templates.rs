@@ -755,12 +755,12 @@ pub fn fluid_input_row(
                 });
             }
 
-            // y+3: UG pipe OUT adjacent to machine fluid port + inserter for solid
+            // y+3: UG pipe OUT facing north (back toward input) adjacent to machine fluid port
             entities.push(PlacedEntity {
                 name: "pipe-to-ground".to_string(),
                 x: mx + port_dx,
                 y: interface_y,
-                direction: EntityDirection::South,
+                direction: EntityDirection::North,
                 io_type: Some("output".to_string()),
                 carries: Some(fluid_item.to_string()),
                 segment_id: fluid_in_seg.clone(),
@@ -929,7 +929,7 @@ pub fn fluid_input_row(
 ///   y+2 : solid input belt 1 (EAST) -- far belt
 ///   y+3 : solid input belt 2 (EAST) -- close belt
 ///   y+4 : long-handed-inserter at mx+1 + inserter at mx+2 +
-///           pipe-to-ground output at mx+port_dx (direction SOUTH)
+///           pipe-to-ground output at mx+port_dx (direction NORTH, faces input)
 ///   y+5..y+5+msz-1 : machine (msz×msz)
 ///   y+5+msz : fluid output pipes (if output_is_fluid) OR output inserter
 ///   y+5+msz+1 : output belt (solid output only)
@@ -1013,7 +1013,7 @@ pub fn fluid_dual_input_row(
             name: "pipe-to-ground".to_string(),
             x: mx + port_dx,
             y: inserter_y,
-            direction: EntityDirection::South,
+            direction: EntityDirection::North,
             io_type: Some("output".to_string()),
             carries: Some(fluid_item.to_string()),
             segment_id: fluid_in_seg.clone(),
@@ -1639,9 +1639,9 @@ mod tests {
             assert_eq!(b.carries.as_deref(), Some("coal"));
         }
 
-        // Machine 1: UG pipe OUT at (0, 3) facing South, io=output
+        // Machine 1: UG pipe OUT at (0, 3) facing North (back toward input), io=output
         let ptg_out = assert_entity(&entities, 0, 3, "pipe-to-ground");
-        assert_eq!(ptg_out.direction, EntityDirection::South);
+        assert_eq!(ptg_out.direction, EntityDirection::North);
         assert_eq!(ptg_out.io_type.as_deref(), Some("output"));
         assert_eq!(ptg_out.carries.as_deref(), Some("petroleum-gas"));
 
@@ -1662,9 +1662,9 @@ mod tests {
         assert_eq!(ptg2_in.direction, EntityDirection::South);
         assert_eq!(ptg2_in.io_type.as_deref(), Some("input"));
 
-        // Machine 2: UG pipe OUT at (3, 3) facing South
+        // Machine 2: UG pipe OUT at (3, 3) facing North (back toward input)
         let ptg2_out = assert_entity(&entities, 3, 3, "pipe-to-ground");
-        assert_eq!(ptg2_out.direction, EntityDirection::South);
+        assert_eq!(ptg2_out.direction, EntityDirection::North);
         assert_eq!(ptg2_out.io_type.as_deref(), Some("output"));
 
         // Machine 2 at (3, 4)
@@ -1802,9 +1802,9 @@ mod tests {
         assert_eq!(ptg_in.direction, EntityDirection::South);
         assert_eq!(ptg_in.io_type.as_deref(), Some("input"));
 
-        // PTG output at (0+0, 4) = (0, 4) direction SOUTH
+        // PTG output at (0+0, 4) = (0, 4) direction NORTH (faces input)
         let ptg_out = assert_entity(&entities, 0, 4, "pipe-to-ground");
-        assert_eq!(ptg_out.direction, EntityDirection::South);
+        assert_eq!(ptg_out.direction, EntityDirection::North);
         assert_eq!(ptg_out.io_type.as_deref(), Some("output"));
 
         // Solid input belt 1 at y=2
