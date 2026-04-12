@@ -736,6 +736,10 @@ pub fn route_bus_ghost(
     // Emit a single long UG bridge for the horizontal instead of N separate
     // per-tile templates that would conflict.
     let mut template_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
+    // Subset of `template_zones` containing only per-tile (1x3) templates.
+    // Corridor templates are excluded because their run tiles still hold
+    // perpendicular trunks that must NOT be stripped by the retain pass.
+    let mut pertile_template_zone_bboxes: Vec<ClusterZone> = Vec::new();
     let mut template_regions: Vec<LayoutRegion> = Vec::new();
     let mut remaining_crossings: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut corridor_handled: FxHashSet<(i32, i32)> = FxHashSet::default();
@@ -987,6 +991,12 @@ pub fn route_bus_ghost(
                     clauses: 0,
                     solve_time_us: 0,
                 });
+                pertile_template_zone_bboxes.push(ClusterZone {
+                    x: zone.x,
+                    y: zone.y,
+                    w: zone.w,
+                    h: zone.h,
+                });
                 template_zones.push((ents, zone));
                 continue; // tile solved — don't add to remaining
             }
@@ -1045,9 +1055,11 @@ pub fn route_bus_ghost(
         ));
     }
 
-    // Remove ghost entities inside solved cluster zones, replace with SAT output.
-    // Only ghost-routed entities (segment_id starts with "ghost:") are removed;
-    // trunks, row template belts, splitters, and balancer entities stay in place.
+    // Remove entities inside solved cluster zones so the template/SAT
+    // output can take their tiles. Ghost entities removed in any zone;
+    // trunk/tapoff entities are additionally removed inside PER-TILE
+    // template zones (corridor templates and SAT zones must keep trunks
+    // because they bridge horizontals — the trunks stay perpendicular).
     if !solved_zones.is_empty() {
         let zone_bboxes: Vec<&ClusterZone> = solved_zones.iter().map(|(_, z)| z).collect();
 
@@ -1056,12 +1068,18 @@ pub fn route_bus_ghost(
             if !in_zone {
                 return true;
             }
-            // Keep non-ghost entities inside zones
-            let is_ghost = e
-                .segment_id
-                .as_ref()
-                .is_some_and(|s| s.starts_with("ghost:"));
-            !is_ghost
+            let seg = e.segment_id.as_deref().unwrap_or("");
+            if seg.starts_with("ghost:") {
+                return false;
+            }
+            // Inside per-tile template zones, also drop trunk/tapoff belts
+            // so the UG-in/out + surface belt can take those tiles.
+            let in_pertile_zone =
+                pertile_template_zone_bboxes.iter().any(|z| z.contains(e.x, e.y));
+            if in_pertile_zone && (seg.starts_with("trunk:") || seg.starts_with("tapoff:")) {
+                return false;
+            }
+            true
         });
 
         // Build set of occupied positions: row_entities + non-ghost entities
@@ -1526,10 +1544,13 @@ fn try_bridge(
     let ug_name = ug_for_belt(bridge_belt);
     let seg = Some(format!("junction:{}:{},{}", bridge_item, cx, cy));
 
-    let mut entities = Vec::new();
+    // `pre_existing` contains trunks and other non-ghost belts. Those get
+    // removed from per-tile template zones by the caller's retain pass, so
+    // we always emit the full UG pair + surface belt regardless.
+    let _ = pre_existing;
 
-    if !pre_existing.contains(&(cx, cy)) {
-        entities.push(PlacedEntity {
+    let entities = vec![
+        PlacedEntity {
             name: surface_belt.to_string(),
             x: cx,
             y: cy,
@@ -1537,11 +1558,8 @@ fn try_bridge(
             carries: Some(surface_item.clone()),
             segment_id: seg.clone(),
             ..Default::default()
-        });
-    }
-
-    if !pre_existing.contains(&ug_in) {
-        entities.push(PlacedEntity {
+        },
+        PlacedEntity {
             name: ug_name.to_string(),
             x: ug_in.0,
             y: ug_in.1,
@@ -1550,11 +1568,8 @@ fn try_bridge(
             carries: Some(bridge_item.clone()),
             segment_id: seg.clone(),
             ..Default::default()
-        });
-    }
-
-    if !pre_existing.contains(&ug_out) {
-        entities.push(PlacedEntity {
+        },
+        PlacedEntity {
             name: ug_name.to_string(),
             x: ug_out.0,
             y: ug_out.1,
@@ -1563,8 +1578,8 @@ fn try_bridge(
             carries: Some(bridge_item.clone()),
             segment_id: seg.clone(),
             ..Default::default()
-        });
-    }
+        },
+    ];
 
     let zone = ClusterZone {
         x: cx.min(ug_in.0).min(ug_out.0),
