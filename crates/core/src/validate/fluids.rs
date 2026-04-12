@@ -99,6 +99,15 @@ fn fluid_ports(entity_name: &str, mirror: bool) -> &'static [(i32, i32, &'static
 // check_pipe_isolation
 // ---------------------------------------------------------------------------
 
+fn opposite_direction(dir: EntityDirection) -> EntityDirection {
+    match dir {
+        EntityDirection::North => EntityDirection::South,
+        EntityDirection::South => EntityDirection::North,
+        EntityDirection::East => EntityDirection::West,
+        EntityDirection::West => EntityDirection::East,
+    }
+}
+
 /// For a pipe-to-ground entity, return the single surface-side neighbour tile.
 ///
 /// Input PTGs expose their surface on the side *opposite* their flow direction
@@ -216,64 +225,49 @@ pub fn check_pipe_isolation(layout_result: &LayoutResult) -> Vec<ValidationIssue
 
 /// Find pipe-to-ground pairs: returns a bidirectional map `pos_a ↔ pos_b`.
 ///
-/// PTGs travelling in the same direction along the same axis are paired:
-/// each input is matched with the nearest downstream output.
+/// PTG pairs must face each other along the same axis:
+/// input faces East ↔ output faces West (same y), or
+/// input faces South ↔ output faces North (same x).
 fn find_ptg_pairs(layout_result: &LayoutResult) -> FxHashMap<(i32, i32), (i32, i32)> {
-    // Group PTGs by (direction, axis_value).
-    // EAST/WEST flow → axis is y; NORTH/SOUTH flow → axis is x.
-    type GroupKey = (u8, i32); // (direction as u8, axis)
-    let mut groups: FxHashMap<GroupKey, Vec<&PlacedEntity>> = FxHashMap::default();
+    // Collect inputs and outputs separately
+    let mut inputs: Vec<&PlacedEntity> = Vec::new();
+    let mut outputs: Vec<&PlacedEntity> = Vec::new();
 
     for e in &layout_result.entities {
         if e.name != "pipe-to-ground" {
             continue;
         }
-        let axis = match e.direction {
-            EntityDirection::East | EntityDirection::West => e.y,
-            EntityDirection::North | EntityDirection::South => e.x,
-        };
-        groups
-            .entry((e.direction as u8, axis))
-            .or_default()
-            .push(e);
+        match e.io_type.as_deref() {
+            Some("input") => inputs.push(e),
+            Some("output") => outputs.push(e),
+            _ => {}
+        }
     }
 
     let mut pairs: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
 
-    for group in groups.values() {
-        let mut inputs: Vec<&PlacedEntity> = group
-            .iter()
-            .copied()
-            .filter(|e| e.io_type.as_deref() == Some("input"))
-            .collect();
-        let mut outputs: Vec<&PlacedEntity> = group
-            .iter()
-            .copied()
-            .filter(|e| e.io_type.as_deref() == Some("output"))
-            .collect();
+    // For each input, find the nearest output that faces back toward it on the same axis.
+    let mut remaining: Vec<&PlacedEntity> = outputs;
 
-        inputs.sort_by_key(|e| (e.x, e.y));
-        outputs.sort_by_key(|e| (e.x, e.y));
-
-        let mut remaining = outputs;
-
-        for inp in &inputs {
-            let dir = inp.direction;
-            let matched_idx = remaining.iter().position(|out| {
-                match dir {
-                    EntityDirection::East => out.x > inp.x,
-                    EntityDirection::West => out.x < inp.x,
-                    EntityDirection::South => out.y > inp.y,
-                    EntityDirection::North => out.y < inp.y,
-                }
-            });
-            if let Some(idx) = matched_idx {
-                let out = remaining.remove(idx);
-                let a = (inp.x, inp.y);
-                let b = (out.x, out.y);
-                pairs.insert(a, b);
-                pairs.insert(b, a);
+    for inp in &inputs {
+        let expected_dir = opposite_direction(inp.direction);
+        let matched_idx = remaining.iter().position(|out| {
+            if out.direction != expected_dir {
+                return false;
             }
+            match inp.direction {
+                EntityDirection::East => out.y == inp.y && out.x > inp.x,
+                EntityDirection::West => out.y == inp.y && out.x < inp.x,
+                EntityDirection::South => out.x == inp.x && out.y > inp.y,
+                EntityDirection::North => out.x == inp.x && out.y < inp.y,
+            }
+        });
+        if let Some(idx) = matched_idx {
+            let out = remaining.remove(idx);
+            let a = (inp.x, inp.y);
+            let b = (out.x, out.y);
+            pairs.insert(a, b);
+            pairs.insert(b, a);
         }
     }
 
@@ -738,7 +732,7 @@ mod tests {
     fn ptg_pairs_east_direction() {
         let lr = layout(vec![
             ptg(0, 0, EntityDirection::East, "input", None),
-            ptg(3, 0, EntityDirection::East, "output", None),
+            ptg(3, 0, EntityDirection::West, "output", None),
         ]);
         let pairs = find_ptg_pairs(&lr);
         assert_eq!(pairs.get(&(0, 0)), Some(&(3, 0)));
@@ -749,7 +743,7 @@ mod tests {
     fn ptg_pairs_north_direction() {
         let lr = layout(vec![
             ptg(0, 3, EntityDirection::North, "input", None),
-            ptg(0, 0, EntityDirection::North, "output", None),
+            ptg(0, 0, EntityDirection::South, "output", None),
         ]);
         let pairs = find_ptg_pairs(&lr);
         assert_eq!(pairs.get(&(0, 3)), Some(&(0, 0)));
@@ -758,7 +752,7 @@ mod tests {
 
     #[test]
     fn ptg_pairs_wrong_direction_not_paired() {
-        // Output is behind the input (EAST flow) → no pairing
+        // Output faces same direction as input instead of opposite → no pairing
         let lr = layout(vec![
             ptg(3, 0, EntityDirection::East, "input", None),
             ptg(0, 0, EntityDirection::East, "output", None),
