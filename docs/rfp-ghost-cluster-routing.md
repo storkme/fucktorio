@@ -250,44 +250,56 @@ Key outputs:
 - Tier-5 measurement at 20/s AM3 deferred — the current pipeline can't
   produce that layout at all. Measured 5/s AM2 instead, got clean data.
 
-### Phase 1 — Pole-first placement
+### Phase 1 — Pole-first placement (DONE)
 
-Move `place_poles` from the end of `build_bus_layout` to immediately after
-`place_rows`. Update the obstacle set construction to include poles upfront.
-All existing e2e tests must stay green.
+`place_poles` now runs inside the retry loop before `route_bus`, using
+only row entities to build the occupied set. Poles are appended to the
+entity list passed to the router, making them hard obstacles from the
+start. Spot-checked: zero pole-position drift on tier-2, tier-3 tests.
 
-No new behaviour yet — this is a refactor to prove pole coverage is stable
-without the "place last, patch the remainder" ordering.
+One regression caught and fixed: oil-refinery fluid ports (placed by the
+router, not row templates) collided with pre-placed poles. Fix: reserve
+planned fluid-lane tiles (vertical trunk connections + horizontal PTG
+chain endpoints) in the pole placer's occupied set.
 
-### Phase 2 — Ghost A\* prototype
+### Phase 2 — Ghost A\* prototype (DONE)
 
-Add a new router entry point alongside (not replacing) `route_lane`:
+Implemented as `crates/core/src/bus/ghost_router.rs`, with `ghost_astar`
+in `astar.rs` and env var gate in `layout.rs`. Gated behind
+`FUCKTORIO_GHOST_ROUTING=1`. When set, `route_bus_ghost` replaces
+`route_bus`: places trunk belts + splitter stamps + balancer blocks as
+hard obstacles, routes every connecting-belt spec with `ghost_astar`,
+records ghost crossings, union-finds them into clusters.
 
-```rust
-pub fn route_lane_ghost(
-    lane: &BusLane,
-    row_spans: &[RowSpan],
-    hard_obstacles: &FxHashSet<(i32, i32)>,
-    existing_belts: &FxHashSet<(i32, i32)>,
-    belt_tier: &str,
-) -> Vec<PlacedEntity>;
-```
+**Key result on `tier4_advanced_circuit_from_ore_am1`:**
+- 36/36 specs routed, **0 unroutable**
+- 1 ghost cluster at **348 tiles** (545 expected validator errors)
+- 3166 layout entities
 
-Gated behind `FUCKTORIO_GHOST_ROUTING=1` env var. Test it on the AC-from-ores
-fixture first. No changes to the default pipeline.
+**Cluster size note:** Phase 0 per-failing-spec measurement showed
+4 separate ~31-tile clusters. Phase 2 full spec set produces 1 cluster
+at 348 tiles because tap-offs at different y-values share trunk-crossing
+tiles. This is the expected SAT input for Phase 3. Varisat handles
+~1000-2000 variables in <100ms. Bifurcation (#138) can decompose if
+needed.
 
-### Phase 3 — Cluster extraction + SAT
+### Phase 3 — Cluster SAT resolution
 
-Build the union-find, feed clusters to `sat::solve_crossing_zone`, and
-replace the ghost path's tiles in that region with the SAT-solved entities.
+Feed ghost clusters from Phase 2 into `sat::solve_crossing_zone`. For
+each cluster: extract boundary ports from ghost path endpoints, build a
+`CrossingZone`, solve, replace ghost-crossing surface belts with
+SAT-solved entities (surface belts + UG pairs). Unsolvable clusters are
+hard failures with diagnostic output.
 
-**Solve clusters in parallel from day one.** Each cluster is an independent
-SAT problem — varisat is single-threaded per-instance but shares no global
-state, so `clusters.par_iter().map(sat::solve_crossing_zone)` gives linear
-speedup in core count for free. On tier-5 layouts with dozens of clusters
-this is load-bearing, not a nice-to-have. Related: #139 (parallelise
-validators the same way; A\* negotiation is the only phase that stays
-sequential).
+**Solve clusters in parallel from day one.** Each cluster is independent;
+`clusters.par_iter().map(sat::solve_crossing_zone)` gives linear speedup.
+Related: #139 (parallelise validators the same way).
+
+**Main design question:** boundary extraction — how to derive
+`ZoneBoundary` entries from the ghost cluster's edge tiles. Each ghost
+path entering/exiting the cluster bbox defines a port (item, direction,
+position on boundary). The ghost router records which spec placed each
+crossing tile and specs carry item names + directional intent.
 
 ### Phase 4 — Gate flip + cleanup
 
