@@ -2633,7 +2633,7 @@ fn chain_ptg_pairs_vertical(
             name: "pipe-to-ground".to_string(),
             x,
             y: out_pos,
-            direction: EntityDirection::South,
+            direction: EntityDirection::North,
             io_type: Some("output".to_string()),
             carries: Some(item.to_string()),
             ..Default::default()
@@ -2678,7 +2678,7 @@ fn chain_ptg_pairs_horizontal(
             name: "pipe-to-ground".to_string(),
             x: out_pos,
             y,
-            direction: EntityDirection::East,
+            direction: EntityDirection::West,
             io_type: Some("output".to_string()),
             carries: Some(item.to_string()),
             ..Default::default()
