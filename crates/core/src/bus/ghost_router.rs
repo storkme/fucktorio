@@ -421,6 +421,8 @@ pub fn route_bus_ghost(
                     path_len: path.len(),
                     crossings: crossings.len(),
                     turns,
+                    tiles: path.clone(),
+                    crossing_tiles: crossings.clone(),
                 });
 
                 // Emit entities via render_path

@@ -271,6 +271,8 @@ pub enum TraceEvent {
         path_len: usize,
         crossings: usize,
         turns: usize,
+        tiles: Vec<(i32, i32)>,
+        crossing_tiles: Vec<(i32, i32)>,
     },
     GhostSpecFailed {
         spec_key: String,

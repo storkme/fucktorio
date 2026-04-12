@@ -13,6 +13,9 @@ type RouteFailureEvent = Extract<TraceEvent, { phase: "RouteFailure" }>;
 type LaneConsolidatedEvent = Extract<TraceEvent, { phase: "LaneConsolidated" }>;
 type RowSplitEvent = Extract<TraceEvent, { phase: "RowSplit" }>;
 type LaneOrderOptimizedEvent = Extract<TraceEvent, { phase: "LaneOrderOptimized" }>;
+type GhostSpecRoutedEvent = Extract<TraceEvent, { phase: "GhostSpecRouted" }>;
+type GhostSpecFailedEvent = Extract<TraceEvent, { phase: "GhostSpecFailed" }>;
+type GhostRoutingCompleteEvent = Extract<TraceEvent, { phase: "GhostRoutingComplete" }>;
 
 /** Draw a dashed line segment on a Graphics context. */
 function drawDashedLine(
@@ -188,10 +191,95 @@ export function renderTraceOverlay(
     layer.addChild(label);
   }
 
-  // --- Phase summary label (top-left, above layout) ---
+  const summaryStyle = new TextStyle({ fontSize: 10, fill: "#aaa", fontFamily: "monospace" });
+
+  // --- Ghost routing paths (from GhostSpecRouted) ---
+  const ghostPalette = [
+    0x569cd6, 0xd0a040, 0x6ac080, 0xc06090, 0x70b0e0,
+    0xb080d0, 0xe07050, 0x60c0c0, 0xd0d060, 0x80b060,
+  ];
+  let ghostPathIdx = 0;
+  for (const evt of events) {
+    if (evt.phase !== "GhostSpecRouted") continue;
+    const d = (evt as GhostSpecRoutedEvent).data;
+    const color = ghostPalette[ghostPathIdx % ghostPalette.length];
+    ghostPathIdx++;
+    const g = new Graphics();
+    // Draw path polyline through tile centers
+    if (d.tiles && d.tiles.length > 1) {
+      g.setStrokeStyle({ width: 3, color, alpha: 0.7 });
+      g.moveTo(d.tiles[0][0] * TILE_PX + TILE_PX / 2, d.tiles[0][1] * TILE_PX + TILE_PX / 2);
+      for (let i = 1; i < d.tiles.length; i++) {
+        g.lineTo(d.tiles[i][0] * TILE_PX + TILE_PX / 2, d.tiles[i][1] * TILE_PX + TILE_PX / 2);
+      }
+      g.stroke();
+    }
+    // Crossing tiles as yellow diamonds
+    if (d.crossing_tiles) {
+      for (const [cx, cy] of d.crossing_tiles) {
+        const px = cx * TILE_PX + TILE_PX / 2;
+        const py = cy * TILE_PX + TILE_PX / 2;
+        const ds = TILE_PX * 0.25;
+        g.moveTo(px, py - ds).lineTo(px + ds, py).lineTo(px, py + ds).lineTo(px - ds, py).closePath()
+          .fill({ color: 0xffdd00, alpha: 0.85 });
+      }
+    }
+    g.eventMode = "static";
+    g.on("pointerenter", () => onHover(`Ghost path: ${d.spec_key} len=${d.path_len} crossings=${d.crossings} turns=${d.turns}`));
+    g.on("pointerleave", () => onHover(null));
+    layer.addChild(g);
+  }
+
+  // --- Ghost spec failures (from GhostSpecFailed) ---
+  for (const evt of events) {
+    if (evt.phase !== "GhostSpecFailed") continue;
+    const d = (evt as GhostSpecFailedEvent).data;
+    const cx = d.from_x * TILE_PX + TILE_PX / 2;
+    const cy = d.from_y * TILE_PX + TILE_PX / 2;
+    const halfSpan = 4;
+    const g = new Graphics();
+    g.label = "RouteFailure";
+    g.moveTo(cx - halfSpan, cy - halfSpan).lineTo(cx + halfSpan, cy + halfSpan).stroke({ width: 2, color: 0xff3333 });
+    g.moveTo(cx + halfSpan, cy - halfSpan).lineTo(cx - halfSpan, cy + halfSpan).stroke({ width: 2, color: 0xff3333 });
+    drawDashedLine(g, cx, cy, d.to_x * TILE_PX + TILE_PX / 2, d.to_y * TILE_PX + TILE_PX / 2,
+      6, 4, { width: 1, color: 0xff3333, alpha: 0.6 });
+    g.eventMode = "static";
+    g.on("pointerenter", () => onHover(`Ghost failed: ${d.spec_key} (${d.from_x},${d.from_y})→(${d.to_x},${d.to_y})`));
+    g.on("pointerleave", () => onHover(null));
+    layer.addChild(g);
+  }
+
+  // --- Ghost cluster zones (from GhostClusterSolved / GhostClusterFailed) ---
+  for (const evt of events) {
+    if (evt.phase !== "GhostClusterSolved" && evt.phase !== "GhostClusterFailed") continue;
+    const isFailed = evt.phase === "GhostClusterFailed";
+    const solved = isFailed ? null : (evt as Extract<TraceEvent, { phase: "GhostClusterSolved" }>).data;
+    const failed = isFailed ? (evt as Extract<TraceEvent, { phase: "GhostClusterFailed" }>).data : null;
+    const base = solved ?? failed!;
+    const color = isFailed ? 0xff4444 : 0x44aaff;
+    const g = new Graphics();
+    g.rect(base.zone_x * TILE_PX, base.zone_y * TILE_PX, base.zone_w * TILE_PX, base.zone_h * TILE_PX)
+      .fill({ color, alpha: isFailed ? 0.15 : 0.08 })
+      .stroke({ width: isFailed ? 2 : 1, color, alpha: isFailed ? 0.9 : 0.6 });
+    g.eventMode = "static";
+    const solveInfo = solved ? ` vars=${solved.variables} clauses=${solved.clauses} ${(solved.solve_time_us / 1000).toFixed(1)}ms` : "";
+    g.on("pointerenter", () => onHover(`Cluster #${base.cluster_id}: ${base.zone_w}x${base.zone_h} @ (${base.zone_x},${base.zone_y}) ${base.boundary_count} ports${solveInfo}${isFailed ? " FAILED" : ""}`));
+    g.on("pointerleave", () => onHover(null));
+    layer.addChild(g);
+  }
+
+  // --- Ghost routing summary (from GhostRoutingComplete) ---
+  const ghostComplete = events.find((e): e is GhostRoutingCompleteEvent => e.phase === "GhostRoutingComplete");
+  if (ghostComplete) {
+    const d = ghostComplete.data;
+    const info = `Ghost: ${d.entity_count} entities, ${d.cluster_count} clusters (max ${d.max_cluster_tiles} tiles), ${d.unroutable_count} unroutable`;
+    const summaryGhost = new Text({ text: info, style: summaryStyle });
+    summaryGhost.x = 4;
+    summaryGhost.y = -28;
+    layer.addChild(summaryGhost);
+  }
   const phaseNames = events.map(e => e.phase);
   const uniquePhases = [...new Set(phaseNames)];
-  const summaryStyle = new TextStyle({ fontSize: 10, fill: "#aaa", fontFamily: "monospace" });
   const laneOrder = events.find((e): e is LaneOrderOptimizedEvent => e.phase === "LaneOrderOptimized");
   const crossingSuffix = laneOrder ? ` | lane order: ${laneOrder.data.crossing_score} crossings` : "";
   const summaryText = new Text({ text: `Trace: ${uniquePhases.join(" → ")}${crossingSuffix}`, style: summaryStyle });
