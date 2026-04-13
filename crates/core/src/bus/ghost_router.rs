@@ -52,6 +52,9 @@ pub struct GhostRouteResult {
     pub merge_max_x: i32,
     /// Layout regions (empty for Phase 2; SAT fills these in Phase 3).
     pub regions: Vec<LayoutRegion>,
+    /// Non-fatal warnings (direct/bare modes produce these for cases
+    /// that would hard-error in the default pipeline).
+    pub warnings: Vec<String>,
 }
 
 /// A spec for one connecting belt run.
@@ -76,6 +79,7 @@ pub fn route_bus_ghost(
     row_entities: &[PlacedEntity],
 ) -> Result<GhostRouteResult, String> {
     let mut entities: Vec<PlacedEntity> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let mut max_y = total_height;
     let mut merge_max_x = 0i32;
 
@@ -1364,10 +1368,21 @@ pub fn route_bus_ghost(
     regions.append(&mut sat_regions);
 
     if failed_count > 0 {
-        return Err(format!(
+        let msg = format!(
             "ghost router: {} of {} clusters failed SAT resolution",
             failed_count, cluster_count
-        ));
+        );
+        // Direct and bare modes are exploratory — they deliberately produce
+        // layouts the current pipeline wasn't designed for (A* walks through
+        // row belts, templates skip RowEntity tiles, more crossings fall
+        // through to SAT). Hard-erroring blocks visualization, which is
+        // the whole point of the spike. Downgrade to a warning so the
+        // layout still renders with the problematic clusters unresolved.
+        if direct_mode || bare_mode {
+            warnings.push(msg);
+        } else {
+            return Err(msg);
+        }
     }
 
     // Step 6: sync `entities` to Occupancy's released state.
@@ -1462,6 +1477,7 @@ pub fn route_bus_ghost(
         max_y,
         merge_max_x,
         regions,
+        warnings,
     })
 }
 

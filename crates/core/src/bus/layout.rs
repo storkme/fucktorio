@@ -214,6 +214,9 @@ pub fn build_bus_layout(
     let mut max_y: i32;
     let mut merge_max_x: i32;
     let mut regions: Vec<crate::models::LayoutRegion>;
+    // Extra warnings surfaced by the ghost router (direct/bare modes
+    // downgrade some hard errors to warnings so layouts still render).
+    let mut ghost_warnings: Vec<String> = Vec::new();
     // Pole entities computed from row positions before routing so poles are
     // visible to the router as hard obstacles. Updated each loop iteration
     // when rows are re-placed. The initial value is immediately overwritten
@@ -446,6 +449,7 @@ pub fn build_bus_layout(
             max_y = ghost_result.max_y;
             merge_max_x = ghost_result.merge_max_x;
             regions = ghost_result.regions;
+            ghost_warnings.extend(ghost_result.warnings);
             #[cfg(not(target_arch = "wasm32"))]
             crate::trace::emit(crate::trace::TraceEvent::PhaseTime {
                 phase: "ghost_routing".to_string(),
@@ -600,7 +604,7 @@ pub fn build_bus_layout(
     }
 
     // Check for missing balancer templates and collect warnings
-    let mut warnings = Vec::new();
+    let mut warnings = ghost_warnings;
     let templates = crate::bus::balancer_library::balancer_templates();
     for fam in &families {
         let (n, m) = (fam.shape.0 as u32, fam.shape.1 as u32);
