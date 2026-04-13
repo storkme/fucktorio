@@ -545,6 +545,27 @@ impl CrossingEncoder {
                         ]);
                     }
 
+                    // 1a. UG-out → surface neighbor: a UG-out emits into
+                    //     its downstream tile and the surface item must
+                    //     propagate, same as a surface belt. This clause
+                    //     was missing from the original encoder and lets
+                    //     the solver emit uoc → iron-plate belt chains
+                    //     on larger zones.
+                    for bit in 0..nb {
+                        cnf.add(&[
+                            t.is_ug_out.negative(),
+                            t.out_dir[d].negative(),
+                            t.item_bits[bit].negative(),
+                            n.item_bits[bit].positive(),
+                        ]);
+                        cnf.add(&[
+                            t.is_ug_out.negative(),
+                            t.out_dir[d].negative(),
+                            t.item_bits[bit].positive(),
+                            n.item_bits[bit].negative(),
+                        ]);
+                    }
+
                     // 2. UG input → underground: ug_in facing d →
                     //    neighbor's underground channel matches this
                     //    tile's surface item.
@@ -997,6 +1018,439 @@ mod tests {
 
         let result = solve_crossing_zone(&zone, 4, "transport-belt");
         assert!(result.is_none(), "Conflicting 1x1 should be UNSAT");
+    }
+
+    /// Build a realistic band-shaped zone: a horizontal band that contains
+    /// `n_trunks` vertical trunks crossing `n_horizontals` horizontal specs.
+    /// Trunks are spaced evenly along the x-axis; horizontal specs run at
+    /// distinct y values inside the band. Items are shared across trunks:
+    /// real bus layouts carry ≤16 distinct items total, and a given band
+    /// usually has fewer (encoder cap is 16 items).
+    fn band_zone(width: u32, height: u32, n_trunks: usize, n_horizontals: usize) -> CrossingZone {
+        assert!(width >= 4 && height >= 3);
+        assert!(n_trunks >= 1 && n_horizontals >= 1);
+        assert!(n_horizontals <= (height as usize).saturating_sub(2));
+
+        // Share items across trunks; encoder supports ≤16 items.
+        let n_trunk_items = n_trunks.min(6);
+        let n_horiz_items = n_horizontals.clamp(1, 4);
+
+        let mut boundaries = Vec::new();
+
+        for i in 0..n_trunks {
+            let trunk_x =
+                1 + ((i as u32 * (width - 2)) / n_trunks.max(1) as u32) as i32;
+            let item = format!("trunk-item-{}", i % n_trunk_items);
+            boundaries.push(ZoneBoundary {
+                x: trunk_x,
+                y: 0,
+                direction: EntityDirection::South,
+                item: item.clone(),
+                is_input: true,
+            });
+            boundaries.push(ZoneBoundary {
+                x: trunk_x,
+                y: (height - 1) as i32,
+                direction: EntityDirection::South,
+                item,
+                is_input: false,
+            });
+        }
+
+        for j in 0..n_horizontals {
+            let horiz_y = 1 + j as i32;
+            let item = format!("horiz-item-{}", j % n_horiz_items);
+            boundaries.push(ZoneBoundary {
+                x: 0,
+                y: horiz_y,
+                direction: EntityDirection::East,
+                item: item.clone(),
+                is_input: true,
+            });
+            boundaries.push(ZoneBoundary {
+                x: (width - 1) as i32,
+                y: horiz_y,
+                direction: EntityDirection::East,
+                item,
+                is_input: false,
+            });
+        }
+
+        CrossingZone {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            boundaries,
+            forced_empty: vec![],
+        }
+    }
+
+    /// Validate a solved band: overlap check, port-adjacency carry check,
+    /// and flow-trace from each input port to a matching output port.
+    ///
+    /// Returns a list of human-readable problems. Empty list = valid.
+    fn validate_band_solution(
+        zone: &CrossingZone,
+        solution: &CrossingZoneSolution,
+    ) -> Vec<String> {
+        use std::collections::HashMap;
+        let mut problems = Vec::new();
+
+        let mut by_pos: HashMap<(i32, i32), &PlacedEntity> = HashMap::new();
+        for e in &solution.entities {
+            if let Some(prev) = by_pos.insert((e.x, e.y), e) {
+                problems.push(format!(
+                    "overlap: two entities at ({},{}): {} vs {}",
+                    e.x, e.y, prev.name, e.name
+                ));
+            }
+        }
+
+        // For each input port, verify there's an entity at the port position
+        // carrying the right item.
+        for b in &zone.boundaries {
+            let ent = match by_pos.get(&(b.x, b.y)) {
+                Some(e) => e,
+                None => {
+                    problems.push(format!(
+                        "missing entity at {} port ({},{}) item={}",
+                        if b.is_input { "input" } else { "output" },
+                        b.x,
+                        b.y,
+                        b.item
+                    ));
+                    continue;
+                }
+            };
+            match ent.carries.as_deref() {
+                Some(c) if c == b.item => {}
+                Some(c) => problems.push(format!(
+                    "{} port ({},{}) expected item={} but entity carries {}",
+                    if b.is_input { "input" } else { "output" },
+                    b.x,
+                    b.y,
+                    b.item,
+                    c
+                )),
+                None => problems.push(format!(
+                    "{} port ({},{}) expected item={} but entity {} carries nothing",
+                    if b.is_input { "input" } else { "output" },
+                    b.x,
+                    b.y,
+                    b.item,
+                    ent.name
+                )),
+            }
+        }
+
+        // Flow trace: follow each input port through the belt graph until
+        // we exit the zone. Verify we land on an output port with a
+        // matching item.
+        for b in zone.boundaries.iter().filter(|b| b.is_input) {
+            let out = trace_flow(zone, &by_pos, b);
+            match out {
+                Ok((ox, oy, item)) => {
+                    let matched = zone.boundaries.iter().any(|p| {
+                        !p.is_input && p.x == ox && p.y == oy && p.item == item
+                    });
+                    if !matched {
+                        problems.push(format!(
+                            "input ({},{}) item={} traced to ({},{}) item={} — no matching output port",
+                            b.x, b.y, b.item, ox, oy, item
+                        ));
+                    }
+                }
+                Err(why) => problems.push(format!(
+                    "input ({},{}) item={} trace failed: {}",
+                    b.x, b.y, b.item, why
+                )),
+            }
+        }
+
+        problems
+    }
+
+    fn step(dir: EntityDirection) -> (i32, i32) {
+        match dir {
+            EntityDirection::North => (0, -1),
+            EntityDirection::East => (1, 0),
+            EntityDirection::South => (0, 1),
+            EntityDirection::West => (-1, 0),
+        }
+    }
+
+    fn trace_flow(
+        zone: &CrossingZone,
+        by_pos: &std::collections::HashMap<(i32, i32), &PlacedEntity>,
+        input: &ZoneBoundary,
+    ) -> Result<(i32, i32, String), String> {
+        let mut visited = std::collections::HashSet::new();
+        let mut x = input.x;
+        let mut y = input.y;
+        let x_lo = zone.x;
+        let x_hi = zone.x + zone.width as i32 - 1;
+        let y_lo = zone.y;
+        let y_hi = zone.y + zone.height as i32 - 1;
+
+        for _ in 0..10_000 {
+            if !visited.insert((x, y)) {
+                return Err(format!("loop at ({},{})", x, y));
+            }
+            let ent = match by_pos.get(&(x, y)) {
+                Some(e) => e,
+                None => return Err(format!("no entity at ({},{})", x, y)),
+            };
+            let item = ent
+                .carries
+                .as_ref()
+                .ok_or_else(|| format!("entity at ({},{}) carries nothing", x, y))?
+                .clone();
+            if item != input.item {
+                return Err(format!(
+                    "item mismatch at ({},{}): expected {} got {}",
+                    x, y, input.item, item
+                ));
+            }
+            let next_dir = ent.direction;
+            let (dx, dy) = step(next_dir);
+
+            // Underground-belt input: jump to its matching output along the
+            // direction, skipping intermediate tiles.
+            if ent.name.ends_with("underground-belt")
+                && ent.io_type.as_deref() == Some("input")
+            {
+                let mut jx = x + dx;
+                let mut jy = y + dy;
+                let mut jumped = false;
+                for _ in 0..6 {
+                    if let Some(peer) = by_pos.get(&(jx, jy)) {
+                        if peer.name == ent.name
+                            && peer.io_type.as_deref() == Some("output")
+                            && peer.direction == next_dir
+                        {
+                            x = jx;
+                            y = jy;
+                            jumped = true;
+                            break;
+                        }
+                    }
+                    jx += dx;
+                    jy += dy;
+                }
+                if !jumped {
+                    return Err(format!("UG-in at ({},{}) has no matching UG-out", x, y));
+                }
+                // Continue tracing from the UG-out tile.
+            }
+
+            let nx = x + dx;
+            let ny = y + dy;
+
+            // Exit: next tile is outside the zone. Done.
+            if nx < x_lo || nx > x_hi || ny < y_lo || ny > y_hi {
+                return Ok((x, y, item));
+            }
+
+            x = nx;
+            y = ny;
+        }
+        Err("trace exceeded 10000 steps".into())
+    }
+
+    fn render_band_with_items(
+        zone: &CrossingZone,
+        solution: &CrossingZoneSolution,
+    ) -> String {
+        use std::collections::HashMap;
+        let w = zone.width as usize;
+        let h = zone.height as usize;
+        let mut by_pos: HashMap<(i32, i32), &PlacedEntity> = HashMap::new();
+        for e in &solution.entities {
+            by_pos.insert((e.x, e.y), e);
+        }
+        let mut out = String::new();
+        for y in 0..h {
+            out.push_str("    ");
+            for x in 0..w {
+                if let Some(e) = by_pos.get(&(x as i32 + zone.x, y as i32 + zone.y)) {
+                    let tag = match e.name.as_str() {
+                        n if n.ends_with("underground-belt") => {
+                            match e.io_type.as_deref() {
+                                Some("input") => "ui",
+                                Some("output") => "uo",
+                                _ => "u?",
+                            }
+                        }
+                        _ => match e.direction {
+                            EntityDirection::North => " N",
+                            EntityDirection::East => " E",
+                            EntityDirection::South => " S",
+                            EntityDirection::West => " W",
+                        },
+                    };
+                    let item_label = e.carries.as_deref().map(|c| c.chars().next().unwrap_or('?')).unwrap_or('·');
+                    out.push_str(&format!("{}{} ", tag, item_label));
+                } else {
+                    out.push_str(" .. ");
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn render_band_solution(
+        zone: &CrossingZone,
+        solution: &CrossingZoneSolution,
+    ) -> String {
+        use std::collections::HashMap;
+        let w = zone.width as usize;
+        let h = zone.height as usize;
+        let mut grid = vec![vec!['.'; w]; h];
+
+        let mut by_pos: HashMap<(i32, i32), &PlacedEntity> = HashMap::new();
+        for e in &solution.entities {
+            by_pos.insert((e.x, e.y), e);
+        }
+
+        for y in 0..h {
+            for x in 0..w {
+                if let Some(e) = by_pos.get(&(x as i32 + zone.x, y as i32 + zone.y)) {
+                    let glyph = if e.name.ends_with("underground-belt") {
+                        match (e.direction, e.io_type.as_deref()) {
+                            (EntityDirection::North, Some("input")) => '↥',
+                            (EntityDirection::North, Some("output")) => '▲',
+                            (EntityDirection::East, Some("input")) => '↦',
+                            (EntityDirection::East, Some("output")) => '▶',
+                            (EntityDirection::South, Some("input")) => '↧',
+                            (EntityDirection::South, Some("output")) => '▼',
+                            (EntityDirection::West, Some("input")) => '↤',
+                            (EntityDirection::West, Some("output")) => '◀',
+                            _ => '?',
+                        }
+                    } else {
+                        match e.direction {
+                            EntityDirection::North => '↑',
+                            EntityDirection::East => '→',
+                            EntityDirection::South => '↓',
+                            EntityDirection::West => '←',
+                        }
+                    };
+                    grid[y][x] = glyph;
+                }
+            }
+        }
+
+        let mut out = String::new();
+        for row in &grid {
+            out.push_str("    ");
+            out.extend(row.iter());
+            out.push('\n');
+        }
+        out
+    }
+
+    fn time_band(
+        label: &str,
+        width: u32,
+        height: u32,
+        n_trunks: usize,
+        n_horizontals: usize,
+        render: bool,
+    ) -> Option<CrossingZoneSolution> {
+        let zone = band_zone(width, height, n_trunks, n_horizontals);
+        let n_ports = zone.boundaries.len();
+        let t = std::time::Instant::now();
+        let result = solve_crossing_zone(&zone, 4, "transport-belt");
+        let elapsed = t.elapsed();
+        match result {
+            Some(sol) => {
+                let problems = validate_band_solution(&zone, &sol);
+                let verdict = if problems.is_empty() {
+                    "VALID".to_string()
+                } else {
+                    format!("INVALID ({} issues)", problems.len())
+                };
+                eprintln!(
+                    "  {label}: {width}x{height} trunks={n_trunks} horiz={n_horizontals} ports={n_ports}  {vars} vars  {clauses} clauses  solver={solver_us}µs  wall={wall_ms:.1}ms  {verdict}",
+                    vars = sol.stats.variables,
+                    clauses = sol.stats.clauses,
+                    solver_us = sol.stats.solve_time_us,
+                    wall_ms = elapsed.as_secs_f64() * 1e3,
+                );
+                for p in problems.iter().take(6) {
+                    eprintln!("      ✗ {}", p);
+                }
+                if render {
+                    eprint!("{}", render_band_solution(&zone, &sol));
+                }
+                Some(sol)
+            }
+            None => {
+                eprintln!(
+                    "  {label}: {width}x{height} trunks={n_trunks} horiz={n_horizontals} ports={n_ports}  wall={wall_ms:.1}ms  UNSAT",
+                    wall_ms = elapsed.as_secs_f64() * 1e3,
+                );
+                None
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn validate_existing_small_tests() {
+        // Re-run the existing small tests through the trace validator to
+        // see if they are actually valid or just getting lucky.
+        eprintln!("validating existing small cases via flow trace:");
+
+        let cases = [
+            ("3x3", simple_crossing_zone(3, 3)),
+            ("5x5", simple_crossing_zone(5, 5)),
+            ("7x5", simple_crossing_zone(7, 5)),
+            ("9x5", simple_crossing_zone(9, 5)),
+            ("11x5", simple_crossing_zone(11, 5)),
+            ("15x5", simple_crossing_zone(15, 5)),
+            ("21x5", simple_crossing_zone(21, 5)),
+        ];
+        for (label, zone) in cases {
+            match solve_crossing_zone(&zone, 4, "transport-belt") {
+                Some(sol) => {
+                    let problems = validate_band_solution(&zone, &sol);
+                    let verdict = if problems.is_empty() {
+                        "VALID".to_string()
+                    } else {
+                        format!("INVALID ({} issues)", problems.len())
+                    };
+                    eprintln!("  {label}: {verdict}");
+                    for p in problems.iter().take(3) {
+                        eprintln!("      ✗ {}", p);
+                    }
+                    if !problems.is_empty() || label == "3x3" {
+                        eprint!("{}", render_band_solution(&zone, &sol));
+                        if label == "5x5" {
+                            eprint!("   items+dirs for 5x5:\n{}", render_band_with_items(&zone, &sol));
+                        }
+                    }
+                }
+                None => eprintln!("  {label}: UNSAT"),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn band_regions_sat_bench() {
+        eprintln!("band-regions SAT benchmark:");
+        time_band("baseline 5x5", 5, 5, 1, 1, true);
+        time_band("small band ", 30, 5, 4, 2, true);
+        time_band("medium band", 50, 5, 8, 2, false);
+        time_band("tier2 band ", 90, 5, 12, 2, false);
+        time_band("tier2 wide ", 90, 5, 16, 3, false);
+        time_band("tier4 merged-3", 90, 9, 12, 3, false);
+        time_band("tier4 wide ", 124, 7, 14, 3, false);
+        time_band("stress big ", 124, 9, 20, 4, false);
     }
 
     #[test]
