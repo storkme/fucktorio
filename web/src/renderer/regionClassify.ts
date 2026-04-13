@@ -192,9 +192,10 @@ export function classifyRegion(region: LayoutRegion): RegionClassification {
 /** Colour for a region based on engine-assigned kind. */
 export function kindColor(kind: string): number {
   switch (kind) {
-    case "corridor_template":  return 0x3d7bb5; // blue
-    case "junction_template":  return 0x4aa66f; // green
-    case "ghost_cluster":      return 0xd08040; // orange
+    case "corridor_template":  return 0x3d7bb5; // blue — T2 corridor
+    case "junction_template":  return 0x4aa66f; // green — T1 perpendicular
+    case "ghost_cluster":      return 0xd08040; // orange — legacy SAT (no longer produced)
+    case "unresolved":         return 0xd04040; // red — junction solver work needed
     default:                   return 0x808080; // gray
   }
 }
