@@ -62,35 +62,6 @@ pub fn layout_ghost(solver_result: SolverResult, max_belt_tier: Option<String>) 
         .map_err(|e| JsError::new(&e))
 }
 
-/// Ghost-routed bus layout with trunk-less direct intermediate routing.
-/// Intermediate lanes (both producer and consumer, no family balancer)
-/// skip trunk/tap-off/return specs and emit one direct A* spec per
-/// consumer routed from the nearest producer row. External-input and
-/// collector-only lanes still use trunks.
-///
-/// This is a spike for "what happens if we just let A* route between
-/// rows directly?" — throughput and splitter correctness are expected
-/// to be wrong; the goal is visual intuition.
-#[wasm_bindgen]
-pub fn layout_direct(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
-    let _g1 = fucktorio_core::bus::layout::GhostModeGuard::new();
-    let _g2 = fucktorio_core::bus::layout::DirectRoutingGuard::new();
-    fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())
-        .map_err(|e| JsError::new(&e))
-}
-
-/// Ghost-routed bus layout with *fully* trunk-less routing: both
-/// intermediate and external-input lanes emit direct A* specs. External
-/// inputs enter at (lane.x, lane.source_y) and route to each consumer
-/// row individually. Collector-only and family-balanced lanes still
-/// use their existing handling.
-#[wasm_bindgen]
-pub fn layout_bare(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
-    let _g1 = fucktorio_core::bus::layout::GhostModeGuard::new();
-    let _g2 = fucktorio_core::bus::layout::BareRoutingGuard::new();
-    fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())
-        .map_err(|e| JsError::new(&e))
-}
 
 #[wasm_bindgen]
 pub fn layout_traced(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {

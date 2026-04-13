@@ -124,44 +124,12 @@ pub fn route_bus_ghost(
         }
     }
 
-    // Direct intermediate routing: when enabled, non-fluid lanes that
-    // have both producers and consumers (and aren't family-balanced) skip
-    // trunk generation and route producer→consumer pairs directly via A*.
-    //
-    // Bare routing (strict superset): also skips trunks for external-input
-    // lanes. External inputs still have a single conceptual source at
-    // (lane.x, lane.source_y) — A* starts there and routes to each
-    // consumer. Collector-only lanes still use trunks for now (their
-    // destination is typically a merger block, which needs its own
-    // treatment for bare mode to fully work).
-    let direct_mode = crate::bus::layout::is_direct_intermediate_routing();
-    let bare_mode = crate::bus::layout::is_bare_routing();
-    let has_producers_on_lane =
-        |lane: &BusLane| lane.producer_row.is_some() || !lane.extra_producer_rows.is_empty();
-    let skip_trunk_for_lane = |lane: &BusLane| -> bool {
-        if lane.is_fluid || lane.family_balancer_range.is_some() || lane.family_id.is_some() {
-            return false;
-        }
-        if direct_mode && is_intermediate(lane) {
-            return true;
-        }
-        if bare_mode && !has_producers_on_lane(lane) && !lane.consumer_rows.is_empty() {
-            // External-input lane (no producers, has consumers).
-            return true;
-        }
-        false
-    };
-
     // -------------------------------------------------------------------------
     // Step 2: Place splitter stamps as hard obstacles. Trunks are routed via
     // ghost_astar in Step 4 so horizontal specs can walk through them.
     // -------------------------------------------------------------------------
     for lane in lanes {
         if lane.is_fluid {
-            continue;
-        }
-        if skip_trunk_for_lane(lane) {
-            // Direct routing: no trunk, no tap-off splitters.
             continue;
         }
 
@@ -296,71 +264,6 @@ pub fn route_bus_ghost(
         let last_tap_y = lane.tap_off_ys.iter().copied().max();
         let horiz_belt = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
         let trunk_belt = horiz_belt;
-
-        // ---- Direct / bare routing path ----
-        //
-        // When enabled for this lane: no trunks, no tap-off splitters,
-        // no returns. Instead, emit one direct spec per consumer tap_y.
-        //
-        // Source selection:
-        //   - Intermediate lane (has producers): route from the nearest
-        //     producer row's output_belt_y at (bw-1, out_y).
-        //   - External-input lane (bare mode, has no producers): route
-        //     from (lane.x, lane.source_y) — the top of the bus at the
-        //     lane's planned column.
-        //
-        // Geometry: intermediate endpoints are (bw-1, y) for both ends.
-        // External inputs enter from (lane.x, 0) and terminate at
-        // (bw-1, consumer_y). A* negotiation resolves path sharing.
-        if skip_trunk_for_lane(lane) {
-            let mut producer_ys: Vec<i32> = Vec::new();
-            if let Some(pr) = lane.producer_row {
-                if pr < row_spans.len() {
-                    producer_ys.push(row_spans[pr].output_belt_y);
-                }
-            }
-            for &pri in &lane.extra_producer_rows {
-                if pri < row_spans.len() {
-                    producer_ys.push(row_spans[pri].output_belt_y);
-                }
-            }
-            if !has_consumers {
-                continue;
-            }
-            if !producer_ys.is_empty() {
-                // Intermediate lane: one direct spec per consumer, routed
-                // from the nearest producer row.
-                for &tap_y in &lane.tap_off_ys {
-                    let nearest = producer_ys
-                        .iter()
-                        .copied()
-                        .min_by_key(|&py| (py - tap_y).abs())
-                        .unwrap();
-                    let key = format!("direct:{}:{}:{}", lane.item, nearest, tap_y);
-                    specs.push(BeltSpec {
-                        key,
-                        start: (bw - 1, nearest),
-                        goal: (bw - 1, tap_y),
-                        item: lane.item.clone(),
-                        belt_name: horiz_belt,
-                    });
-                }
-            } else {
-                // External-input lane in bare mode: emit one direct spec
-                // per consumer, routed from (lane.x, lane.source_y).
-                for &tap_y in &lane.tap_off_ys {
-                    let key = format!("bare-ext:{}:{}:{}", lane.item, lane.x, tap_y);
-                    specs.push(BeltSpec {
-                        key,
-                        start: (lane.x, lane.source_y),
-                        goal: (bw - 1, tap_y),
-                        item: lane.item.clone(),
-                        belt_name: horiz_belt,
-                    });
-                }
-            }
-            continue;
-        }
 
         // Trunk specs — routed first per lane so horizontals see them in
         // existing_belts. Turn penalty keeps them straight vertical lines.
@@ -1347,7 +1250,6 @@ pub fn route_bus_ghost(
     regions.append(&mut unresolved_regions);
 
     if !remaining_crossings.is_empty() {
-        let _ = (direct_mode, bare_mode); // no-op; kept to mark the source of unresolveds
         warnings.push(format!(
             "ghost router: {} unresolved crossings (junction solver not yet implemented)",
             remaining_crossings.len()

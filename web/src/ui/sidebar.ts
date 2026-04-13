@@ -506,8 +506,6 @@ export interface SidebarParams {
 export interface SidebarOptions {
   getDebugMode?: () => boolean;
   getGhostMode?: () => boolean;
-  getDirectMode?: () => boolean;
-  getBareMode?: () => boolean;
   /** Called after the sidebar creates its display toggles. */
   onDisplayToggles?: (toggles: DisplayToggles) => void;
 }
@@ -794,8 +792,6 @@ export function renderSidebar(
       inputs: availableInputs,
       belt: beltSelect.value || null,
       ghost: options?.getGhostMode?.() ?? false,
-      direct: options?.getDirectMode?.() ?? false,
-      bare: options?.getBareMode?.() ?? false,
     });
 
     resultContainer.innerHTML = "";
@@ -827,13 +823,7 @@ export function renderSidebar(
       const maxTier = beltSelect.value || undefined;
       const useTraced = options?.getDebugMode?.() ?? false;
       const useGhost = options?.getGhostMode?.() ?? false;
-      const useDirect = options?.getDirectMode?.() ?? false;
-      const useBare = options?.getBareMode?.() ?? false;
-      currentLayout = useBare
-        ? engine.buildLayoutBare(currentResult, maxTier)
-        : useDirect
-        ? engine.buildLayoutDirect(currentResult, maxTier)
-        : useGhost
+      currentLayout = useGhost
         ? engine.buildLayoutGhost(currentResult, maxTier)
         : useTraced
         ? engine.buildLayoutTraced(currentResult, maxTier)

@@ -7,8 +7,6 @@ import wasmInit, {
   export_blueprint as wasmExportBlueprint,
   layout as wasmLayout,
   layout_ghost as wasmLayoutGhost,
-  layout_direct as wasmLayoutDirect,
-  layout_bare as wasmLayoutBare,
   layout_traced as wasmLayoutTraced,
   parse_blueprint as wasmParseBlueprint,
   validate_layout as wasmValidateLayout,
@@ -69,14 +67,6 @@ function buildLayoutGhost(result: SolverResult, maxBeltTier?: string): LayoutRes
   return wasmLayoutGhost(result, maxBeltTier ?? null);
 }
 
-function buildLayoutDirect(result: SolverResult, maxBeltTier?: string): LayoutResult {
-  return wasmLayoutDirect(result, maxBeltTier ?? null);
-}
-
-function buildLayoutBare(result: SolverResult, maxBeltTier?: string): LayoutResult {
-  return wasmLayoutBare(result, maxBeltTier ?? null);
-}
-
 function buildLayoutTraced(result: SolverResult, maxBeltTier?: string): LayoutResult {
   return wasmLayoutTraced(result, maxBeltTier ?? null);
 }
@@ -103,8 +93,6 @@ export type Engine = {
   allProducerMachines: typeof allProducerMachines;
   buildLayout: typeof buildLayout;
   buildLayoutGhost: typeof buildLayoutGhost;
-  buildLayoutDirect: typeof buildLayoutDirect;
-  buildLayoutBare: typeof buildLayoutBare;
   buildLayoutTraced: typeof buildLayoutTraced;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
@@ -118,8 +106,6 @@ export function getEngine(): Engine {
     allProducerMachines,
     buildLayout,
     buildLayoutGhost,
-    buildLayoutDirect,
-    buildLayoutBare,
     buildLayoutTraced,
     exportBlueprint,
     defaultMachineForItem,
