@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use fucktorio_core::bus::layout::{build_bus_layout_traced, GhostModeGuard};
 use fucktorio_core::models::{EntityDirection, LayoutRegion, PortIo, RegionKind, RegionPort};
 use fucktorio_core::solver;
+use fucktorio_core::trace::TraceEvent;
 use fucktorio_core::validate::{self, LayoutStyle};
 use rustc_hash::FxHashSet;
 
@@ -157,6 +158,41 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
         .filter(|i| matches!(i.severity, validate::Severity::Error))
         .collect();
 
+    // Build tile → Vec<(bridge_dir, reason)> map from JunctionTemplateRejected
+    // events. A single crossing can generate two events (vertical then
+    // horizontal fallback), both with the same (tile_x, tile_y). Unresolved
+    // perpendicular regions are per-tile so we can look up by region (x, y).
+    let mut rejections: BTreeMap<(i32, i32), Vec<(String, String)>> = BTreeMap::new();
+    // Tally which strategy solved each successful crossing, plus how many
+    // regions hit the growth-cap (and why). Used below to explain why SAT
+    // is or isn't firing.
+    let mut solved_by_strategy: BTreeMap<String, usize> = BTreeMap::new();
+    let mut growth_capped: BTreeMap<String, usize> = BTreeMap::new();
+    if let Some(events) = layout.trace.as_ref() {
+        for ev in events {
+            match ev {
+                TraceEvent::JunctionTemplateRejected {
+                    tile_x,
+                    tile_y,
+                    bridge_dir,
+                    reason,
+                } => {
+                    rejections
+                        .entry((*tile_x, *tile_y))
+                        .or_default()
+                        .push((bridge_dir.clone(), reason.clone()));
+                }
+                TraceEvent::JunctionSolved { strategy, .. } => {
+                    *solved_by_strategy.entry(strategy.clone()).or_insert(0) += 1;
+                }
+                TraceEvent::JunctionGrowthCapped { reason, .. } => {
+                    *growth_capped.entry(reason.clone()).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Group regions by (kind, class)
     let mut by_kc: BTreeMap<(RegionKind, Class), Vec<&LayoutRegion>> = BTreeMap::new();
     for r in &layout.regions {
@@ -189,6 +225,15 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
         println!("  warnings: {:?}", layout.warnings);
     }
 
+    if !solved_by_strategy.is_empty() {
+        println!(
+            "  junction-solver success by strategy: {:?}",
+            solved_by_strategy
+        );
+    }
+    if !growth_capped.is_empty() {
+        println!("  growth-capped by reason: {:?}", growth_capped);
+    }
     println!("  regions by (kind × class):");
     for ((kind, class), regs) in &by_kc {
         let err_touch: usize = regs.iter().filter_map(|r| {
@@ -203,6 +248,39 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
             "    {:20?}  {:20}  ×{:3}  {} err-touching regions ({} total errors)",
             kind, class.label(), regs.len(), err_touch, err_total
         );
+        // Drill into the specific anomaly: unresolved regions that the
+        // classifier calls perpendicular. Print the tile-level rejection
+        // reasons so we can categorise why the template matcher bailed.
+        if *kind == RegionKind::Unresolved && *class == Class::Perpendicular {
+            for r in regs {
+                // Unresolved regions are 1×1 per-tile in today's pipeline;
+                // scan each contained tile and print reasons if present.
+                let mut any_shown = false;
+                for ty in r.y..r.y + r.height {
+                    for tx in r.x..r.x + r.width {
+                        if let Some(reasons) = rejections.get(&(tx, ty)) {
+                            let joined: Vec<String> = reasons
+                                .iter()
+                                .map(|(bd, rs)| format!("{}={}", bd, rs))
+                                .collect();
+                            println!(
+                                "      ({},{}) reasons: {}",
+                                tx,
+                                ty,
+                                joined.join(", ")
+                            );
+                            any_shown = true;
+                        }
+                    }
+                }
+                if !any_shown {
+                    println!(
+                        "      ({},{}) {}×{}  (no trace events — investigate)",
+                        r.x, r.y, r.width, r.height
+                    );
+                }
+            }
+        }
     }
 
     // Dimension histogram for T4 Complex + SAT clusters (the hard cases)

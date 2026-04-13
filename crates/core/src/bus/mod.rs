@@ -19,6 +19,8 @@ pub mod bus_router;
 pub(crate) mod ghost_occupancy;
 pub mod ghost_router;
 pub(crate) mod junction;
+pub(crate) mod junction_sat_strategy;
+pub(crate) mod junction_solver;
 pub mod layout;
 pub mod placer;
 pub mod plan;

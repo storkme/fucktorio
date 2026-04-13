@@ -303,6 +303,40 @@ pub enum TraceEvent {
         boundary_count: usize,
     },
 
+    // Emitted by `try_bridge` in ghost_router.rs whenever a per-tile
+    // perpendicular template rejection happens. One event per failed
+    // bridge attempt, so a fully-rejected perpendicular crossing emits
+    // two (vertical-first, horizontal-fallback). Drives the
+    // diagnose_junctions step for correlating "unresolved" regions with
+    // their rejection cause.
+    JunctionTemplateRejected {
+        tile_x: i32,
+        tile_y: i32,
+        bridge_dir: String,
+        reason: String,
+    },
+
+    // Emitted by `junction_solver::solve_crossing` when a strategy
+    // accepts the junction. `growth_iter` is the region-growth iteration
+    // at which the strategy fired (0 = initial 1-tile crossing, no
+    // growth yet).
+    JunctionSolved {
+        tile_x: i32,
+        tile_y: i32,
+        strategy: String,
+        growth_iter: usize,
+        region_tiles: usize,
+    },
+    // Emitted when the growth loop gives up: either frontier exhausted
+    // (all participating belts fully consumed) or tile cap hit.
+    JunctionGrowthCapped {
+        tile_x: i32,
+        tile_y: i32,
+        iters: usize,
+        region_tiles: usize,
+        reason: String,
+    },
+
     // Phase-1 instrumentation: emitted after all ghost specs are routed but
     // before crossing resolution. Reports per-tile axis occupancy so we can
     // see same-axis conflicts (Phase 2 negotiation target).

@@ -27,6 +27,11 @@ use crate::bus::bus_router::{
     BusLane, LaneFamily, is_intermediate, merge_output_rows, render_path,
     splitter_for_belt, stamp_family_balancer, trunk_segments, MACHINE_ENTITIES,
 };
+use crate::bus::junction::{BeltTier, Rect};
+use crate::bus::junction_sat_strategy::SatStrategy;
+use crate::bus::junction_solver::{
+    self, JunctionSolution, JunctionStrategy, JunctionStrategyContext,
+};
 use crate::bus::placer::RowSpan;
 use crate::common::{belt_entity_for_rate, machine_size, machine_tiles, ug_max_reach};
 use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, SolverResult};
@@ -921,8 +926,8 @@ pub fn route_bus_ghost(
                     && !is_row_entity(ug_out)
                     && !any_spec_turns_at(ug_in, &routed_paths)
                     && !any_spec_turns_at(ug_out, &routed_paths)
-                    && !ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths)
-                    && !ug_endpoint_conflicts(ug_out, ug_dir, key, &routed_paths);
+                    && ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths).is_none()
+                    && ug_endpoint_conflicts(ug_out, ug_dir, key, &routed_paths).is_none();
 
                 if endpoints_free {
                     // Find the horizontal spec that owns this run (for item/belt info).
@@ -1130,93 +1135,140 @@ pub fn route_bus_ghost(
         }
     }
 
-    // Step 6a: Try per-tile perpendicular crossing templates on individual tiles
-    // not already handled by a corridor template.
+    // Step 6a: Per-tile crossing resolution via the junction-solver
+    // growth loop. The loop seeds a `GrowingRegion` from each remaining
+    // crossing tile, runs the registered strategies, and grows the
+    // region's participating-spec frontier when none succeed. Today
+    // the only strategy is `PerpendicularTemplateStrategy`, a wrapper
+    // around the existing per-tile template — so behaviour matches the
+    // old direct-call path for every crossing the old code solved.
+    // Growth-aware strategies land on top of this scaffold.
+
+    let spec_belt_tiers: FxHashMap<String, BeltTier> = specs
+        .iter()
+        .map(|s| {
+            (
+                s.key.clone(),
+                BeltTier::from_name(s.belt_name).unwrap_or(BeltTier::Yellow),
+            )
+        })
+        .collect();
+    let spec_items: FxHashMap<String, String> = specs
+        .iter()
+        .map(|s| (s.key.clone(), s.item.clone()))
+        .collect();
+    let perp_strategy = PerpendicularTemplateStrategy;
+    let sat_strategy = SatStrategy;
+    // Strategy order = priority: cheap templates run first, then
+    // escalation. SatStrategy is an inert placeholder today (always
+    // returns None) and lives at the end of the list so it picks up
+    // whatever the cheaper strategies couldn't handle once its
+    // `try_solve` body is filled in.
+    let strategies: [&dyn JunctionStrategy; 2] = [&perp_strategy, &sat_strategy];
 
     for &tile in &crossing_set {
         if corridor_handled.contains(&tile) {
             continue;
         }
-        if let Some(info) = classify_crossing(tile, &routed_paths, &specs)
-            .filter(|info| is_perpendicular(info.spec_a.1, info.spec_b.1))
-        {
-            if let Some((ents, zone)) =
-                solve_perpendicular_template(&info, &hard, &routed_paths)
-            {
-                trace::emit(trace::TraceEvent::GhostClusterSolved {
-                    cluster_id: template_count,
-                    zone_x: zone.x,
-                    zone_y: zone.y,
-                    zone_w: zone.w,
-                    zone_h: zone.h,
-                    boundary_count: 4,
-                    variables: 0,
-                    clauses: 0,
-                    solve_time_us: 0,
-                });
-                template_regions.push(LayoutRegion {
-                    kind: crate::models::RegionKind::JunctionTemplate,
-                    x: zone.x,
-                    y: zone.y,
-                    width: zone.w as i32,
-                    height: zone.h as i32,
-                    ports: Vec::new(),
-                });
-
-                // Release GhostSurface + trunk/tapoff Permanent claims
-                // inside the template zone so the template's entities
-                // can take those tiles. Then place the template entities
-                // into both `entities` and Occupancy.
-                let release_rect = crate::bus::ghost_occupancy::Rect {
-                    x: zone.x,
-                    y: zone.y,
-                    w: zone.w,
-                    h: zone.h,
-                };
-                occupancy.release_for_pertile_template(&release_rect);
-                for ent in &ents {
-                    let tile = (ent.x, ent.y);
-                    if occupancy.is_hard_obstacle(tile) {
-                        continue;
-                    }
-                    // Two per-tile templates with overlapping footprints —
-                    // the second one's stamp is skipped to match the
-                    // legacy post-hoc `occupied` filter behaviour.
-                    if matches!(
-                        occupancy.claim_at(tile),
-                        Some(crate::bus::ghost_occupancy::Claim::Template { .. })
-                    ) {
-                        continue;
-                    }
-                    // Skip tiles claimed by RowEntity — templates can't
-                    // overwrite row belts. Direct-routing mode exposes
-                    // this when A* walks through a row belt as a
-                    // crossing; the per-tile template tries to UG-bridge
-                    // it and places a UG-in/out on a row tile.
-                    if matches!(
-                        occupancy.claim_at(tile),
-                        Some(crate::bus::ghost_occupancy::Claim::RowEntity { .. })
-                    ) {
-                        continue;
-                    }
-                    occupancy
-                        .place(
-                            ent.clone(),
-                            crate::bus::ghost_occupancy::ClaimKindTag::Template,
-                        )
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "occupancy refactor: template place failed at ({},{}): {:?}",
-                                tile.0, tile.1, err
-                            );
-                        });
-                }
-                entities.extend(ents);
-                template_count += 1;
-                continue; // tile solved — don't add to remaining
-            }
+        // Collect keys of every spec whose path passes through this
+        // tile. classify_crossing gates on "exactly two specs with a
+        // valid direction at the tile" — if that fails, the crossing
+        // is degenerate and we skip to unresolved.
+        if classify_crossing(tile, &routed_paths, &specs).is_none() {
+            remaining_crossings.insert(tile);
+            continue;
         }
-        remaining_crossings.insert(tile);
+        let keys_at_tile: Vec<&str> = specs
+            .iter()
+            .filter(|s| {
+                routed_paths
+                    .get(&s.key)
+                    .map(|p| p.contains(&tile))
+                    .unwrap_or(false)
+            })
+            .map(|s| s.key.as_str())
+            .collect();
+
+        let Some(sol) = junction_solver::solve_crossing(
+            tile,
+            &keys_at_tile,
+            &routed_paths,
+            &hard,
+            &spec_belt_tiers,
+            &spec_items,
+            &strategies,
+        ) else {
+            remaining_crossings.insert(tile);
+            continue;
+        };
+
+        let footprint = sol.footprint;
+        trace::emit(trace::TraceEvent::GhostClusterSolved {
+            cluster_id: template_count,
+            zone_x: footprint.x,
+            zone_y: footprint.y,
+            zone_w: footprint.w,
+            zone_h: footprint.h,
+            boundary_count: 4,
+            variables: 0,
+            clauses: 0,
+            solve_time_us: 0,
+        });
+        template_regions.push(LayoutRegion {
+            kind: crate::models::RegionKind::JunctionTemplate,
+            x: footprint.x,
+            y: footprint.y,
+            width: footprint.w as i32,
+            height: footprint.h as i32,
+            ports: Vec::new(),
+        });
+
+        let release_rect = crate::bus::ghost_occupancy::Rect {
+            x: footprint.x,
+            y: footprint.y,
+            w: footprint.w,
+            h: footprint.h,
+        };
+        occupancy.release_for_pertile_template(&release_rect);
+        for ent in &sol.entities {
+            let tile = (ent.x, ent.y);
+            if occupancy.is_hard_obstacle(tile) {
+                continue;
+            }
+            // Two per-tile templates with overlapping footprints —
+            // the second one's stamp is skipped to match the
+            // legacy post-hoc `occupied` filter behaviour.
+            if matches!(
+                occupancy.claim_at(tile),
+                Some(crate::bus::ghost_occupancy::Claim::Template { .. })
+            ) {
+                continue;
+            }
+            // Skip tiles claimed by RowEntity — templates can't
+            // overwrite row belts. Direct-routing mode exposes this
+            // when A* walks through a row belt as a crossing; the
+            // per-tile template tries to UG-bridge it and places a
+            // UG-in/out on a row tile.
+            if matches!(
+                occupancy.claim_at(tile),
+                Some(crate::bus::ghost_occupancy::Claim::RowEntity { .. })
+            ) {
+                continue;
+            }
+            occupancy
+                .place(
+                    ent.clone(),
+                    crate::bus::ghost_occupancy::ClaimKindTag::Template,
+                )
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "occupancy refactor: template place failed at ({},{}): {:?}",
+                        tile.0, tile.1, err
+                    );
+                });
+        }
+        entities.extend(sol.entities);
+        template_count += 1;
     }
 
     // Step 6b: Emit per-tile "unresolved" regions for crossings that
@@ -1548,12 +1600,16 @@ fn any_spec_turns_at(
 ///
 /// In Factorio, sideloads onto UG-input belts only fill the far lane and
 /// can dump items wrong; we reject any template that would create one.
+///
+/// Returns `None` if the tile is fine, or `Some(reason)` identifying the
+/// first conflict found. The caller tags the reason with the endpoint
+/// it was checking (UG-in vs UG-out).
 fn ug_endpoint_conflicts(
     tile: (i32, i32),
     bridge_dir: EntityDirection,
     bridge_spec_key: &str,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
-) -> bool {
+) -> Option<&'static str> {
     let bridge_axis_vert = matches!(bridge_dir, EntityDirection::North | EntityDirection::South);
 
     // 1. The tile itself: if any other spec has it in its path AND its axis
@@ -1577,7 +1633,7 @@ fn ug_endpoint_conflicts(
             };
             let spec_axis_vert = dy != 0;
             if spec_axis_vert != bridge_axis_vert {
-                return true;
+                return Some("axis_conflict");
             }
             break;
         }
@@ -1613,14 +1669,14 @@ fn ug_endpoint_conflicts(
                 };
                 let spec_dir = step_direction(sdx, sdy);
                 if spec_dir == expected_dir {
-                    return true; // sideload into our UG-in
+                    return Some("sideload");
                 }
                 break;
             }
         }
     }
 
-    false
+    None
 }
 
 /// Solve a perpendicular crossing with a deterministic template.
@@ -1699,15 +1755,35 @@ fn try_bridge(
     let ug_in = (cx - dx, cy - dy);
     let ug_out = (cx + dx, cy + dy);
 
-    if hard_obstacles.contains(&ug_in) || hard_obstacles.contains(&ug_out) {
-        return None;
+    let bridge_axis_label: &'static str = match bridge_dir {
+        EntityDirection::North | EntityDirection::South => "vertical",
+        EntityDirection::East | EntityDirection::West => "horizontal",
+    };
+    let reject = |reason: &'static str| -> Option<(Vec<PlacedEntity>, ClusterZone)> {
+        trace::emit(trace::TraceEvent::JunctionTemplateRejected {
+            tile_x: cx,
+            tile_y: cy,
+            bridge_dir: bridge_axis_label.to_string(),
+            reason: reason.to_string(),
+        });
+        None
+    };
+
+    if hard_obstacles.contains(&ug_in) {
+        return reject("hard_obstacle_ug_in");
+    }
+    if hard_obstacles.contains(&ug_out) {
+        return reject("hard_obstacle_ug_out");
     }
 
     // Reject if any spec turns at the UG-in/out tile, or if a perpendicular
     // belt would sideload into them. Sideloads onto UG belts only fill the
     // far lane and dump items.
-    if any_spec_turns_at(ug_in, routed_paths) || any_spec_turns_at(ug_out, routed_paths) {
-        return None;
+    if any_spec_turns_at(ug_in, routed_paths) {
+        return reject("turn_at_ug_in");
+    }
+    if any_spec_turns_at(ug_out, routed_paths) {
+        return reject("turn_at_ug_out");
     }
     // Find a representative key for the bridged spec to exclude from the
     // conflict check. Any path containing the crossing tile in the bridge
@@ -1717,10 +1793,19 @@ fn try_bridge(
         .find(|(_, path)| path.contains(&crossing))
         .map(|(k, _)| k.as_str())
         .unwrap_or("");
-    if ug_endpoint_conflicts(ug_in, bridge_dir, bridge_key, routed_paths)
-        || ug_endpoint_conflicts(ug_out, bridge_dir, bridge_key, routed_paths)
-    {
-        return None;
+    if let Some(sub) = ug_endpoint_conflicts(ug_in, bridge_dir, bridge_key, routed_paths) {
+        return reject(match sub {
+            "axis_conflict" => "ug_in_axis_conflict",
+            "sideload" => "ug_in_sideload",
+            _ => "ug_in_conflict",
+        });
+    }
+    if let Some(sub) = ug_endpoint_conflicts(ug_out, bridge_dir, bridge_key, routed_paths) {
+        return reject(match sub {
+            "axis_conflict" => "ug_out_axis_conflict",
+            "sideload" => "ug_out_sideload",
+            _ => "ug_out_conflict",
+        });
     }
 
     let ug_name = ug_for_belt(bridge_belt);
@@ -1766,6 +1851,71 @@ fn try_bridge(
     };
 
     Some((entities, zone))
+}
+
+/// Belt entity name for a junction-solver `BeltTier`. Matches the
+/// surface belt names that `BeltSpec::belt_name` holds.
+fn belt_name_for_tier(tier: BeltTier) -> &'static str {
+    match tier {
+        BeltTier::Yellow => "transport-belt",
+        BeltTier::Red => "fast-transport-belt",
+        BeltTier::Blue => "express-transport-belt",
+    }
+}
+
+/// The first (and currently only) `JunctionStrategy` wired into the
+/// growth loop: a thin wrapper around the existing
+/// `solve_perpendicular_template`. Only activates when the junction
+/// has exactly two specs with perpendicular directions at the initial
+/// crossing tile. Ignores region growth entirely — the underlying
+/// template operates on a fixed 3-tile footprint. Real growth-aware
+/// strategies will land alongside this one.
+struct PerpendicularTemplateStrategy;
+
+impl JunctionStrategy for PerpendicularTemplateStrategy {
+    fn name(&self) -> &'static str {
+        "perpendicular_template"
+    }
+
+    fn try_solve(&self, ctx: &JunctionStrategyContext) -> Option<JunctionSolution> {
+        // The underlying per-tile template operates on a fixed 3-tile
+        // footprint around the original crossing and has no concept of
+        // a grown region. If it fails on the initial 1×1 region, it
+        // will fail the same way on every grown iteration — skip
+        // subsequent attempts to avoid noisy duplicate trace events.
+        if ctx.region.tile_count() > 1 {
+            return None;
+        }
+        if ctx.junction.specs.len() != 2 {
+            return None;
+        }
+        let sa = &ctx.junction.specs[0];
+        let sb = &ctx.junction.specs[1];
+        let da = sa.entry.direction;
+        let db = sb.entry.direction;
+        if !is_perpendicular(da, db) {
+            return None;
+        }
+        let info = CrossingInfo {
+            tile: ctx.region.initial_tile,
+            spec_a: (sa.item.clone(), da),
+            spec_b: (sb.item.clone(), db),
+            belt_a: belt_name_for_tier(sa.belt_tier),
+            belt_b: belt_name_for_tier(sb.belt_tier),
+        };
+        let (entities, zone) =
+            solve_perpendicular_template(&info, ctx.hard_obstacles, ctx.routed_paths)?;
+        Some(JunctionSolution {
+            entities,
+            footprint: Rect {
+                x: zone.x,
+                y: zone.y,
+                w: zone.w,
+                h: zone.h,
+            },
+            strategy_name: self.name(),
+        })
+    }
 }
 
 fn is_belt_like(name: &str) -> bool {

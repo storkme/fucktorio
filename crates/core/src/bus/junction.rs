@@ -72,6 +72,26 @@ impl BeltTier {
             None
         }
     }
+
+    /// Surface belt entity name for this tier.
+    pub fn belt_name(self) -> &'static str {
+        match self {
+            Self::Yellow => "transport-belt",
+            Self::Red => "fast-transport-belt",
+            Self::Blue => "express-transport-belt",
+        }
+    }
+
+    /// Ordering key for "which tier is higher throughput". Used when a
+    /// junction carries specs at multiple tiers and we need to pick the
+    /// dominant tier for the whole region.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Yellow => 0,
+            Self::Red => 1,
+            Self::Blue => 2,
+        }
+    }
 }
 
 /// One spec crossing a junction. Exactly one entry + one exit per spec.
