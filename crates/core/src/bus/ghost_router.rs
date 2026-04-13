@@ -199,6 +199,50 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
+    // Occupancy refactor (Steps 2-3): construct the parallel `Occupancy` from
+    // the inputs to steps 1-3 of this function. Step 3 of the rollout uses it
+    // to mirror materialisation writes; Step 4+ will switch the template and
+    // SAT phases over to it as the source of obstacle truth. See
+    // `docs/rfp-ghost-occupancy-refactor.md`.
+    // -------------------------------------------------------------------------
+    // Row template entities split by permeability: belts are
+    // `RowEntity` (boundary ports may land on them); machines,
+    // inserters, poles, and pipes are `Permanent` (real obstacles).
+    let (row_belts, row_non_belts): (Vec<PlacedEntity>, Vec<PlacedEntity>) = row_entities
+        .iter()
+        .cloned()
+        .partition(|e| is_belt_like(&e.name));
+    let mut permanent_inits = row_non_belts;
+    permanent_inits.extend(entities.iter().cloned());
+    let mut occupancy = crate::bus::ghost_occupancy::Occupancy::new(
+        hard.clone(),
+        row_belts,
+        permanent_inits,
+    );
+
+    #[cfg(debug_assertions)]
+    {
+        for &tile in &hard {
+            debug_assert!(
+                occupancy.is_claimed(tile),
+                "occupancy refactor: hard tile {:?} not claimed in parallel Occupancy",
+                tile,
+            );
+        }
+        for &tile in &pre_ghost_belts {
+            // Row template belts now sit in `Occupancy` as
+            // `RowEntity` claims (not `Permanent`), to mirror
+            // today's `pre_existing_positions` semantics. They
+            // should still be `is_claimed`.
+            debug_assert!(
+                occupancy.is_claimed(tile),
+                "occupancy refactor: pre_ghost_belts tile {:?} not claimed in parallel Occupancy",
+                tile,
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Step 4: Build connecting-belt spec list
     // -------------------------------------------------------------------------
     let mut specs: Vec<BeltSpec> = Vec::new();
@@ -619,10 +663,49 @@ pub fn route_bus_ghost(
                 spec_seg_id,
                 None,
             );
-            entities.extend(path_ents.into_iter().filter(|e| {
-                !pre_ghost_belts.contains(&(e.x, e.y))
-                    && !ghost_item_at.contains_key(&(e.x, e.y))
-            }));
+            // Materialise the path into entities + Occupancy.
+            //
+            // Claim kind: trunk specs become load-bearing vertical bus
+            // belts (`Permanent` claims). All other specs (tap-offs,
+            // returns, horizontals) get `GhostSurface` claims which
+            // templates and SAT may replace. This mirrors the old
+            // `pre_existing_positions` filter semantics — non-ghost
+            // segment IDs (trunks) were kept as obstacles; ghost
+            // segment IDs were skipped.
+            //
+            // Filter: drop path tiles that already hold a pre-existing
+            // belt (from row templates / step 2-3 setup), already
+            // carry another ghost item (first-spec-wins), or overlap a
+            // hard obstacle. The hard-obstacle filter protects against
+            // `ghost_astar:695` which allows goal tiles on hard
+            // obstacles (and silently also start tiles — no check at
+            // `astar.rs:658`). Dropping those entities prevents
+            // entity-overlap validator errors on fluid-lane
+            // reservations and machine anchors.
+            let claim_kind = if spec.key.starts_with("trunk:") {
+                crate::bus::ghost_occupancy::ClaimKindTag::Permanent
+            } else {
+                crate::bus::ghost_occupancy::ClaimKindTag::GhostSurface
+            };
+            let surviving_ents: Vec<PlacedEntity> = path_ents
+                .into_iter()
+                .filter(|e| {
+                    !pre_ghost_belts.contains(&(e.x, e.y))
+                        && !ghost_item_at.contains_key(&(e.x, e.y))
+                        && !hard.contains(&(e.x, e.y))
+                })
+                .collect();
+            for ent in &surviving_ents {
+                occupancy
+                    .place(ent.clone(), claim_kind)
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "occupancy refactor: place failed for spec {} at ({},{}): {:?}",
+                            spec.key, ent.x, ent.y, err
+                        );
+                    });
+            }
+            entities.extend(surviving_ents);
 
             for &tile in &path {
                 existing_belts.insert(tile);
@@ -641,6 +724,22 @@ pub fn route_bus_ghost(
             for &tile in &path {
                 ghost_item_at.entry(tile).or_insert_with(|| spec.item.clone());
             }
+        }
+    }
+
+    // Step 3 of the occupancy refactor: verify that every tile in the
+    // post-materialisation `existing_belts` set has a corresponding claim
+    // in Occupancy. Reverse direction does not hold — Occupancy includes
+    // machines, poles, and fluid-lane reservations that `existing_belts`
+    // does not.
+    #[cfg(debug_assertions)]
+    {
+        for &tile in &existing_belts {
+            debug_assert!(
+                occupancy.is_claimed(tile),
+                "occupancy refactor: existing_belts tile {:?} not claimed in Occupancy after materialisation",
+                tile,
+            );
         }
     }
 
@@ -723,23 +822,14 @@ pub fn route_bus_ghost(
     // -------------------------------------------------------------------------
     let crossing_set: FxHashSet<(i32, i32)> = all_ghost_crossings.iter().copied().collect();
 
-    // Pre-existing entity positions (for template/SAT overlap avoidance)
-    let pre_existing_set: FxHashSet<(i32, i32)> = entities
-        .iter()
-        .filter(|e| !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:")))
-        .map(|e| (e.x, e.y))
-        .chain(row_entities.iter().map(|e| (e.x, e.y)))
-        .collect();
-
     // Step 6a-pre: Corridor template — detect runs of adjacent horizontal
     // crossings where one horizontal spec crosses N adjacent vertical trunks.
     // Emit a single long UG bridge for the horizontal instead of N separate
     // per-tile templates that would conflict.
-    let mut template_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
-    // Subset of `template_zones` containing only per-tile (1x3) templates.
-    // Corridor templates are excluded because their run tiles still hold
-    // perpendicular trunks that must NOT be stripped by the retain pass.
-    let mut pertile_template_zone_bboxes: Vec<ClusterZone> = Vec::new();
+    // Running count of templates emitted in step 6a (both corridor
+    // runs and per-tile crossings). Added to `cluster_tile_counts.len()`
+    // at the bottom to form `cluster_count`.
+    let mut template_count: usize = 0;
     let mut template_regions: Vec<LayoutRegion> = Vec::new();
     let mut remaining_crossings: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut corridor_handled: FxHashSet<(i32, i32)> = FxHashSet::default();
@@ -807,10 +897,8 @@ pub fn route_bus_ghost(
                 // pre-existing belt, must not be a turn point for any spec,
                 // and must not have a perpendicular spec passing through them
                 // (sideloads onto UG-input fail in Factorio).
-                let endpoints_free = !hard.contains(&ug_in)
-                    && !hard.contains(&ug_out)
-                    && !pre_existing_set.contains(&ug_in)
-                    && !pre_existing_set.contains(&ug_out)
+                let endpoints_free = !occupancy.is_permanent(ug_in)
+                    && !occupancy.is_permanent(ug_out)
                     && !any_spec_turns_at(ug_in, &routed_paths)
                     && !any_spec_turns_at(ug_out, &routed_paths)
                     && !ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths)
@@ -850,7 +938,7 @@ pub fn route_bus_ghost(
                         };
                         let zone = ClusterZone { x: zx, y: zy, w: zw, h: zh };
                         trace::emit(trace::TraceEvent::GhostClusterSolved {
-                            cluster_id: template_zones.len(),
+                            cluster_id: template_count,
                             zone_x: zone.x,
                             zone_y: zone.y,
                             zone_w: zone.w,
@@ -873,7 +961,41 @@ pub fn route_bus_ghost(
                             clauses: 0,
                             solve_time_us: 0,
                         });
-                        template_zones.push((ents, zone));
+                        // Step 5a of the occupancy refactor: push the corridor
+                        // UG bridge entities directly into `entities` and
+                        // mirror to Occupancy as Template, instead of
+                        // deferring via template_zones. Same pattern as
+                        // Step 4 for per-tile templates. This is what makes
+                        // the SAT phase's forced_empty (after Step 5b
+                        // switches it to read from Occupancy) include
+                        // corridor UG bridge tiles, fixing potential
+                        // SAT-vs-corridor entity collisions that exist in
+                        // main today.
+                        for ent in &ents {
+                            let tile = (ent.x, ent.y);
+                            if occupancy.is_hard_obstacle(tile) {
+                                continue;
+                            }
+                            if matches!(
+                                occupancy.claim_at(tile),
+                                Some(crate::bus::ghost_occupancy::Claim::Template { .. })
+                            ) {
+                                continue;
+                            }
+                            occupancy
+                                .place(
+                                    ent.clone(),
+                                    crate::bus::ghost_occupancy::ClaimKindTag::Template,
+                                )
+                                .unwrap_or_else(|err| {
+                                    panic!(
+                                        "step 5a corridor UG place failed at ({},{}): {:?}",
+                                        tile.0, tile.1, err
+                                    );
+                                });
+                        }
+                        entities.extend(ents);
+                        template_count += 1;
                         // Mark all run tiles as corridor-handled and remove
                         // the horizontal spec's surface belts at those tiles
                         // (they're now underground via the UG bridge).
@@ -894,6 +1016,22 @@ pub fn route_bus_ghost(
                             }
                             e.segment_id.as_deref() != Some(bridged_seg.as_str())
                         });
+
+                        // Step 5a: mirror the bridged-spec ghost belt removal
+                        // in Occupancy. Run tiles only have at most one
+                        // ghost belt (the bridged spec's), so releasing all
+                        // GhostSurface claims in the corridor zone is
+                        // equivalent to the targeted entities.retain above.
+                        // The UG endpoint tiles already hold Template claims
+                        // from edit 1 above; release_ghost_surface_in only
+                        // touches GhostSurface, so they're safe.
+                        let release_rect = crate::bus::ghost_occupancy::Rect {
+                            x: zone.x,
+                            y: zone.y,
+                            w: zone.w,
+                            h: zone.h,
+                        };
+                        occupancy.release_ghost_surface_in(&release_rect);
 
                         // Re-add surface belts for perpendicular specs whose
                         // path was filtered out at materialization (because
@@ -929,7 +1067,7 @@ pub fn route_bus_ghost(
                                     // Use a non-ghost segment_id so the
                                     // post-template retain (which strips
                                     // "ghost:*" inside solved zones) keeps it.
-                                    entities.push(PlacedEntity {
+                                    let perp_ent = PlacedEntity {
                                         name: os.belt_name.to_string(),
                                         x: run_tile.0,
                                         y: run_tile.1,
@@ -940,7 +1078,30 @@ pub fn route_bus_ghost(
                                             os.item, run_tile.0, run_tile.1
                                         )),
                                         ..Default::default()
-                                    });
+                                    };
+                                    // Step 5a: mirror to Occupancy as
+                                    // Permanent so SAT's forced_empty (after
+                                    // 5b) sees these surface belts. The
+                                    // tile is free in Occupancy at this
+                                    // point because edit 2 above released
+                                    // any ghost-surface claim, and the
+                                    // outer `occupied_after_removal` check
+                                    // already filtered tiles still holding
+                                    // a permanent entity.
+                                    if !occupancy.is_hard_obstacle((perp_ent.x, perp_ent.y)) {
+                                        occupancy
+                                            .place(
+                                                perp_ent.clone(),
+                                                crate::bus::ghost_occupancy::ClaimKindTag::Permanent,
+                                            )
+                                            .unwrap_or_else(|err| {
+                                                panic!(
+                                                    "step 5a corridor-perp place failed at ({},{}): {:?}",
+                                                    perp_ent.x, perp_ent.y, err
+                                                );
+                                            });
+                                    }
+                                    entities.push(perp_ent);
                                     break;
                                 }
                             }
@@ -965,10 +1126,10 @@ pub fn route_bus_ghost(
             .filter(|info| is_perpendicular(info.spec_a.1, info.spec_b.1))
         {
             if let Some((ents, zone)) =
-                solve_perpendicular_template(&info, &hard, &pre_existing_set, &routed_paths)
+                solve_perpendicular_template(&info, &hard, &routed_paths)
             {
                 trace::emit(trace::TraceEvent::GhostClusterSolved {
-                    cluster_id: template_zones.len(),
+                    cluster_id: template_count,
                     zone_x: zone.x,
                     zone_y: zone.y,
                     zone_w: zone.w,
@@ -991,13 +1152,46 @@ pub fn route_bus_ghost(
                     clauses: 0,
                     solve_time_us: 0,
                 });
-                pertile_template_zone_bboxes.push(ClusterZone {
+
+                // Release GhostSurface + trunk/tapoff Permanent claims
+                // inside the template zone so the template's entities
+                // can take those tiles. Then place the template entities
+                // into both `entities` and Occupancy.
+                let release_rect = crate::bus::ghost_occupancy::Rect {
                     x: zone.x,
                     y: zone.y,
                     w: zone.w,
                     h: zone.h,
-                });
-                template_zones.push((ents, zone));
+                };
+                occupancy.release_for_pertile_template(&release_rect);
+                for ent in &ents {
+                    let tile = (ent.x, ent.y);
+                    if occupancy.is_hard_obstacle(tile) {
+                        continue;
+                    }
+                    // Two per-tile templates with overlapping footprints —
+                    // the second one's stamp is skipped to match the
+                    // legacy post-hoc `occupied` filter behaviour.
+                    if matches!(
+                        occupancy.claim_at(tile),
+                        Some(crate::bus::ghost_occupancy::Claim::Template { .. })
+                    ) {
+                        continue;
+                    }
+                    occupancy
+                        .place(
+                            ent.clone(),
+                            crate::bus::ghost_occupancy::ClaimKindTag::Template,
+                        )
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "occupancy refactor: template place failed at ({},{}): {:?}",
+                                tile.0, tile.1, err
+                            );
+                        });
+                }
+                entities.extend(ents);
+                template_count += 1;
                 continue; // tile solved — don't add to remaining
             }
         }
@@ -1029,22 +1223,22 @@ pub fn route_bus_ghost(
         let root = uf_find(&mut uf, i);
         *cluster_tile_counts.entry(root).or_insert(0) += 1;
     }
-    let cluster_count = cluster_tile_counts.len() + template_zones.len();
+    let cluster_count = cluster_tile_counts.len() + template_count;
     let max_cluster_tiles = cluster_tile_counts.values().copied().max().unwrap_or(0);
 
-    let (mut sat_zones, mut sat_regions, failed_count) = resolve_clusters(
+    // `resolve_clusters` writes SAT solutions into both `entities` and
+    // Occupancy directly. It returns only the regions list (for
+    // telemetry) and a failure count.
+    let (mut sat_regions, failed_count) = resolve_clusters(
         &crossing_list,
         &mut uf,
         &routed_paths,
         &specs,
         max_belt_tier,
-        &entities,
-        &hard,
+        &mut occupancy,
+        &mut entities,
     );
 
-    // Merge template and SAT results
-    let mut solved_zones = template_zones;
-    solved_zones.append(&mut sat_zones);
     let mut regions = template_regions;
     regions.append(&mut sat_regions);
 
@@ -1055,51 +1249,46 @@ pub fn route_bus_ghost(
         ));
     }
 
-    // Remove entities inside solved cluster zones so the template/SAT
-    // output can take their tiles. Ghost entities removed in any zone;
-    // trunk/tapoff entities are additionally removed inside PER-TILE
-    // template zones (corridor templates and SAT zones must keep trunks
-    // because they bridge horizontals — the trunks stay perpendicular).
-    if !solved_zones.is_empty() {
-        let zone_bboxes: Vec<&ClusterZone> = solved_zones.iter().map(|(_, z)| z).collect();
-
-        entities.retain(|e| {
-            let in_zone = zone_bboxes.iter().any(|z| z.contains(e.x, e.y));
-            if !in_zone {
-                return true;
-            }
-            let seg = e.segment_id.as_deref().unwrap_or("");
-            if seg.starts_with("ghost:") {
-                return false;
-            }
-            // Inside per-tile template zones, also drop trunk/tapoff belts
-            // so the UG-in/out + surface belt can take those tiles.
-            let in_pertile_zone =
-                pertile_template_zone_bboxes.iter().any(|z| z.contains(e.x, e.y));
-            if in_pertile_zone && (seg.starts_with("trunk:") || seg.starts_with("tapoff:")) {
-                return false;
-            }
-            true
-        });
-
-        // Build set of occupied positions: row_entities + non-ghost entities
-        // in our entity list. SAT output must not overlap these.
-        let mut occupied: FxHashSet<(i32, i32)> =
-            row_entities.iter().map(|e| (e.x, e.y)).collect();
-        for e in entities.iter() {
-            occupied.insert((e.x, e.y));
-        }
-
-        for (sat_entities, _zone) in &solved_zones {
-            // Skip SAT entities that would overlap pre-existing entities
-            entities.extend(
-                sat_entities
-                    .iter()
-                    .filter(|e| !occupied.contains(&(e.x, e.y)))
-                    .cloned(),
+    // Step 6: sync `entities` to Occupancy's released state.
+    //
+    // Templates and SAT write to both `entities` and Occupancy during
+    // their phases. When they release/replace a prior claim (a ghost
+    // surface belt, a trunk, or a tapoff) via `release_ghost_surface_in`
+    // or `release_for_pertile_template`, Occupancy is updated but the
+    // old entity stays in the local `entities` Vec. This pass drops
+    // any ghost/trunk/tapoff entity whose Occupancy claim no longer
+    // matches — i.e., where a later phase stamped over it.
+    //
+    // Other entity kinds (row templates, step 2/3 entities, templates,
+    // SAT solutions, corridor-perp re-adds) are always kept.
+    //
+    // The post-hoc add loop that previously re-added template/SAT
+    // entities via `solved_zones` is gone — Steps 4-5 push those
+    // entities directly into the Vec at the moment they're generated.
+    entities.retain(|e| {
+        let seg = e.segment_id.as_deref().unwrap_or("");
+        let occ_claim = occupancy.claim_at((e.x, e.y));
+        if seg.starts_with("ghost:") {
+            // Keep only if Occupancy still holds a GhostSurface claim
+            // at this tile. If the claim was released by a template
+            // or SAT solution, drop the entity.
+            return matches!(
+                occ_claim,
+                Some(crate::bus::ghost_occupancy::Claim::GhostSurface { .. })
             );
         }
-    }
+        if seg.starts_with("trunk:") || seg.starts_with("tapoff:") {
+            // Keep only if Occupancy still holds a Permanent claim.
+            // A per-tile template that stamped over the trunk will
+            // have released the Permanent claim and replaced it with
+            // a Template claim.
+            return matches!(
+                occ_claim,
+                Some(crate::bus::ghost_occupancy::Claim::Permanent { .. })
+            );
+        }
+        true
+    });
 
     // -------------------------------------------------------------------------
     // Step 7: Merge output rows for final products
@@ -1178,6 +1367,7 @@ fn uf_find(p: &mut [usize], i: usize) -> usize {
 // ---------------------------------------------------------------------------
 
 /// Bounding box for a ghost cluster zone (padded by 1 tile on each side).
+#[derive(Clone, Copy)]
 struct ClusterZone {
     /// Padded bbox left
     x: i32,
@@ -1444,7 +1634,6 @@ fn ug_endpoint_conflicts(
 fn solve_perpendicular_template(
     info: &CrossingInfo,
     hard_obstacles: &FxHashSet<(i32, i32)>,
-    pre_existing: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
     let perpendicular = is_perpendicular(info.spec_a.1, info.spec_b.1);
@@ -1455,7 +1644,6 @@ fn solve_perpendicular_template(
             (&info.spec_a.0, info.spec_a.1, info.belt_a),
             (&info.spec_b.0, info.spec_b.1, info.belt_b),
             hard_obstacles,
-            pre_existing,
             routed_paths,
         );
     }
@@ -1475,7 +1663,6 @@ fn solve_perpendicular_template(
         (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         hard_obstacles,
-        pre_existing,
         routed_paths,
     );
     if bridge_vertical_first.is_some() {
@@ -1488,7 +1675,6 @@ fn solve_perpendicular_template(
         (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         hard_obstacles,
-        pre_existing,
         routed_paths,
     )
 }
@@ -1501,7 +1687,6 @@ fn try_bridge(
     surface: (&String, EntityDirection, &'static str),
     bridge: (&String, EntityDirection, &'static str),
     hard_obstacles: &FxHashSet<(i32, i32)>,
-    pre_existing: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
     let (cx, cy) = crossing;
@@ -1543,11 +1728,6 @@ fn try_bridge(
 
     let ug_name = ug_for_belt(bridge_belt);
     let seg = Some(format!("junction:{}:{},{}", bridge_item, cx, cy));
-
-    // `pre_existing` contains trunks and other non-ghost belts. Those get
-    // removed from per-tile template zones by the caller's retain pass, so
-    // we always emit the full UG pair + surface belt regardless.
-    let _ = pre_existing;
 
     let entities = vec![
         PlacedEntity {
@@ -1596,20 +1776,30 @@ fn try_bridge(
 /// For each cluster: compute padded bbox, extract boundary ports from paths
 /// that pass through the zone, build a CrossingZone, and SAT-solve it.
 ///
-/// Returns solved entity lists per zone (with their bboxes), LayoutRegions
-/// for telemetry, and the count of failed clusters.
+/// Writes SAT solutions directly into `entities_out` and `occupancy`.
+/// Returns (LayoutRegions for telemetry, count of failed clusters).
 fn resolve_clusters(
     crossing_list: &[(i32, i32)],
     uf: &mut [usize],
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     specs: &[BeltSpec],
     max_belt_tier: Option<&str>,
-    all_entities: &[PlacedEntity],
-    hard_obstacles: &FxHashSet<(i32, i32)>,
-) -> (Vec<(Vec<PlacedEntity>, ClusterZone)>, Vec<LayoutRegion>, usize) {
+    occupancy: &mut crate::bus::ghost_occupancy::Occupancy,
+    entities_out: &mut Vec<PlacedEntity>,
+) -> (Vec<LayoutRegion>, usize) {
+    use crate::bus::ghost_occupancy::{ClaimKindTag, Rect};
+
+    // Snapshot the permanent obstacle set ONCE here, before any SAT
+    // cluster places its solution into Occupancy. The boundary port
+    // check below uses this snapshot (not the live Occupancy) so that
+    // later clusters see the same obstacle view as earlier ones,
+    // matching today's behaviour where `pre_existing_positions` is
+    // built once at the top of the function and never updated.
+    let pre_sat_permanent = occupancy.snapshot_permanent_tiles();
+
     let n_tiles = crossing_list.len();
     if n_tiles == 0 {
-        return (Vec::new(), Vec::new(), 0);
+        return (Vec::new(), 0);
     }
 
     // Build spec lookup: key → &BeltSpec
@@ -1647,7 +1837,6 @@ fn resolve_clusters(
 
     // No zone merging — overlapping zones produce conflicting SAT solutions.
 
-    let mut solved_zones: Vec<(Vec<PlacedEntity>, ClusterZone)> = Vec::new();
     let mut regions: Vec<LayoutRegion> = Vec::new();
     let mut failed_count = 0;
 
@@ -1655,12 +1844,9 @@ fn resolve_clusters(
     let effective_belt = max_belt_tier.unwrap_or("transport-belt");
     let max_reach = ug_max_reach(effective_belt);
 
-    // Pre-existing entity positions — boundary ports must not land here
-    let pre_existing_positions: FxHashSet<(i32, i32)> = all_entities
-        .iter()
-        .filter(|e| !e.segment_id.as_ref().is_some_and(|s| s.starts_with("ghost:")))
-        .map(|e| (e.x, e.y))
-        .collect();
+    // Step 5b: Occupancy supplies both "tile is permanent" (was
+    // hard_obstacles + pre_existing_positions) and the per-zone
+    // forced_empty set, so no separate pre_existing_positions is needed.
 
     for (cluster_idx, (_root_id, zone, _cluster_tile_set)) in zones.into_iter().enumerate() {
         // Collect all paths that have any tile inside this zone's padded bbox
@@ -1702,11 +1888,10 @@ fn resolve_clusters(
                     !zone.contains(npx, npy)
                 };
 
-                // Skip boundary ports at positions occupied by hard obstacles
-                // or pre-existing entities — those would conflict with the
-                // SAT solution or get filtered out, breaking connectivity.
-                let occupied_by_existing =
-                    hard_obstacles.contains(&(px, py)) || pre_existing_positions.contains(&(px, py));
+                // Step 6: use the pre-SAT permanent obstacle snapshot
+                // so later clusters see the same obstacle view as
+                // earlier ones.
+                let occupied_by_existing = pre_sat_permanent.contains(&(px, py));
 
                 if prev_outside && zone.on_edge(px, py) && !occupied_by_existing {
                     // Entry port: direction is the direction of travel INTO the zone
@@ -1814,32 +1999,16 @@ fn resolve_clusters(
             continue;
         }
 
-        // Mark occupied tiles inside the zone as forced-empty so the SAT
-        // solver doesn't place entities on top of hard obstacles (machines,
-        // poles, pipes) or pre-existing belts (trunks, row templates).
+        // BISECT: try Occupancy.forced_empty_in.
         let boundary_set: FxHashSet<(i32, i32)> =
             boundaries.iter().map(|b| (b.x, b.y)).collect();
-        let mut forced_empty_set: FxHashSet<(i32, i32)> = FxHashSet::default();
-
-        // Hard obstacles (machines, poles, pipes, fluid lanes)
-        for &(hx, hy) in hard_obstacles {
-            if zone.contains(hx, hy) && !boundary_set.contains(&(hx, hy)) {
-                forced_empty_set.insert((hx, hy));
-            }
-        }
-        // Pre-existing non-ghost entities (trunks, row template belts, splitters)
-        for e in all_entities {
-            if zone.contains(e.x, e.y)
-                && !e
-                    .segment_id
-                    .as_ref()
-                    .is_some_and(|s| s.starts_with("ghost:"))
-                && !boundary_set.contains(&(e.x, e.y))
-            {
-                forced_empty_set.insert((e.x, e.y));
-            }
-        }
-        let forced_empty: Vec<(i32, i32)> = forced_empty_set.into_iter().collect();
+        let zone_rect = Rect {
+            x: zone.x,
+            y: zone.y,
+            w: zone.w,
+            h: zone.h,
+        };
+        let forced_empty = occupancy.forced_empty_in(&zone_rect, &boundary_set);
 
         let crossing_zone = CrossingZone {
             x: zone.x,
@@ -1893,7 +2062,34 @@ fn resolve_clusters(
                     solve_time_us: solution.stats.solve_time_us,
                 });
 
-                solved_zones.push((solution.entities, zone));
+                // Step 5b: write SAT solution entities directly into
+                // `entities_out` and Occupancy, instead of deferring via
+                // solved_zones. Release any GhostSurface claims in the
+                // zone first so the SAT entities can take those tiles.
+                // Skip entities that land on hard obstacles or already-
+                // claimed permanent tiles (matches the current post-hoc
+                // occupied filter behaviour.
+                occupancy.release_ghost_surface_in(&zone_rect);
+                for ent in solution.entities {
+                    let tile = (ent.x, ent.y);
+                    if occupancy.is_hard_obstacle(tile) {
+                        continue;
+                    }
+                    if !occupancy.is_free(tile) {
+                        // Already claimed by Permanent / Template /
+                        // SatSolved from a prior cluster. Drop.
+                        continue;
+                    }
+                    occupancy
+                        .place(ent.clone(), ClaimKindTag::SatSolved)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "sat place failed at ({},{}): {:?}",
+                                tile.0, tile.1, err
+                            );
+                        });
+                    entities_out.push(ent);
+                }
             }
             None => {
                 trace::emit(trace::TraceEvent::GhostClusterFailed {
@@ -1909,7 +2105,7 @@ fn resolve_clusters(
         }
     }
 
-    (solved_zones, regions, failed_count)
+    (regions, failed_count)
 }
 
 fn is_belt_like(name: &str) -> bool {

@@ -30,6 +30,7 @@ The bus layout works but is wider/taller than necessary in many cases.
 - [ ] Dead lane elimination — remove bus lanes that carry zero throughput after splitting/balancing
 - [ ] Multi-tile entity positioning — assemblers and chemical plants use center-offset positioning; verify blueprint export handles 3x3 and 3x3+ footprints correctly (there's a TODO in blueprint.rs)
 - [ ] Row merging — when two recipe groups have compatible input sets, consider placing them in adjacent rows sharing tap-offs
+- [ ] **Ghost router: A* allows goal/start tiles on hard obstacles** — `astar.rs:695` lets a path's goal tile sit on a hard obstacle, and the start tile is silently never checked at `astar.rs:658`. The occupancy refactor's materialisation filter (`ghost_router.rs`) now drops entities at hard tiles so they don't cause entity-overlap on fluid-lane reservations, but the underlying A* bug remains — paths still end on hard tiles, just without a materialised entity. The cleaner fix is to make `ghost_astar` reject hard-tile start/goal states outright (or have the tap-off spec generation place the spec endpoint one tile off the hard region).
 
 ## Space Age Machine Support (Rust Pipeline)
 
