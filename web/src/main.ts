@@ -187,14 +187,26 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const soloRegionsCb = makeOverlayToggle("Solo regions");
   const ghostCb = makeOverlayToggle("Ghost routes");
   const ghostModeCb = makeOverlayToggle("Ghost mode");
+  const directModeCb = makeOverlayToggle("Direct routing");
+  const bareModeCb = makeOverlayToggle("Bare (no trunks)");
 
-  // Initialize ghost mode from URL state. Auto-enables SAT zone overlay
-  // when ghost is on so the user immediately sees the junction rectangles.
+  // Initialize ghost/direct/bare from URL state. Bare implies direct
+  // implies ghost. Auto-enables SAT zone overlay so junction rectangles
+  // are immediately visible.
   {
-    const initialGhost = new URLSearchParams(window.location.search).get("ghost") === "1";
-    if (initialGhost) {
+    const qs = new URLSearchParams(window.location.search);
+    const initialGhost = qs.get("ghost") === "1";
+    const initialDirect = qs.get("direct") === "1";
+    const initialBare = qs.get("bare") === "1";
+    if (initialGhost || initialDirect || initialBare) {
       ghostModeCb.checked = true;
       regionsCb.checked = true;
+    }
+    if (initialDirect || initialBare) {
+      directModeCb.checked = true;
+    }
+    if (initialBare) {
+      bareModeCb.checked = true;
     }
   }
 
@@ -632,7 +644,12 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const classStr = fmtMap(classCounts, k => classLabel(k as Parameters<typeof classLabel>[0]));
     const overlapStr = overlapPairs > 0 ? `  |  ⚠ ${overlapPairs} overlap` : "";
 
-    ghostHud.innerHTML = `<span style="color:#8bf">ghost</span> ${items.length} regions  |  kind: ${kindStr}  |  class: ${classStr}${overlapStr}`;
+    const modeTag = bareModeCb.checked
+      ? `<span style="color:#fc6">ghost+bare</span>`
+      : directModeCb.checked
+      ? `<span style="color:#fb8">ghost+direct</span>`
+      : `<span style="color:#8bf">ghost</span>`;
+    ghostHud.innerHTML = `${modeTag} ${items.length} regions  |  kind: ${kindStr}  |  class: ${classStr}${overlapStr}`;
     ghostHud.style.display = "block";
   }
 
@@ -1142,6 +1159,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }, {
       getDebugMode: () => debugCb.checked,
       getGhostMode: () => ghostModeCb.checked,
+      getDirectMode: () => directModeCb.checked,
+      getBareMode: () => bareModeCb.checked,
       onDisplayToggles: (toggles: DisplayToggles) => {
         colorCb = toggles.colorCb;
         rateCb = toggles.rateCb;
@@ -1175,10 +1194,39 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       if (ghostModeCb.checked && !regionsCb.checked) {
         regionsCb.checked = true;
       }
+      // Direct/bare require ghost mode; clear them when ghost is off.
+      if (!ghostModeCb.checked) {
+        if (directModeCb.checked) directModeCb.checked = false;
+        if (bareModeCb.checked) bareModeCb.checked = false;
+      }
       updateRegionHud();
       showRegionDetail(null);
-      // Re-run the layout by clicking the solve button's layout generation.
-      // The sidebar reads getGhostMode() on each layoutBtn click.
+      (generatePanel.querySelector(".sb-btn-primary") as HTMLButtonElement | null)?.click();
+    });
+
+    directModeCb.addEventListener("change", () => {
+      // Direct routing implies ghost mode. Auto-enable both.
+      if (directModeCb.checked) {
+        if (!ghostModeCb.checked) ghostModeCb.checked = true;
+        if (!regionsCb.checked) regionsCb.checked = true;
+      } else {
+        // Turning off direct also turns off bare.
+        if (bareModeCb.checked) bareModeCb.checked = false;
+      }
+      updateRegionHud();
+      showRegionDetail(null);
+      (generatePanel.querySelector(".sb-btn-primary") as HTMLButtonElement | null)?.click();
+    });
+
+    bareModeCb.addEventListener("change", () => {
+      // Bare implies direct implies ghost. Auto-enable the chain.
+      if (bareModeCb.checked) {
+        if (!ghostModeCb.checked) ghostModeCb.checked = true;
+        if (!directModeCb.checked) directModeCb.checked = true;
+        if (!regionsCb.checked) regionsCb.checked = true;
+      }
+      updateRegionHud();
+      showRegionDetail(null);
       (generatePanel.querySelector(".sb-btn-primary") as HTMLButtonElement | null)?.click();
     });
 

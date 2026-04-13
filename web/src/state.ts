@@ -8,6 +8,10 @@ export interface FormState {
   belt: string | null;
   /** Use ghost router instead of the default bus router. */
   ghost: boolean;
+  /** Direct (no-trunk) routing for intermediate lanes. Implies ghost. */
+  direct: boolean;
+  /** Bare routing: no trunks at all (includes external inputs). Implies ghost+direct. */
+  bare: boolean;
 }
 
 export const DEFAULT_INPUTS: string[] = [
@@ -37,8 +41,10 @@ export function readUrlState(): FormState {
   const inputs = inParam ? inParam.split(",").filter((s) => s.length > 0) : DEFAULT_INPUTS;
   const belt = params.get("belt");
   const ghost = params.get("ghost") === "1";
+  const direct = params.get("direct") === "1";
+  const bare = params.get("bare") === "1";
 
-  return { item, rate, machine, inputs, belt, ghost };
+  return { item, rate, machine, inputs, belt, ghost, direct, bare };
 }
 
 export function writeUrlState(state: Omit<FormState, "machine"> & { machine: string }): void {
@@ -49,7 +55,9 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
     state.inputs.length === DEFAULT_INPUTS.length &&
     state.inputs.every((v, i) => v === DEFAULT_INPUTS[i]) &&
     !state.belt &&
-    !state.ghost;
+    !state.ghost &&
+    !state.direct &&
+    !state.bare;
 
   if (isDefault) {
     history.replaceState(null, "", window.location.pathname);
@@ -63,5 +71,7 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
   params.set("in", state.inputs.join(","));
   if (state.belt) params.set("belt", state.belt);
   if (state.ghost) params.set("ghost", "1");
+  if (state.direct) params.set("direct", "1");
+  if (state.bare) params.set("bare", "1");
   history.replaceState(null, "", "?" + params.toString());
 }

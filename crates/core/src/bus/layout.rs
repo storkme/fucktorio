@@ -12,6 +12,20 @@ thread_local! {
     /// WASM callers set this via `GhostModeGuard` because env vars don't
     /// work in the browser.
     static FORCE_GHOST_ROUTING: Cell<bool> = const { Cell::new(false) };
+
+    /// Thread-local flag to skip trunk generation for intermediate lanes
+    /// in the ghost router. When true, producer rows and consumer rows
+    /// are connected by direct A* specs instead of routing through a
+    /// shared trunk column. External-input and collector-only lanes
+    /// still use trunks. Used by the "Direct routing" UI spike.
+    static DIRECT_INTERMEDIATE_ROUTING: Cell<bool> = const { Cell::new(false) };
+
+    /// Thread-local flag to skip trunk generation for *all* lanes,
+    /// including external-input and collector-only. Implies
+    /// DIRECT_INTERMEDIATE_ROUTING. When set, every non-fluid,
+    /// non-family-balanced lane emits direct A* specs between
+    /// producers/external sources and consumers.
+    static BARE_ROUTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// RAII guard that enables ghost routing for the duration of its lifetime.
@@ -41,8 +55,71 @@ impl Drop for GhostModeGuard {
     }
 }
 
+/// RAII guard that enables direct (no-trunk) routing for intermediate
+/// lanes in the ghost router. External-input and collector-only lanes
+/// still use trunks; this only affects lanes that have both producers
+/// and consumers.
+pub struct DirectRoutingGuard {
+    prev: bool,
+}
+
+impl DirectRoutingGuard {
+    pub fn new() -> Self {
+        let prev = DIRECT_INTERMEDIATE_ROUTING.with(|c| c.replace(true));
+        Self { prev }
+    }
+}
+
+impl Default for DirectRoutingGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for DirectRoutingGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        DIRECT_INTERMEDIATE_ROUTING.with(|c| c.set(prev));
+    }
+}
+
+/// RAII guard that enables fully bare routing: no trunks at all,
+/// including external-input and collector-only lanes. Implies both
+/// ghost routing and direct intermediate routing.
+pub struct BareRoutingGuard {
+    prev_bare: bool,
+}
+
+impl BareRoutingGuard {
+    pub fn new() -> Self {
+        let prev_bare = BARE_ROUTING.with(|c| c.replace(true));
+        Self { prev_bare }
+    }
+}
+
+impl Default for BareRoutingGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for BareRoutingGuard {
+    fn drop(&mut self) {
+        let prev = self.prev_bare;
+        BARE_ROUTING.with(|c| c.set(prev));
+    }
+}
+
 pub(crate) fn is_ghost_routing_forced() -> bool {
     FORCE_GHOST_ROUTING.with(|c| c.get())
+}
+
+pub(crate) fn is_direct_intermediate_routing() -> bool {
+    DIRECT_INTERMEDIATE_ROUTING.with(|c| c.get()) || BARE_ROUTING.with(|c| c.get())
+}
+
+pub(crate) fn is_bare_routing() -> bool {
+    BARE_ROUTING.with(|c| c.get())
 }
 
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
