@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use fucktorio_core::bus::layout::{build_bus_layout_traced, GhostModeGuard};
-use fucktorio_core::models::{LayoutRegion, PortEdge, PortIo, PortSpec, RegionKind};
+use fucktorio_core::models::{EntityDirection, LayoutRegion, PortIo, RegionKind, RegionPort};
 use fucktorio_core::solver;
 use fucktorio_core::validate::{self, LayoutStyle};
 use rustc_hash::FxHashSet;
@@ -41,17 +41,17 @@ impl Class {
     }
 }
 
-fn port_axis(p: &PortSpec) -> &'static str {
-    match p.edge {
-        PortEdge::E | PortEdge::W => "h",
-        PortEdge::N | PortEdge::S => "v",
+fn port_axis(p: &RegionPort) -> &'static str {
+    match p.point.direction {
+        EntityDirection::East | EntityDirection::West => "h",
+        EntityDirection::North | EntityDirection::South => "v",
     }
 }
 
 #[derive(Default)]
 struct ItemPorts {
-    inputs: Vec<PortSpec>,
-    outputs: Vec<PortSpec>,
+    inputs: Vec<RegionPort>,
+    outputs: Vec<RegionPort>,
     axes: FxHashSet<&'static str>,
 }
 
@@ -243,8 +243,8 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
     }
 }
 
-fn group_by_item(r: &LayoutRegion) -> BTreeMap<String, Vec<&PortSpec>> {
-    let mut m: BTreeMap<String, Vec<&PortSpec>> = BTreeMap::new();
+fn group_by_item(r: &LayoutRegion) -> BTreeMap<String, Vec<&RegionPort>> {
+    let mut m: BTreeMap<String, Vec<&RegionPort>> = BTreeMap::new();
     for p in &r.ports {
         m.entry(p.item.clone().unwrap_or_else(|| "?".to_string())).or_default().push(p);
     }

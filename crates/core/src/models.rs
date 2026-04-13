@@ -115,18 +115,7 @@ pub struct PlacedEntity {
     pub items: Vec<ModuleItem>,
 }
 
-/// Which edge of a rectangular zone a port sits on.
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PortEdge {
-    N,
-    E,
-    S,
-    W,
-}
-
-/// Whether a boundary port is an input into the zone or an output from it.
+/// Whether a boundary port is an input into the region or an output from it.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,23 +124,31 @@ pub enum PortIo {
     Output,
 }
 
-/// A boundary port on a SAT crossing zone: edge, offset along that edge, and direction.
-///
-/// `offset` is measured from the zone's top-left corner along the edge in
-/// tile units (0 = first tile on that edge).
+/// A point on or inside a region where a spec enters or exits. Stored in
+/// absolute tile coordinates; `direction` encodes the flow direction at
+/// that tile (which way items are physically moving).
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortPoint {
+    pub x: i32,
+    pub y: i32,
+    pub direction: EntityDirection,
+}
+
+/// A boundary port on a `LayoutRegion`: a point plus io/item metadata.
+/// Replaces the old `PortSpec { edge, offset, … }` triple-encoding —
+/// position is now stored in absolute coordinates and the edge is
+/// derivable from the region's bbox when needed.
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortSpec {
-    pub edge: PortEdge,
-    pub offset: u32,
+pub struct RegionPort {
+    pub point: PortPoint,
     pub io: PortIo,
-    /// Item carried through this port (for visualisation).
+    /// Item carried through this port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
-    /// Flow direction at this port (for visualisation).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub direction: Option<EntityDirection>,
 }
 
 /// Origin/purpose of a `LayoutRegion`. Replaces the historical stringly-typed
@@ -182,13 +179,10 @@ pub struct LayoutRegion {
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    /// Boundary ports. Each port records the edge it sits on, its offset
-    /// along that edge, whether it's an input or output, the item flowing
-    /// through it, and the flow direction. Items/directions are derivable
-    /// from `ports`; `LayoutRegion` no longer carries separate input/output
-    /// vectors.
+    /// Boundary ports. Each port records the absolute (x, y) position,
+    /// flow direction, io (input/output), and item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ports: Vec<PortSpec>,
+    pub ports: Vec<RegionPort>,
 }
 
 /// Everything the layout engine produces — no rate data.

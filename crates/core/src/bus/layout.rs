@@ -896,18 +896,14 @@ fn route_bus(
     let regions: Vec<crate::models::LayoutRegion> = solved_crossings
         .iter()
         .map(|sc| {
-            // Convert each boundary to a PortSpec relative to the zone's top-left.
-            // Boundary tiles are INSIDE the zone (0 <= lx < width, 0 <= ly < height)
-            // and sit on one of the four edge rows/columns. We classify by which
-            // edge they're nearest to, using the belt direction as a tiebreaker for
-            // corner tiles.
-            let ports: Vec<crate::models::PortSpec> = sc.zone.boundaries.iter()
+            // Convert each boundary tile to a `RegionPort` with absolute
+            // position and flow direction. Boundaries must lie inside the
+            // zone bbox.
+            let ports: Vec<crate::models::RegionPort> = sc.zone.boundaries.iter()
                 .filter_map(|b| {
                     let lx = (b.x - sc.zone.x) as u32;
                     let ly = (b.y - sc.zone.y) as u32;
-                    let w = sc.zone.width;
-                    let h = sc.zone.height;
-                    if lx >= w || ly >= h {
+                    if lx >= sc.zone.width || ly >= sc.zone.height {
                         return None;
                     }
                     let io = if b.is_input {
@@ -915,37 +911,15 @@ fn route_bus(
                     } else {
                         crate::models::PortIo::Output
                     };
-                    // A boundary tile is on the edge of the zone. Determine which
-                    // edge by checking whether it's in the top/bottom row or
-                    // left/right column. Use the belt flow direction to break ties.
-                    let on_north = ly == 0;
-                    let on_south = ly == h - 1;
-                    let on_west  = lx == 0;
-                    let on_east  = lx == w - 1;
-
-                    let edge = match (on_north, on_south, on_west, on_east) {
-                        (true, false, false, false) => crate::models::PortEdge::N,
-                        (false, true, false, false) => crate::models::PortEdge::S,
-                        (false, false, true, false) => crate::models::PortEdge::W,
-                        (false, false, false, true) => crate::models::PortEdge::E,
-                        // Corner or centre tile: use belt direction to classify.
-                        _ => {
-                            use crate::models::EntityDirection;
-                            match b.direction {
-                                EntityDirection::North => crate::models::PortEdge::N,
-                                EntityDirection::South => crate::models::PortEdge::S,
-                                EntityDirection::West  => crate::models::PortEdge::W,
-                                EntityDirection::East  => crate::models::PortEdge::E,
-                            }
-                        }
-                    };
-
-                    let offset = match edge {
-                        crate::models::PortEdge::N | crate::models::PortEdge::S => lx,
-                        crate::models::PortEdge::W | crate::models::PortEdge::E => ly,
-                    };
-
-                    Some(crate::models::PortSpec { edge, offset, io, item: None, direction: None })
+                    Some(crate::models::RegionPort {
+                        point: crate::models::PortPoint {
+                            x: b.x,
+                            y: b.y,
+                            direction: b.direction,
+                        },
+                        io,
+                        item: Some(b.item.clone()),
+                    })
                 })
                 .collect();
 

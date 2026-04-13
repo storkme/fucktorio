@@ -12,7 +12,55 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use crate::models::{LayoutRegion, PortEdge, PortSpec};
+use crate::models::{LayoutRegion, PortIo, RegionPort};
+
+/// Internal edge classification used only for the canonical signature
+/// computation. The public `RegionPort` uses absolute positions instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    N,
+    E,
+    S,
+    W,
+}
+
+/// Derive `(edge, offset)` for a port sitting on the boundary of a
+/// `(width, height)` zone anchored at `(zx, zy)`. Returns `None` if the
+/// port point is outside the zone bbox.
+fn edge_and_offset(zx: i32, zy: i32, w: u32, h: u32, port: &RegionPort) -> Option<(Edge, u32)> {
+    let lx = port.point.x - zx;
+    let ly = port.point.y - zy;
+    if lx < 0 || ly < 0 || lx as u32 >= w || ly as u32 >= h {
+        return None;
+    }
+    let lxu = lx as u32;
+    let lyu = ly as u32;
+    let on_north = lyu == 0;
+    let on_south = lyu == h - 1;
+    let on_west = lxu == 0;
+    let on_east = lxu == w - 1;
+    let edge = match (on_north, on_south, on_west, on_east) {
+        (true, false, false, false) => Edge::N,
+        (false, true, false, false) => Edge::S,
+        (false, false, true, false) => Edge::W,
+        (false, false, false, true) => Edge::E,
+        // Corner/degenerate — break ties with flow direction.
+        _ => {
+            use crate::models::EntityDirection;
+            match port.point.direction {
+                EntityDirection::North => Edge::N,
+                EntityDirection::South => Edge::S,
+                EntityDirection::West => Edge::W,
+                EntityDirection::East => Edge::E,
+            }
+        }
+    };
+    let offset = match edge {
+        Edge::N | Edge::S => lxu,
+        Edge::E | Edge::W => lyu,
+    };
+    Some((edge, offset))
+}
 
 /// SAT solver stats associated with a zone record. Mirrors
 /// `sat::SolutionStats` but kept local so `zone_cache` doesn't depend on
@@ -146,25 +194,33 @@ fn format_port(edge: u8, offset: u32, is_input: bool) -> String {
 /// as `"{W}x{H}:{sorted_port_tuples}"`, and returns the lexicographically
 /// smallest — so geometrically identical zones (rotated or mirrored) collapse
 /// to the same bucket.
-pub fn canonical_signature(width: u32, height: u32, ports: &[PortSpec]) -> String {
+pub fn canonical_signature(zx: i32, zy: i32, width: u32, height: u32, ports: &[RegionPort]) -> String {
     let mut candidates: Vec<String> = Vec::with_capacity(8);
+
+    // Derive (edge, offset, io) tuples once; then apply D4 transforms to each.
+    let base: Vec<(u8, u32, bool)> = ports
+        .iter()
+        .filter_map(|p| {
+            let (edge, offset) = edge_and_offset(zx, zy, width, height, p)?;
+            let edge_idx = match edge {
+                Edge::N => 0,
+                Edge::E => 1,
+                Edge::S => 2,
+                Edge::W => 3,
+            };
+            let is_input = matches!(p.io, PortIo::Input);
+            Some((edge_idx, offset, is_input))
+        })
+        .collect();
 
     for rotation in 0u8..4 {
         for &reflect in &[false, true] {
-            let transformed: Vec<(u8, u32, bool)> = ports
+            let transformed: Vec<(u8, u32, bool)> = base
                 .iter()
-                .map(|p| {
-                    let edge_idx = match p.edge {
-                        PortEdge::N => 0,
-                        PortEdge::E => 1,
-                        PortEdge::S => 2,
-                        PortEdge::W => 3,
-                    };
-                    let is_input = matches!(p.io, crate::models::PortIo::Input);
-                    let (ne, no, nio, tw, th) = transform_port(
-                        edge_idx, p.offset, is_input, width, height, rotation, reflect,
+                .map(|&(edge_idx, offset, is_input)| {
+                    let (ne, no, nio, _tw, _th) = transform_port(
+                        edge_idx, offset, is_input, width, height, rotation, reflect,
                     );
-                    let _ = (tw, th); // dimensions handled below
                     (ne, no, nio)
                 })
                 .collect();
@@ -205,6 +261,8 @@ pub fn record_zone(region: &LayoutRegion, stats: ZoneStats, source: Option<&str>
         .or_else(|| std::env::var("FUCKTORIO_ZONE_SOURCE").ok());
 
     let signature = canonical_signature(
+        region.x,
+        region.y,
         region.width as u32,
         region.height as u32,
         &region.ports,

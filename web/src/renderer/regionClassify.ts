@@ -6,7 +6,7 @@
 // ghost_cluster) AND what a template-based classifier would do with it.
 // Gaps between the two tell us what the taxonomy is missing.
 
-import type { LayoutRegion, PortSpec, PortEdge, EntityDirection, RegionKind } from "../engine";
+import type { LayoutRegion, RegionPort, EntityDirection, RegionKind } from "../engine";
 
 export type RegionClass =
   | "perpendicular"        // T1: one horizontal item × one vertical item, single-tile crossing
@@ -28,17 +28,17 @@ export interface RegionClassification {
 export interface ItemPorts {
   name: string;
   axis: "horizontal" | "vertical" | "mixed";
-  inputs: PortSpec[];
-  outputs: PortSpec[];
+  inputs: RegionPort[];
+  outputs: RegionPort[];
 }
 
-function portAxis(port: PortSpec): "horizontal" | "vertical" {
-  // E/W edges → horizontal flow (the spec enters or exits along a horizontal
-  // direction). N/S edges → vertical flow.
-  return port.edge === "E" || port.edge === "W" ? "horizontal" : "vertical";
+function portAxis(port: RegionPort): "horizontal" | "vertical" {
+  // Flow direction determines axis: E/W → horizontal, N/S → vertical.
+  const d = port.point.direction;
+  return d === "East" || d === "West" ? "horizontal" : "vertical";
 }
 
-function itemAxis(ports: PortSpec[]): "horizontal" | "vertical" | "mixed" {
+function itemAxis(ports: RegionPort[]): "horizontal" | "vertical" | "mixed" {
   const axes = new Set(ports.map(portAxis));
   if (axes.size === 1) return [...axes][0];
   return "mixed";
@@ -227,4 +227,4 @@ export function classLabel(cls: RegionClass): string {
 }
 
 /** Ignored for direction, used only in JSDoc hover context. */
-export type _ForDoc = PortEdge | EntityDirection;
+export type _ForDoc = EntityDirection;

@@ -1,23 +1,7 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX, itemColor } from "./entities";
-import type { LayoutResult, LayoutRegion, EntityDirection, RegionKind } from "../engine";
+import type { LayoutResult, LayoutRegion, EntityDirection, RegionKind, RegionPort } from "../engine";
 import { classifyRegion, kindColor, classColor, classLabel, type RegionClassification } from "./regionClassify";
-
-// ---------------------------------------------------------------------------
-// Types mirroring the Rust PortSpec / PortEdge / PortIo that come through
-// serde but are not part of the generated tsify .d.ts.
-// ---------------------------------------------------------------------------
-
-type PortEdge = "N" | "S" | "E" | "W";
-type PortIo = "Input" | "Output";
-
-interface PortSpec {
-  edge: PortEdge;
-  offset: number;
-  io: PortIo;
-  item?: string;
-  direction?: EntityDirection;
-}
 
 interface LayoutRegionWithPorts {
   kind: RegionKind;
@@ -25,7 +9,7 @@ interface LayoutRegionWithPorts {
   y: number;
   width: number;
   height: number;
-  ports?: PortSpec[];
+  ports?: RegionPort[];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,15 +80,17 @@ function drawArrow(
 // Port world position
 // ---------------------------------------------------------------------------
 
-function portWorldPos(
-  region: LayoutRegionWithPorts,
-  port: PortSpec,
-): [number, number] {
-  switch (port.edge) {
-    case "N": return [region.x + port.offset, region.y];
-    case "S": return [region.x + port.offset, region.y + region.height - 1];
-    case "W": return [region.x, region.y + port.offset];
-    case "E": return [region.x + region.width - 1, region.y + port.offset];
+function portWorldPos(port: RegionPort): [number, number] {
+  return [port.point.x, port.point.y];
+}
+
+/** Pick a label "side" for a port based on its flow direction. */
+function portEdgeHint(port: RegionPort): "N" | "S" | "E" | "W" {
+  switch (port.point.direction) {
+    case "North": return "N";
+    case "South": return "S";
+    case "East":  return "E";
+    case "West":  return "W";
   }
 }
 
@@ -170,7 +156,7 @@ export function renderRegionOverlayDetailed(layout: LayoutResult): RegionOverlay
     // Boundary ports — unchanged visual; existing port labels still useful
     const ports = region.ports ?? [];
     for (const port of ports) {
-      const [wx, wy] = portWorldPos(region, port);
+      const [wx, wy] = portWorldPos(port);
       const px = wx * TILE_PX + TILE_PX / 2;
       const py = wy * TILE_PX + TILE_PX / 2;
 
@@ -179,12 +165,10 @@ export function renderRegionOverlayDetailed(layout: LayoutResult): RegionOverlay
       pg.circle(px, py, TILE_PX * 0.3).fill({ color: portColor, alpha: 0.8 });
       layer.addChild(pg);
 
-      if (port.direction) {
-        const ag = new Graphics();
-        const arrowColor = port.item ? itemColor(port.item) : portColor;
-        drawArrow(ag, px, py, port.direction, arrowColor);
-        layer.addChild(ag);
-      }
+      const ag = new Graphics();
+      const arrowColor = port.item ? itemColor(port.item) : portColor;
+      drawArrow(ag, px, py, port.point.direction, arrowColor);
+      layer.addChild(ag);
 
       const ioTag = port.io === "Input" ? "IN" : "OUT";
       const itemAbbr = port.item ? port.item.slice(0, 3) : "?";
@@ -192,7 +176,7 @@ export function renderRegionOverlayDetailed(layout: LayoutResult): RegionOverlay
         text: `${itemAbbr} ${ioTag}`,
         style: PORT_LABEL_STYLE,
       });
-      switch (port.edge) {
+      switch (portEdgeHint(port)) {
         case "N":
           portLabel.x = px - portLabel.width / 2;
           portLabel.y = py - TILE_PX * 0.9;

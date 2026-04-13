@@ -1459,8 +1459,8 @@ fn emit_unresolved_junctions(
     specs: &[BeltSpec],
     ghost_item_at: &FxHashMap<(i32, i32), String>,
 ) -> Vec<LayoutRegion> {
-    use crate::bus::junction::{BeltTier, Junction, PortPoint, Rect, SpecCrossing};
-    use crate::models::RegionKind;
+    use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing};
+    use crate::models::{PortPoint, RegionKind};
 
     let _ = ghost_item_at;
 

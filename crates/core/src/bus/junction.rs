@@ -24,7 +24,7 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::models::{EntityDirection, LayoutRegion, PortEdge, PortIo, PortSpec, RegionKind};
+use crate::models::{LayoutRegion, PortIo, PortPoint, RegionKind, RegionPort};
 
 /// A rectangular bounding box in tile coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,18 +40,6 @@ impl Rect {
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.x && x < self.x + self.w as i32 && y >= self.y && y < self.y + self.h as i32
     }
-}
-
-/// A single point on or inside a junction where a spec enters or exits.
-/// `direction` is the flow direction at this tile — which way items are
-/// physically moving. The edge of the bbox the port sits on is derivable
-/// from `(x, y, direction)` combined with the bbox and whether this is an
-/// entry or an exit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PortPoint {
-    pub x: i32,
-    pub y: i32,
-    pub direction: EntityDirection,
 }
 
 /// The belt tier a spec is routed at. Determines throughput class — two
@@ -131,14 +119,22 @@ impl Junction {
     }
 
     /// Lower this junction to a `LayoutRegion` for the pipeline output.
-    /// Each spec produces two `PortSpec`s (one entry + one exit) whose
-    /// edges are derived from the point's position inside the bbox and
-    /// the flow direction.
+    /// Each spec contributes two `RegionPort`s — one entry (`PortIo::Input`)
+    /// and one exit (`PortIo::Output`) — with absolute positions and
+    /// flow directions.
     pub fn to_layout_region(&self, kind: RegionKind) -> LayoutRegion {
-        let mut ports: Vec<PortSpec> = Vec::with_capacity(self.specs.len() * 2);
+        let mut ports: Vec<RegionPort> = Vec::with_capacity(self.specs.len() * 2);
         for spec in &self.specs {
-            ports.push(point_to_port(&self.bbox, &spec.entry, PortIo::Input, &spec.item));
-            ports.push(point_to_port(&self.bbox, &spec.exit, PortIo::Output, &spec.item));
+            ports.push(RegionPort {
+                point: spec.entry,
+                io: PortIo::Input,
+                item: Some(spec.item.clone()),
+            });
+            ports.push(RegionPort {
+                point: spec.exit,
+                io: PortIo::Output,
+                item: Some(spec.item.clone()),
+            });
         }
         LayoutRegion {
             kind,
@@ -148,57 +144,5 @@ impl Junction {
             height: self.bbox.h as i32,
             ports,
         }
-    }
-}
-
-/// Derive a `PortSpec` from a bbox + point + io + item. The edge is
-/// picked from the point's position inside the bbox (W if on the west
-/// edge, etc.). For a 1×1 bbox (the common case for per-tile
-/// unresolved junctions), every position collapses to a corner; we
-/// then use the flow direction to decide which edge the port
-/// conceptually sits on: entries face the edge opposite their flow
-/// (items flowing East enter from the west edge) and exits face the
-/// edge matching their flow.
-fn point_to_port(bbox: &Rect, p: &PortPoint, io: PortIo, item: &str) -> PortSpec {
-    let lx = p.x - bbox.x;
-    let ly = p.y - bbox.y;
-    let w = bbox.w as i32;
-    let h = bbox.h as i32;
-
-    let on_north = ly == 0;
-    let on_south = ly == h - 1;
-    let on_west = lx == 0;
-    let on_east = lx == w - 1;
-
-    let edge = match (on_north, on_south, on_west, on_east) {
-        (true, false, false, false) => PortEdge::N,
-        (false, true, false, false) => PortEdge::S,
-        (false, false, true, false) => PortEdge::W,
-        (false, false, false, true) => PortEdge::E,
-        // Corner (including 1×1 bbox where every edge overlaps) —
-        // tiebreak by flow direction + io.
-        _ => match (io, p.direction) {
-            (PortIo::Input, EntityDirection::East) => PortEdge::W,
-            (PortIo::Input, EntityDirection::West) => PortEdge::E,
-            (PortIo::Input, EntityDirection::North) => PortEdge::S,
-            (PortIo::Input, EntityDirection::South) => PortEdge::N,
-            (PortIo::Output, EntityDirection::East) => PortEdge::E,
-            (PortIo::Output, EntityDirection::West) => PortEdge::W,
-            (PortIo::Output, EntityDirection::North) => PortEdge::N,
-            (PortIo::Output, EntityDirection::South) => PortEdge::S,
-        },
-    };
-
-    let offset = match edge {
-        PortEdge::N | PortEdge::S => lx.max(0) as u32,
-        PortEdge::E | PortEdge::W => ly.max(0) as u32,
-    };
-
-    PortSpec {
-        edge,
-        offset,
-        io,
-        item: Some(item.to_string()),
-        direction: Some(p.direction),
     }
 }
