@@ -105,6 +105,7 @@ pub(super) enum ClaimKindTag {
     Permanent,
     GhostSurface,
     Template,
+    #[allow(dead_code)]
     SatSolved,
 }
 
@@ -205,6 +206,7 @@ impl Occupancy {
     }
 
     /// True if the tile is unclaimed.
+    #[allow(dead_code)]
     pub fn is_free(&self, tile: (i32, i32)) -> bool {
         !self.claims.contains_key(&tile)
     }
@@ -240,6 +242,7 @@ impl Occupancy {
     /// the top of the SAT cluster loop, mirroring today's behaviour
     /// where `pre_existing_positions` is computed once and not
     /// updated as later SAT clusters claim tiles.
+    #[allow(dead_code)]
     pub fn snapshot_permanent_tiles(&self) -> FxHashSet<(i32, i32)> {
         self.claims
             .iter()
@@ -258,6 +261,7 @@ impl Occupancy {
     /// has already designated as boundary ports — those must not appear
     /// in `forced_empty` because they're entry/exit ports for the
     /// solver.
+    #[allow(dead_code)]
     pub fn forced_empty_in(
         &self,
         zone: &Rect,
