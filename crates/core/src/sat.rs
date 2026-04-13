@@ -238,6 +238,7 @@ impl CrossingEncoder {
         self.encode_direction_constraints(&mut cnf);
         self.encode_adjacency(&mut cnf);
         self.encode_underground(&mut cnf, max_ug_reach);
+        self.encode_single_incoming(&mut cnf);
         if self.n_item_bits > 0 {
             self.encode_item_transport(&mut cnf);
         }
@@ -411,6 +412,26 @@ impl CrossingEncoder {
                     ]);
                 }
 
+                // ug_out pairing: ug_out facing d must receive underground[d]
+                // from its "tail" tile — the tile in direction -d.  Without
+                // this, an orphaned ug_out can appear with no matching ug_in.
+                for &d in &ALL_DIRS {
+                    let (dx, dy) = dir_delta(d);
+                    let px = x as i32 - dx;
+                    let py = y as i32 - dy;
+                    if self.in_bounds(px, py) {
+                        let p = self.tiles[self.idx(px as u32, py as u32)];
+                        cnf.add(&[
+                            t.is_ug_out.negative(),
+                            t.out_dir[d].negative(),
+                            p.underground[d].positive(),
+                        ]);
+                    } else {
+                        // No underground can arrive from off-grid.
+                        cnf.add(&[t.is_ug_out.negative(), t.out_dir[d].negative()]);
+                    }
+                }
+
                 for &d in &ALL_DIRS {
                     let (dx, dy) = dir_delta(d);
                     let nx = x as i32 + dx;
@@ -491,6 +512,52 @@ impl CrossingEncoder {
                     }
                     if clause.len() == (max_reach + 1) as usize {
                         cnf.add(&clause);
+                    }
+                }
+            }
+        }
+    }
+
+    // -- At most one incoming surface edge per tile --------------------------
+    //
+    // Prevents closed loops (A→B→C→A) and spurious item merges.  For every
+    // pair of distinct directions d1, d2, the two upstream tiles p1 and p2
+    // cannot both be outputting toward this tile simultaneously.
+    //
+    // This is valid for pure routing (no item splits/merges) and is safe for
+    // crossing zones where each path is a simple chain with no merging.
+
+    fn encode_single_incoming(&self, cnf: &mut Cnf) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                // Collect (type_var, out_dir_var) pairs for every neighbor
+                // that *could* output toward (x,y).
+                // A neighbor at (x-dx, y-dy) facing direction d = (dx,dy)
+                // sends items toward (x,y).
+                let mut feeders: Vec<(Var, Var)> = Vec::new();
+                for &d in &ALL_DIRS {
+                    let (dx, dy) = dir_delta(d);
+                    let px = x as i32 - dx;
+                    let py = y as i32 - dy;
+                    if !self.in_bounds(px, py) {
+                        continue;
+                    }
+                    let p = self.tiles[self.idx(px as u32, py as u32)];
+                    // Both surface belts and ug_out can output toward us.
+                    feeders.push((p.is_belt, p.out_dir[d]));
+                    feeders.push((p.is_ug_out, p.out_dir[d]));
+                }
+                // Pairwise AMO: at most one (type ∧ dir) pair active.
+                for i in 0..feeders.len() {
+                    for j in (i + 1)..feeders.len() {
+                        let (ti, di) = feeders[i];
+                        let (tj, dj) = feeders[j];
+                        cnf.add(&[
+                            ti.negative(),
+                            di.negative(),
+                            tj.negative(),
+                            dj.negative(),
+                        ]);
                     }
                 }
             }
@@ -650,6 +717,21 @@ impl CrossingEncoder {
                 // belt (surface) or ug_in (items enter underground).
                 cnf.add(&[t.is_belt.positive(), t.is_ug_in.positive()]);
                 cnf.add(&[t.out_dir[d].positive()]);
+
+                // No in-grid entity may output toward an input boundary.
+                // Items at an input boundary enter from outside the zone;
+                // allowing in-grid paths to flow back into the input would
+                // create loops (items circling around an input tile).
+                for &fd in &ALL_DIRS {
+                    let (fdx, fdy) = dir_delta(fd);
+                    let px = lx as i32 - fdx;
+                    let py = ly as i32 - fdy;
+                    if self.in_bounds(px, py) {
+                        let p = self.tiles[self.idx(px as u32, py as u32)];
+                        cnf.add(&[p.is_belt.negative(), p.out_dir[fd].negative()]);
+                        cnf.add(&[p.is_ug_out.negative(), p.out_dir[fd].negative()]);
+                    }
+                }
             } else {
                 // Output: items exit zone flowing dir d. Tile can be
                 // belt or ug_out.
@@ -1461,5 +1543,112 @@ mod tests {
         assert!(result.stats.clauses > 0);
         assert_eq!(result.stats.zone_width, 3);
         assert_eq!(result.stats.zone_height, 3);
+    }
+
+    /// 4×4 routing for the broken electronic-circuit tap-off zone.
+    ///
+    /// World coords x:3-6, y:6-9.  Two items cross:
+    ///   - copper-plate: enters top-left (3,6) South, exits right-mid (6,8) East
+    ///   - copper-cable: enters right (6,7) West, exits bottom (4,9) South
+    ///
+    /// The broken layout had belt-W at (5,7) feeding ug-in-S at (4,7) — illegal.
+    /// The solver must find a path that turns copper-cable South before the UG entrance.
+    #[test]
+    fn test_4x4_electronic_circuit_routing() {
+        let zone = CrossingZone {
+            x: 3,
+            y: 6,
+            width: 4,
+            height: 4,
+            boundaries: vec![
+                // IN1: copper-plate enters top-left, flowing South into grid
+                ZoneBoundary {
+                    x: 3,
+                    y: 6,
+                    direction: EntityDirection::South,
+                    item: "copper-plate".into(),
+                    is_input: true,
+                },
+                // IN2: copper-cable enters right column y=7, flowing West into grid
+                ZoneBoundary {
+                    x: 6,
+                    y: 7,
+                    direction: EntityDirection::West,
+                    item: "copper-cable".into(),
+                    is_input: true,
+                },
+                // OUT1: copper-plate exits right column y=8, flowing East
+                ZoneBoundary {
+                    x: 6,
+                    y: 8,
+                    direction: EntityDirection::East,
+                    item: "copper-plate".into(),
+                    is_input: false,
+                },
+                // OUT2: copper-cable exits bottom row x=4, flowing South
+                ZoneBoundary {
+                    x: 4,
+                    y: 9,
+                    direction: EntityDirection::South,
+                    item: "copper-cable".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![],
+        };
+
+        let result = solve_crossing_zone(&zone, 4, "fast-transport-belt");
+        assert!(result.is_some(), "4×4 electronic-circuit routing should be solvable");
+
+        let solution = result.unwrap();
+
+        // Verify no overlapping positions.
+        let mut positions: Vec<(i32, i32)> =
+            solution.entities.iter().map(|e| (e.x, e.y)).collect();
+        let total = positions.len();
+        positions.sort();
+        positions.dedup();
+        assert_eq!(total, positions.len(), "No duplicate positions");
+
+        eprintln!(
+            "\n4×4 solution: {} entities ({} vars, {} clauses, {}µs)",
+            solution.entities.len(),
+            solution.stats.variables,
+            solution.stats.clauses,
+            solution.stats.solve_time_us,
+        );
+
+        // Print a grid so we can eyeball it.
+        let by_pos: std::collections::HashMap<(i32, i32), &crate::models::PlacedEntity> =
+            solution.entities.iter().map(|e| ((e.x, e.y), e)).collect();
+
+        eprintln!("     x=3        x=4        x=5        x=6");
+        for wy in 6..=9 {
+            eprint!("y={wy} ");
+            for wx in 3..=6 {
+                if let Some(e) = by_pos.get(&(wx, wy)) {
+                    let sym = match (&e.direction, &e.io_type) {
+                        (_, Some(t)) if t == "input" => "UG↓in".to_string(),
+                        (_, Some(_)) => "UG↓out".to_string(),
+                        (EntityDirection::North, _) => format!("↑({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::South, _) => format!("↓({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::East,  _) => format!("→({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::West,  _) => format!("←({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                    };
+                    eprint!("{sym:<10} ");
+                } else {
+                    eprint!(".          ");
+                }
+            }
+            eprintln!();
+        }
+        eprintln!();
+
+        for e in &solution.entities {
+            eprintln!(
+                "  ({},{}) {} {:?} carries={:?} io={:?}",
+                e.x, e.y, e.name, e.direction, e.carries, e.io_type
+            );
+        }
     }
 }
