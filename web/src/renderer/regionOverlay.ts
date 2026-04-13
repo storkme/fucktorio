@@ -1,6 +1,6 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX, itemColor } from "./entities";
-import type { LayoutResult, LayoutRegion, EntityDirection } from "../engine";
+import type { LayoutResult, LayoutRegion, EntityDirection, RegionKind } from "../engine";
 import { classifyRegion, kindColor, classColor, classLabel, type RegionClassification } from "./regionClassify";
 
 // ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ interface PortSpec {
 }
 
 interface LayoutRegionWithPorts {
-  kind: string;
+  kind: RegionKind;
   x: number;
   y: number;
   width: number;

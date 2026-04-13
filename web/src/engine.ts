@@ -18,6 +18,7 @@ export type {
   ItemFlow,
   LayoutResult,
   LayoutRegion,
+  RegionKind,
   PortSpec,
   PortEdge,
   PortIo,

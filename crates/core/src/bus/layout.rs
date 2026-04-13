@@ -950,7 +950,7 @@ fn route_bus(
                 .collect();
 
             let region = crate::models::LayoutRegion {
-                kind: "crossing_zone".to_string(),
+                kind: crate::models::RegionKind::CrossingZone,
                 x: sc.zone.x,
                 y: sc.zone.y,
                 width: sc.zone.width as i32,

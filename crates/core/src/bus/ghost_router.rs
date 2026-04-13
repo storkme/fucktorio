@@ -969,7 +969,7 @@ pub fn route_bus_ghost(
                             solve_time_us: 0,
                         });
                         template_regions.push(LayoutRegion {
-                            kind: "corridor_template".to_string(),
+                            kind: crate::models::RegionKind::CorridorTemplate,
                             x: zone.x,
                             y: zone.y,
                             width: zone.w as i32,
@@ -1155,7 +1155,7 @@ pub fn route_bus_ghost(
                     solve_time_us: 0,
                 });
                 template_regions.push(LayoutRegion {
-                    kind: "junction_template".to_string(),
+                    kind: crate::models::RegionKind::JunctionTemplate,
                     x: zone.x,
                     y: zone.y,
                     width: zone.w as i32,
@@ -1476,7 +1476,7 @@ fn emit_unresolved_junctions(
                 // bare region so the diagnostic sees it.
                 let _ = ghost_item_at.get(&tile);
                 out.push(LayoutRegion {
-                    kind: "unresolved".to_string(),
+                    kind: crate::models::RegionKind::Unresolved,
                     x: tx,
                     y: ty,
                     width: 1,
@@ -1525,7 +1525,7 @@ fn emit_unresolved_junctions(
         push_spec(info.spec_b.0.clone(), info.spec_b.1);
 
         out.push(LayoutRegion {
-            kind: "unresolved".to_string(),
+            kind: crate::models::RegionKind::Unresolved,
             x: tx,
             y: ty,
             width: 1,

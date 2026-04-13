@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use fucktorio_core::bus::layout::{build_bus_layout_traced, GhostModeGuard};
-use fucktorio_core::models::{LayoutRegion, PortEdge, PortIo, PortSpec};
+use fucktorio_core::models::{LayoutRegion, PortEdge, PortIo, PortSpec, RegionKind};
 use fucktorio_core::solver;
 use fucktorio_core::validate::{self, LayoutStyle};
 use rustc_hash::FxHashSet;
@@ -158,10 +158,10 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
         .collect();
 
     // Group regions by (kind, class)
-    let mut by_kc: BTreeMap<(String, Class), Vec<&LayoutRegion>> = BTreeMap::new();
+    let mut by_kc: BTreeMap<(RegionKind, Class), Vec<&LayoutRegion>> = BTreeMap::new();
     for r in &layout.regions {
         let c = classify(r);
-        by_kc.entry((r.kind.clone(), c)).or_default().push(r);
+        by_kc.entry((r.kind, c)).or_default().push(r);
     }
 
     // Also map region → contained validator errors
@@ -200,7 +200,7 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
             Some(region_err_counts[idx])
         }).sum();
         println!(
-            "    {:20}  {:20}  ×{:3}  {} err-touching regions ({} total errors)",
+            "    {:20?}  {:20}  ×{:3}  {} err-touching regions ({} total errors)",
             kind, class.label(), regs.len(), err_touch, err_total
         );
     }
@@ -224,7 +224,7 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
     println!("  SAT clusters touching validator errors:");
     let mut any = false;
     for (i, r) in layout.regions.iter().enumerate() {
-        if r.kind == "ghost_cluster" && region_err_counts[i] > 0 {
+        if r.kind == RegionKind::CrossingZone && region_err_counts[i] > 0 {
             any = true;
             let c = classify(r);
             println!(

@@ -154,13 +154,30 @@ pub struct PortSpec {
     pub direction: Option<EntityDirection>,
 }
 
+/// Origin/purpose of a `LayoutRegion`. Replaces the historical stringly-typed
+/// `kind` field so classifier and histograms can exhaustive-match.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegionKind {
+    /// Non-ghost SAT crossing-zone solver output.
+    CrossingZone,
+    /// Ghost-router corridor template (one horizontal spec crossing N trunks).
+    CorridorTemplate,
+    /// Ghost-router per-tile perpendicular crossing template.
+    JunctionTemplate,
+    /// Ghost-router crossing left for the junction solver to pick up.
+    Unresolved,
+}
+
 /// Metadata about a resolved region in the layout (SAT crossing zone,
 /// ghost-routed junction template, or unresolved placeholder).
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutRegion {
-    pub kind: String,
+    pub kind: RegionKind,
     pub x: i32,
     pub y: i32,
     pub width: i32,

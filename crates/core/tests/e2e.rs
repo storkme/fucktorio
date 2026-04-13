@@ -983,7 +983,10 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
             // with boundary ports, SAT entities, pre-existing entities, and
             // a 1-tile halo showing what's just outside the zone.
             for region in &result.layout.regions {
-                if region.kind != "ghost_cluster" { continue; }
+                // "ghost_cluster" kind no longer exists — this zone-visualiser
+                // block is effectively dead now but kept for when a
+                // post-SAT visualiser is reintroduced.
+                if region.kind != fucktorio_core::models::RegionKind::CrossingZone { continue; }
                 let zx = region.x;
                 let zy = region.y;
                 let zw = region.width;

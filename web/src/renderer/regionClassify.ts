@@ -6,7 +6,7 @@
 // ghost_cluster) AND what a template-based classifier would do with it.
 // Gaps between the two tell us what the taxonomy is missing.
 
-import type { LayoutRegion, PortSpec, PortEdge, EntityDirection } from "../engine";
+import type { LayoutRegion, PortSpec, PortEdge, EntityDirection, RegionKind } from "../engine";
 
 export type RegionClass =
   | "perpendicular"        // T1: one horizontal item × one vertical item, single-tile crossing
@@ -190,13 +190,12 @@ export function classifyRegion(region: LayoutRegion): RegionClassification {
 // ---------------------------------------------------------------------------
 
 /** Colour for a region based on engine-assigned kind. */
-export function kindColor(kind: string): number {
+export function kindColor(kind: RegionKind): number {
   switch (kind) {
     case "corridor_template":  return 0x3d7bb5; // blue — T2 corridor
     case "junction_template":  return 0x4aa66f; // green — T1 perpendicular
-    case "ghost_cluster":      return 0xd08040; // orange — legacy SAT (no longer produced)
+    case "crossing_zone":      return 0xd08040; // orange — non-ghost SAT solved
     case "unresolved":         return 0xd04040; // red — junction solver work needed
-    default:                   return 0x808080; // gray
   }
 }
 
