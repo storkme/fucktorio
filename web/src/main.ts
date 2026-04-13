@@ -644,9 +644,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }
     const r = item.region;
     const c = item.classification;
-    const satStats = r.solve_time_us > 0
-      ? `<br><span style="color:#999">SAT: ${r.variables} vars, ${r.clauses} clauses, ${r.solve_time_us}µs</span>`
-      : "";
     const portStr = r.ports && r.ports.length > 0 ? `${r.ports.length} ports` : "no ports";
     const itemList = [...c.items.values()]
       .map(ip => `${ip.name} (${ip.axis}, ${ip.inputs.length}in/${ip.outputs.length}out)`)
@@ -657,7 +654,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       <div style="color:#aaa">(${r.x}, ${r.y})  ${r.width}×${r.height}  ${portStr}</div>
       <div style="margin-top:6px;color:#ddd">${c.summary}</div>
       ${itemList ? `<div style="margin-top:6px;color:#bbb"><b>items:</b><br>&nbsp;&nbsp;${itemList}</div>` : ""}
-      ${satStats}
     `;
     regionDetail.style.display = "block";
   }

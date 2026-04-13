@@ -25,12 +25,7 @@ interface LayoutRegionWithPorts {
   y: number;
   width: number;
   height: number;
-  inputs: string[];
-  outputs: string[];
   ports?: PortSpec[];
-  variables: number;
-  clauses: number;
-  solve_time_us: number;
 }
 
 // ---------------------------------------------------------------------------

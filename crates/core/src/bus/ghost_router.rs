@@ -974,12 +974,7 @@ pub fn route_bus_ghost(
                             y: zone.y,
                             width: zone.w as i32,
                             height: zone.h as i32,
-                            inputs: vec![hspec.item.clone()],
-                            outputs: vec![hspec.item.clone()],
                             ports: Vec::new(),
-                            variables: 0,
-                            clauses: 0,
-                            solve_time_us: 0,
                         });
                         // Step 5a of the occupancy refactor: push the corridor
                         // UG bridge entities directly into `entities` and
@@ -1165,12 +1160,7 @@ pub fn route_bus_ghost(
                     y: zone.y,
                     width: zone.w as i32,
                     height: zone.h as i32,
-                    inputs: vec![info.spec_a.0.clone(), info.spec_b.0.clone()],
-                    outputs: vec![info.spec_a.0, info.spec_b.0],
                     ports: Vec::new(),
-                    variables: 0,
-                    clauses: 0,
-                    solve_time_us: 0,
                 });
 
                 // Release GhostSurface + trunk/tapoff Permanent claims
@@ -1484,19 +1474,14 @@ fn emit_unresolved_junctions(
                 // A crossing tile with ≠2 specs — rare and probably
                 // indicates something upstream went wrong. Still emit a
                 // bare region so the diagnostic sees it.
-                let item = ghost_item_at.get(&tile).cloned().unwrap_or_default();
+                let _ = ghost_item_at.get(&tile);
                 out.push(LayoutRegion {
                     kind: "unresolved".to_string(),
                     x: tx,
                     y: ty,
                     width: 1,
                     height: 1,
-                    inputs: if item.is_empty() { Vec::new() } else { vec![item.clone()] },
-                    outputs: if item.is_empty() { Vec::new() } else { vec![item] },
                     ports: Vec::new(),
-                    variables: 0,
-                    clauses: 0,
-                    solve_time_us: 0,
                 });
                 continue;
             }
@@ -1545,12 +1530,7 @@ fn emit_unresolved_junctions(
             y: ty,
             width: 1,
             height: 1,
-            inputs: vec![info.spec_a.0.clone(), info.spec_b.0.clone()],
-            outputs: vec![info.spec_a.0, info.spec_b.0],
             ports,
-            variables: 0,
-            clauses: 0,
-            solve_time_us: 0,
         });
     }
 

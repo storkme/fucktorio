@@ -896,15 +896,6 @@ fn route_bus(
     let regions: Vec<crate::models::LayoutRegion> = solved_crossings
         .iter()
         .map(|sc| {
-            let inputs: Vec<String> = sc.zone.boundaries.iter()
-                .filter(|b| b.is_input)
-                .map(|b| b.item.clone())
-                .collect();
-            let outputs: Vec<String> = sc.zone.boundaries.iter()
-                .filter(|b| !b.is_input)
-                .map(|b| b.item.clone())
-                .collect();
-
             // Convert each boundary to a PortSpec relative to the zone's top-left.
             // Boundary tiles are INSIDE the zone (0 <= lx < width, 0 <= ly < height)
             // and sit on one of the four edge rows/columns. We classify by which
@@ -964,15 +955,18 @@ fn route_bus(
                 y: sc.zone.y,
                 width: sc.zone.width as i32,
                 height: sc.zone.height as i32,
-                inputs,
-                outputs,
                 ports,
-                variables: sc.solution.stats.variables,
-                clauses: sc.solution.stats.clauses,
-                solve_time_us: sc.solution.stats.solve_time_us,
             };
             #[cfg(not(target_arch = "wasm32"))]
-            crate::zone_cache::record_zone(&region, None);
+            crate::zone_cache::record_zone(
+                &region,
+                crate::zone_cache::ZoneStats {
+                    variables: sc.solution.stats.variables,
+                    clauses: sc.solution.stats.clauses,
+                    solve_time_us: sc.solution.stats.solve_time_us,
+                },
+                None,
+            );
             region
         })
         .collect();

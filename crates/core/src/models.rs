@@ -154,7 +154,8 @@ pub struct PortSpec {
     pub direction: Option<EntityDirection>,
 }
 
-/// Metadata about a SAT-solved region in the layout.
+/// Metadata about a resolved region in the layout (SAT crossing zone,
+/// ghost-routed junction template, or unresolved placeholder).
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,15 +165,13 @@ pub struct LayoutRegion {
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
-    /// Boundary ports with their edge/offset positions, used for canonical
-    /// orientation-invariant signatures in zone telemetry.
+    /// Boundary ports. Each port records the edge it sits on, its offset
+    /// along that edge, whether it's an input or output, the item flowing
+    /// through it, and the flow direction. Items/directions are derivable
+    /// from `ports`; `LayoutRegion` no longer carries separate input/output
+    /// vectors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortSpec>,
-    pub variables: u32,
-    pub clauses: u32,
-    pub solve_time_us: u64,
 }
 
 /// Everything the layout engine produces — no rate data.

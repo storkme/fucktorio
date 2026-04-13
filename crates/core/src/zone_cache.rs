@@ -13,6 +13,15 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use crate::models::{LayoutRegion, PortEdge, PortSpec};
+
+/// SAT solver stats associated with a zone record. Mirrors
+/// `sat::SolutionStats` but kept local so `zone_cache` doesn't depend on
+/// the full `sat` module.
+pub struct ZoneStats {
+    pub variables: u32,
+    pub clauses: u32,
+    pub solve_time_us: u64,
+}
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -188,7 +197,7 @@ pub fn canonical_signature(width: u32, height: u32, ports: &[PortSpec]) -> Strin
 /// 3. The `FUCKTORIO_ZONE_SOURCE` environment variable (legacy / single-threaded).
 ///
 /// Silently no-ops on any I/O error — this is telemetry, not correctness.
-pub fn record_zone(region: &LayoutRegion, source: Option<&str>) {
+pub fn record_zone(region: &LayoutRegion, stats: ZoneStats, source: Option<&str>) {
     // Resolve source: thread-local wins, then arg, then env var.
     let thread_src = ZONE_SOURCE.with(|s| s.borrow().clone());
     let effective_source: Option<String> = thread_src
@@ -213,11 +222,9 @@ pub fn record_zone(region: &LayoutRegion, source: Option<&str>) {
         "signature": signature,
         "width": region.width as u32,
         "height": region.height as u32,
-        "inputs": region.inputs,
-        "outputs": region.outputs,
-        "variables": region.variables,
-        "clauses": region.clauses,
-        "solve_time_us": region.solve_time_us,
+        "variables": stats.variables,
+        "clauses": stats.clauses,
+        "solve_time_us": stats.solve_time_us,
         "source": effective_source,
     });
 

@@ -998,8 +998,7 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                     })
                     .collect();
 
-                eprintln!("\n  ╔══ Zone ({},{}) {}x{}, {} vars, {} clauses ══",
-                    zx, zy, zw, zh, region.variables, region.clauses);
+                eprintln!("\n  ╔══ Zone ({},{}) {}x{} ══", zx, zy, zw, zh);
                 if !zone_issues.is_empty() {
                     for issue in &zone_issues {
                         eprintln!("  ║ ⚠ {}", issue.message);
