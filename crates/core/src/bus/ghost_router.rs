@@ -30,7 +30,10 @@ use crate::bus::bus_router::{
 use crate::bus::placer::RowSpan;
 use crate::common::{belt_entity_for_rate, machine_size, machine_tiles, ug_max_reach};
 use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, PortEdge, PortIo, PortSpec, SolverResult};
-use crate::sat::{self, CrossingZone, ZoneBoundary};
+// sat.rs is retained in the tree as a standalone library; route_bus_ghost
+// no longer uses it after the per-tile "unresolved" rewrite. The junction
+// solver (docs/rfp-junction-solver.md) may reintroduce it as a T4
+// fallback strategy, in which case reimport at that point.
 use crate::trace;
 
 const TURN_PENALTY: u32 = 8;
@@ -1323,66 +1326,32 @@ pub fn route_bus_ghost(
         remaining_crossings.insert(tile);
     }
 
-    // Step 6b: Cluster remaining unsolved crossings and SAT-solve them.
-    // Use merge_dist = ug_max_reach+1 to keep zones from producing
-    // interfering UG pairs across boundaries.
-    let merge_dist = ug_max_reach(max_belt_tier.unwrap_or("transport-belt")) as i32 + 1;
-    let crossing_list: Vec<(i32, i32)> = remaining_crossings.iter().copied().collect();
-    let n_tiles = crossing_list.len();
-    let mut uf: Vec<usize> = (0..n_tiles).collect();
-
-    for (i, &(ax, ay)) in crossing_list.iter().enumerate() {
-        for (j, &(bx, by)) in crossing_list.iter().enumerate().skip(i + 1) {
-            if (ax - bx).abs() + (ay - by).abs() <= merge_dist {
-                let ra = uf_find(&mut uf, i);
-                let rb = uf_find(&mut uf, j);
-                if ra != rb {
-                    uf[ra] = rb;
-                }
-            }
-        }
-    }
-
-    let mut cluster_tile_counts: FxHashMap<usize, usize> = FxHashMap::default();
-    for i in 0..n_tiles {
-        let root = uf_find(&mut uf, i);
-        *cluster_tile_counts.entry(root).or_insert(0) += 1;
-    }
-    let cluster_count = cluster_tile_counts.len() + template_count;
-    let max_cluster_tiles = cluster_tile_counts.values().copied().max().unwrap_or(0);
-
-    // `resolve_clusters` writes SAT solutions into both `entities` and
-    // Occupancy directly. It returns only the regions list (for
-    // telemetry) and a failure count.
-    let (mut sat_regions, failed_count) = resolve_clusters(
-        &crossing_list,
-        &mut uf,
-        &routed_paths,
-        &specs,
-        max_belt_tier,
-        &mut occupancy,
-        &mut entities,
-    );
+    // Step 6b: Emit per-tile "unresolved" regions for crossings that
+    // no template could handle. This replaces the old SAT cluster
+    // pipeline — the padded-bbox + union-find + varisat approach was
+    // producing broken output on every cluster in real layouts (see
+    // docs/sat-band-investigation.md).
+    //
+    // Each unresolved crossing becomes a 1×1 mini-junction whose specs
+    // we record as input/output port pairs on a LayoutRegion with
+    // `kind = "unresolved"`. Downstream (UI + diagnostic) can render
+    // these as "here's where junction-solver work is needed". No
+    // entities are emitted — the layout renders with visible gaps
+    // where crossings weren't solved.
+    let cluster_count = template_count + remaining_crossings.len();
+    let max_cluster_tiles = if remaining_crossings.is_empty() { 0 } else { 1 };
+    let mut unresolved_regions =
+        emit_unresolved_junctions(&remaining_crossings, &routed_paths, &specs, &ghost_item_at);
 
     let mut regions = template_regions;
-    regions.append(&mut sat_regions);
+    regions.append(&mut unresolved_regions);
 
-    if failed_count > 0 {
-        let msg = format!(
-            "ghost router: {} of {} clusters failed SAT resolution",
-            failed_count, cluster_count
-        );
-        // Direct and bare modes are exploratory — they deliberately produce
-        // layouts the current pipeline wasn't designed for (A* walks through
-        // row belts, templates skip RowEntity tiles, more crossings fall
-        // through to SAT). Hard-erroring blocks visualization, which is
-        // the whole point of the spike. Downgrade to a warning so the
-        // layout still renders with the problematic clusters unresolved.
-        if direct_mode || bare_mode {
-            warnings.push(msg);
-        } else {
-            return Err(msg);
-        }
+    if !remaining_crossings.is_empty() {
+        let _ = (direct_mode, bare_mode); // no-op; kept to mark the source of unresolveds
+        warnings.push(format!(
+            "ghost router: {} unresolved crossings (junction solver not yet implemented)",
+            remaining_crossings.len()
+        ));
     }
 
     // Step 6: sync `entities` to Occupancy's released state.
@@ -1482,25 +1451,7 @@ pub fn route_bus_ghost(
 }
 
 // ---------------------------------------------------------------------------
-// Union-find helper (used by both route_bus_ghost and resolve_clusters)
-// ---------------------------------------------------------------------------
-
-fn uf_find(p: &mut [usize], i: usize) -> usize {
-    let mut r = i;
-    while p[r] != r {
-        r = p[r];
-    }
-    let mut cur = i;
-    while p[cur] != r {
-        let next = p[cur];
-        p[cur] = r;
-        cur = next;
-    }
-    r
-}
-
-// ---------------------------------------------------------------------------
-// Phase 3: Ghost cluster SAT resolution
+// Cluster zone + per-tile template support (used by Step 6a templates)
 // ---------------------------------------------------------------------------
 
 /// Bounding box for a ghost cluster zone (padded by 1 tile on each side).
@@ -1516,23 +1467,6 @@ struct ClusterZone {
     h: u32,
 }
 
-impl ClusterZone {
-    fn contains(&self, px: i32, py: i32) -> bool {
-        px >= self.x
-            && px < self.x + self.w as i32
-            && py >= self.y
-            && py < self.y + self.h as i32
-    }
-
-    fn on_edge(&self, px: i32, py: i32) -> bool {
-        self.contains(px, py)
-            && (px == self.x
-                || px == self.x + self.w as i32 - 1
-                || py == self.y
-                || py == self.y + self.h as i32 - 1)
-    }
-}
-
 /// Direction from a (dx, dy) step.
 fn step_direction(dx: i32, dy: i32) -> EntityDirection {
     if dx > 0 {
@@ -1543,27 +1477,6 @@ fn step_direction(dx: i32, dy: i32) -> EntityDirection {
         EntityDirection::South
     } else {
         EntityDirection::North
-    }
-}
-
-/// Which edge of the zone a tile is on (for PortSpec construction).
-fn tile_edge(zone: &ClusterZone, px: i32, py: i32) -> PortEdge {
-    if py == zone.y {
-        PortEdge::N
-    } else if py == zone.y + zone.h as i32 - 1 {
-        PortEdge::S
-    } else if px == zone.x {
-        PortEdge::W
-    } else {
-        PortEdge::E
-    }
-}
-
-/// Offset of a tile along its edge (from top-left corner of the zone).
-fn edge_offset(zone: &ClusterZone, edge: &PortEdge, px: i32, py: i32) -> u32 {
-    match edge {
-        PortEdge::N | PortEdge::S => (px - zone.x) as u32,
-        PortEdge::W | PortEdge::E => (py - zone.y) as u32,
     }
 }
 
@@ -1640,6 +1553,106 @@ fn classify_crossing(
         belt_a: sa.belt_name,
         belt_b: sb.belt_name,
     })
+}
+
+/// Build one `LayoutRegion { kind: "unresolved" }` per remaining crossing
+/// tile. Each region is a 1×1 mini-junction with two boundary ports (one
+/// per crossing spec), recording the item and flow direction. No entities
+/// are emitted — these regions are telemetry for the junction solver.
+///
+/// See `docs/rfp-junction-solver.md` for the target replacement.
+fn emit_unresolved_junctions(
+    remaining: &FxHashSet<(i32, i32)>,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    specs: &[BeltSpec],
+    ghost_item_at: &FxHashMap<(i32, i32), String>,
+) -> Vec<LayoutRegion> {
+    let mut out: Vec<LayoutRegion> = Vec::with_capacity(remaining.len());
+
+    // Sort tiles for deterministic output (the diagnostic expects stable
+    // order across runs).
+    let mut tiles: Vec<(i32, i32)> = remaining.iter().copied().collect();
+    tiles.sort();
+
+    for tile in tiles {
+        let (tx, ty) = tile;
+        let info = match classify_crossing(tile, routed_paths, specs) {
+            Some(info) => info,
+            None => {
+                // A crossing tile with ≠2 specs — rare and probably
+                // indicates something upstream went wrong. Still emit a
+                // bare region so the diagnostic sees it.
+                let item = ghost_item_at.get(&tile).cloned().unwrap_or_default();
+                out.push(LayoutRegion {
+                    kind: "unresolved".to_string(),
+                    x: tx,
+                    y: ty,
+                    width: 1,
+                    height: 1,
+                    inputs: if item.is_empty() { Vec::new() } else { vec![item.clone()] },
+                    outputs: if item.is_empty() { Vec::new() } else { vec![item] },
+                    ports: Vec::new(),
+                    variables: 0,
+                    clauses: 0,
+                    solve_time_us: 0,
+                });
+                continue;
+            }
+        };
+
+        // Build two PortSpec pairs — one entry + one exit per crossing
+        // spec. For a 1×1 bbox at (tx, ty), the entry sits on the edge
+        // opposite the flow direction (a spec flowing East enters from
+        // the west edge → PortEdge::W) and the exit sits on the edge
+        // matching the flow direction.
+        let mut ports: Vec<PortSpec> = Vec::with_capacity(4);
+        let mut push_spec = |item: String, dir: EntityDirection| {
+            let entry_edge = match dir {
+                EntityDirection::East => PortEdge::W,
+                EntityDirection::West => PortEdge::E,
+                EntityDirection::North => PortEdge::S,
+                EntityDirection::South => PortEdge::N,
+            };
+            let exit_edge = match dir {
+                EntityDirection::East => PortEdge::E,
+                EntityDirection::West => PortEdge::W,
+                EntityDirection::North => PortEdge::N,
+                EntityDirection::South => PortEdge::S,
+            };
+            ports.push(PortSpec {
+                edge: entry_edge,
+                offset: 0,
+                io: PortIo::Input,
+                item: Some(item.clone()),
+                direction: Some(dir),
+            });
+            ports.push(PortSpec {
+                edge: exit_edge,
+                offset: 0,
+                io: PortIo::Output,
+                item: Some(item),
+                direction: Some(dir),
+            });
+        };
+        push_spec(info.spec_a.0.clone(), info.spec_a.1);
+        push_spec(info.spec_b.0.clone(), info.spec_b.1);
+
+        out.push(LayoutRegion {
+            kind: "unresolved".to_string(),
+            x: tx,
+            y: ty,
+            width: 1,
+            height: 1,
+            inputs: vec![info.spec_a.0.clone(), info.spec_b.0.clone()],
+            outputs: vec![info.spec_a.0, info.spec_b.0],
+            ports,
+            variables: 0,
+            clauses: 0,
+            solve_time_us: 0,
+        });
+    }
+
+    out
 }
 
 fn ug_for_belt(belt: &str) -> &'static str {
@@ -1906,343 +1919,6 @@ fn try_bridge(
     };
 
     Some((entities, zone))
-}
-
-/// Resolve ghost clusters into SAT crossing zones.
-///
-/// For each cluster: compute padded bbox, extract boundary ports from paths
-/// that pass through the zone, build a CrossingZone, and SAT-solve it.
-///
-/// Writes SAT solutions directly into `entities_out` and `occupancy`.
-/// Returns (LayoutRegions for telemetry, count of failed clusters).
-fn resolve_clusters(
-    crossing_list: &[(i32, i32)],
-    uf: &mut [usize],
-    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
-    specs: &[BeltSpec],
-    max_belt_tier: Option<&str>,
-    occupancy: &mut crate::bus::ghost_occupancy::Occupancy,
-    entities_out: &mut Vec<PlacedEntity>,
-) -> (Vec<LayoutRegion>, usize) {
-    use crate::bus::ghost_occupancy::{ClaimKindTag, Rect};
-
-    // Snapshot the permanent obstacle set ONCE here, before any SAT
-    // cluster places its solution into Occupancy. The boundary port
-    // check below uses this snapshot (not the live Occupancy) so that
-    // later clusters see the same obstacle view as earlier ones,
-    // matching today's behaviour where `pre_existing_positions` is
-    // built once at the top of the function and never updated.
-    let pre_sat_permanent = occupancy.snapshot_permanent_tiles();
-
-    let n_tiles = crossing_list.len();
-    if n_tiles == 0 {
-        return (Vec::new(), 0);
-    }
-
-    // Build spec lookup: key → &BeltSpec
-    let spec_map: FxHashMap<&str, &BeltSpec> = specs.iter().map(|s| (s.key.as_str(), s)).collect();
-
-    // Group crossing tiles by UF root
-    let mut cluster_tiles: FxHashMap<usize, Vec<(i32, i32)>> = FxHashMap::default();
-    for (i, &tile) in crossing_list.iter().enumerate() {
-        let root = uf_find(uf, i);
-        cluster_tiles
-            .entry(root)
-            .or_default()
-            .push(tile);
-    }
-
-    // Build zones from clusters
-    let mut zones: Vec<(usize, ClusterZone, FxHashSet<(i32, i32)>)> = Vec::new();
-    for (&root, tiles) in &cluster_tiles {
-        let min_x = tiles.iter().map(|t| t.0).min().unwrap();
-        let max_x = tiles.iter().map(|t| t.0).max().unwrap();
-        let min_y = tiles.iter().map(|t| t.1).min().unwrap();
-        let max_y = tiles.iter().map(|t| t.1).max().unwrap();
-
-        // +2 padding on each side: gives the SAT solver room for UG
-        // entry/exit pairs around each crossing point.
-        let zone = ClusterZone {
-            x: min_x - 2,
-            y: min_y - 2,
-            w: (max_x - min_x + 5) as u32,
-            h: (max_y - min_y + 5) as u32,
-        };
-        let tile_set: FxHashSet<(i32, i32)> = tiles.iter().copied().collect();
-        zones.push((root, zone, tile_set));
-    }
-
-    // No zone merging — overlapping zones produce conflicting SAT solutions.
-
-    let mut regions: Vec<LayoutRegion> = Vec::new();
-    let mut failed_count = 0;
-
-    // Determine belt tier for SAT solver
-    let effective_belt = max_belt_tier.unwrap_or("transport-belt");
-    let max_reach = ug_max_reach(effective_belt);
-
-    // Step 5b: Occupancy supplies both "tile is permanent" (was
-    // hard_obstacles + pre_existing_positions) and the per-zone
-    // forced_empty set, so no separate pre_existing_positions is needed.
-
-    for (cluster_idx, (_root_id, zone, _cluster_tile_set)) in zones.into_iter().enumerate() {
-        // Collect all paths that have any tile inside this zone's padded bbox
-        let mut boundaries: Vec<ZoneBoundary> = Vec::new();
-        let mut port_specs: Vec<PortSpec> = Vec::new();
-
-        for (key, path) in routed_paths {
-            let spec = match spec_map.get(key.as_str()) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            // Check if this path intersects the zone at all
-            let touches_zone = path.iter().any(|&(px, py)| zone.contains(px, py));
-            if !touches_zone {
-                continue;
-            }
-
-            // Walk the path and find entry/exit boundary ports
-            for i in 0..path.len() {
-                let (px, py) = path[i];
-                if !zone.contains(px, py) {
-                    continue;
-                }
-
-                // Entry: previous tile is outside the zone (or this is the first tile)
-                let prev_outside = if i == 0 {
-                    true
-                } else {
-                    let (ppx, ppy) = path[i - 1];
-                    !zone.contains(ppx, ppy)
-                };
-
-                // Exit: next tile is outside the zone (or this is the last tile)
-                let next_outside = if i == path.len() - 1 {
-                    true
-                } else {
-                    let (npx, npy) = path[i + 1];
-                    !zone.contains(npx, npy)
-                };
-
-                // Step 6: use the pre-SAT permanent obstacle snapshot
-                // so later clusters see the same obstacle view as
-                // earlier ones.
-                let occupied_by_existing = pre_sat_permanent.contains(&(px, py));
-
-                if prev_outside && zone.on_edge(px, py) && !occupied_by_existing {
-                    // Entry port: direction is the direction of travel INTO the zone
-                    let dir = if i == 0 {
-                        if path.len() > 1 {
-                            let (npx, npy) = path[i + 1];
-                            step_direction(npx - px, npy - py)
-                        } else {
-                            if spec.start.0 <= spec.goal.0 {
-                                EntityDirection::East
-                            } else {
-                                EntityDirection::West
-                            }
-                        }
-                    } else {
-                        let (ppx, ppy) = path[i - 1];
-                        step_direction(px - ppx, py - ppy)
-                    };
-
-                    let edge = tile_edge(&zone, px, py);
-                    let offset = edge_offset(&zone, &edge, px, py);
-                    boundaries.push(ZoneBoundary {
-                        x: px,
-                        y: py,
-                        direction: dir,
-                        item: spec.item.clone(),
-                        is_input: true,
-                    });
-                    port_specs.push(PortSpec {
-                        edge,
-                        offset,
-                        io: PortIo::Input,
-                        item: Some(spec.item.clone()),
-                        direction: Some(dir),
-                    });
-                }
-
-                if next_outside && zone.on_edge(px, py) && !occupied_by_existing {
-                    // Exit port: direction of travel OUT of the zone
-                    let dir = if i == path.len() - 1 {
-                        if path.len() > 1 {
-                            let (ppx, ppy) = path[i - 1];
-                            step_direction(px - ppx, py - ppy)
-                        } else {
-                            if spec.start.0 <= spec.goal.0 {
-                                EntityDirection::East
-                            } else {
-                                EntityDirection::West
-                            }
-                        }
-                    } else {
-                        let (npx, npy) = path[i + 1];
-                        step_direction(npx - px, npy - py)
-                    };
-
-                    let edge = tile_edge(&zone, px, py);
-                    let offset = edge_offset(&zone, &edge, px, py);
-                    boundaries.push(ZoneBoundary {
-                        x: px,
-                        y: py,
-                        direction: dir,
-                        item: spec.item.clone(),
-                        is_input: false,
-                    });
-                    port_specs.push(PortSpec {
-                        edge,
-                        offset,
-                        io: PortIo::Output,
-                        item: Some(spec.item.clone()),
-                        direction: Some(dir),
-                    });
-                }
-            }
-        }
-
-        // ── Flow-balance filter ──────────────────────────────────────
-        // 1. Deduplicate ports at the same (x, y, direction, is_input).
-        // 2. For each item, check that it has at least one input AND one
-        //    output.  Drop all ports for items that are unbalanced — the
-        //    SAT solver cannot route items that have no exit (it creates
-        //    loops) or no entrance (dead ends).
-        {
-            // Dedup
-            let mut seen: FxHashSet<(i32, i32, u8, bool)> = FxHashSet::default();
-            let mut deduped_b: Vec<ZoneBoundary> = Vec::new();
-            let mut deduped_p: Vec<PortSpec> = Vec::new();
-            for (b, p) in boundaries.into_iter().zip(port_specs.into_iter()) {
-                let dir_byte = match b.direction {
-                    EntityDirection::North => 0,
-                    EntityDirection::East => 1,
-                    EntityDirection::South => 2,
-                    EntityDirection::West => 3,
-                };
-                if seen.insert((b.x, b.y, dir_byte, b.is_input)) {
-                    deduped_b.push(b);
-                    deduped_p.push(p);
-                }
-            }
-
-            boundaries = deduped_b;
-            port_specs = deduped_p;
-        }
-
-        if boundaries.is_empty() {
-            continue;
-        }
-
-        // BISECT: try Occupancy.forced_empty_in.
-        let boundary_set: FxHashSet<(i32, i32)> =
-            boundaries.iter().map(|b| (b.x, b.y)).collect();
-        let zone_rect = Rect {
-            x: zone.x,
-            y: zone.y,
-            w: zone.w,
-            h: zone.h,
-        };
-        let forced_empty = occupancy.forced_empty_in(&zone_rect, &boundary_set);
-
-        let crossing_zone = CrossingZone {
-            x: zone.x,
-            y: zone.y,
-            width: zone.w,
-            height: zone.h,
-            boundaries: boundaries.clone(),
-            forced_empty,
-        };
-
-        match sat::solve_crossing_zone(&crossing_zone, max_reach, effective_belt) {
-            Some(solution) => {
-                trace::emit(trace::TraceEvent::GhostClusterSolved {
-                    cluster_id: cluster_idx,
-                    zone_x: zone.x,
-                    zone_y: zone.y,
-                    zone_w: zone.w,
-                    zone_h: zone.h,
-                    boundary_count: boundaries.len(),
-                    variables: solution.stats.variables,
-                    clauses: solution.stats.clauses,
-                    solve_time_us: solution.stats.solve_time_us,
-                });
-
-                let input_items: Vec<String> = boundaries
-                    .iter()
-                    .filter(|b| b.is_input)
-                    .map(|b| b.item.clone())
-                    .collect::<FxHashSet<_>>()
-                    .into_iter()
-                    .collect();
-                let output_items: Vec<String> = boundaries
-                    .iter()
-                    .filter(|b| !b.is_input)
-                    .map(|b| b.item.clone())
-                    .collect::<FxHashSet<_>>()
-                    .into_iter()
-                    .collect();
-
-                regions.push(LayoutRegion {
-                    kind: "ghost_cluster".to_string(),
-                    x: zone.x,
-                    y: zone.y,
-                    width: zone.w as i32,
-                    height: zone.h as i32,
-                    inputs: input_items,
-                    outputs: output_items,
-                    ports: port_specs,
-                    variables: solution.stats.variables,
-                    clauses: solution.stats.clauses,
-                    solve_time_us: solution.stats.solve_time_us,
-                });
-
-                // Step 5b: write SAT solution entities directly into
-                // `entities_out` and Occupancy, instead of deferring via
-                // solved_zones. Release any GhostSurface claims in the
-                // zone first so the SAT entities can take those tiles.
-                // Skip entities that land on hard obstacles or already-
-                // claimed permanent tiles (matches the current post-hoc
-                // occupied filter behaviour.
-                occupancy.release_ghost_surface_in(&zone_rect);
-                for ent in solution.entities {
-                    let tile = (ent.x, ent.y);
-                    if occupancy.is_hard_obstacle(tile) {
-                        continue;
-                    }
-                    if !occupancy.is_free(tile) {
-                        // Already claimed by Permanent / Template /
-                        // SatSolved from a prior cluster. Drop.
-                        continue;
-                    }
-                    occupancy
-                        .place(ent.clone(), ClaimKindTag::SatSolved)
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "sat place failed at ({},{}): {:?}",
-                                tile.0, tile.1, err
-                            );
-                        });
-                    entities_out.push(ent);
-                }
-            }
-            None => {
-                trace::emit(trace::TraceEvent::GhostClusterFailed {
-                    cluster_id: cluster_idx,
-                    zone_x: zone.x,
-                    zone_y: zone.y,
-                    zone_w: zone.w,
-                    zone_h: zone.h,
-                    boundary_count: boundaries.len(),
-                });
-                failed_count += 1;
-            }
-        }
-    }
-
-    (regions, failed_count)
 }
 
 fn is_belt_like(name: &str) -> bool {

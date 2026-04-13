@@ -18,6 +18,7 @@ pub mod balancer_library;
 pub mod bus_router;
 pub(crate) mod ghost_occupancy;
 pub mod ghost_router;
+pub(crate) mod junction;
 pub mod layout;
 pub mod placer;
 pub mod plan;
