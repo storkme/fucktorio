@@ -1462,4 +1462,111 @@ mod tests {
         assert_eq!(result.stats.zone_width, 3);
         assert_eq!(result.stats.zone_height, 3);
     }
+
+    /// 4×4 routing for the broken electronic-circuit tap-off zone.
+    ///
+    /// World coords x:3-6, y:6-9.  Two items cross:
+    ///   - copper-plate: enters top-left (3,6) South, exits right-mid (6,8) East
+    ///   - copper-cable: enters right (6,7) West, exits bottom (4,9) South
+    ///
+    /// The broken layout had belt-W at (5,7) feeding ug-in-S at (4,7) — illegal.
+    /// The solver must find a path that turns copper-cable South before the UG entrance.
+    #[test]
+    fn test_4x4_electronic_circuit_routing() {
+        let zone = CrossingZone {
+            x: 3,
+            y: 6,
+            width: 4,
+            height: 4,
+            boundaries: vec![
+                // IN1: copper-plate enters top-left, flowing South into grid
+                ZoneBoundary {
+                    x: 3,
+                    y: 6,
+                    direction: EntityDirection::South,
+                    item: "copper-plate".into(),
+                    is_input: true,
+                },
+                // IN2: copper-cable enters right column y=7, flowing West into grid
+                ZoneBoundary {
+                    x: 6,
+                    y: 7,
+                    direction: EntityDirection::West,
+                    item: "copper-cable".into(),
+                    is_input: true,
+                },
+                // OUT1: copper-plate exits right column y=8, flowing East
+                ZoneBoundary {
+                    x: 6,
+                    y: 8,
+                    direction: EntityDirection::East,
+                    item: "copper-plate".into(),
+                    is_input: false,
+                },
+                // OUT2: copper-cable exits bottom row x=4, flowing South
+                ZoneBoundary {
+                    x: 4,
+                    y: 9,
+                    direction: EntityDirection::South,
+                    item: "copper-cable".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![],
+        };
+
+        let result = solve_crossing_zone(&zone, 4, "fast-transport-belt");
+        assert!(result.is_some(), "4×4 electronic-circuit routing should be solvable");
+
+        let solution = result.unwrap();
+
+        // Verify no overlapping positions.
+        let mut positions: Vec<(i32, i32)> =
+            solution.entities.iter().map(|e| (e.x, e.y)).collect();
+        let total = positions.len();
+        positions.sort();
+        positions.dedup();
+        assert_eq!(total, positions.len(), "No duplicate positions");
+
+        eprintln!(
+            "\n4×4 solution: {} entities ({} vars, {} clauses, {}µs)",
+            solution.entities.len(),
+            solution.stats.variables,
+            solution.stats.clauses,
+            solution.stats.solve_time_us,
+        );
+
+        // Print a grid so we can eyeball it.
+        let by_pos: std::collections::HashMap<(i32, i32), &crate::models::PlacedEntity> =
+            solution.entities.iter().map(|e| ((e.x, e.y), e)).collect();
+
+        eprintln!("     x=3        x=4        x=5        x=6");
+        for wy in 6..=9 {
+            eprint!("y={wy} ");
+            for wx in 3..=6 {
+                if let Some(e) = by_pos.get(&(wx, wy)) {
+                    let sym = match (&e.direction, &e.io_type) {
+                        (_, Some(t)) if t == "input" => "UG↓in".to_string(),
+                        (_, Some(_)) => "UG↓out".to_string(),
+                        (EntityDirection::North, _) => format!("↑({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::South, _) => format!("↓({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::East,  _) => format!("→({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                        (EntityDirection::West,  _) => format!("←({})", &e.carries.as_deref().unwrap_or("?")[..2]),
+                    };
+                    eprint!("{sym:<10} ");
+                } else {
+                    eprint!(".          ");
+                }
+            }
+            eprintln!();
+        }
+        eprintln!();
+
+        for e in &solution.entities {
+            eprintln!(
+                "  ({},{}) {} {:?} carries={:?} io={:?}",
+                e.x, e.y, e.name, e.direction, e.carries, e.io_type
+            );
+        }
+    }
 }
