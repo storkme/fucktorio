@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Analyze ghost routing crossings from a .fls snapshot."""
-import sys
-import json
-import gzip
+
 import base64
+import gzip
+import json
+import sys
 from collections import defaultdict
 
 
@@ -42,7 +43,7 @@ def main(path):
             tile_to_specs[t].append(k)
 
     hist = defaultdict(int)
-    for t, specs in tile_to_specs.items():
+    for _t, specs in tile_to_specs.items():
         hist[len(specs)] += 1
     print("Tile spec-count histogram:", dict(hist))
     print()
@@ -69,7 +70,7 @@ def main(path):
     # Count run lengths
     run_len_hist = defaultdict(int)
     total_runs = 0
-    for y, runs in runs_by_y.items():
+    for _y, runs in runs_by_y.items():
         for r in runs:
             run_len_hist[len(r)] += 1
             total_runs += 1

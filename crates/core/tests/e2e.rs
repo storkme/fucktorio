@@ -906,6 +906,7 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
             let mut ghost_spec_failed = 0;
             let mut clusters_solved = 0;
             let mut clusters_failed = 0;
+            let mut solved_zones: Vec<(i32, i32, u32, u32)> = Vec::new();
 
             for ev in &result.trace_events {
                 match ev {
@@ -924,6 +925,7 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                     TraceEvent::GhostSpecFailed { .. } => ghost_spec_failed += 1,
                     TraceEvent::GhostClusterSolved { zone_x, zone_y, zone_w, zone_h, boundary_count, .. } => {
                         clusters_solved += 1;
+                        solved_zones.push((*zone_x, *zone_y, *zone_w, *zone_h));
                         eprintln!("  cluster solved: zone ({},{}) {}x{}, {} boundaries", zone_x, zone_y, zone_w, zone_h, boundary_count);
                     }
                     TraceEvent::GhostClusterFailed { .. } => clusters_failed += 1,
@@ -1145,6 +1147,13 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
                 eprintln!("  ╚══ Legend: →↓←↑=belt dir, UPPERCASE=SAT, ▸▾◂▴=pre-existing, ·=empty(zone), .=empty(halo) ══");
             }
 
+            // Pairwise overlap diagnostic: SAT solves each cluster
+            // independently with no shared occupancy mask, so any pair of
+            // padded zones that intersect spatially is a strategy bug
+            // (the two solvers can both claim tiles in the shared region).
+            let overlap_pairs = report_zone_overlaps(&solved_zones, "  ");
+            eprintln!("  zone overlap pairs: {overlap_pairs}");
+
             // Phase 3 assertions: SAT must have resolved all clusters
             assert_eq!(clusters_failed, 0, "all ghost clusters should be SAT-solved");
             assert!(clusters_solved > 0, "expected at least one cluster to solve");
@@ -1152,6 +1161,168 @@ fn tier4_advanced_circuit_from_ore_am1_ghost() {
             assert_produces(&result, "advanced-circuit", 5.0);
         }
     }
+}
+
+/// Minimal ghost-routing scoreboard for the tier1/tier2/tier3 ghost
+/// fixtures: runs the pipeline with ghost routing enabled, prints a
+/// short summary, and reports any overlapping cluster zones. No
+/// assertions — these fixtures exist for strategy debugging, not
+/// regression, and we expect them to expose problems rather than
+/// guard against them.
+fn run_ghost_scoreboard(
+    test_name: &str,
+    recipe: &str,
+    rate: f64,
+    machine: &str,
+    belt: Option<&str>,
+    inputs: &FxHashSet<String>,
+) {
+    std::env::set_var("FUCKTORIO_GHOST_ROUTING", "1");
+    let result = run_e2e(test_name, recipe, rate, machine, belt, inputs);
+    std::env::remove_var("FUCKTORIO_GHOST_ROUTING");
+
+    let result = result.unwrap_or_else(|e| panic!("{test_name}: ghost routing failed: {e}"));
+
+    let mut entity_count = 0;
+    let mut cluster_count = 0;
+    let mut max_cluster_tiles = 0;
+    let mut unroutable_count = 0;
+    let mut ghost_spec_routed = 0;
+    let mut ghost_spec_failed = 0;
+    let mut clusters_solved = 0;
+    let mut clusters_failed = 0;
+    let mut solved_zones: Vec<(i32, i32, u32, u32)> = Vec::new();
+
+    for ev in &result.trace_events {
+        match ev {
+            TraceEvent::GhostRoutingComplete {
+                entity_count: ec,
+                cluster_count: cc,
+                max_cluster_tiles: mt,
+                unroutable_count: uc,
+            } => {
+                entity_count = *ec;
+                cluster_count = *cc;
+                max_cluster_tiles = *mt;
+                unroutable_count = *uc;
+            }
+            TraceEvent::GhostSpecRouted { .. } => ghost_spec_routed += 1,
+            TraceEvent::GhostSpecFailed { .. } => ghost_spec_failed += 1,
+            TraceEvent::GhostClusterSolved { zone_x, zone_y, zone_w, zone_h, .. } => {
+                clusters_solved += 1;
+                solved_zones.push((*zone_x, *zone_y, *zone_w, *zone_h));
+            }
+            TraceEvent::GhostClusterFailed { .. } => clusters_failed += 1,
+            _ => {}
+        }
+    }
+
+    let errors = result.issues.iter()
+        .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Error))
+        .count();
+    let warnings = result.issues.iter()
+        .filter(|i| matches!(i.severity, fucktorio_core::validate::Severity::Warning))
+        .count();
+
+    eprintln!(
+        "ghost scoreboard [{test_name}]:\n  \
+         entities: {entity_count}  specs ok/fail/unroutable: {ghost_spec_routed}/{ghost_spec_failed}/{unroutable_count}\n  \
+         clusters: {cluster_count} (solved {clusters_solved}, failed {clusters_failed}), max tiles {max_cluster_tiles}\n  \
+         validator: {errors} errors, {warnings} warnings"
+    );
+
+    let overlap_pairs = report_zone_overlaps(&solved_zones, "  ");
+    eprintln!("  zone overlap pairs: {overlap_pairs}");
+
+    // Per-category error breakdown so we can spot regressions/wins on
+    // each refactor step.
+    let mut by_check: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for issue in &result.issues {
+        if matches!(issue.severity, fucktorio_core::validate::Severity::Error) {
+            *by_check.entry(issue.category.clone()).or_insert(0) += 1;
+        }
+    }
+    if !by_check.is_empty() {
+        eprintln!("  errors by category:");
+        for (cat, n) in &by_check {
+            eprintln!("    {cat}: {n}");
+        }
+    }
+}
+
+/// Pairwise overlap detector for ghost-cluster zones. Returns the
+/// number of overlapping pairs found and prints each pair to stderr
+/// with the supplied indent prefix. SAT solves each cluster
+/// independently with no shared occupancy mask, so any pair of padded
+/// zones that intersect spatially is a strategy bug.
+fn report_zone_overlaps(zones: &[(i32, i32, u32, u32)], indent: &str) -> usize {
+    let mut pairs = 0;
+    for (i, &(ax, ay, aw, ah)) in zones.iter().enumerate() {
+        for (j_off, &(bx, by, bw, bh)) in zones[i + 1..].iter().enumerate() {
+            let j = i + 1 + j_off;
+            let x_overlap = ax < bx + bw as i32 && bx < ax + aw as i32;
+            let y_overlap = ay < by + bh as i32 && by < ay + ah as i32;
+            if x_overlap && y_overlap {
+                pairs += 1;
+                eprintln!(
+                    "{indent}⚠ cluster overlap: #{i} ({ax},{ay}) {aw}x{ah}  vs  #{j} ({bx},{by}) {bw}x{bh}"
+                );
+            }
+        }
+    }
+    pairs
+}
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn tier1_iron_gear_wheel_ghost() {
+    let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
+    run_ghost_scoreboard(
+        "tier1_ghost",
+        "iron-gear-wheel",
+        30.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    );
+}
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn tier2_electronic_circuit_from_ore_ghost() {
+    let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    run_ghost_scoreboard(
+        "tier2_ghost",
+        "electronic-circuit",
+        30.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    );
+}
+
+#[test]
+#[ignore]
+#[ntest::timeout(60000)]
+fn tier3_plastic_bar_ghost() {
+    let inputs: FxHashSet<String> = ["petroleum-gas", "coal"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    run_ghost_scoreboard(
+        "tier3_ghost",
+        "plastic-bar",
+        30.0,
+        "chemical-plant",
+        Some("transport-belt"),
+        &inputs,
+    );
 }
 
 /// Baseline (Phase 1, 2026-04-11): entities=9190, warnings=0, zones_solved=13,

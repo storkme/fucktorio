@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Dump all entities at a y range."""
-import sys
-import json
-import gzip
+
 import base64
+import gzip
+import json
+import sys
 
 
 def decode_fls(path):

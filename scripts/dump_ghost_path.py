@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Dump the full path of a ghost-routed spec."""
-import sys
-import json
-import gzip
+
 import base64
+import gzip
+import json
+import sys
 
 
 def decode_fls(path):
