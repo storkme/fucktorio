@@ -51,6 +51,17 @@ pub fn layout(solver_result: SolverResult, max_belt_tier: Option<String>) -> Res
     build_bus_layout(&solver_result, max_belt_tier.as_deref()).map_err(|e| JsError::new(&e))
 }
 
+/// Ghost-routed bus layout. Forces the ghost routing path regardless of
+/// env vars. Returns the same `LayoutResult` as `layout()`, but with
+/// `regions` populated from the ghost router's template/SAT decomposition
+/// and `trace` populated so the "Ghost routes" debug overlay lights up.
+#[wasm_bindgen]
+pub fn layout_ghost(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
+    let _guard = fucktorio_core::bus::layout::GhostModeGuard::new();
+    fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())
+        .map_err(|e| JsError::new(&e))
+}
+
 #[wasm_bindgen]
 pub fn layout_traced(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
     fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())

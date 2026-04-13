@@ -6,6 +6,7 @@ import wasmInit, {
   default_machine_for_item as wasmDefaultMachineForItem,
   export_blueprint as wasmExportBlueprint,
   layout as wasmLayout,
+  layout_ghost as wasmLayoutGhost,
   layout_traced as wasmLayoutTraced,
   parse_blueprint as wasmParseBlueprint,
   validate_layout as wasmValidateLayout,
@@ -17,6 +18,9 @@ export type {
   ItemFlow,
   LayoutResult,
   LayoutRegion,
+  PortSpec,
+  PortEdge,
+  PortIo,
   PlacedEntity,
   EntityDirection,
   ValidationIssue,
@@ -59,6 +63,10 @@ function buildLayout(result: SolverResult, maxBeltTier?: string): LayoutResult {
   return wasmLayout(result, maxBeltTier ?? null);
 }
 
+function buildLayoutGhost(result: SolverResult, maxBeltTier?: string): LayoutResult {
+  return wasmLayoutGhost(result, maxBeltTier ?? null);
+}
+
 function buildLayoutTraced(result: SolverResult, maxBeltTier?: string): LayoutResult {
   return wasmLayoutTraced(result, maxBeltTier ?? null);
 }
@@ -84,6 +92,7 @@ export type Engine = {
   allProducibleItems: typeof allProducibleItems;
   allProducerMachines: typeof allProducerMachines;
   buildLayout: typeof buildLayout;
+  buildLayoutGhost: typeof buildLayoutGhost;
   buildLayoutTraced: typeof buildLayoutTraced;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
@@ -96,6 +105,7 @@ export function getEngine(): Engine {
     allProducibleItems,
     allProducerMachines,
     buildLayout,
+    buildLayoutGhost,
     buildLayoutTraced,
     exportBlueprint,
     defaultMachineForItem,

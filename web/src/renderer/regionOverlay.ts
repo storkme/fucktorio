@@ -1,6 +1,7 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX, itemColor } from "./entities";
-import type { LayoutResult, EntityDirection } from "../engine";
+import type { LayoutResult, LayoutRegion, EntityDirection } from "../engine";
+import { classifyRegion, kindColor, classColor, classLabel, type RegionClassification } from "./regionClassify";
 
 // ---------------------------------------------------------------------------
 // Types mirroring the Rust PortSpec / PortEdge / PortIo that come through
@@ -33,19 +34,10 @@ interface LayoutRegionWithPorts {
 }
 
 // ---------------------------------------------------------------------------
-// Zone colours — each region gets its own tint from this palette, cycled.
+// Zone colours — sourced from regionClassify (kind / class-based palettes).
+// Each region is drawn with its kind as fill and class as outline, so you
+// can see both channels at once.
 // ---------------------------------------------------------------------------
-
-const ZONE_PALETTE: number[] = [
-  0x569cd6, // steel blue
-  0xd0a040, // amber
-  0x6ac080, // mint
-  0xc06090, // rose
-  0x70b0e0, // sky
-  0xb080d0, // lavender
-  0xe07050, // coral
-  0x60c0c0, // teal
-];
 
 const INPUT_COLOR = 0x50c050;  // green
 const OUTPUT_COLOR = 0xd04040; // red
@@ -125,70 +117,86 @@ function portWorldPos(
 // Public API
 // ---------------------------------------------------------------------------
 
-export function renderRegionOverlay(layout: LayoutResult): Container {
+export interface RegionOverlayItem {
+  region: LayoutRegion;
+  classification: RegionClassification;
+  bboxPixels: { x: number; y: number; w: number; h: number };
+}
+
+export interface RegionOverlayResult {
+  layer: Container;
+  items: RegionOverlayItem[];
+  /** Returns the region whose bbox contains the given world-pixel point, or null. */
+  hitTest: (wx: number, wy: number) => RegionOverlayItem | null;
+}
+
+export function renderRegionOverlayDetailed(layout: LayoutResult): RegionOverlayResult {
   const layer = new Container();
   const regions = (layout.regions ?? []) as LayoutRegionWithPorts[];
-  if (regions.length === 0) return layer;
+  const items: RegionOverlayItem[] = [];
 
-  for (let i = 0; i < regions.length; i++) {
-    const region = regions[i];
-    const zoneColor = ZONE_PALETTE[i % ZONE_PALETTE.length];
+  if (regions.length === 0) {
+    return { layer, items, hitTest: () => null };
+  }
+
+  for (const region of regions) {
+    const classification = classifyRegion(region as LayoutRegion);
+    const fillColor = kindColor(region.kind);
+    const strokeColor = classColor(classification.cls);
 
     const rx = region.x * TILE_PX;
     const ry = region.y * TILE_PX;
     const rw = region.width * TILE_PX;
     const rh = region.height * TILE_PX;
 
-    // Semi-transparent zone rectangle with visible outline
+    items.push({
+      region: region as LayoutRegion,
+      classification,
+      bboxPixels: { x: rx, y: ry, w: rw, h: rh },
+    });
+
     const rect = new Graphics();
-    rect.rect(rx, ry, rw, rh).fill({ color: zoneColor, alpha: 0.12 });
-    // Outer border — darker outline for visibility on light backgrounds
-    rect.setStrokeStyle({ width: 1, color: 0x000000, alpha: 0.5 });
+    rect.rect(rx, ry, rw, rh).fill({ color: fillColor, alpha: 0.14 });
+    // Thin dark outer edge for contrast against light belts
+    rect.setStrokeStyle({ width: 1, color: 0x000000, alpha: 0.55 });
     rect.rect(rx - 1, ry - 1, rw + 2, rh + 2).stroke();
-    // Inner coloured border
-    rect.setStrokeStyle({ width: 2, color: zoneColor, alpha: 0.8 });
+    // Class-colored inner border (this is the "classification visible" channel)
+    rect.setStrokeStyle({ width: 2, color: strokeColor, alpha: 0.85 });
     rect.rect(rx, ry, rw, rh).stroke();
     layer.addChild(rect);
 
-    // Dimension label at top-left corner of zone
-    const label = new Text({
-      text: `${region.width}x${region.height}`,
-      style: LABEL_STYLE,
-    });
+    // Dimension + class label at top-left corner
+    const labelText = `${region.width}×${region.height}  ${classLabel(classification.cls)}`;
+    const label = new Text({ text: labelText, style: LABEL_STYLE });
     label.x = rx + 3;
     label.y = ry + 2;
     layer.addChild(label);
 
-    // Boundary ports
+    // Boundary ports — unchanged visual; existing port labels still useful
     const ports = region.ports ?? [];
     for (const port of ports) {
       const [wx, wy] = portWorldPos(region, port);
       const px = wx * TILE_PX + TILE_PX / 2;
       const py = wy * TILE_PX + TILE_PX / 2;
 
-      // Filled circle at the port position (larger for visibility)
       const portColor = port.io === "Input" ? INPUT_COLOR : OUTPUT_COLOR;
       const pg = new Graphics();
       pg.circle(px, py, TILE_PX * 0.3).fill({ color: portColor, alpha: 0.8 });
       layer.addChild(pg);
 
-      // Directional arrow if direction is specified
       if (port.direction) {
         const ag = new Graphics();
-        // Use item color if available, otherwise use io color
         const arrowColor = port.item ? itemColor(port.item) : portColor;
         drawArrow(ag, px, py, port.direction, arrowColor);
         layer.addChild(ag);
       }
 
-      // Text label showing abbreviated item name + IN/OUT
       const ioTag = port.io === "Input" ? "IN" : "OUT";
       const itemAbbr = port.item ? port.item.slice(0, 3) : "?";
       const portLabel = new Text({
         text: `${itemAbbr} ${ioTag}`,
         style: PORT_LABEL_STYLE,
       });
-      // Position label offset from the port based on edge
       switch (port.edge) {
         case "N":
           portLabel.x = px - portLabel.width / 2;
@@ -211,5 +219,23 @@ export function renderRegionOverlay(layout: LayoutResult): Container {
     }
   }
 
-  return layer;
+  // Hit test: smallest-area containing region wins, so nested rectangles
+  // prefer the inner one.
+  const hitTest = (wx: number, wy: number): RegionOverlayItem | null => {
+    let best: RegionOverlayItem | null = null;
+    let bestArea = Infinity;
+    for (const it of items) {
+      const b = it.bboxPixels;
+      if (wx >= b.x && wx < b.x + b.w && wy >= b.y && wy < b.y + b.h) {
+        const area = b.w * b.h;
+        if (area < bestArea) {
+          bestArea = area;
+          best = it;
+        }
+      }
+    }
+    return best;
+  };
+
+  return { layer, items, hitTest };
 }

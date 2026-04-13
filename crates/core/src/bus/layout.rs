@@ -2,7 +2,48 @@
 //!
 //! Port of `src/bus/layout.py`.
 
+use std::cell::Cell;
+
 use rustc_hash::{FxHashMap, FxHashSet};
+
+thread_local! {
+    /// Thread-local override for ghost routing mode. When `true`, the ghost
+    /// router is used regardless of the `FUCKTORIO_GHOST_ROUTING` env var.
+    /// WASM callers set this via `GhostModeGuard` because env vars don't
+    /// work in the browser.
+    static FORCE_GHOST_ROUTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII guard that enables ghost routing for the duration of its lifetime.
+/// Primarily used by the WASM bindings; native callers can also use it for
+/// scoped overrides.
+pub struct GhostModeGuard {
+    prev: bool,
+}
+
+impl GhostModeGuard {
+    pub fn new() -> Self {
+        let prev = FORCE_GHOST_ROUTING.with(|c| c.replace(true));
+        Self { prev }
+    }
+}
+
+impl Default for GhostModeGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for GhostModeGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        FORCE_GHOST_ROUTING.with(|c| c.set(prev));
+    }
+}
+
+pub(crate) fn is_ghost_routing_forced() -> bool {
+    FORCE_GHOST_ROUTING.with(|c| c.get())
+}
 
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
 use crate::bus::bus_router::{
@@ -307,8 +348,9 @@ pub fn build_bus_layout(
         row_entities_with_poles.extend(pole_entities.clone());
 
         // Route bus lanes
-        let use_ghost = std::env::var("FUCKTORIO_GHOST_ROUTING")
-            .is_ok_and(|v| v == "1");
+        let use_ghost = is_ghost_routing_forced()
+            || std::env::var("FUCKTORIO_GHOST_ROUTING")
+                .is_ok_and(|v| v == "1");
 
         if use_ghost {
             #[cfg(not(target_arch = "wasm32"))]

@@ -19,7 +19,8 @@ import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
 import { renderTraceOverlay, renderGhostRoutingOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
 import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
-import { renderRegionOverlay } from "./renderer/regionOverlay";
+import { renderRegionOverlayDetailed, type RegionOverlayItem } from "./renderer/regionOverlay";
+import { classLabel } from "./renderer/regionClassify";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -185,6 +186,17 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const regionsCb = makeOverlayToggle("SAT Zones");
   const soloRegionsCb = makeOverlayToggle("Solo regions");
   const ghostCb = makeOverlayToggle("Ghost routes");
+  const ghostModeCb = makeOverlayToggle("Ghost mode");
+
+  // Initialize ghost mode from URL state. Auto-enables SAT zone overlay
+  // when ghost is on so the user immediately sees the junction rectangles.
+  {
+    const initialGhost = new URLSearchParams(window.location.search).get("ghost") === "1";
+    if (initialGhost) {
+      ghostModeCb.checked = true;
+      regionsCb.checked = true;
+    }
+  }
 
   container.appendChild(overlayPanel);
 
@@ -437,6 +449,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
   let regionOverlayLayer: Container | null = null;
+  let regionOverlayItems: RegionOverlayItem[] = [];
+  let regionHitTest: ((wx: number, wy: number) => RegionOverlayItem | null) | null = null;
 
   function panToTile(x: number, y: number): void {
     viewport.moveCenter(x * TILE_PX + TILE_PX / 2, y * TILE_PX + TILE_PX / 2);
@@ -494,10 +508,17 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       regionOverlayLayer.destroy();
       regionOverlayLayer = null;
     }
+    regionOverlayItems = [];
+    regionHitTest = null;
+    updateRegionHud();
     if (!regionsCb?.checked || !lastLayout) return;
     if (!lastLayout.regions || lastLayout.regions.length === 0) return;
-    regionOverlayLayer = renderRegionOverlay(lastLayout);
+    const detailed = renderRegionOverlayDetailed(lastLayout);
+    regionOverlayLayer = detailed.layer;
+    regionOverlayItems = detailed.items;
+    regionHitTest = detailed.hitTest;
     entityLayer.addChild(regionOverlayLayer);
+    updateRegionHud();
   }
 
   function updateGhostOverlay(): void {
@@ -553,6 +574,92 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const legendEl = document.createElement("div");
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
   container.appendChild(legendEl);
+
+  // --- Ghost mode HUD (top-center) ---
+  // Compact stats block showing region counts by kind and by class.
+  // Only visible when ghost mode is on.
+  const ghostHud = document.createElement("div");
+  ghostHud.style.cssText = "position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(10,10,15,0.85);color:#ccc;font:11px monospace;padding:6px 10px;border-radius:4px;border:1px solid #333;z-index:10;display:none;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,0.5)";
+  container.appendChild(ghostHud);
+
+  // --- Region detail panel (bottom-right) ---
+  // Shown on hover over a region when ghost mode is on. Displays the
+  // engine-assigned kind, classifier output, dimensions, item breakdown,
+  // and SAT stats if applicable.
+  const regionDetail = document.createElement("div");
+  regionDetail.style.cssText = "position:absolute;bottom:8px;right:8px;background:rgba(10,10,15,0.9);color:#ddd;font:11px monospace;padding:8px 12px;border-radius:4px;border:1px solid #444;z-index:10;display:none;max-width:360px;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.6);line-height:1.5";
+  container.appendChild(regionDetail);
+
+  function updateRegionHud(): void {
+    if (!ghostModeCb?.checked) {
+      ghostHud.style.display = "none";
+      return;
+    }
+    const items = regionOverlayItems;
+    if (items.length === 0) {
+      ghostHud.textContent = "ghost: 0 regions";
+      ghostHud.style.display = "block";
+      return;
+    }
+
+    const kindCounts = new Map<string, number>();
+    const classCounts = new Map<string, number>();
+    for (const it of items) {
+      kindCounts.set(it.region.kind, (kindCounts.get(it.region.kind) ?? 0) + 1);
+      const c = it.classification.cls;
+      classCounts.set(c, (classCounts.get(c) ?? 0) + 1);
+    }
+
+    // Overlap pair count — bbox-overlap test, same as report_zone_overlaps.
+    let overlapPairs = 0;
+    for (let i = 0; i < items.length; i++) {
+      const a = items[i].region;
+      for (let j = i + 1; j < items.length; j++) {
+        const b = items[j].region;
+        const xOverlap = a.x < b.x + b.width && b.x < a.x + a.width;
+        const yOverlap = a.y < b.y + b.height && b.y < a.y + a.height;
+        if (xOverlap && yOverlap) overlapPairs++;
+      }
+    }
+
+    const fmtMap = (m: Map<string, number>, fmt: (k: string) => string) =>
+      [...m.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${fmt(k)} ${v}`)
+        .join("  ");
+
+    const kindStr = fmtMap(kindCounts, k => k.replace("_template", "").replace("ghost_", ""));
+    const classStr = fmtMap(classCounts, k => classLabel(k as Parameters<typeof classLabel>[0]));
+    const overlapStr = overlapPairs > 0 ? `  |  ⚠ ${overlapPairs} overlap` : "";
+
+    ghostHud.innerHTML = `<span style="color:#8bf">ghost</span> ${items.length} regions  |  kind: ${kindStr}  |  class: ${classStr}${overlapStr}`;
+    ghostHud.style.display = "block";
+  }
+
+  function showRegionDetail(item: RegionOverlayItem | null): void {
+    if (!item) {
+      regionDetail.style.display = "none";
+      return;
+    }
+    const r = item.region;
+    const c = item.classification;
+    const satStats = r.solve_time_us > 0
+      ? `<br><span style="color:#999">SAT: ${r.variables} vars, ${r.clauses} clauses, ${r.solve_time_us}µs</span>`
+      : "";
+    const portStr = r.ports && r.ports.length > 0 ? `${r.ports.length} ports` : "no ports";
+    const itemList = [...c.items.values()]
+      .map(ip => `${ip.name} (${ip.axis}, ${ip.inputs.length}in/${ip.outputs.length}out)`)
+      .join("<br>&nbsp;&nbsp;");
+
+    regionDetail.innerHTML = `
+      <div style="color:#8bf;margin-bottom:4px"><b>${r.kind}</b> → ${classLabel(c.cls)}</div>
+      <div style="color:#aaa">(${r.x}, ${r.y})  ${r.width}×${r.height}  ${portStr}</div>
+      <div style="margin-top:6px;color:#ddd">${c.summary}</div>
+      ${itemList ? `<div style="margin-top:6px;color:#bbb"><b>items:</b><br>&nbsp;&nbsp;${itemList}</div>` : ""}
+      ${satStats}
+    `;
+    regionDetail.style.display = "block";
+  }
 
   let pinnedRow: HTMLDivElement | null = null;
 
@@ -839,6 +946,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }
   }
 
+  let hoveredRegion: RegionOverlayItem | null = null;
   app.canvas.addEventListener("pointermove", (e) => {
     const rect = app.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -847,6 +955,33 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const tx = Math.floor(world.x / TILE_PX);
     const ty = Math.floor(world.y / TILE_PX);
     coordsEl.textContent = `x:${tx} y:${ty}`;
+
+    // Region hover — only when ghost mode + region overlay are active.
+    if (regionHitTest && ghostModeCb.checked && regionsCb.checked) {
+      const it = regionHitTest(world.x, world.y);
+      if (it !== hoveredRegion) {
+        hoveredRegion = it;
+        showRegionDetail(it);
+      }
+    } else if (hoveredRegion) {
+      hoveredRegion = null;
+      showRegionDetail(null);
+    }
+  });
+
+  // Click-to-pan for a region.
+  app.canvas.addEventListener("pointerdown", (e) => {
+    if (!regionHitTest || !ghostModeCb.checked || !regionsCb.checked) return;
+    // Only the primary button, without modifiers.
+    if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    const rect = app.canvas.getBoundingClientRect();
+    const world = viewport.toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const it = regionHitTest(world.x, world.y);
+    if (it) {
+      const cx = (it.region.x + it.region.width / 2) * TILE_PX;
+      const cy = (it.region.y + it.region.height / 2) * TILE_PX;
+      viewport.moveCenter(cx, cy);
+    }
   });
 
   function renderGraph(result: SolverResult | null): void {
@@ -1006,6 +1141,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       renderLayout: renderLayoutOnCanvas,
     }, {
       getDebugMode: () => debugCb.checked,
+      getGhostMode: () => ghostModeCb.checked,
       onDisplayToggles: (toggles: DisplayToggles) => {
         colorCb = toggles.colorCb;
         rateCb = toggles.rateCb;
@@ -1033,6 +1169,18 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     valCb.addEventListener("change", updateValidationOverlay);
     regionsCb.addEventListener("change", updateRegionOverlay);
     ghostCb.addEventListener("change", updateGhostOverlay);
+    ghostModeCb.addEventListener("change", () => {
+      // Toggling ghost mode re-runs layout with the alternate router.
+      // Also auto-enables the region overlay so the user sees junctions.
+      if (ghostModeCb.checked && !regionsCb.checked) {
+        regionsCb.checked = true;
+      }
+      updateRegionHud();
+      showRegionDetail(null);
+      // Re-run the layout by clicking the solve button's layout generation.
+      // The sidebar reads getGhostMode() on each layoutBtn click.
+      (generatePanel.querySelector(".sb-btn-primary") as HTMLButtonElement | null)?.click();
+    });
 
     soloRegionsCb.addEventListener("change", () => {
       if (soloRegionsCb.checked) {

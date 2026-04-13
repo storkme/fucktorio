@@ -505,6 +505,7 @@ export interface SidebarParams {
 /** Callbacks the sidebar can use to read canvas overlay state. */
 export interface SidebarOptions {
   getDebugMode?: () => boolean;
+  getGhostMode?: () => boolean;
   /** Called after the sidebar creates its display toggles. */
   onDisplayToggles?: (toggles: DisplayToggles) => void;
 }
@@ -790,6 +791,7 @@ export function renderSidebar(
       machine: machineSelect.value,
       inputs: availableInputs,
       belt: beltSelect.value || null,
+      ghost: options?.getGhostMode?.() ?? false,
     });
 
     resultContainer.innerHTML = "";
@@ -820,7 +822,10 @@ export function renderSidebar(
     try {
       const maxTier = beltSelect.value || undefined;
       const useTraced = options?.getDebugMode?.() ?? false;
-      currentLayout = useTraced
+      const useGhost = options?.getGhostMode?.() ?? false;
+      currentLayout = useGhost
+        ? engine.buildLayoutGhost(currentResult, maxTier)
+        : useTraced
         ? engine.buildLayoutTraced(currentResult, maxTier)
         : engine.buildLayout(currentResult, maxTier);
       setRecipeFlows(currentResult.machines);
