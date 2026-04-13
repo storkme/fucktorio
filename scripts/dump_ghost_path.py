@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Dump the full path of a ghost-routed spec."""
+
 import base64
 import gzip
 import json

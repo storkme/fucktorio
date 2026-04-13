@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Inspect a specific ghost-routed spec from a .fls snapshot."""
+
 import base64
 import gzip
 import json

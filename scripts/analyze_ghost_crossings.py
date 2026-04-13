@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Analyze ghost routing crossings from a .fls snapshot."""
+
 import base64
 import gzip
 import json
