@@ -238,6 +238,7 @@ impl CrossingEncoder {
         self.encode_direction_constraints(&mut cnf);
         self.encode_adjacency(&mut cnf);
         self.encode_underground(&mut cnf, max_ug_reach);
+        self.encode_single_incoming(&mut cnf);
         if self.n_item_bits > 0 {
             self.encode_item_transport(&mut cnf);
         }
@@ -411,6 +412,26 @@ impl CrossingEncoder {
                     ]);
                 }
 
+                // ug_out pairing: ug_out facing d must receive underground[d]
+                // from its "tail" tile — the tile in direction -d.  Without
+                // this, an orphaned ug_out can appear with no matching ug_in.
+                for &d in &ALL_DIRS {
+                    let (dx, dy) = dir_delta(d);
+                    let px = x as i32 - dx;
+                    let py = y as i32 - dy;
+                    if self.in_bounds(px, py) {
+                        let p = self.tiles[self.idx(px as u32, py as u32)];
+                        cnf.add(&[
+                            t.is_ug_out.negative(),
+                            t.out_dir[d].negative(),
+                            p.underground[d].positive(),
+                        ]);
+                    } else {
+                        // No underground can arrive from off-grid.
+                        cnf.add(&[t.is_ug_out.negative(), t.out_dir[d].negative()]);
+                    }
+                }
+
                 for &d in &ALL_DIRS {
                     let (dx, dy) = dir_delta(d);
                     let nx = x as i32 + dx;
@@ -491,6 +512,52 @@ impl CrossingEncoder {
                     }
                     if clause.len() == (max_reach + 1) as usize {
                         cnf.add(&clause);
+                    }
+                }
+            }
+        }
+    }
+
+    // -- At most one incoming surface edge per tile --------------------------
+    //
+    // Prevents closed loops (A→B→C→A) and spurious item merges.  For every
+    // pair of distinct directions d1, d2, the two upstream tiles p1 and p2
+    // cannot both be outputting toward this tile simultaneously.
+    //
+    // This is valid for pure routing (no item splits/merges) and is safe for
+    // crossing zones where each path is a simple chain with no merging.
+
+    fn encode_single_incoming(&self, cnf: &mut Cnf) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                // Collect (type_var, out_dir_var) pairs for every neighbor
+                // that *could* output toward (x,y).
+                // A neighbor at (x-dx, y-dy) facing direction d = (dx,dy)
+                // sends items toward (x,y).
+                let mut feeders: Vec<(Var, Var)> = Vec::new();
+                for &d in &ALL_DIRS {
+                    let (dx, dy) = dir_delta(d);
+                    let px = x as i32 - dx;
+                    let py = y as i32 - dy;
+                    if !self.in_bounds(px, py) {
+                        continue;
+                    }
+                    let p = self.tiles[self.idx(px as u32, py as u32)];
+                    // Both surface belts and ug_out can output toward us.
+                    feeders.push((p.is_belt, p.out_dir[d]));
+                    feeders.push((p.is_ug_out, p.out_dir[d]));
+                }
+                // Pairwise AMO: at most one (type ∧ dir) pair active.
+                for i in 0..feeders.len() {
+                    for j in (i + 1)..feeders.len() {
+                        let (ti, di) = feeders[i];
+                        let (tj, dj) = feeders[j];
+                        cnf.add(&[
+                            ti.negative(),
+                            di.negative(),
+                            tj.negative(),
+                            dj.negative(),
+                        ]);
                     }
                 }
             }
@@ -650,6 +717,21 @@ impl CrossingEncoder {
                 // belt (surface) or ug_in (items enter underground).
                 cnf.add(&[t.is_belt.positive(), t.is_ug_in.positive()]);
                 cnf.add(&[t.out_dir[d].positive()]);
+
+                // No in-grid entity may output toward an input boundary.
+                // Items at an input boundary enter from outside the zone;
+                // allowing in-grid paths to flow back into the input would
+                // create loops (items circling around an input tile).
+                for &fd in &ALL_DIRS {
+                    let (fdx, fdy) = dir_delta(fd);
+                    let px = lx as i32 - fdx;
+                    let py = ly as i32 - fdy;
+                    if self.in_bounds(px, py) {
+                        let p = self.tiles[self.idx(px as u32, py as u32)];
+                        cnf.add(&[p.is_belt.negative(), p.out_dir[fd].negative()]);
+                        cnf.add(&[p.is_ug_out.negative(), p.out_dir[fd].negative()]);
+                    }
+                }
             } else {
                 // Output: items exit zone flowing dir d. Tile can be
                 // belt or ug_out.
