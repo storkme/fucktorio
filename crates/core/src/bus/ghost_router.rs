@@ -29,7 +29,7 @@ use crate::bus::bus_router::{
 };
 use crate::bus::placer::RowSpan;
 use crate::common::{belt_entity_for_rate, machine_size, machine_tiles, ug_max_reach};
-use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, PortEdge, PortIo, PortSpec, SolverResult};
+use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, SolverResult};
 // sat.rs is retained in the tree as a standalone library; route_bus_ghost
 // no longer uses it after the per-tile "unresolved" rewrite. The junction
 // solver (docs/rfp-junction-solver.md) may reintroduce it as a T4
@@ -1447,10 +1447,10 @@ fn classify_crossing(
     })
 }
 
-/// Build one `LayoutRegion { kind: "unresolved" }` per remaining crossing
-/// tile. Each region is a 1×1 mini-junction with two boundary ports (one
-/// per crossing spec), recording the item and flow direction. No entities
-/// are emitted — these regions are telemetry for the junction solver.
+/// Build one `LayoutRegion { kind: Unresolved }` per remaining crossing
+/// tile. Each region is lowered from a `Junction` — a 1×1 mini-junction
+/// with one `SpecCrossing` per crossing spec — so the long-term junction
+/// solver pass can consume the same internal shape.
 ///
 /// See `docs/rfp-junction-solver.md` for the target replacement.
 fn emit_unresolved_junctions(
@@ -1459,6 +1459,11 @@ fn emit_unresolved_junctions(
     specs: &[BeltSpec],
     ghost_item_at: &FxHashMap<(i32, i32), String>,
 ) -> Vec<LayoutRegion> {
+    use crate::bus::junction::{BeltTier, Junction, PortPoint, Rect, SpecCrossing};
+    use crate::models::RegionKind;
+
+    let _ = ghost_item_at;
+
     let mut out: Vec<LayoutRegion> = Vec::with_capacity(remaining.len());
 
     // Sort tiles for deterministic output (the diagnostic expects stable
@@ -1466,72 +1471,32 @@ fn emit_unresolved_junctions(
     let mut tiles: Vec<(i32, i32)> = remaining.iter().copied().collect();
     tiles.sort();
 
-    for tile in tiles {
-        let (tx, ty) = tile;
-        let info = match classify_crossing(tile, routed_paths, specs) {
-            Some(info) => info,
-            None => {
-                // A crossing tile with ≠2 specs — rare and probably
-                // indicates something upstream went wrong. Still emit a
-                // bare region so the diagnostic sees it.
-                let _ = ghost_item_at.get(&tile);
-                out.push(LayoutRegion {
-                    kind: crate::models::RegionKind::Unresolved,
-                    x: tx,
-                    y: ty,
-                    width: 1,
-                    height: 1,
-                    ports: Vec::new(),
-                });
-                continue;
-            }
-        };
+    for (tx, ty) in tiles {
+        let bbox = Rect { x: tx, y: ty, w: 1, h: 1 };
+        let junction_specs: Vec<SpecCrossing> = classify_crossing((tx, ty), routed_paths, specs)
+            .map(|info| {
+                // 1×1 bbox: entry and exit sit on the same tile; direction
+                // encodes the flow. The lowering in `Junction::to_layout_region`
+                // picks the correct edges from `(io, direction)`.
+                let make = |item: String, dir: EntityDirection, belt: &str| SpecCrossing {
+                    item,
+                    belt_tier: BeltTier::from_name(belt).unwrap_or(BeltTier::Yellow),
+                    entry: PortPoint { x: tx, y: ty, direction: dir },
+                    exit: PortPoint { x: tx, y: ty, direction: dir },
+                };
+                vec![
+                    make(info.spec_a.0, info.spec_a.1, &info.belt_a),
+                    make(info.spec_b.0, info.spec_b.1, &info.belt_b),
+                ]
+            })
+            .unwrap_or_default();
 
-        // Build two PortSpec pairs — one entry + one exit per crossing
-        // spec. For a 1×1 bbox at (tx, ty), the entry sits on the edge
-        // opposite the flow direction (a spec flowing East enters from
-        // the west edge → PortEdge::W) and the exit sits on the edge
-        // matching the flow direction.
-        let mut ports: Vec<PortSpec> = Vec::with_capacity(4);
-        let mut push_spec = |item: String, dir: EntityDirection| {
-            let entry_edge = match dir {
-                EntityDirection::East => PortEdge::W,
-                EntityDirection::West => PortEdge::E,
-                EntityDirection::North => PortEdge::S,
-                EntityDirection::South => PortEdge::N,
-            };
-            let exit_edge = match dir {
-                EntityDirection::East => PortEdge::E,
-                EntityDirection::West => PortEdge::W,
-                EntityDirection::North => PortEdge::N,
-                EntityDirection::South => PortEdge::S,
-            };
-            ports.push(PortSpec {
-                edge: entry_edge,
-                offset: 0,
-                io: PortIo::Input,
-                item: Some(item.clone()),
-                direction: Some(dir),
-            });
-            ports.push(PortSpec {
-                edge: exit_edge,
-                offset: 0,
-                io: PortIo::Output,
-                item: Some(item),
-                direction: Some(dir),
-            });
+        let junction = Junction {
+            bbox,
+            forbidden: FxHashSet::default(),
+            specs: junction_specs,
         };
-        push_spec(info.spec_a.0.clone(), info.spec_a.1);
-        push_spec(info.spec_b.0.clone(), info.spec_b.1);
-
-        out.push(LayoutRegion {
-            kind: crate::models::RegionKind::Unresolved,
-            x: tx,
-            y: ty,
-            width: 1,
-            height: 1,
-            ports,
-        });
+        out.push(junction.to_layout_region(RegionKind::Unresolved));
     }
 
     out

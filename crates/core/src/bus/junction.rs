@@ -4,12 +4,11 @@
 //! two or more ghost-routed specs cross and need a deterministic resolution
 //! (surface + underground belt arrangement).
 //!
-//! This module is scaffolding — the types are defined but nothing consumes
-//! them yet. The solver that uses them will land in a follow-up. Dead code
-//! warnings are silenced because the unused fields/methods are the
-//! documented API surface for the upcoming solver work.
-
-#![allow(dead_code)]
+//! Currently used as the internal shape for ghost-router "unresolved"
+//! junctions (per-tile 1×1 crossings that still need a template). The
+//! junction is built first, then lowered to a `LayoutRegion` via
+//! `to_layout_region` at the output boundary. A solver pass that actually
+//! consumes `Junction` will land in a follow-up.
 //!
 //! Invariants:
 //! - Each spec contributes exactly **1 entry + 1 exit**. No splitting or
@@ -25,7 +24,7 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::models::EntityDirection;
+use crate::models::{EntityDirection, LayoutRegion, PortEdge, PortIo, PortSpec, RegionKind};
 
 /// A rectangular bounding box in tile coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +36,7 @@ pub struct Rect {
 }
 
 impl Rect {
+    #[allow(dead_code)]
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.x && x < self.x + self.w as i32 && y >= self.y && y < self.y + self.h as i32
     }
@@ -97,6 +97,7 @@ pub struct SpecCrossing {
 
 impl SpecCrossing {
     /// True when this spec passes straight through without turning.
+    #[allow(dead_code)]
     pub fn is_straight(&self) -> bool {
         self.entry.direction == self.exit.direction
     }
@@ -113,6 +114,7 @@ impl SpecCrossing {
 #[derive(Debug, Clone)]
 pub struct Junction {
     pub bbox: Rect,
+    #[allow(dead_code)]
     pub forbidden: FxHashSet<(i32, i32)>,
     pub specs: Vec<SpecCrossing>,
 }
@@ -121,11 +123,82 @@ impl Junction {
     /// Number of distinct `(item, belt_tier)` classes passing through.
     #[allow(dead_code)]
     pub fn class_count(&self) -> usize {
-        use rustc_hash::FxHashSet;
         let mut seen: FxHashSet<(&str, BeltTier)> = FxHashSet::default();
         for s in &self.specs {
             seen.insert((s.item.as_str(), s.belt_tier));
         }
         seen.len()
+    }
+
+    /// Lower this junction to a `LayoutRegion` for the pipeline output.
+    /// Each spec produces two `PortSpec`s (one entry + one exit) whose
+    /// edges are derived from the point's position inside the bbox and
+    /// the flow direction.
+    pub fn to_layout_region(&self, kind: RegionKind) -> LayoutRegion {
+        let mut ports: Vec<PortSpec> = Vec::with_capacity(self.specs.len() * 2);
+        for spec in &self.specs {
+            ports.push(point_to_port(&self.bbox, &spec.entry, PortIo::Input, &spec.item));
+            ports.push(point_to_port(&self.bbox, &spec.exit, PortIo::Output, &spec.item));
+        }
+        LayoutRegion {
+            kind,
+            x: self.bbox.x,
+            y: self.bbox.y,
+            width: self.bbox.w as i32,
+            height: self.bbox.h as i32,
+            ports,
+        }
+    }
+}
+
+/// Derive a `PortSpec` from a bbox + point + io + item. The edge is
+/// picked from the point's position inside the bbox (W if on the west
+/// edge, etc.). For a 1×1 bbox (the common case for per-tile
+/// unresolved junctions), every position collapses to a corner; we
+/// then use the flow direction to decide which edge the port
+/// conceptually sits on: entries face the edge opposite their flow
+/// (items flowing East enter from the west edge) and exits face the
+/// edge matching their flow.
+fn point_to_port(bbox: &Rect, p: &PortPoint, io: PortIo, item: &str) -> PortSpec {
+    let lx = p.x - bbox.x;
+    let ly = p.y - bbox.y;
+    let w = bbox.w as i32;
+    let h = bbox.h as i32;
+
+    let on_north = ly == 0;
+    let on_south = ly == h - 1;
+    let on_west = lx == 0;
+    let on_east = lx == w - 1;
+
+    let edge = match (on_north, on_south, on_west, on_east) {
+        (true, false, false, false) => PortEdge::N,
+        (false, true, false, false) => PortEdge::S,
+        (false, false, true, false) => PortEdge::W,
+        (false, false, false, true) => PortEdge::E,
+        // Corner (including 1×1 bbox where every edge overlaps) —
+        // tiebreak by flow direction + io.
+        _ => match (io, p.direction) {
+            (PortIo::Input, EntityDirection::East) => PortEdge::W,
+            (PortIo::Input, EntityDirection::West) => PortEdge::E,
+            (PortIo::Input, EntityDirection::North) => PortEdge::S,
+            (PortIo::Input, EntityDirection::South) => PortEdge::N,
+            (PortIo::Output, EntityDirection::East) => PortEdge::E,
+            (PortIo::Output, EntityDirection::West) => PortEdge::W,
+            (PortIo::Output, EntityDirection::North) => PortEdge::N,
+            (PortIo::Output, EntityDirection::South) => PortEdge::S,
+        },
+    };
+
+    let offset = match edge {
+        PortEdge::N | PortEdge::S => lx.max(0) as u32,
+        PortEdge::E | PortEdge::W => ly.max(0) as u32,
+    };
+
+    PortSpec {
+        edge,
+        offset,
+        io,
+        item: Some(item.to_string()),
+        direction: Some(p.direction),
     }
 }
