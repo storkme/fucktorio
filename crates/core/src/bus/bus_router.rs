@@ -589,7 +589,21 @@ fn split_overflowing_lanes(
         let mut family_id: Option<usize> = None;
         let mut family_source_y: Option<i32> = None;
 
-        if n_producers >= 1 && n_producers < n_lanes_with_consumers {
+        // Create a family balancer for any multi-lane case where the
+        // number of producers is <= the number of lanes. The original
+        // condition (`n_producers < n_lanes`) only handled fan-out
+        // (1→N, 2→3, etc). It missed the parallel case (e.g. 2→2),
+        // which tried to route each producer to its own trunk via a
+        // `ret:` sideload — but inner lanes get boxed in by adjacent
+        // trunks and there's no clean tile for the sideload to land
+        // on. Always using a family for multi-lane puts a balancer
+        // block between the producers and the trunks, which handles
+        // the merge cleanly. The `n_producers > n_lanes` (fan-in)
+        // path is left unchanged for now.
+        if n_producers >= 1
+            && n_lanes_with_consumers >= 2
+            && n_producers <= n_lanes_with_consumers
+        {
             let shape = (n_producers, n_lanes_with_consumers);
             family_id = Some(families.len());
 

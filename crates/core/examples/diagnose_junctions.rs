@@ -229,7 +229,7 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
         if !by_kind.is_empty() {
             println!("  errors by code: {:?}", by_kind);
         }
-        for issue in issues.iter().take(8) {
+        for issue in issues.iter().take(40) {
             println!(
                 "    err {} @ ({:?},{:?}): {}",
                 issue.category, issue.x, issue.y, issue.message
@@ -331,6 +331,50 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
     }
 
     // Specific problem regions: ghost_cluster SAT regions that overlap errors
+    if label.contains("user URL") {
+        println!("  entities near (4, 35):");
+        let mut around: Vec<_> = layout
+            .entities
+            .iter()
+            .filter(|e| e.x >= 0 && e.x <= 10 && e.y >= 30 && e.y <= 40)
+            .collect();
+        around.sort_by_key(|e| (e.y, e.x));
+        for e in around {
+            println!(
+                "    ({},{}) {} {:?} carries={:?} seg={}",
+                e.x,
+                e.y,
+                e.name,
+                e.direction,
+                e.carries,
+                e.segment_id.as_deref().unwrap_or("-")
+            );
+        }
+    }
+
+    if let Some(events) = layout.trace.as_ref() {
+        let balancers: Vec<_> = events
+            .iter()
+            .filter_map(|ev| {
+                if let TraceEvent::BalancerStamped {
+                    item,
+                    shape,
+                    y_start,
+                    y_end,
+                    template_found,
+                } = ev
+                {
+                    Some((item.clone(), *shape, *y_start, *y_end, *template_found))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !balancers.is_empty() {
+            println!("  balancers: {:?}", balancers);
+        }
+    }
+
     println!("  SAT clusters touching validator errors:");
     let mut any = false;
     for (i, r) in layout.regions.iter().enumerate() {
@@ -385,4 +429,60 @@ fn main() {
         "assembling-machine-1",
         &["iron-ore", "copper-ore", "coal", "water", "crude-oil"],
     );
+    run_case_with_belt(
+        "tier4 advanced-circuit 5/s AM1 (user URL, no belt cap)",
+        "advanced-circuit",
+        5.0,
+        "assembling-machine-1",
+        &[
+            "steel-plate", "stone", "coal", "water", "crude-oil",
+            "iron-ore", "copper-ore",
+        ],
+        None,
+    );
+}
+
+fn run_case_with_belt(
+    label: &str,
+    recipe: &str,
+    rate: f64,
+    machine: &str,
+    inputs: &[&str],
+    max_belt_tier: Option<&str>,
+) {
+    let input_set: FxHashSet<String> = inputs.iter().map(|s| s.to_string()).collect();
+    let solver_result = solver::solve(recipe, rate, &input_set, machine).expect("solve");
+    let _g = GhostModeGuard::new();
+    let layout = build_bus_layout_traced(&solver_result, max_belt_tier).expect("layout");
+    let issues = match validate::validate(&layout, Some(&solver_result), LayoutStyle::Bus) {
+        Ok(issues) => issues,
+        Err(e) => e.issues,
+    };
+    let issues: Vec<_> = issues
+        .into_iter()
+        .filter(|i| matches!(i.severity, validate::Severity::Error))
+        .collect();
+
+    println!("\n=== {} ===", label);
+    println!(
+        "  layout: {} entities, {} regions, {} validator errors",
+        layout.entities.len(),
+        layout.regions.len(),
+        issues.len()
+    );
+    if !layout.warnings.is_empty() {
+        println!("  warnings: {:?}", layout.warnings);
+    }
+    let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+    for issue in &issues {
+        *by_kind.entry(issue.category.to_string()).or_insert(0) += 1;
+    }
+    println!("  errors by code: {:?}", by_kind);
+    for issue in &issues {
+        println!(
+            "    err {} @ ({:?},{:?}): {}",
+            issue.category, issue.x, issue.y, issue.message
+        );
+    }
+
 }

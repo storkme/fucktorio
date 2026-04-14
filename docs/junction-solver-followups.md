@@ -66,6 +66,60 @@ work. All 10 e2e tests still green.
 location/entities dump for `entity-overlap` issues. Useful for spotting
 this class of orphan bugs in the future.
 
+## 2026-04-14 follow-up #2: multi-lane trunk family condition
+
+Unrelated to junction solving, but surfaced while eyeballing the tier4
+5/s AM1 case in the deployed viewer. A disconnected `fast-transport-belt`
+at `(4, 35)` was the head of an unfed 2-wide copper-plate trunk extension.
+
+**The bug:** `split_overflowing_lanes` at `bus_router.rs:592` only created
+a family balancer when `n_producers < n_lanes_with_consumers` (the fan-out
+case: 1→2, 2→3, etc). When `n_producers == n_lanes_with_consumers` (the
+parallel case, e.g. 2→2), it fell through to the "independent direct
+routing" path, where each producer gets its own `ret:` spec with goal
+`(x + 1, out_y)` sideloading into its trunk column.
+
+That goal is fine for the rightmost lane (column `x + 1` is empty) but
+broken for any inner lane: the tile east of the inner lane's column is
+*another lane's trunk*. A* routes the inner lane's return path as far
+as it can and terminates with a West-facing belt that sideloads into the
+neighbouring lane's trunk — which happily accepts the items. The inner
+lane's own trunk stays unfed, and every validator check on those tiles
+fires.
+
+For tier4 5/s AM1 with red belts (no cap), copper-plate hit this shape
+(2 producer rows × 2 trunk lanes) and produced 57× `lane-throughput`
+errors (all of copper-plate's 25/s dumped onto lane 5's right lane)
+plus the dead-belt at `(4, 35..42)`.
+
+**The fix:** Widen the family condition to `n_producers >= 1 &&
+n_lanes_with_consumers >= 2 && n_producers <= n_lanes_with_consumers`.
+Parallel multi-lane cases now stamp a proper balancer block between the
+producers and the trunks. The `(2, 2)` template already exists in the
+library — it's literally a single splitter with both sides in/out.
+
+### Numbers
+
+| Recipe | Errors before | Errors after | Δ |
+|---|---|---|---|
+| tier2 ec 30/s (yellow) | 16 | 16 | 0 |
+| tier3 pb 30/s | 24 | 24 | 0 |
+| tier4 ac 5/s (yellow) | 20 | 25 | +5 (regression) |
+| tier4 ac 5/s (no cap, user URL) | 74 | 17 | -57 |
+
+**The tier4 yellow regression** is +2 `belt-dead-end`, +2
+`belt-item-isolation`, +1 `underground-belt`. Caused by a new
+`plastic-bar (2, 2)` balancer at `y=28..30` that wasn't being stamped
+before — the family placement shifts the downstream layout and causes
+routing conflicts in unrelated rows. Worth investigating separately;
+the plastic-bar balancer block is probably stepping on something
+around `y=38..51`. Not catastrophic — net -52 validator errors across
+the tier4 AC 5/s cases.
+
+`diagnose_junctions` now also prints `BalancerStamped` shapes and y
+ranges per case. Useful for spotting which families are being created
+vs falling back to direct routing.
+
 ### What this means for the rest of the original plan
 
 - **P0** (this fix): done.
