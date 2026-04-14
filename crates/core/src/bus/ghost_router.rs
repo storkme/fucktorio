@@ -23,9 +23,10 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::ghost_astar;
+use crate::bus::balancer::{splitter_for_belt, stamp_family_balancer};
 use crate::bus::bus_router::{
     BusLane, LaneFamily, is_intermediate, merge_output_rows, render_path,
-    splitter_for_belt, stamp_family_balancer, trunk_segments, MACHINE_ENTITIES,
+    trunk_segments, MACHINE_ENTITIES,
 };
 use crate::bus::junction::{BeltTier, Rect};
 use crate::bus::junction_sat_strategy::SatStrategy;

@@ -14,6 +14,8 @@ use std::cmp::Ordering;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::models::{SolverResult, PlacedEntity, EntityDirection};
+use crate::bus::balancer::{splitter_for_belt, underground_for_belt};
+use crate::bus::lane_order::optimize_lane_order;
 use crate::bus::placer::RowSpan;
 
 /// Per-lane capacity for each belt tier (half of total throughput).
@@ -136,200 +138,6 @@ pub struct LaneFamily {
     pub total_rate: f64,
 }
 
-/// Score a proposed lane ordering: the number of tap-off rays that have
-/// to cross other lanes' active ranges. Lower is better. Also penalises
-/// family-template input landing columns that overlap lanes to the right
-/// of the family block, pushing family blocks rightmost.
-pub(crate) fn score_lane_ordering(ordered: &[BusLane], row_spans: &[RowSpan]) -> usize {
-    let mut score = 0;
-
-    fn active_range(lane: &BusLane, row_spans: &[RowSpan]) -> (i32, i32) {
-        let all_p = lane.all_producers();
-        if !all_p.is_empty() && !lane.consumer_rows.is_empty() {
-            let start = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .min()
-                .unwrap();
-            let end = if !lane.tap_off_ys.is_empty() {
-                lane.tap_off_ys.iter().copied().max().unwrap()
-            } else {
-                start
-            };
-            (start, end)
-        } else if !lane.tap_off_ys.is_empty() {
-            let end = lane.tap_off_ys.iter().copied().max().unwrap();
-            (lane.source_y, end)
-        } else {
-            let end = all_p.iter()
-                .map(|&p| row_spans[p].output_belt_y)
-                .max()
-                .unwrap_or(lane.source_y);
-            (lane.source_y, end)
-        }
-    }
-
-    let ranges: Vec<(i32, i32)> = ordered.iter().map(|ln| active_range(ln, row_spans)).collect();
-
-    for (pos, lane) in ordered.iter().enumerate() {
-        for &tap_y in &lane.tap_off_ys {
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= tap_y && tap_y <= re {
-                    score += 1;
-                }
-            }
-        }
-        let all_producers = lane.all_producers();
-        for &pri in &all_producers {
-            let ret_y = row_spans[pri].output_belt_y;
-            for &(rs, re) in &ranges[(pos + 1)..] {
-                if rs <= ret_y && ret_y <= re {
-                    score += 1;
-                }
-            }
-        }
-    }
-
-    let templates = crate::bus::balancer_library::balancer_templates();
-    let n = ordered.len();
-    for (pos, lane) in ordered.iter().enumerate() {
-        if let Some(fid) = lane.family_id {
-            if pos > 0 && ordered[pos - 1].family_id == Some(fid) {
-                continue;
-            }
-            let fam_count = ordered[pos..].iter()
-                .take_while(|l| l.family_id == Some(fid))
-                .count();
-            let ox = pos + 1;
-            let (fn_, fm) = {
-                let all_p = lane.all_producers();
-                (all_p.len().max(1), fam_count)
-            };
-            if let Some(tpl) = templates.get(&(fn_ as u32, fm as u32)) {
-                for &(dx, _) in tpl.input_tiles {
-                    let landing_x = (ox as i32) + dx + 1;
-                    for rpos in (pos + fam_count)..n {
-                        let rx = (rpos + 1) as i32;
-                        if rx == landing_x {
-                            score += 100;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    score
-}
-
-fn family_contiguous(ordered: &[BusLane]) -> bool {
-    let mut seen_ranges: FxHashMap<usize, (usize, usize)> = FxHashMap::default();
-    for (i, ln) in ordered.iter().enumerate() {
-        if let Some(fid) = ln.family_id {
-            let (lo, hi) = seen_ranges.get(&fid).copied().unwrap_or((i, i));
-            seen_ranges.insert(fid, (lo.min(i), hi.max(i)));
-        }
-    }
-    let mut counts: FxHashMap<usize, usize> = FxHashMap::default();
-    for ln in ordered {
-        if let Some(fid) = ln.family_id {
-            *counts.entry(fid).or_insert(0) += 1;
-        }
-    }
-    seen_ranges.iter().all(|(fid, (lo, hi))| hi - lo + 1 == counts[fid])
-}
-
-fn find_best_permutation(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if solid.is_empty() {
-        return Vec::new();
-    }
-    let n = solid.len();
-    let mut indices: Vec<usize> = (0..n).collect();
-    let mut best_order: Vec<usize> = indices.clone();
-    let mut best_score = score_lane_ordering(
-        &indices.iter().map(|&i| solid[i].clone()).collect::<Vec<_>>(),
-        row_spans,
-    );
-    let mut c = vec![0; n];
-    let mut i = 0;
-    while i < n {
-        if c[i] < i {
-            if i % 2 == 0 {
-                indices.swap(0, i);
-            } else {
-                indices.swap(c[i], i);
-            }
-            let ordered: Vec<BusLane> = indices.iter().map(|&idx| solid[idx].clone()).collect();
-            if family_contiguous(&ordered) {
-                let score = score_lane_ordering(&ordered, row_spans);
-                if score < best_score {
-                    best_score = score;
-                    best_order = indices.clone();
-                }
-            }
-            c[i] += 1;
-            i = 0;
-        } else {
-            c[i] = 0;
-            i += 1;
-        }
-    }
-    best_order.iter().map(|&i| solid[i].clone()).collect()
-}
-
-fn hill_climb_lane_order(solid: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    let mut order = solid.to_vec();
-    order.sort_by_key(|ln| {
-        let fid = ln.family_id.unwrap_or(usize::MAX) as i32;
-        let y = ln.tap_off_ys.iter().min().copied().map(|y| -y).unwrap_or(9999);
-        (fid, y)
-    });
-    let n = order.len();
-    let mut best_score = score_lane_ordering(&order, row_spans);
-    loop {
-        let mut improved = false;
-        'outer: for i in 0..n {
-            for j in (i + 1)..n {
-                order.swap(i, j);
-                if family_contiguous(&order) {
-                    let score = score_lane_ordering(&order, row_spans);
-                    if score < best_score {
-                        best_score = score;
-                        improved = true;
-                        continue 'outer;
-                    }
-                }
-                order.swap(i, j);
-            }
-        }
-        if !improved { break; }
-    }
-    order
-}
-
-/// Optimize the left-to-right ordering of lanes to minimise tap-off /
-/// return crossings while keeping family lanes contiguous. Exact search
-/// for ≤7 solid lanes, hill-climbing above. Fluid lanes are appended
-/// unchanged at the right.
-pub(crate) fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> Vec<BusLane> {
-    if lanes.len() <= 1 {
-        return lanes.to_vec();
-    }
-    let solid: Vec<BusLane> = lanes.iter().filter(|ln| !ln.is_fluid).cloned().collect();
-    let fluid: Vec<BusLane> = lanes.iter().filter(|ln| ln.is_fluid).cloned().collect();
-    let best_solid = if solid.len() <= 7 {
-        find_best_permutation(&solid, row_spans)
-    } else {
-        hill_climb_lane_order(&solid, row_spans)
-    };
-    let mut result = best_solid;
-    result.extend(fluid);
-    let crossing_score = score_lane_ordering(&result, row_spans);
-    crate::trace::emit(crate::trace::TraceEvent::LaneOrderOptimized {
-        ordering: result.iter().map(|ln| ln.item.clone()).collect(),
-        crossing_score,
-    });
-    result
-}
 
 /// Lanes are ordered so that lanes tapping off at earlier (higher) rows
 /// are placed on the LEFT, reducing tap-off crossings.
@@ -595,33 +403,6 @@ impl Default for BusLane {
     }
 }
 
-/// Splitter name mapping by belt tier.
-const SPLITTER_MAP: &[(&str, &str)] = &[
-    ("transport-belt", "splitter"),
-    ("fast-transport-belt", "fast-splitter"),
-    ("express-transport-belt", "express-splitter"),
-];
-
-/// Underground belt name mapping by belt tier.
-const UNDERGROUND_MAP: &[(&str, &str)] = &[
-    ("transport-belt", "underground-belt"),
-    ("fast-transport-belt", "fast-underground-belt"),
-    ("express-transport-belt", "express-underground-belt"),
-];
-
-pub(crate) fn splitter_for_belt(belt: &str) -> &'static str {
-    SPLITTER_MAP.iter()
-        .find(|(b, _)| *b == belt)
-        .map(|(_, s)| *s)
-        .unwrap_or("splitter")
-}
-
-fn underground_for_belt(belt: &str) -> &'static str {
-    UNDERGROUND_MAP.iter()
-        .find(|(b, _)| *b == belt)
-        .map(|(_, u)| *u)
-        .unwrap_or("underground-belt")
-}
 
 /// Split lanes whose rate exceeds the available belt's per-lane capacity.
 fn split_overflowing_lanes(
@@ -855,88 +636,6 @@ pub fn bus_width_for_lanes(lanes: &[BusLane]) -> i32 {
     }
 }
 
-/// Stamp a balancer template at the family's origin position.
-///
-/// Template entity tiles are offset by the family's stamp origin
-/// (x = min(lane_xs), y = balancer_y_start). The item each entity
-/// carries is set to the family's item. Belt and splitter tiers are
-/// chosen from the family's total rate so the balancer matches its
-/// sibling trunks.
-pub(crate) fn stamp_family_balancer(
-    family: &LaneFamily,
-    max_belt_tier: Option<&str>,
-) -> Result<Vec<PlacedEntity>, String> {
-    use crate::bus::balancer_library::balancer_templates;
-    use crate::common::belt_entity_for_rate;
-
-    let templates = balancer_templates();
-    let (n, m) = (family.shape.0 as u32, family.shape.1 as u32);
-    let template_key = (n, m);
-
-    if family.lane_xs.is_empty() {
-        return Err(format!("LaneFamily for item {} has no lane_xs assigned", family.item));
-    }
-
-    let belt_tier = belt_entity_for_rate(family.total_rate, max_belt_tier);
-    let splitter_name = splitter_for_belt(belt_tier);
-    let ug_name = underground_for_belt(belt_tier);
-    let balancer_seg_id = Some(format!("balancer:{}", family.item));
-
-    if let Some(template) = templates.get(&template_key) {
-        // Direct template match.
-        let origin_x = *family.lane_xs.iter().min().unwrap();
-        let origin_y = family.balancer_y_start;
-
-        let mut entities = template.stamp(
-            origin_x, origin_y, belt_tier, splitter_name, ug_name,
-            Some(&family.item),
-        );
-        for ent in &mut entities {
-            ent.segment_id = balancer_seg_id.clone();
-        }
-        return Ok(entities);
-    }
-
-    // Decomposition fallback: try to split (N, M) into groups that have
-    // templates. Search for a divisor g of N where (N/g, M/g) has a template.
-    // E.g., (6,8) → g=2 → 2 copies of (3,4). (5,10) → g=5 → 5 copies of (1,2).
-    for g in (1..=n).rev() {
-        if n % g != 0 || m % g != 0 {
-            continue;
-        }
-        let sub_n = n / g;
-        let sub_m = m / g;
-        if let Some(sub_template) = templates.get(&(sub_n, sub_m)) {
-            let mut all_entities = Vec::new();
-            let _producers_per_group = sub_n as usize;
-            let lanes_per_group = sub_m as usize;
-
-            for gi in 0..(g as usize) {
-                let lane_start = gi * lanes_per_group;
-                let lane_end = (lane_start + lanes_per_group).min(family.lane_xs.len());
-                let lane_chunk = &family.lane_xs[lane_start..lane_end];
-                if lane_chunk.is_empty() {
-                    continue;
-                }
-                let sub_origin_x = *lane_chunk.iter().min().unwrap();
-                let sub_origin_y = family.balancer_y_start;
-
-                let mut ents = sub_template.stamp(
-                    sub_origin_x, sub_origin_y, belt_tier, splitter_name, ug_name,
-                    Some(&family.item),
-                );
-                for ent in &mut ents {
-                    ent.segment_id = Some(format!("balancer:{}:{}", family.item, gi));
-                }
-                all_entities.extend(ents);
-            }
-            return Ok(all_entities);
-        }
-    }
-
-    // No template and no decomposition possible — skip.
-    Ok(Vec::new())
-}
 
 /// Render path entities from A*-routed belts and underground segments.
 ///
@@ -1267,6 +966,8 @@ pub(crate) fn trunk_segments(start_y: i32, end_y: i32, skip_ys: &FxHashSet<i32>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::balancer::stamp_family_balancer;
+    use crate::bus::lane_order::score_lane_ordering;
     use crate::models::{ItemFlow, MachineSpec};
     use crate::bus::placer::RowSpan;
 
