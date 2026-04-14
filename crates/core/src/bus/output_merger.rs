@@ -196,6 +196,9 @@ mod tests {
             fluid_port_ys: Vec::new(),
             fluid_port_pipes: Vec::new(),
             fluid_output_port_pipes: Vec::new(),
+            output_east: true,
+            output_belt_x_min: 0,
+            output_belt_x_max: 9,
         }
     }
 

@@ -72,6 +72,14 @@ struct BeltSpec {
     goal: (i32, i32),
     item: String,
     belt_name: &'static str,
+    /// Explicit exit direction for the final belt on this path. Set when the
+    /// planner knows the spec's topology — producer-row orientation, trunk
+    /// axis — at emission time. When `Some`, render_path uses this for
+    /// single-tile paths and the last tile of multi-tile paths instead of
+    /// inferring direction from start/goal coordinate comparisons (which is
+    /// ambiguous for degenerate start == goal specs and length-1 blocked A*
+    /// fallbacks). See plan file abundant-gliding-turing.md for context.
+    exit_dir: Option<EntityDirection>,
 }
 
 /// Route all bus belts using the ghost A* approach.
@@ -259,6 +267,25 @@ pub fn route_bus_ghost(
     // -------------------------------------------------------------------------
     let mut specs: Vec<BeltSpec> = Vec::new();
 
+    // Helper: compute the row-exit origin tile for a ret/feeder spec based on
+    // the producer row's orientation. For westward rows (intermediate
+    // producers feeding a trunk column to their left) items exit at
+    // (output_belt_x_min - 1, out_y) flowing West. For eastward rows (final
+    // output rows) items exit at (output_belt_x_max + 1, out_y) flowing East.
+    // The ret/feeder spec always walks back horizontally toward the trunk,
+    // so the *direction* of the bend at the origin tile is always "toward the
+    // trunk column": West for westward rows (trunk is west of the exit), West
+    // for eastward rows too (trunk is west of the row start at x = bus_width,
+    // and the ret walks back west to it).
+    let row_exit_origin = |row: &RowSpan| -> (i32, i32) {
+        let out_y = row.output_belt_y;
+        if row.output_east {
+            (row.output_belt_x_max + 1, out_y)
+        } else {
+            (row.output_belt_x_min - 1, out_y)
+        }
+    };
+
     for lane in lanes {
         if lane.is_fluid {
             continue;
@@ -269,6 +296,20 @@ pub fn route_bus_ghost(
         let last_tap_y = lane.tap_off_ys.iter().copied().max();
         let horiz_belt = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
         let trunk_belt = horiz_belt;
+
+        // Collect the set of producer output ys for this lane; used by the
+        // trunk-segment filter below to drop degenerate stubs.
+        let mut producer_ys: FxHashSet<i32> = FxHashSet::default();
+        if let Some(pr) = lane.producer_row {
+            if pr < row_spans.len() {
+                producer_ys.insert(row_spans[pr].output_belt_y);
+            }
+        }
+        for &pri in &lane.extra_producer_rows {
+            if pri < row_spans.len() {
+                producer_ys.insert(row_spans[pri].output_belt_y);
+            }
+        }
 
         // Trunk specs — routed first per lane so horizontals see them in
         // existing_belts. Turn penalty keeps them straight vertical lines.
@@ -289,16 +330,7 @@ pub fn route_bus_ghost(
             }
 
             let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
-            for &pri in &lane.extra_producer_rows {
-                if pri < row_spans.len() {
-                    all_ys.push(row_spans[pri].output_belt_y);
-                }
-            }
-            if let Some(pr) = lane.producer_row {
-                if pr < row_spans.len() {
-                    all_ys.push(row_spans[pr].output_belt_y);
-                }
-            }
+            all_ys.extend(producer_ys.iter().copied());
             let start_y = lane.source_y;
             let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
             let end_y = if let Some(by) = lane.balancer_y {
@@ -315,6 +347,15 @@ pub fn route_bus_ghost(
                     goal: (x, seg_end),
                     item: lane.item.clone(),
                     belt_name: trunk_belt,
+                    // exit_dir = South: the trunk flows south toward taps /
+                    // producers / the lane terminus. This is the last-tile
+                    // direction for render_path; without it, length-1 trunk
+                    // segments (lanes whose source_y is immediately above a
+                    // single tap, e.g. a pure-input lane where `trunk_segments`
+                    // returns a 1-tile stub) would fall through to the legacy
+                    // start-vs-goal hint which maps `start == goal` to East
+                    // and strands the trunk stub as a horizontal dead-end.
+                    exit_dir: Some(EntityDirection::South),
                 });
             }
         }
@@ -335,11 +376,18 @@ pub fn route_bus_ghost(
                     goal: (goal_x, tap_y),
                     item: lane.item.clone(),
                     belt_name: horiz_belt,
+                    exit_dir: Some(EntityDirection::East),
                 });
             }
         }
 
-        // Return specs for intermediate lanes (no family balancer)
+        // Return specs for intermediate lanes (no family balancer).
+        // Producers feed the trunk from the west side of the bus; start tile
+        // is orientation-aware (westward rows exit left of the row, eastward
+        // rows exit right of the row). Items always walk West back to the
+        // trunk, so exit_dir is West — this makes the bend belt that lands
+        // at (x+1, out_y) face West regardless of path length, so it sideloads
+        // correctly into the South-facing trunk at (x, out_y).
         if is_intermediate(lane) && lane.family_balancer_range.is_none() {
             let mut all_producers = Vec::new();
             if let Some(pr) = lane.producer_row {
@@ -351,14 +399,24 @@ pub fn route_bus_ghost(
                 if pri >= row_spans.len() {
                     continue;
                 }
-                let out_y = row_spans[pri].output_belt_y;
+                let row = &row_spans[pri];
+                let (start_x, out_y) = row_exit_origin(row);
+                let goal_x = x + 1;
+                // Skip the spec entirely when the exit lands west of (or at)
+                // the goal — the row's own exit belt already covers it and
+                // no additional ret belt is needed. This can happen when a
+                // westward row's output_belt_x_min is adjacent to the trunk.
+                if start_x < goal_x {
+                    continue;
+                }
                 let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
                 specs.push(BeltSpec {
                     key: ret_key,
-                    start: (bw - 1, out_y),
-                    goal: (x + 1, out_y),
+                    start: (start_x, out_y),
+                    goal: (goal_x, out_y),
                     item: lane.item.clone(),
                     belt_name: horiz_belt,
+                    exit_dir: Some(EntityDirection::West),
                 });
             }
         }
@@ -375,14 +433,20 @@ pub fn route_bus_ghost(
                 if pri >= row_spans.len() {
                     continue;
                 }
-                let out_y = row_spans[pri].output_belt_y;
+                let row = &row_spans[pri];
+                let (start_x, out_y) = row_exit_origin(row);
+                let goal_x = x + 1;
+                if start_x < goal_x {
+                    continue;
+                }
                 let ret_key = format!("ret:{}:{}:{}", lane.item, x, out_y);
                 specs.push(BeltSpec {
                     key: ret_key,
-                    start: (bw - 1, out_y),
-                    goal: (x + 1, out_y),
+                    start: (start_x, out_y),
+                    goal: (goal_x, out_y),
                     item: lane.item.clone(),
                     belt_name: horiz_belt,
+                    exit_dir: Some(EntityDirection::West),
                 });
             }
         }
@@ -414,18 +478,33 @@ pub fn route_bus_ghost(
                             if pri >= row_spans.len() {
                                 continue;
                             }
-                            let out_y = row_spans[pri].output_belt_y;
+                            let row = &row_spans[pri];
+                            let (start_x, out_y) = row_exit_origin(row);
                             if let Some(&(input_x_rel, _input_y_rel)) = inputs.get(i) {
                                 let input_x = origin_x + input_x_rel;
                                 let input_y = origin_y;
                                 let feeder_key =
                                     format!("feeder:{}:{}:{}", lane.item, input_x, out_y);
+                                // Feeders walk from the row exit to a
+                                // balancer input tile. exit_dir aims at the
+                                // balancer — South when the input is below
+                                // the row (typical), West otherwise.
+                                let feeder_exit_dir = if input_y > out_y {
+                                    EntityDirection::South
+                                } else if input_y < out_y {
+                                    EntityDirection::North
+                                } else if input_x < start_x {
+                                    EntityDirection::West
+                                } else {
+                                    EntityDirection::East
+                                };
                                 specs.push(BeltSpec {
                                     key: feeder_key,
-                                    start: (bw - 1, out_y),
+                                    start: (start_x, out_y),
                                     goal: (input_x, input_y),
                                     item: lane.item.clone(),
                                     belt_name: feeder_belt,
+                                    exit_dir: Some(feeder_exit_dir),
                                 });
                             }
                         }
@@ -649,9 +728,16 @@ pub fn route_bus_ghost(
                 crossing_tiles: crossings.clone(),
             });
 
-            // Emit entities via render_path. Vertical specs (trunks) get
-            // South/North direction; otherwise East/West.
-            let direction_hint = if spec.start.1 != spec.goal.1 && spec.start.0 == spec.goal.0 {
+            // Emit entities via render_path. When the planner set an explicit
+            // exit_dir on the spec (orientation-aware ret/feeder, vertical
+            // trunks), use it directly — this is the only reliable direction
+            // source for length-1 paths (start == goal, or A* blocked fallback
+            // to goal tile only). When unset, infer from start/goal coordinate
+            // comparison (legacy behaviour for multi-tile horizontal/vertical
+            // specs where the path deltas in render_path carry the direction).
+            let direction_hint = if let Some(d) = spec.exit_dir {
+                d
+            } else if spec.start.1 != spec.goal.1 && spec.start.0 == spec.goal.0 {
                 if spec.goal.1 > spec.start.1 {
                     EntityDirection::South
                 } else {

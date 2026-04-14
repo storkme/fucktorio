@@ -5,7 +5,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::common::{belt_entity_for_rate, lane_capacity, machine_size, BELT_TIERS};
-use crate::models::{MachineSpec, PlacedEntity, SolverResult};
+use crate::models::{EntityDirection, MachineSpec, PlacedEntity, SolverResult};
 
 /// Best available per-lane capacity across all belt tiers.
 fn max_lane_capacity() -> f64 {
@@ -41,6 +41,16 @@ pub struct RowSpan {
     pub fluid_port_pipes: Vec<(String, i32, i32)>,
     /// Per-fluid-item output port pipe positions (item, x, y).
     pub fluid_output_port_pipes: Vec<(String, i32, i32)>,
+    /// True when the row's output belts flow East (final-output rows).
+    /// False when they flow West back toward the bus (intermediate
+    /// producer rows feeding an item consumed further down the bus).
+    pub output_east: bool,
+    /// Leftmost x coordinate of the output belt run. For westward rows,
+    /// items exit the row at `output_belt_x_min - 1`.
+    pub output_belt_x_min: i32,
+    /// Rightmost x coordinate of the output belt run. For eastward rows,
+    /// items exit the row at `output_belt_x_max + 1`.
+    pub output_belt_x_max: i32,
 }
 
 /// Maximum machines in one row before output or input exceeds belt lane capacity.
@@ -568,6 +578,46 @@ pub(crate) fn build_one_row(
     let gap = if lane_split { LANE_SPLIT_GAP } else { 0 };
     let row_width = bus_width + count as i32 * machine_pitch + gap;
 
+    // Scan the emitted row entities for surface belts on the output belt row,
+    // carrying the row's (solid) output item. This captures the exact x-range
+    // of the exit belt run regardless of which template produced it.
+    let (output_belt_x_min, output_belt_x_max) = {
+        let mut min_x: Option<i32> = None;
+        let mut max_x: Option<i32> = None;
+        for ent in &row_ents {
+            if ent.y != output_belt_y {
+                continue;
+            }
+            if !matches!(
+                ent.name.as_str(),
+                "transport-belt" | "fast-transport-belt" | "express-transport-belt"
+            ) {
+                continue;
+            }
+            if ent.carries.as_deref() != Some(output_item) {
+                continue;
+            }
+            let is_east_west = matches!(
+                ent.direction,
+                EntityDirection::East | EntityDirection::West
+            );
+            if !is_east_west {
+                continue;
+            }
+            min_x = Some(min_x.map_or(ent.x, |m| m.min(ent.x)));
+            max_x = Some(max_x.map_or(ent.x, |m| m.max(ent.x)));
+        }
+        // Fluid-only rows have no solid output belts. Default to the machine
+        // x-range so downstream code gets sane values; nothing actually
+        // consumes x_min/x_max for fluid rows.
+        let default_min = bus_width;
+        let default_max = bus_width + count as i32 * machine_pitch + gap - 1;
+        (
+            min_x.unwrap_or(default_min),
+            max_x.unwrap_or(default_max),
+        )
+    };
+
     let span = RowSpan {
         y_start: y_cursor,
         y_end: y_cursor + row_h,
@@ -579,6 +629,9 @@ pub(crate) fn build_one_row(
         fluid_port_ys,
         fluid_port_pipes,
         fluid_output_port_pipes,
+        output_east,
+        output_belt_x_min,
+        output_belt_x_max,
     };
 
     (row_ents, span, row_width)

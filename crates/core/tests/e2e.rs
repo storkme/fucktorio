@@ -347,7 +347,6 @@ fn assert_round_trip(result: &E2EResult) {
 // new green-bar regression guards for ghost routing.
 
 #[test]
-#[ignore = "ghost-mode: head-on collision + dead-end at (1,0)/(3,7)/(4,7)"]
 #[ntest::timeout(10000)]
 fn tier1_iron_gear_wheel() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
@@ -361,7 +360,6 @@ fn tier1_iron_gear_wheel() {
 }
 
 #[test]
-#[ignore = "ghost-mode: belt-dead-end at (4,0)"]
 #[ntest::timeout(10000)]
 fn tier1_iron_gear_wheel_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore"].iter().map(|s| s.to_string()).collect();
@@ -382,7 +380,6 @@ fn tier1_iron_gear_wheel_from_ore() {
 }
 
 #[test]
-#[ignore = "ghost-mode: belt-dead-end at (3,0) / (4,0)"]
 #[ntest::timeout(10000)]
 fn tier1_iron_gear_wheel_20s() {
     let inputs: FxHashSet<String> = ["iron-plate"].iter().map(|s| s.to_string()).collect();
@@ -450,7 +447,6 @@ fn tier2_electronic_circuit_from_ore() {
 }
 
 #[test]
-#[ignore = "ghost-mode: belt-dead-end at (3,0)"]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_20s_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
