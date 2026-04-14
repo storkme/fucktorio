@@ -1540,8 +1540,8 @@ fn emit_unresolved_junctions(
                     exit: PortPoint { x: tx, y: ty, direction: dir },
                 };
                 vec![
-                    make(info.spec_a.0, info.spec_a.1, &info.belt_a),
-                    make(info.spec_b.0, info.spec_b.1, &info.belt_b),
+                    make(info.spec_a.0, info.spec_a.1, info.belt_a),
+                    make(info.spec_b.0, info.spec_b.1, info.belt_b),
                 ]
             })
             .unwrap_or_default();
