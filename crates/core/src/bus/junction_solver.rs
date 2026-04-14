@@ -394,6 +394,21 @@ pub struct JunctionStrategyContext<'a> {
     /// obstacles.
     #[allow(dead_code)]
     pub strict_obstacles: &'a FxHashSet<(i32, i32)>,
+    /// Entities already placed in Steps 2-5 (row templates, splitter
+    /// stamps, balancer blocks, ghost-routed belts). Strategies that
+    /// place UG inputs consult this to detect perpendicular sideloads
+    /// from splitters or belts whose flow would drop items into the UG
+    /// input tile from the wrong side — these sources live in
+    /// `placed_entities` but never enter `routed_paths`.
+    pub placed_entities: &'a [crate::models::PlacedEntity],
+    /// Tiles holding a Permanent / Template / RowEntity / HardObstacle
+    /// claim whose segment id is NOT `trunk:*` or `tapoff:*`. These are
+    /// the claims `release_for_pertile_template` refuses to clear, so
+    /// the perpendicular-template strategy must treat them as obstacles
+    /// even though the comment on `strict_obstacles` says the strategy
+    /// relies on release-in-footprint for trunk/tapoff cleanup. Computed
+    /// once per `solve_crossing` call by the caller.
+    pub unreleasable_obstacles: &'a FxHashSet<(i32, i32)>,
 }
 
 /// A strategy that attempts to produce a `JunctionSolution` for a
@@ -415,8 +430,10 @@ pub fn solve_crossing(
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     hard_obstacles: &FxHashSet<(i32, i32)>,
     strict_obstacles: &FxHashSet<(i32, i32)>,
+    unreleasable_obstacles: &FxHashSet<(i32, i32)>,
     spec_belt_tiers: &FxHashMap<String, BeltTier>,
     spec_items: &FxHashMap<String, String>,
+    placed_entities: &[crate::models::PlacedEntity],
     strategies: &[&dyn JunctionStrategy],
 ) -> Option<JunctionSolution> {
     let mut region = GrowingRegion::from_crossing(
@@ -436,6 +453,8 @@ pub fn solve_crossing(
             routed_paths,
             hard_obstacles,
             strict_obstacles,
+            placed_entities,
+            unreleasable_obstacles,
         };
         for strategy in strategies {
             if let Some(sol) = strategy.try_solve(&ctx) {

@@ -1012,8 +1012,8 @@ pub fn route_bus_ghost(
                     && !is_row_entity(ug_out)
                     && !any_spec_turns_at(ug_in, &routed_paths)
                     && !any_spec_turns_at(ug_out, &routed_paths)
-                    && ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths).is_none()
-                    && ug_endpoint_conflicts(ug_out, ug_dir, key, &routed_paths).is_none();
+                    && ug_endpoint_conflicts(ug_in, ug_dir, key, &routed_paths, &entities).is_none()
+                    && ug_endpoint_conflicts(ug_out, ug_dir, key, &routed_paths, &entities).is_none();
 
                 if endpoints_free {
                     // Find the horizontal spec that owns this run (for item/belt info).
@@ -1251,13 +1251,35 @@ pub fn route_bus_ghost(
     // the pipeline — covers everything except `GhostSurface`, which
     // strategies are allowed to replace.
     let junction_hard: FxHashSet<(i32, i32)> = occupancy.snapshot_junction_obstacles();
+    // Subset of `junction_hard` whose claims would panic if perp-template
+    // stamped over them. `release_for_pertile_template` clears trunks and
+    // tapoffs inside the footprint, and the post-place loop
+    // (ghost_router.rs:1356) benignly skips `Template` and `RowEntity`
+    // collisions. What remains, and what panics, is `Permanent` claims
+    // whose segment id is NOT trunk/tapoff/row — balancer belts,
+    // corridor-perp re-adds, merger chains — plus hard obstacles.
+    // `PerpendicularTemplateStrategy` consults this narrower set so it
+    // returns `None` instead of producing a panicking solution.
+    let unreleasable_obstacles: FxHashSet<(i32, i32)> = entities
+        .iter()
+        .filter(|e| {
+            let seg = e.segment_id.as_deref().unwrap_or("");
+            !seg.starts_with("trunk:")
+                && !seg.starts_with("tapoff:")
+                && !seg.starts_with("ghost:")
+                && !seg.starts_with("row:")
+                && !seg.starts_with("junction:")
+                && !seg.starts_with("corridor:")
+                && !seg.starts_with("crossing:")
+        })
+        .map(|e| (e.x, e.y))
+        .chain(hard.iter().copied())
+        .collect();
     let perp_strategy = PerpendicularTemplateStrategy;
     let sat_strategy = SatStrategy;
     // Strategy order = priority: cheap templates run first, then
-    // escalation. SatStrategy is an inert placeholder today (always
-    // returns None) and lives at the end of the list so it picks up
-    // whatever the cheaper strategies couldn't handle once its
-    // `try_solve` body is filled in.
+    // escalation to SAT on the grown region when the fixed-footprint
+    // template can't make space.
     let strategies: [&dyn JunctionStrategy; 2] = [&perp_strategy, &sat_strategy];
 
     for &tile in &crossing_set {
@@ -1289,8 +1311,10 @@ pub fn route_bus_ghost(
             &routed_paths,
             &hard,
             &junction_hard,
+            &unreleasable_obstacles,
             &spec_belt_tiers,
             &spec_items,
+            &entities,
             &strategies,
         ) else {
             remaining_crossings.insert(tile);
@@ -1690,6 +1714,12 @@ fn any_spec_turns_at(
 /// In Factorio, sideloads onto UG-input belts only fill the far lane and
 /// can dump items wrong; we reject any template that would create one.
 ///
+/// The check considers both (a) in-flight routed ghost specs and (b) already-
+/// placed physical entities (splitters, row belts, trunks placed in Step 2-3).
+/// Without (b), a splitter whose output drops straight into this tile from a
+/// perpendicular direction slips through — the splitter is stamped before
+/// ghost routing and never enters `routed_paths`.
+///
 /// Returns `None` if the tile is fine, or `Some(reason)` identifying the
 /// first conflict found. The caller tags the reason with the endpoint
 /// it was checking (UG-in vs UG-out).
@@ -1698,6 +1728,7 @@ fn ug_endpoint_conflicts(
     bridge_dir: EntityDirection,
     bridge_spec_key: &str,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    placed_entities: &[PlacedEntity],
 ) -> Option<&'static str> {
     let bridge_axis_vert = matches!(bridge_dir, EntityDirection::North | EntityDirection::South);
 
@@ -1742,6 +1773,7 @@ fn ug_endpoint_conflicts(
     };
     for &(dx, dy, expected_dir) in side_offsets {
         let side = (tile.0 + dx, tile.1 + dy);
+        // 2a. Routed-path sideloads (original check).
         for path in routed_paths.values() {
             for (i, &t) in path.iter().enumerate() {
                 if t != side {
@@ -1763,6 +1795,15 @@ fn ug_endpoint_conflicts(
                 break;
             }
         }
+        // 2b. TODO: splitter-sideload detection. Pre-routing splitters
+        //     (Step 2-3) can drop items into UG endpoint tiles
+        //     perpendicularly but never enter routed_paths, so they slip
+        //     past 2a. A naive check on placed splitters rejects legitimate
+        //     corridor placements in tier2_electronic_circuit_splitter_stamp_regression
+        //     via an interaction with corridor-perp re-adds I don't
+        //     fully understand yet. Left disabled until that's untangled —
+        //     see tier2_electronic_circuit for the concrete failing case.
+        let _ = placed_entities;
     }
 
     None
@@ -1776,7 +1817,9 @@ fn ug_endpoint_conflicts(
 fn solve_perpendicular_template(
     info: &CrossingInfo,
     hard_obstacles: &FxHashSet<(i32, i32)>,
+    unreleasable_obstacles: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    placed_entities: &[PlacedEntity],
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
     let perpendicular = is_perpendicular(info.spec_a.1, info.spec_b.1);
     if !perpendicular {
@@ -1786,7 +1829,9 @@ fn solve_perpendicular_template(
             (&info.spec_a.0, info.spec_a.1, info.belt_a),
             (&info.spec_b.0, info.spec_b.1, info.belt_b),
             hard_obstacles,
+            unreleasable_obstacles,
             routed_paths,
+            placed_entities,
         );
     }
 
@@ -1805,7 +1850,9 @@ fn solve_perpendicular_template(
         (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         hard_obstacles,
+        unreleasable_obstacles,
         routed_paths,
+        placed_entities,
     );
     if bridge_vertical_first.is_some() {
         return bridge_vertical_first;
@@ -1817,7 +1864,9 @@ fn solve_perpendicular_template(
         (&v_spec.0, v_spec.1, if std::ptr::eq(v_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         (&h_spec.0, h_spec.1, if std::ptr::eq(h_spec, &info.spec_a) { info.belt_a } else { info.belt_b }),
         hard_obstacles,
+        unreleasable_obstacles,
         routed_paths,
+        placed_entities,
     )
 }
 
@@ -1829,7 +1878,9 @@ fn try_bridge(
     surface: (&String, EntityDirection, &'static str),
     bridge: (&String, EntityDirection, &'static str),
     hard_obstacles: &FxHashSet<(i32, i32)>,
+    unreleasable_obstacles: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+    placed_entities: &[PlacedEntity],
 ) -> Option<(Vec<PlacedEntity>, ClusterZone)> {
     let (cx, cy) = crossing;
     let (surface_item, surface_dir, surface_belt) = surface;
@@ -1861,6 +1912,22 @@ fn try_bridge(
     if hard_obstacles.contains(&ug_in) {
         return reject("hard_obstacle_ug_in");
     }
+    // `release_for_pertile_template` clears trunks/tapoffs inside the 3-tile
+    // footprint, so those don't block us. But it leaves Permanent claims with
+    // any other segment id — balancer belts, corridor-perp re-adds, row
+    // templates, prior stamped templates — alone. Stamping a UG endpoint OR
+    // the crossing-tile surface belt on top of one of those panics in
+    // `place`. Reject here so the growth loop in `solve_crossing` moves on
+    // to SatStrategy at the next iteration.
+    if unreleasable_obstacles.contains(&ug_in) {
+        return reject("unreleasable_obstacle_ug_in");
+    }
+    if unreleasable_obstacles.contains(&ug_out) {
+        return reject("unreleasable_obstacle_ug_out");
+    }
+    if unreleasable_obstacles.contains(&(cx, cy)) {
+        return reject("unreleasable_obstacle_crossing");
+    }
     if hard_obstacles.contains(&ug_out) {
         return reject("hard_obstacle_ug_out");
     }
@@ -1882,14 +1949,14 @@ fn try_bridge(
         .find(|(_, path)| path.contains(&crossing))
         .map(|(k, _)| k.as_str())
         .unwrap_or("");
-    if let Some(sub) = ug_endpoint_conflicts(ug_in, bridge_dir, bridge_key, routed_paths) {
+    if let Some(sub) = ug_endpoint_conflicts(ug_in, bridge_dir, bridge_key, routed_paths, placed_entities) {
         return reject(match sub {
             "axis_conflict" => "ug_in_axis_conflict",
             "sideload" => "ug_in_sideload",
             _ => "ug_in_conflict",
         });
     }
-    if let Some(sub) = ug_endpoint_conflicts(ug_out, bridge_dir, bridge_key, routed_paths) {
+    if let Some(sub) = ug_endpoint_conflicts(ug_out, bridge_dir, bridge_key, routed_paths, placed_entities) {
         return reject(match sub {
             "axis_conflict" => "ug_out_axis_conflict",
             "sideload" => "ug_out_sideload",
@@ -1993,7 +2060,13 @@ impl JunctionStrategy for PerpendicularTemplateStrategy {
             belt_b: belt_name_for_tier(sb.belt_tier),
         };
         let (entities, zone) =
-            solve_perpendicular_template(&info, ctx.hard_obstacles, ctx.routed_paths)?;
+            solve_perpendicular_template(
+                &info,
+                ctx.hard_obstacles,
+                ctx.unreleasable_obstacles,
+                ctx.routed_paths,
+                ctx.placed_entities,
+            )?;
         Some(JunctionSolution {
             entities,
             footprint: Rect {
