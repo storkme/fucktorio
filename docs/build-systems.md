@@ -1,15 +1,5 @@
 # Build Systems
 
-## Python
-
-```bash
-uv sync                          # install/update deps
-uv run pytest tests/             # run full test suite
-uv run pytest tests/ --viz       # run tests + generate HTML visualizations in test_viz/
-uv run python -m src.pipeline    # generate a blueprint
-uv run python scripts/<name>.py  # run a one-off script
-```
-
 ## Rust workspace
 
 ```bash
@@ -18,30 +8,24 @@ cargo test           # run all Rust tests
 cargo clippy         # lint (also runs in pre-commit hook if .rs files staged)
 ```
 
-### PyO3 extension (`crates/pyo3-bindings/`)
+The workspace has three crates:
 
-Compiled into `fucktorio_native.so` and imported by the Python pipeline for A\* pathfinding and
-lane negotiation.
+| Crate | Role |
+|-------|------|
+| `crates/core/` | Pure shared logic: models, solver, recipe DB, blueprint export, A*, bus layout, validation. The `wasm` feature gates `tsify-next` / `wasm-bindgen` derives. |
+| `crates/wasm-bindings/` | wasm-bindgen wrapper → browser WASM module. |
+| `crates/mining-cli/` | CLI for exploring mined-blueprint corpora. |
 
-```bash
-uv run maturin develop --manifest-path crates/pyo3-bindings/Cargo.toml
-```
-
-> **Note:** Editable installs don't always refresh `target/*.so`. If changes aren't picked up,
-> copy the compiled `.so` manually. See agent memory `feedback_maturin.md`.
-
-Exposes to Python: `astar_path`, `negotiate_lanes`.
-
-### WASM bundle (`crates/wasm-bindings/`)
-
-Used by the web app. Outputs into `web/src/wasm-pkg/`.
+### WASM bundle
 
 ```bash
-wasm-pack build crates/wasm-bindings --target web --out-dir ../../web/src/wasm-pkg
+wasm-pack build crates/wasm-bindings --target web --out-dir "$(pwd)/web/src/wasm-pkg"
 ```
 
-Exposes to the browser: `solve`, `layout`, `export_blueprint`, recipe lookups. Loaded by
-`web/src/engine.ts`.
+Always pass an absolute `--out-dir` — relative paths resolve from the
+crate dir, not `cwd`. Outputs into `web/src/wasm-pkg/` and is consumed
+by `web/src/engine.ts`. Exposes `solve`, `layout`, `layout_traced`,
+`export_blueprint`, `validate_layout`, and the recipe lookup helpers.
 
 ## Web app (`web/`)
 
@@ -49,17 +33,28 @@ Stack: Vite + vanilla TypeScript + PixiJS v8 + pixi-viewport.
 
 ```bash
 cd web
-npm install        # install deps (or pnpm / bun)
-npm run dev        # Vite dev server
-npm run build      # tsc --noEmit && vite build
+npm install        # install deps
+npm run dev        # Vite dev server at http://localhost:5173
+npm run build      # tsc --noEmit && vite build (produces web/dist/)
 ```
 
 See `docs/web-app-plan.md` for design context.
 
-## Crate structure
+## Scripts
 
-| Crate | Role |
-|-------|------|
-| `crates/core/` | Pure shared logic: models, solver, recipe DB, blueprint export, A\*, bus layout, validation. The `wasm` feature gates `tsify-next`/`wasm-bindgen` derives so `core` compiles for both PyO3 and WASM. |
-| `crates/pyo3-bindings/` | Thin PyO3 adapter → `fucktorio_native.so` |
-| `crates/wasm-bindings/` | wasm-bindgen wrapper → browser WASM module |
+`scripts/` contains a few Python and Node helpers. None of them are
+required for a normal build, but they're useful for data refresh and
+snapshot inspection:
+
+- `generate_balancer_library.py` — regenerates `balancer_library.rs`
+  from Factorio-SAT. Needs Factorio-SAT on `PATH`.
+- `extract_factorio_data.py` — pulls recipes/entity data from
+  `factorio-draftsman` into the JSON embedded in Rust.
+- `extract_icons.py`, `extract_entity_frames.py` — asset extractors
+  for the web app.
+- `analyze_ghost_crossings.py`, `debug_validator_rates.py`,
+  `dump_ghost_path.py`, `dump_tiles_at.py`, `inspect_ghost_spec.py`
+  — stdlib-only decoders for `.fls` snapshot files from the Rust
+  pipeline. See `docs/layout-snapshot-debugger.md`.
+- `test_wasm.mjs`, `test_wasm_bisect.mjs` — Node.js drivers for
+  timing the WASM module outside the browser.

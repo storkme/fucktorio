@@ -1,8 +1,8 @@
 //! `fucktorio_core` — shared pipeline logic for the Factorio blueprint generator.
 //!
-//! Used by both the PyO3 Python extension (`crates/pyo3-bindings`) and the
-//! WASM web app (`crates/wasm-bindings`). Enable the `wasm` feature to gate in
-//! `tsify-next`/`wasm-bindgen` derives; otherwise the crate is pure Rust.
+//! Consumed by the WASM web app (`crates/wasm-bindings`). Enable the
+//! `wasm` feature to gate in `tsify-next`/`wasm-bindgen` derives;
+//! otherwise the crate is pure Rust.
 //!
 //! Pipeline: solver → bus layout → blueprint export → validation.
 //! See `CLAUDE.md` and `docs/ghost-pipeline-contracts.md` for the full picture.

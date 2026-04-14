@@ -16,27 +16,24 @@ cargo test --manifest-path crates/core/Cargo.toml --test e2e -- \
 cd web && npm install && npm run dev
 ```
 
-For full build commands (PyO3 extension, WASM rebuild, release builds), see [`docs/build-systems.md`](docs/build-systems.md).
+For full build commands (WASM rebuild, release builds), see [`docs/build-systems.md`](docs/build-systems.md).
 
 ## Development conventions
 
 - **Primary workflow**: edit Rust, run `cargo test`, then rebuild WASM and hit the web app to eyeball the layout.
 - **WASM rebuild**: `wasm-pack build crates/wasm-bindings --target web --out-dir "$(pwd)/web/src/wasm-pkg"`. Always pass an absolute `--out-dir` (see memory: `feedback_wasmpack_outdir`).
-- **Pre-commit hooks**: in `.githooks/pre-commit`, activate with `git config core.hooksPath .githooks`. Runs `cargo clippy` on staged Rust, `tsc` on staged TS, and ruff on any staged Python. Bypass with `--no-verify` only for genuine emergencies.
+- **Pre-commit hooks**: in `.githooks/pre-commit`, activate with `git config core.hooksPath .githooks`. Runs `cargo clippy` on staged Rust and `tsc` on staged TS. Bypass with `--no-verify` only for genuine emergencies.
 - **Scripts**: put exploratory snippets in `scripts/` rather than inline one-liners. Rust debug scripts go in `crates/core/examples/` or as `#[test] #[ignore]` benchmarks.
 - **Snapshots**: `FUCKTORIO_DUMP_SNAPSHOTS=1 cargo test ...` writes `.fls` files under `crates/core/target/tmp/`. Decode with `tail -c +5 <file> | base64 -d | gunzip`. See [`docs/layout-snapshot-debugger.md`](docs/layout-snapshot-debugger.md).
 
 ## Architecture
 
-**Rust workspace** (`crates/`) is where all work happens. Three crates:
+**Rust workspace** (`crates/`) is where all work happens:
 
-- **`crates/core/`** — pure shared logic: solver, recipe DB, bus layout engine, blueprint export, A\*, validation. All new features and bug fixes land here. The `wasm` feature gates WASM-only derives so the same crate serves PyO3 and the browser.
+- **`crates/core/`** — pure shared logic: solver, recipe DB, bus layout engine, blueprint export, A\*, validation. All new features and bug fixes land here. The `wasm` feature gates WASM-only derives.
 - **`crates/wasm-bindings/`** — thin wasm-bindgen wrapper exposing `solve`, `layout`, `export_blueprint`, and recipe lookups to the browser. Consumed by `web/src/engine.ts`.
-- **`crates/pyo3-bindings/`** — thin PyO3 adapter that exposes `astar_path` + `negotiate_lanes` to Python, used only by the legacy Python pipeline's routing.
 
 **Web app** (`web/`) is the primary interactive interface. Vite + vanilla TS + PixiJS v8 + pixi-viewport. Runs the full solver → layout → blueprint pipeline client-side via WASM. URL state encodes the recipe, rate, machine tier, external inputs, and belt tier, so links reproduce layouts exactly.
-
-**Python pipeline** (`src/`) is **deprecated**. It was the original reference but has been superseded by the Rust port. Do not extend it. Do not use its output to diagnose issues seen in the web app or Rust tests — it is out of sync with current behavior. The only Python still in active use is `src/analysis/` (parses real Factorio blueprints for studying community layouts) and the `scripts/generate_balancer_library.py` generator.
 
 ### Pipeline stages (all Rust)
 
@@ -59,13 +56,20 @@ Most-visited files. Full reference in [`docs/file-reference.md`](docs/file-refer
 
 | File | Purpose |
 |------|---------|
-| `crates/core/src/bus/layout.rs` | Top-level `build_bus_layout` pipeline: place_rows → plan_bus_lanes → route_bus, retry loop, pole placement |
-| `crates/core/src/bus/bus_router.rs` | Trunk routing, tap-offs, N-to-M balancer stamping, output mergers, negotiated crossing map |
+| `crates/core/src/bus/layout.rs` | Top-level `build_bus_layout`: `place_rows` → `plan_bus_lanes` → `place_poles` → `route_bus_ghost`, single pass |
+| `crates/core/src/bus/ghost_router.rs` | Ghost A* + negotiated congestion routing; junction solver integration; output merger call-site |
+| `crates/core/src/bus/lane_planner.rs` | `BusLane` / `LaneFamily` types, `plan_bus_lanes`, lane splitting + tap-off coordinate finding |
+| `crates/core/src/bus/lane_order.rs` | Left-to-right lane column order optimiser (exact search ≤7 lanes, hill-climb above) |
+| `crates/core/src/bus/balancer.rs` | `stamp_family_balancer` + splitter/UG name helpers |
+| `crates/core/src/bus/trunk_renderer.rs` | `render_path` (A* path → belts), `trunk_segments`, `is_intermediate` |
+| `crates/core/src/bus/output_merger.rs` | Final-product east-flowing output merger |
 | `crates/core/src/bus/placer.rs` | Row placement: group machines by recipe, split for throughput, `place_rows` geometry |
 | `crates/core/src/bus/templates.rs` | Belt/inserter row templates (single-input, dual-input, lane-splitting sideload bridges) |
-| `crates/core/src/bus/plan.rs` | `plan_bus_lanes`, `plan_layout`, `extract_and_solve_crossings` (SAT crossing zones) |
-| `crates/core/src/bus/balancer_library.rs` | Pre-generated N→M balancer templates. Regenerate via `scripts/generate_balancer_library.py` |
-| `crates/core/src/astar.rs` | A\* pathfinder + lane-first negotiated congestion routing |
+| `crates/core/src/bus/junction_solver.rs` | Region-growth junction solver framework (trait, growth loop) |
+| `crates/core/src/bus/junction_sat_strategy.rs` | SAT-backed `JunctionStrategy` fallback |
+| `crates/core/src/bus/ghost_occupancy.rs` | Typed `Occupancy` map (HardObstacle / RowEntity / Permanent / GhostSurface / Template / SatSolved) |
+| `crates/core/src/bus/balancer_library.rs` | Pre-generated N→M balancer templates (do not edit manually) |
+| `crates/core/src/astar.rs` | `ghost_astar` + `astar_path` + `negotiate_lanes` pathfinder primitives |
 | `crates/core/src/sat.rs` | Varisat-backed crossing-zone SAT solver (see memory: `project_sat_crossing_solver`) |
 | `crates/core/src/validate/belt_flow.rs` | Lane-rate walker (Kahn topo sort with splitter pairing and balancer feedback-loop handling) |
 | `crates/core/src/validate/` | Rest of the 21 checks: `belt_structural`, `fluids`, `inserters`, `power`, `underground` |
@@ -122,7 +126,7 @@ Layout bugs are easy to get wrong — zero validation errors can mean the check 
 | Looking for | Location |
 |-------------|----------|
 | Recipe data | `crates/core/data/recipes.json` (embedded via `include_str!`) |
-| Balancer templates | `crates/core/src/bus/balancer_library.rs`. Regenerate: `uv run python scripts/generate_balancer_library.py` |
+| Balancer templates | `crates/core/src/bus/balancer_library.rs`. Regenerate: `python scripts/generate_balancer_library.py` (needs Factorio-SAT on `PATH`). |
 | Belt tier thresholds | `crates/core/src/common.rs` (`belt_entity_for_rate`, `ug_max_reach`) |
 | Entity sizes | `crates/core/src/common.rs` (`entity_size`) |
 | Validation checks | `crates/core/src/validate/` (21 checks) |
@@ -134,6 +138,4 @@ Layout bugs are easy to get wrong — zero validation errors can mean the check 
 
 ## Visualizations
 
-The web app at `http://localhost:5173` is the primary visualization — any URL (`?item=...&rate=...&in=...&belt=...`) renders a live layout with entity overlays, segment highlighting, and validation markers.
-
-The legacy Python test suite also emits HTML viz files (`tests/ --viz`) that are deployed to GitHub Pages on main branch pushes: https://storkme.github.io/fucktorio/ — these reflect the deprecated Python pipeline, not Rust behavior.
+The web app at `http://localhost:5173` is the primary visualization — any URL (`?item=...&rate=...&in=...&belt=...`) renders a live layout with entity overlays, segment highlighting, and validation markers. The same app is deployed to GitHub Pages on every push to main: https://storkme.github.io/fucktorio/

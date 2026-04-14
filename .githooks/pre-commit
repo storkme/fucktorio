@@ -1,24 +1,9 @@
 #!/bin/sh
-# Pre-commit hook: lint + format + clippy
+# Pre-commit hook: clippy + tsc
 # Activate with: git config core.hooksPath .githooks
 # Bypass with: git commit --no-verify
 
 set -e
-
-# --- Python: ruff check + format ---
-if ! command -v uv >/dev/null 2>&1; then
-  echo "uv not found — install it to enable pre-commit checks"
-  exit 1
-fi
-
-uv run ruff check src/ tests/ scripts/ || {
-  echo "ruff check failed — fix lint errors before committing"
-  exit 1
-}
-uv run ruff format --check src/ tests/ scripts/ || {
-  echo "ruff format check failed — run 'uv run ruff format .' before committing"
-  exit 1
-}
 
 # --- Rust: clippy (if any Rust files are staged) ---
 if git diff --cached --name-only | grep -qE '\.rs$|Cargo\.toml|Cargo\.lock'; then
