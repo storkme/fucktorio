@@ -9,10 +9,10 @@
 //!
 //! Also exports the small `splitter_for_belt` / `underground_for_belt`
 //! lookup helpers since the balancer needs them and so does `render_path`
-//! in `bus_router.rs`.
+//! in `lane_planner.rs`.
 
 use crate::models::PlacedEntity;
-use crate::bus::bus_router::LaneFamily;
+use crate::bus::lane_planner::LaneFamily;
 
 /// Splitter name mapping by belt tier.
 const SPLITTER_MAP: &[(&str, &str)] = &[
@@ -123,4 +123,35 @@ pub(crate) fn stamp_family_balancer(
 
     // No template and no decomposition possible — skip.
     Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::lane_planner::LaneFamily;
+
+    #[test]
+    fn test_stamp_family_balancer() {
+        let family = LaneFamily {
+            item: "iron-plate".to_string(),
+            shape: (1, 2),  // 1 producer, 2 lanes
+            producer_rows: vec![0],
+            lane_xs: vec![1, 2],
+            balancer_y_start: 10,
+            balancer_y_end: 11,
+            total_rate: 20.0,  // should use fast-transport-belt
+        };
+
+        let entities = stamp_family_balancer(&family, None);
+        assert!(entities.is_ok());
+
+        let entities = entities.unwrap();
+        assert!(!entities.is_empty());
+        // Verify that the stamped entities have the correct origin and item
+        for e in &entities {
+            assert_eq!(e.carries, Some("iron-plate".to_string()));
+            assert!(e.x >= 1);  // origin_x should be >= 1 (min of lane_xs)
+            assert!(e.y >= 10); // origin_y should be >= 10
+        }
+    }
 }

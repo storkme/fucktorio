@@ -7,7 +7,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::bus::bus_router::BusLane;
+use crate::bus::lane_planner::BusLane;
 use crate::bus::placer::RowSpan;
 
 /// Score a proposed lane ordering: the number of tap-off rays that have
@@ -203,4 +203,128 @@ pub(crate) fn optimize_lane_order(lanes: &[BusLane], row_spans: &[RowSpan]) -> V
         crossing_score,
     });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ItemFlow, MachineSpec};
+
+    fn make_test_row_span(
+        recipe: &str,
+        y_start: i32,
+        inputs: Vec<ItemFlow>,
+        outputs: Vec<ItemFlow>,
+        machine_count: usize,
+        input_belt_y: Vec<i32>,
+    ) -> RowSpan {
+        RowSpan {
+            y_start,
+            y_end: y_start + 3,
+            spec: MachineSpec {
+                entity: "assembling-machine-3".to_string(),
+                recipe: recipe.to_string(),
+                count: machine_count as f64,
+                inputs,
+                outputs,
+            },
+            machine_count,
+            input_belt_y,
+            output_belt_y: y_start + 2,
+            row_width: 10,
+            fluid_port_ys: Vec::new(),
+            fluid_port_pipes: Vec::new(),
+            fluid_output_port_pipes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_score_lane_ordering_with_crossing() {
+        let lanes = vec![
+            BusLane {
+                item: "iron-ore".to_string(),
+                consumer_rows: vec![0],
+                tap_off_ys: vec![1],
+                producer_row: None,
+                source_y: 0,
+                ..Default::default()
+            },
+            BusLane {
+                item: "copper-ore".to_string(),
+                consumer_rows: vec![1],
+                tap_off_ys: vec![5],
+                producer_row: None,
+                source_y: 0,
+                ..Default::default()
+            },
+        ];
+
+        let row_spans = vec![
+            make_test_row_span(
+                "iron-plate",
+                0,
+                vec![ItemFlow { item: "iron-ore".to_string(), rate: 1.0, is_fluid: false }],
+                vec![],
+                1,
+                vec![1],
+            ),
+            make_test_row_span(
+                "copper-plate",
+                4,
+                vec![ItemFlow { item: "copper-ore".to_string(), rate: 1.0, is_fluid: false }],
+                vec![],
+                1,
+                vec![5],
+            ),
+        ];
+
+        let score = score_lane_ordering(&lanes, &row_spans);
+        // Iron-ore taps at y=1, copper-ore is active from y=0 to y=5, so 1 crossing
+        assert_eq!(score, 1);
+    }
+
+    #[test]
+    fn test_score_lane_ordering_no_crossing() {
+        let lanes = vec![
+            BusLane {
+                item: "iron-ore".to_string(),
+                consumer_rows: vec![0],
+                tap_off_ys: vec![10],
+                producer_row: None,
+                source_y: 0,
+                ..Default::default()
+            },
+            BusLane {
+                item: "copper-ore".to_string(),
+                consumer_rows: vec![1],
+                tap_off_ys: vec![5],
+                producer_row: None,
+                source_y: 0,
+                ..Default::default()
+            },
+        ];
+
+        let row_spans = vec![
+            make_test_row_span(
+                "iron-plate",
+                8,
+                vec![ItemFlow { item: "iron-ore".to_string(), rate: 1.0, is_fluid: false }],
+                vec![],
+                1,
+                vec![10],
+            ),
+            make_test_row_span(
+                "copper-plate",
+                4,
+                vec![ItemFlow { item: "copper-ore".to_string(), rate: 1.0, is_fluid: false }],
+                vec![],
+                1,
+                vec![5],
+            ),
+        ];
+
+        let score = score_lane_ordering(&lanes, &row_spans);
+        // Iron-ore taps at y=10, copper-ore is only active from y=0 to y=5, no crossing
+        assert_eq!(score, 0);
+    }
 }

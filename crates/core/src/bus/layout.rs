@@ -9,7 +9,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::models::{EntityDirection, LayoutResult, PlacedEntity, SolverResult};
-use crate::bus::bus_router::{
+use crate::bus::lane_planner::{
     plan_bus_lanes, bus_width_for_lanes, BusLane, LaneFamily, MACHINE_ENTITIES,
 };
 use crate::bus::placer::{place_rows, RowSpan};

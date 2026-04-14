@@ -11,8 +11,12 @@
 //! - [`layout`] — orchestrator: rows + lane planning + poles + ghost routing → `LayoutResult`
 //! - [`placer`] — stacks assembly rows vertically in dependency order
 //! - [`templates`] — belt/inserter patterns stamped into each row
-//! - [`bus_router`] — `BusLane` / `LaneFamily` types, lane planning, balancer stamping, output mergers
+//! - [`lane_planner`] — `BusLane` / `LaneFamily` types + `plan_bus_lanes` orchestration
+//! - [`lane_order`] — left-to-right lane ordering optimiser
+//! - [`balancer`] — N→M balancer block stamping (+ splitter/UG name helpers)
 //! - [`balancer_library`] — pre-generated N-to-M balancer templates (do not edit manually)
+//! - [`trunk_renderer`] — path → entity rendering, trunk segment slicing
+//! - [`output_merger`] — final-product east-flowing output merger
 //! - [`tapoff_search`] — brute-force search used only during template generation
 //! - [`ghost_router`] — A* + negotiation loop that materialises every connecting belt
 //! - [`ghost_occupancy`] — typed obstacle map shared between router phases
@@ -22,14 +26,16 @@
 
 pub mod balancer;
 pub mod balancer_library;
-pub mod bus_router;
 pub(crate) mod ghost_occupancy;
 pub mod ghost_router;
 pub(crate) mod junction;
 pub(crate) mod junction_sat_strategy;
 pub(crate) mod junction_solver;
 pub(crate) mod lane_order;
+pub mod lane_planner;
 pub mod layout;
+pub mod output_merger;
 pub mod placer;
 pub mod tapoff_search;
 pub mod templates;
+pub mod trunk_renderer;
