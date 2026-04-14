@@ -221,6 +221,38 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
     println!("\n=== {} ===", label);
     println!("  layout: {} entities, {} regions, {} validator errors",
              layout.entities.len(), layout.regions.len(), global_err_count);
+    {
+        let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+        for issue in &issues {
+            *by_kind.entry(issue.category.to_string()).or_insert(0) += 1;
+        }
+        if !by_kind.is_empty() {
+            println!("  errors by code: {:?}", by_kind);
+        }
+        for issue in issues.iter().take(8) {
+            println!(
+                "    err {} @ ({:?},{:?}): {}",
+                issue.category, issue.x, issue.y, issue.message
+            );
+            if issue.category == "entity-overlap" {
+                let (Some(ex), Some(ey)) = (issue.x, issue.y) else { continue; };
+                let here: Vec<_> = layout
+                    .entities
+                    .iter()
+                    .filter(|e| e.x == ex && e.y == ey)
+                    .map(|e| {
+                        format!(
+                            "{}/{:?}/seg={}",
+                            e.name,
+                            e.direction,
+                            e.segment_id.as_deref().unwrap_or("-")
+                        )
+                    })
+                    .collect();
+                println!("       entities: {:?}", here);
+            }
+        }
+    }
     if !layout.warnings.is_empty() {
         println!("  warnings: {:?}", layout.warnings);
     }

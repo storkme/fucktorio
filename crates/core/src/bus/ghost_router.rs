@@ -1157,6 +1157,14 @@ pub fn route_bus_ghost(
         .iter()
         .map(|s| (s.key.clone(), s.item.clone()))
         .collect();
+    // Build the obstacle set seen by junction strategies. The narrow
+    // `hard` set only covers row-template machines and fluid lanes;
+    // SAT (and any future strategy) needs the full picture so it
+    // doesn't stamp belts on trunks, tap-off splitters, prior template
+    // output, or row belts. Pulled from Occupancy at this point in
+    // the pipeline — covers everything except `GhostSurface`, which
+    // strategies are allowed to replace.
+    let junction_hard: FxHashSet<(i32, i32)> = occupancy.snapshot_junction_obstacles();
     let perp_strategy = PerpendicularTemplateStrategy;
     let sat_strategy = SatStrategy;
     // Strategy order = priority: cheap templates run first, then
@@ -1194,6 +1202,7 @@ pub fn route_bus_ghost(
             &keys_at_tile,
             &routed_paths,
             &hard,
+            &junction_hard,
             &spec_belt_tiers,
             &spec_items,
             &strategies,
@@ -1230,28 +1239,22 @@ pub fn route_bus_ghost(
             h: footprint.h,
         };
         occupancy.release_for_pertile_template(&release_rect);
-        for ent in &sol.entities {
+        for ent in sol.entities {
             let tile = (ent.x, ent.y);
             if occupancy.is_hard_obstacle(tile) {
                 continue;
             }
             // Two per-tile templates with overlapping footprints —
             // the second one's stamp is skipped to match the
-            // legacy post-hoc `occupied` filter behaviour.
+            // legacy post-hoc `occupied` filter behaviour. We also
+            // skip the entity from the entity list entirely, otherwise
+            // it leaks an orphan belt at a tile that's already claimed
+            // by an earlier template, and the validator flags it as
+            // an entity-overlap with the earlier entity.
             if matches!(
                 occupancy.claim_at(tile),
                 Some(crate::bus::ghost_occupancy::Claim::Template { .. })
-            ) {
-                continue;
-            }
-            // Skip tiles claimed by RowEntity — templates can't
-            // overwrite row belts. Direct-routing mode exposes this
-            // when A* walks through a row belt as a crossing; the
-            // per-tile template tries to UG-bridge it and places a
-            // UG-in/out on a row tile.
-            if matches!(
-                occupancy.claim_at(tile),
-                Some(crate::bus::ghost_occupancy::Claim::RowEntity { .. })
+                    | Some(crate::bus::ghost_occupancy::Claim::RowEntity { .. })
             ) {
                 continue;
             }
@@ -1266,8 +1269,8 @@ pub fn route_bus_ghost(
                         tile.0, tile.1, err
                     );
                 });
+            entities.push(ent);
         }
-        entities.extend(sol.entities);
         template_count += 1;
     }
 

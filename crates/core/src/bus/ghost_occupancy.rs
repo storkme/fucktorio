@@ -251,6 +251,24 @@ impl Occupancy {
             .collect()
     }
 
+    /// Snapshot every tile a junction strategy must avoid stamping on:
+    /// hard obstacles, permanent / template / SAT-solved entities, AND
+    /// row-template belts (`RowEntity`). `GhostSurface` claims are
+    /// excluded — strategies may legitimately replace ghost-routed
+    /// belts when they re-stamp a region. Used by `ghost_router` step
+    /// 6a to build the obstacle set passed into `solve_crossing` so
+    /// SAT (and any future strategy) sees the full picture instead of
+    /// just the narrow `hard` set.
+    pub fn snapshot_junction_obstacles(&self) -> FxHashSet<(i32, i32)> {
+        self.claims
+            .iter()
+            .filter(|(_, c)| {
+                !matches!(c, Claim::GhostSurface { .. })
+            })
+            .map(|(t, _)| *t)
+            .collect()
+    }
+
     /// Tiles inside `zone` that the SAT solver must treat as
     /// `forced_empty`: every claimed tile inside the zone, except
     /// boundary ports, ghost-surface belts (which SAT replaces), and

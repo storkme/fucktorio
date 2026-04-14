@@ -86,6 +86,7 @@ impl GrowingRegion {
         initial_specs: &[&str],
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
+        strict_obstacles: &FxHashSet<(i32, i32)>,
     ) -> Self {
         let mut tiles = FxHashSet::default();
         tiles.insert(initial_tile);
@@ -116,7 +117,7 @@ impl GrowingRegion {
             bbox,
             frontiers,
         };
-        region.refresh_forbidden(routed_paths, hard_obstacles);
+        region.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
         region
     }
 
@@ -128,6 +129,7 @@ impl GrowingRegion {
         &mut self,
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
+        strict_obstacles: &FxHashSet<(i32, i32)>,
     ) -> bool {
         let mut added_any = false;
         let keys: Vec<String> = self.participating.clone();
@@ -158,7 +160,7 @@ impl GrowingRegion {
         }
         if added_any {
             self.recompute_bbox();
-            self.refresh_forbidden(routed_paths, hard_obstacles);
+            self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
         }
         added_any
     }
@@ -200,15 +202,38 @@ impl GrowingRegion {
         &mut self,
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
+        strict_obstacles: &FxHashSet<(i32, i32)>,
     ) {
         self.forbidden_tiles.clear();
         self.encountered.clear();
         // Walk every tile in the bbox and flag obstacles. Walking the
         // bbox rectangle (not just participating tiles) lets strategies
-        // see the full geometry they have to work within.
+        // see the full geometry they have to work within. Frontier
+        // endpoint tiles (the entry/exit ports for participating specs)
+        // are exempted from the obstacle check: a tap-off path's first
+        // tile may land on a Permanent splitter on the trunk column,
+        // and forbidding it would make the SAT zone infeasible because
+        // SAT requires its boundary ports to be free. Interior path
+        // tiles are NOT exempted — if a previous strategy iteration
+        // stamped a Permanent belt that happens to lie on this spec's
+        // interior path, the new strategy must still treat it as an
+        // obstacle so it doesn't double-stamp.
+        let port_tiles: FxHashSet<(i32, i32)> = self
+            .frontiers
+            .iter()
+            .filter_map(|(key, &(start, end))| {
+                routed_paths.get(key).map(|p| (p, start, end))
+            })
+            .flat_map(|(p, start, end)| [p[start], p[end]])
+            .collect();
         for y in self.bbox.y..self.bbox.y + self.bbox.h as i32 {
             for x in self.bbox.x..self.bbox.x + self.bbox.w as i32 {
-                if hard_obstacles.contains(&(x, y)) {
+                if port_tiles.contains(&(x, y)) {
+                    continue;
+                }
+                if hard_obstacles.contains(&(x, y))
+                    || strict_obstacles.contains(&(x, y))
+                {
                     self.forbidden_tiles.insert((x, y));
                 }
             }
@@ -359,6 +384,16 @@ pub struct JunctionStrategyContext<'a> {
     pub growth_iter: usize,
     pub routed_paths: &'a FxHashMap<String, Vec<(i32, i32)>>,
     pub hard_obstacles: &'a FxHashSet<(i32, i32)>,
+    /// Tiles outside the narrow `hard_obstacles` set that strategies
+    /// stamping interior belts (currently SAT) must also avoid: trunk
+    /// columns, tap-off splitters, prior template output, row-template
+    /// belts. Built from `Occupancy::snapshot_junction_obstacles`. The
+    /// perpendicular-template strategy ignores this — it relies on the
+    /// `release_for_pertile_template` path to clear trunks/tap-offs out
+    /// of its 1×3 footprint and would refuse to fire if it saw them as
+    /// obstacles.
+    #[allow(dead_code)]
+    pub strict_obstacles: &'a FxHashSet<(i32, i32)>,
 }
 
 /// A strategy that attempts to produce a `JunctionSolution` for a
@@ -379,6 +414,7 @@ pub fn solve_crossing(
     initial_specs: &[&str],
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     hard_obstacles: &FxHashSet<(i32, i32)>,
+    strict_obstacles: &FxHashSet<(i32, i32)>,
     spec_belt_tiers: &FxHashMap<String, BeltTier>,
     spec_items: &FxHashMap<String, String>,
     strategies: &[&dyn JunctionStrategy],
@@ -388,6 +424,7 @@ pub fn solve_crossing(
         initial_specs,
         routed_paths,
         hard_obstacles,
+        strict_obstacles,
     );
 
     for iter in 0..MAX_GROWTH_ITERS {
@@ -398,6 +435,7 @@ pub fn solve_crossing(
             growth_iter: iter,
             routed_paths,
             hard_obstacles,
+            strict_obstacles,
         };
         for strategy in strategies {
             if let Some(sol) = strategy.try_solve(&ctx) {
@@ -422,7 +460,7 @@ pub fn solve_crossing(
             });
             return None;
         }
-        if !region.grow(routed_paths, hard_obstacles) {
+        if !region.grow(routed_paths, hard_obstacles, strict_obstacles) {
             trace::emit(TraceEvent::JunctionGrowthCapped {
                 tile_x: initial_tile.0,
                 tile_y: initial_tile.1,

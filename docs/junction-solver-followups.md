@@ -3,6 +3,90 @@
 **Status at end of session 2026-04-14.** Not a spec. Notes to pick up next
 session without having to re-investigate.
 
+## 2026-04-14 follow-up: P0 occupancy threading + orphan-extend bug
+
+P0 from the original "Next steps" is done. Two fixes landed together.
+
+### Fix 1 — strict_obstacles thread
+
+`solve_crossing` and `JunctionStrategyContext` gained a `strict_obstacles`
+parameter alongside `hard_obstacles`. The narrow `hard` set still flows to
+`PerpendicularTemplateStrategy` (which intentionally stamps over trunks /
+tap-offs and would refuse to fire if it saw them). The new strict set is
+built once via `Occupancy::snapshot_junction_obstacles()` — every Permanent
+/ Template / SatSolved / RowEntity / HardObstacle tile, i.e. everything
+except `GhostSurface`. `refresh_forbidden` adds both sets to
+`junction.forbidden`, so SAT's `forced_empty` now sees the full picture.
+
+The participating-path filter inside `refresh_forbidden` was tightened:
+the original code skipped every tile in `self.tiles`, but that exempted
+*interior* path tiles where another spec's earlier perp template had
+stamped a Permanent belt. Now only the frontier endpoint tiles
+(`port_tiles`) are exempted — those are the SAT zone's entry/exit ports
+and must be free.
+
+### Fix 2 — orphan-extend bug in step 6a stamp loop
+
+The actual cause of the validator regressions reported in the original
+TL;DR was **not** SAT stamping over trunks (the `release_for_pertile_template`
+path handles trunk/tap-off claims correctly). The real bug was in the
+per-tile template stamp loop in `ghost_router.rs` step 6a:
+
+```rust
+for ent in &sol.entities { ... if Template/RowEntity { continue; } ... }
+entities.extend(sol.entities);  // <-- adds skipped entities too!
+```
+
+When a perp template's footprint collided with an existing Template /
+RowEntity claim (e.g. a previous SAT solution at an adjacent crossing
+that extended into this tile), the entity was correctly skipped from
+`Occupancy.place()` but still leaked into the `entities` Vec via the
+unconditional `extend`. The `step 6 sync` retain logic only drops
+`ghost:` / `trunk:` / `tapoff:` segments, so the orphaned `junction:`
+belts survived to the validator, which flagged them as `entity-overlap`
+with the SAT belt at the same tile.
+
+Fix: the loop now `entities.push(ent)` only inside the place branch, so
+skipped entities are dropped from both `Occupancy` and `entities`
+together.
+
+### Numbers
+
+| Recipe | Errors before | Errors after | Δ |
+|---|---|---|---|
+| tier2 electronic-circuit 30/s | 26 | 16 | -10 (all 12 entity-overlap gone) |
+| tier4 advanced-circuit 5/s | 21 | 20 | -1 (1 entity-overlap gone) |
+
+Remaining tier2 errors: 14× `belt-dead-end`, 1× `belt-item-isolation`,
+1× `underground-belt`. Remaining tier4 errors: 5× `belt-dead-end`, 15×
+`fluid-connectivity`. None of these are junction-solver bugs — separate
+work. All 10 e2e tests still green.
+
+`diagnose_junctions` was extended with `errors by code:` tally + per-error
+location/entities dump for `entity-overlap` issues. Useful for spotting
+this class of orphan bugs in the future.
+
+### What this means for the rest of the original plan
+
+- **P0** (this fix): done.
+- **P1 verify SAT output in viewer**: still worth doing if the next
+  session picks up another regression — the diagnose tally now makes
+  it cheap to spot the remaining `belt-dead-end` clusters and judge
+  whether they're SAT artefacts or pre-existing.
+- **P1 tier3** (no-op): unchanged, still null baseline.
+- **P2 SAT gating**: unchanged. SAT still fires whenever `tile_count > 1`.
+- **P3 turn-shifter strategy / encountered promotion**: unchanged.
+
+The original P0 caveat about "decide whether to expose Occupancy or build
+forbidden in ghost_router" was answered by going closer to option (a):
+the snapshot is built in ghost_router but `Occupancy` had to grow a new
+`snapshot_junction_obstacles()` accessor to expose the right tile classes.
+The framework still doesn't see `Occupancy` directly — it sees a frozen
+`FxHashSet` — which keeps `junction_solver.rs` ignorant of ghost_router
+internals.
+
+---
+
 ## TL;DR
 
 Region-growth outer loop + strategy framework are in. Two strategies are
