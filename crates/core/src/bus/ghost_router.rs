@@ -1795,15 +1795,31 @@ fn ug_endpoint_conflicts(
                 break;
             }
         }
-        // 2b. TODO: splitter-sideload detection. Pre-routing splitters
-        //     (Step 2-3) can drop items into UG endpoint tiles
-        //     perpendicularly but never enter routed_paths, so they slip
-        //     past 2a. A naive check on placed splitters rejects legitimate
-        //     corridor placements in tier2_electronic_circuit_splitter_stamp_regression
-        //     via an interaction with corridor-perp re-adds I don't
-        //     fully understand yet. Left disabled until that's untangled —
-        //     see tier2_electronic_circuit for the concrete failing case.
-        let _ = placed_entities;
+        // 2b. Pre-routing splitters (Step 2-3) dropping items into the
+        //     UG endpoint tile from a perpendicular direction. Splitters
+        //     never enter `routed_paths` so 2a misses them. Splitters are
+        //     two tiles wide perpendicular to their facing direction, so
+        //     the `side` tile may be the right half of a splitter placed
+        //     one column west.
+        for ent in placed_entities {
+            let is_splitter = matches!(
+                ent.name.as_str(),
+                "splitter" | "fast-splitter" | "express-splitter"
+            );
+            if !is_splitter {
+                continue;
+            }
+            if ent.direction != expected_dir {
+                continue;
+            }
+            let second = match ent.direction {
+                EntityDirection::North | EntityDirection::South => (ent.x + 1, ent.y),
+                EntityDirection::East | EntityDirection::West => (ent.x, ent.y + 1),
+            };
+            if (ent.x, ent.y) == side || second == side {
+                return Some("splitter_sideload");
+            }
+        }
     }
 
     None

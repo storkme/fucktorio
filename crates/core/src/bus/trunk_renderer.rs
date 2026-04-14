@@ -36,6 +36,8 @@ pub(crate) fn render_path(
             y: path[0].1,
             direction: direction_hint,
             carries: Some(item.to_string()),
+            segment_id: segment_id.clone(),
+            rate,
             ..Default::default()
         });
         return entities;
