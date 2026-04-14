@@ -352,6 +352,47 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
         }
     }
 
+    // Dump row y-positions per item: helps spot whether place_rows is
+    // leaving room for the balancer block.
+    {
+        let mut rows_by_item: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+        for e in &layout.entities {
+            let Some(seg) = e.segment_id.as_deref() else { continue };
+            if let Some(rest) = seg.strip_prefix("row:") {
+                if let Some(item) = rest.split(':').next() {
+                    rows_by_item.entry(item.to_string()).or_default().push(e.y);
+                }
+            }
+        }
+        for (item, ys) in &mut rows_by_item {
+            let mut unique: Vec<i32> = ys.iter().copied().collect();
+            unique.sort_unstable();
+            unique.dedup();
+            println!("  row:{} ys: {:?}", item, unique);
+        }
+    }
+
+    if let Some(events) = layout.trace.as_ref() {
+        let phases: Vec<_> = events
+            .iter()
+            .filter_map(|ev| {
+                if let TraceEvent::PhaseTime { phase, .. } = ev {
+                    Some(phase.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let retry_count = phases
+            .iter()
+            .filter(|p| p.starts_with("place_rows_2_attempt_"))
+            .count();
+        println!("  phases: place_rows_1={} place_rows_2_attempts={}",
+            phases.iter().filter(|p| p.as_str() == "place_rows_1").count(),
+            retry_count
+        );
+    }
+
     if let Some(events) = layout.trace.as_ref() {
         let balancers: Vec<_> = events
             .iter()
