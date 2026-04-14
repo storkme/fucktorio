@@ -39,8 +39,8 @@ pub(crate) const MACHINE_ENTITIES: &[&str] = &[
 
 /// A single vertical lane on the main bus, carrying one item (or fluid) from its
 /// source row(s) down to its consumer row(s). Lanes run SOUTH; at each consumer the
-/// lane turns EAST via a tap-off. See `docs/layout-engine-deep-dive.md` for the full
-/// bus layout model.
+/// lane turns EAST via a tap-off. See `docs/ghost-pipeline-contracts.md` for the
+/// phase-by-phase contract the router promises.
 #[derive(Clone, Debug)]
 pub struct BusLane {
     /// Item (or fluid) name this lane carries.
@@ -117,7 +117,7 @@ impl BusLane {
 
 /// An N-to-M balancer block that merges N producer outputs into M sibling trunk
 /// lanes for one item, ensuring even distribution. Stamped as a pre-solved SAT
-/// template from `balancer_library`. See `docs/layout-engine-deep-dive.md`.
+/// template from `balancer_library`.
 #[derive(Clone, Debug)]
 pub struct LaneFamily {
     /// Item name shared by all lanes in this family.

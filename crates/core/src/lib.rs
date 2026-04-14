@@ -5,7 +5,7 @@
 //! `tsify-next`/`wasm-bindgen` derives; otherwise the crate is pure Rust.
 //!
 //! Pipeline: solver → bus layout → blueprint export → validation.
-//! See `CLAUDE.md` and `docs/layout-engine-deep-dive.md` for the full picture.
+//! See `CLAUDE.md` and `docs/ghost-pipeline-contracts.md` for the full picture.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]

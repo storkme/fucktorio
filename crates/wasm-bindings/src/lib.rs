@@ -52,17 +52,9 @@ pub fn layout(solver_result: SolverResult, max_belt_tier: Option<String>) -> Res
 }
 
 /// Traced variant of `layout()`. Returns the same `LayoutResult` plus
-/// the structured `trace` events that drive the debug overlays. There
-/// is no longer a separate "ghost" mode — the legacy direct router was
-/// deleted and ghost routing is the only path. `layout_ghost` and
-/// `layout_traced` both call `build_bus_layout_traced`; the alias is
-/// kept for compatibility with `web/src/engine.ts` until the web app
-/// is rebuilt.
-#[wasm_bindgen]
-pub fn layout_ghost(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
-    layout_traced(solver_result, max_belt_tier)
-}
-
+/// the structured `trace` events that drive the debug overlays. Ghost
+/// routing is the only routing path — the legacy direct router was
+/// deleted; both `layout()` and `layout_traced()` go through it.
 #[wasm_bindgen]
 pub fn layout_traced(solver_result: SolverResult, max_belt_tier: Option<String>) -> Result<LayoutResult, JsError> {
     fucktorio_core::bus::layout::build_bus_layout_traced(&solver_result, max_belt_tier.as_deref())

@@ -186,18 +186,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const regionsCb = makeOverlayToggle("SAT Zones");
   const soloRegionsCb = makeOverlayToggle("Solo regions");
   const ghostCb = makeOverlayToggle("Ghost routes");
-  const ghostModeCb = makeOverlayToggle("Ghost mode");
-
-  // Initialize ghost mode from URL state. Auto-enables SAT zone overlay
-  // so junction rectangles are immediately visible.
-  {
-    const qs = new URLSearchParams(window.location.search);
-    const initialGhost = qs.get("ghost") === "1";
-    if (initialGhost) {
-      ghostModeCb.checked = true;
-      regionsCb.checked = true;
-    }
-  }
 
   container.appendChild(overlayPanel);
 
@@ -592,10 +580,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   container.appendChild(regionDetail);
 
   function updateRegionHud(): void {
-    if (!ghostModeCb?.checked) {
-      ghostHud.style.display = "none";
-      return;
-    }
     const items = regionOverlayItems;
     if (items.length === 0) {
       ghostHud.textContent = "ghost: 0 regions";
@@ -953,8 +937,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const ty = Math.floor(world.y / TILE_PX);
     coordsEl.textContent = `x:${tx} y:${ty}`;
 
-    // Region hover — only when ghost mode + region overlay are active.
-    if (regionHitTest && ghostModeCb.checked && regionsCb.checked) {
+    // Region hover — only when the region overlay is active.
+    if (regionHitTest && regionsCb.checked) {
       const it = regionHitTest(world.x, world.y);
       if (it !== hoveredRegion) {
         hoveredRegion = it;
@@ -968,7 +952,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   // Click-to-pan for a region.
   app.canvas.addEventListener("pointerdown", (e) => {
-    if (!regionHitTest || !ghostModeCb.checked || !regionsCb.checked) return;
+    if (!regionHitTest || !regionsCb.checked) return;
     // Only the primary button, without modifiers.
     if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     const rect = app.canvas.getBoundingClientRect();
@@ -1138,7 +1122,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       renderLayout: renderLayoutOnCanvas,
     }, {
       getDebugMode: () => debugCb.checked,
-      getGhostMode: () => ghostModeCb.checked,
       onDisplayToggles: (toggles: DisplayToggles) => {
         colorCb = toggles.colorCb;
         rateCb = toggles.rateCb;
@@ -1166,16 +1149,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     valCb.addEventListener("change", updateValidationOverlay);
     regionsCb.addEventListener("change", updateRegionOverlay);
     ghostCb.addEventListener("change", updateGhostOverlay);
-    ghostModeCb.addEventListener("change", () => {
-      // Toggling ghost mode re-runs layout with the alternate router.
-      // Also auto-enables the region overlay so the user sees junctions.
-      if (ghostModeCb.checked && !regionsCb.checked) {
-        regionsCb.checked = true;
-      }
-      updateRegionHud();
-      showRegionDetail(null);
-      (generatePanel.querySelector(".sb-btn-primary") as HTMLButtonElement | null)?.click();
-    });
 
     soloRegionsCb.addEventListener("change", () => {
       if (soloRegionsCb.checked) {

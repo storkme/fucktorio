@@ -6,8 +6,6 @@ export interface FormState {
   inputs: string[];
   /** Max belt tier override, e.g. "transport-belt". null = auto. */
   belt: string | null;
-  /** Use ghost router instead of the default bus router. */
-  ghost: boolean;
 }
 
 export const DEFAULT_INPUTS: string[] = [
@@ -36,9 +34,8 @@ export function readUrlState(): FormState {
   const inParam = params.get("in");
   const inputs = inParam ? inParam.split(",").filter((s) => s.length > 0) : DEFAULT_INPUTS;
   const belt = params.get("belt");
-  const ghost = params.get("ghost") === "1";
 
-  return { item, rate, machine, inputs, belt, ghost };
+  return { item, rate, machine, inputs, belt };
 }
 
 export function writeUrlState(state: Omit<FormState, "machine"> & { machine: string }): void {
@@ -48,8 +45,7 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
     state.machine === DEFAULT_MACHINE &&
     state.inputs.length === DEFAULT_INPUTS.length &&
     state.inputs.every((v, i) => v === DEFAULT_INPUTS[i]) &&
-    !state.belt &&
-    !state.ghost;
+    !state.belt;
 
   if (isDefault) {
     history.replaceState(null, "", window.location.pathname);
@@ -62,6 +58,5 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
   params.set("machine", state.machine);
   params.set("in", state.inputs.join(","));
   if (state.belt) params.set("belt", state.belt);
-  if (state.ghost) params.set("ghost", "1");
   history.replaceState(null, "", "?" + params.toString());
 }

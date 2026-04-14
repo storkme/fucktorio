@@ -13,7 +13,6 @@
 //!   Automatic on failure — any test with validation errors dumps a snapshot.
 
 use fucktorio_core::analysis::{self, BlueprintAnalysis};
-use fucktorio_core::models::EntityDirection;
 use fucktorio_core::blueprint;
 use fucktorio_core::blueprint_parser;
 use fucktorio_core::bus::layout;

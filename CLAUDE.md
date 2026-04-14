@@ -41,7 +41,7 @@ For full build commands (PyO3 extension, WASM rebuild, release builds), see [`do
 ### Pipeline stages (all Rust)
 
 1. **Solver** (`crates/core/src/solver.rs`) — Recursively resolves recipes, computes machine counts and flow rates. Loads `crates/core/data/recipes.json` via `include_str!`. Returns a `SolverResult`.
-2. **Bus layout** (`crates/core/src/bus/`) — Deterministic row-based layout. Machines group by recipe into rows, trunks run on parallel columns, tap-offs bridge via underground belts. See [`docs/layout-engine-deep-dive.md`](docs/layout-engine-deep-dive.md) for the pipeline internals, retry loop, and SAT crossing solver.
+2. **Bus layout** (`crates/core/src/bus/`) — Deterministic row-based layout. Machines group by recipe into rows, trunks run on parallel columns, tap-offs are routed via the ghost router (negotiated congestion A* + region-growth junction solver). See [`docs/ghost-pipeline-contracts.md`](docs/ghost-pipeline-contracts.md) for the phase-by-phase contracts the router promises.
 3. **Blueprint export** (`crates/core/src/blueprint.rs`) — Emits the JSON + zlib + base64 envelope directly (no draftsman dependency).
 4. **Validation** (`crates/core/src/validate/`) — 21 functional checks: pipe isolation, fluid port connectivity, inserter chains, power coverage, belt flow/structural, underground belt pairs, lane throughput.
 
@@ -128,7 +128,7 @@ Layout bugs are easy to get wrong — zero validation errors can mean the check 
 | Validation checks | `crates/core/src/validate/` (21 checks) |
 | Snapshot format | `crates/core/src/snapshot.rs` + [`docs/layout-snapshot-debugger.md`](docs/layout-snapshot-debugger.md) |
 | Belt lane physics | [`docs/factorio-mechanics.md`](docs/factorio-mechanics.md) |
-| Bus layout internals | [`docs/layout-engine-deep-dive.md`](docs/layout-engine-deep-dive.md) |
+| Ghost pipeline contracts | [`docs/ghost-pipeline-contracts.md`](docs/ghost-pipeline-contracts.md) |
 | Build commands | [`docs/build-systems.md`](docs/build-systems.md) |
 | Full source file list | [`docs/file-reference.md`](docs/file-reference.md) |
 

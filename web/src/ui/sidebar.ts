@@ -505,7 +505,6 @@ export interface SidebarParams {
 /** Callbacks the sidebar can use to read canvas overlay state. */
 export interface SidebarOptions {
   getDebugMode?: () => boolean;
-  getGhostMode?: () => boolean;
   /** Called after the sidebar creates its display toggles. */
   onDisplayToggles?: (toggles: DisplayToggles) => void;
 }
@@ -791,7 +790,6 @@ export function renderSidebar(
       machine: machineSelect.value,
       inputs: availableInputs,
       belt: beltSelect.value || null,
-      ghost: options?.getGhostMode?.() ?? false,
     });
 
     resultContainer.innerHTML = "";
@@ -821,13 +819,11 @@ export function renderSidebar(
     if (!currentResult) return;
     try {
       const maxTier = beltSelect.value || undefined;
-      const useTraced = options?.getDebugMode?.() ?? false;
-      const useGhost = options?.getGhostMode?.() ?? false;
-      currentLayout = useGhost
-        ? engine.buildLayoutGhost(currentResult, maxTier)
-        : useTraced
-        ? engine.buildLayoutTraced(currentResult, maxTier)
-        : engine.buildLayout(currentResult, maxTier);
+      // Ghost routing is the only routing path now. We always use the
+      // traced variant so the Ghost routes / Regions / Validation overlays
+      // have the trace events they need; the untraced `buildLayout` is
+      // still exposed for parity but unused here.
+      currentLayout = engine.buildLayoutTraced(currentResult, maxTier);
       setRecipeFlows(currentResult.machines);
       callbacks.renderLayout(currentLayout);
       if (currentLayout.warnings?.length) {
