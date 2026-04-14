@@ -5,7 +5,7 @@
 //! can all consult and mutate a single source of truth instead of each
 //! maintaining its own obstacle view.
 //!
-//! See `docs/rfp-ghost-occupancy-refactor.md` for the design and rollout
+//! See `docs/archive/rfp-ghost-occupancy-refactor.md` for the design and rollout
 //! plan. This module corresponds to **Step 1**: the type lands in
 //! isolation with unit tests; nothing in `ghost_router.rs` consumes it
 //! yet.

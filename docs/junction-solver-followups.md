@@ -351,10 +351,10 @@ it.
 
 ## Related docs
 
-- `docs/rfp-region-routing.md` — the RFP the scaffold implements. Framing
+- `docs/archive/rfp-region-routing.md` — the RFP the scaffold implements. Framing
   still valid; "SAT is not a tier" claim is stale after this session, but
   the P0 bug above is proof the RFP's caution about SAT formulation
   wasn't wrong, it was just pointing at a different cliff.
-- `docs/rfp-junction-solver.md` — the sister RFP on template catalogue.
+- `docs/archive/rfp-junction-solver.md` — the sister RFP on template catalogue.
   New templates plug in alongside `PerpendicularTemplateStrategy` via the
   same trait.

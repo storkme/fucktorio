@@ -1,6 +1,6 @@
 //! Junction types for the next-generation ghost routing resolution.
 //!
-//! See `docs/rfp-junction-solver.md`. A Junction is an abstract region where
+//! See `docs/archive/rfp-junction-solver.md`. A Junction is an abstract region where
 //! two or more ghost-routed specs cross and need a deterministic resolution
 //! (surface + underground belt arrangement).
 //!

@@ -18,7 +18,7 @@
 //! Returns a `GhostRouteResult` containing all placed entities, ghost crossing
 //! tiles, cluster info, and layout dimensions.
 //!
-//! See `docs/rfp-ghost-cluster-routing.md` for the full design.
+//! See `docs/archive/rfp-ghost-cluster-routing.md` for the full design.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -37,7 +37,7 @@ use crate::common::{belt_entity_for_rate, machine_size, machine_tiles, ug_max_re
 use crate::models::{EntityDirection, LayoutRegion, PlacedEntity, SolverResult};
 // sat.rs is retained in the tree as a standalone library; route_bus_ghost
 // no longer uses it after the per-tile "unresolved" rewrite. The junction
-// solver (docs/rfp-junction-solver.md) may reintroduce it as a T4
+// solver (docs/archive/rfp-junction-solver.md) may reintroduce it as a T4
 // fallback strategy, in which case reimport at that point.
 use crate::trace;
 
@@ -215,7 +215,7 @@ pub fn route_bus_ghost(
     // the inputs to steps 1-3 of this function. Step 3 of the rollout uses it
     // to mirror materialisation writes; Step 4+ will switch the template and
     // SAT phases over to it as the source of obstacle truth. See
-    // `docs/rfp-ghost-occupancy-refactor.md`.
+    // `docs/archive/rfp-ghost-occupancy-refactor.md`.
     // -------------------------------------------------------------------------
     // Row template entities split by permeability: belts are
     // `RowEntity` (boundary ports may land on them); machines,
@@ -1278,7 +1278,7 @@ pub fn route_bus_ghost(
     // no template could handle. This replaces the old SAT cluster
     // pipeline — the padded-bbox + union-find + varisat approach was
     // producing broken output on every cluster in real layouts (see
-    // docs/sat-band-investigation.md).
+    // docs/archive/sat-band-investigation.md).
     //
     // Each unresolved crossing becomes a 1×1 mini-junction whose specs
     // we record as input/output port pairs on a LayoutRegion with
@@ -1507,7 +1507,7 @@ fn classify_crossing(
 /// with one `SpecCrossing` per crossing spec — so the long-term junction
 /// solver pass can consume the same internal shape.
 ///
-/// See `docs/rfp-junction-solver.md` for the target replacement.
+/// See `docs/archive/rfp-junction-solver.md` for the target replacement.
 fn emit_unresolved_junctions(
     remaining: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,

@@ -39,7 +39,7 @@ Web App (web/)
 
 ## Status
 
-**MVP shipped (2026-04-05).** The full pipeline runs in the browser: solver → bus layout → blueprint export → validation. The Rust port to `crates/core` is complete (see `docs/port-status.md`). The web app at `web/` is the primary user-facing tool.
+**MVP shipped (2026-04-05).** The full pipeline runs in the browser: solver → bus layout → blueprint export → validation. The Rust port to `crates/core` is complete (see `docs/archive/port-status.md`). The web app at `web/` is the primary user-facing tool.
 
 ### What's live
 
