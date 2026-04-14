@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use fucktorio_core::bus::layout::{build_bus_layout_traced, GhostModeGuard};
+use fucktorio_core::bus::layout::build_bus_layout_traced;
 use fucktorio_core::models::{EntityDirection, LayoutRegion, PortIo, RegionKind, RegionPort};
 use fucktorio_core::solver;
 use fucktorio_core::trace::TraceEvent;
@@ -142,7 +142,6 @@ fn run_case(label: &str, recipe: &str, rate: f64, machine: &str, inputs: &[&str]
     let solver_result = solver::solve(recipe, rate, &input_set, machine)
         .expect("solve");
 
-    let _g = GhostModeGuard::new();
     let layout = build_bus_layout_traced(&solver_result, Some("transport-belt"))
         .expect("layout");
 
@@ -493,7 +492,6 @@ fn run_case_with_belt(
 ) {
     let input_set: FxHashSet<String> = inputs.iter().map(|s| s.to_string()).collect();
     let solver_result = solver::solve(recipe, rate, &input_set, machine).expect("solve");
-    let _g = GhostModeGuard::new();
     let layout = build_bus_layout_traced(&solver_result, max_belt_tier).expect("layout");
     let issues = match validate::validate(&layout, Some(&solver_result), LayoutStyle::Bus) {
         Ok(issues) => issues,
