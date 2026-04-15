@@ -159,6 +159,16 @@ fn walk_single(path: &AffectedPath<'_>, shadow: &ShadowView) -> Result<(), WalkB
     let mut i = 0usize;
     while i < tiles.len() {
         let t = tiles[i];
+        // Factorio UG corridor rule: if this tile sits strictly between
+        // a UG input and a paired UG output on THIS path, anything can
+        // live on the surface here (or nothing) — the flow passes
+        // underneath. Handled up-front so a perpendicular surface belt
+        // sitting on top of our corridor doesn't trigger a spurious
+        // item-mismatch break.
+        if is_hidden_middle_of_own_ug(tiles, i, path.item, shadow) {
+            i += 1;
+            continue;
+        }
         match shadow.get(t) {
             Some(e) => {
                 // Item must match. Wrong carries means SAT replaced our
@@ -205,14 +215,7 @@ fn walk_single(path: &AffectedPath<'_>, shadow: &ShadowView) -> Result<(), WalkB
                 i += 1;
             }
             None => {
-                // No entity at this tile. Only legal if it's the hidden
-                // middle of a UG pair belonging to this same path (in →
-                // middle → out all in `tiles` with `i` strictly between
-                // the in and out indices).
-                if is_hidden_middle_of_own_ug(tiles, i, path.item, shadow) {
-                    i += 1;
-                    continue;
-                }
+                // Empty tile and not a hidden middle — broken.
                 return Err(WalkBreak {
                     segment_id: path.segment_id.to_string(),
                     tile: t,

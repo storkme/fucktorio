@@ -1368,31 +1368,28 @@ pub fn route_bus_ghost(
             w: footprint.w,
             h: footprint.h,
         };
-        // Only release trunk Permanent entities for specs that are actually
-        // participating in this crossing zone. Non-participating trunk stubs
-        // (e.g. 1-tile balancer output columns whose path sits inside the
-        // zone bbox but weren't an initial crossing spec) are left in place
-        // so the zone solution routes the participating specs around them
-        // underground without orphaning the stub.
+        // Preserve every tile in the footprint that the strategy is
+        // NOT explicitly stamping a new entity at. The strategy's
+        // solution is authoritative *exactly* over its proposed
+        // tiles; every other tile's existing claim (trunk belt,
+        // balancer splitter, non-participating tap, whatever) must
+        // remain intact so the chain around the crossing stays
+        // connected.
         //
-        // Note: trunk entities share a coarse segment_id ("trunk:{item}"),
-        // so we key the allowlist by tile position derived from each
-        // participating spec's routed path.
-        // Only preserve 1-tile trunk stubs that are NOT participating in this
-        // zone. These balancer output column stubs sit inside the crossing
-        // zone bbox but the SAT routes the participating specs underground past
-        // them — the stub entity must stay so the belt chain above it is not
-        // broken. All other trunks in the footprint are releasable as normal.
-        let preserve_trunk_tiles: rustc_hash::FxHashSet<(i32, i32)> = routed_paths
-            .iter()
-            .filter(|(key, path)| {
-                path.len() == 1
-                    && !keys_at_tile.contains(&key.as_str())
-                    && (key.starts_with("trunk:") || key.starts_with("tapoff:"))
-            })
-            .flat_map(|(_, path)| path.iter().copied())
-            .filter(|t| release_rect.contains(t.0, t.1))
-            .collect();
+        // This is the minimum-authority rule: we only touch what
+        // the solver explicitly promises to replace. Without it,
+        // uniformly-grown bboxes wipe out unrelated trunk/splitter
+        // entities just because they sit inside the rectangle.
+        let proposed_tiles: rustc_hash::FxHashSet<(i32, i32)> =
+            sol.entities.iter().map(|e| (e.x, e.y)).collect();
+        let preserve_trunk_tiles: rustc_hash::FxHashSet<(i32, i32)> =
+            (0..release_rect.h as i32)
+                .flat_map(|dy| {
+                    (0..release_rect.w as i32)
+                        .map(move |dx| (release_rect.x + dx, release_rect.y + dy))
+                })
+                .filter(|t| !proposed_tiles.contains(t))
+                .collect();
         // Only release ghost surface entities that lie on a participating
         // spec path. Ghost entities belonging to non-participating specs
         // (e.g. a copper-cable tap whose path runs through the zone bbox

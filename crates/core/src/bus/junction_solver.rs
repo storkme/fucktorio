@@ -667,8 +667,17 @@ pub fn solve_crossing(
                 // perimeter). Catches the tier2_electronic_circuit class
                 // where SAT is locally valid but breaks a perpendicular
                 // trunk the region was unaware of.
+                //
+                // Release set = exactly the tiles SAT proposed a new
+                // entity for. Everything else keeps its existing entity
+                // in the shadow. Proposed overrides existing at the
+                // shared tile via `ShadowView::build`. This preserves
+                // non-participating trunks that sit inside the bbox but
+                // SAT never promised to own — the walker would
+                // otherwise flag them as MissingEntity.
                 let bbox = region.bbox;
-                let released = bbox_tiles_set(bbox);
+                let released: FxHashSet<(i32, i32)> =
+                    sol.entities.iter().map(|e| (e.x, e.y)).collect();
                 let affected: Vec<AffectedPath<'_>> = routed_paths
                     .iter()
                     .filter_map(|(seg, tiles)| {
@@ -761,9 +770,10 @@ pub fn solve_crossing(
 }
 
 /// Every tile inside `bbox` (inclusive on the min side, exclusive on the
-/// max side, per `Rect`'s convention). Used as the "released set" when
-/// building a walker shadow view — a strategy's solution is authoritative
-/// over every tile in its footprint.
+/// max side, per `Rect`'s convention). Kept as a helper in case future
+/// strategies want to release the whole footprint — the current walker
+/// wiring releases only SAT-proposed tiles instead.
+#[allow(dead_code)]
 fn bbox_tiles_set(bbox: Rect) -> FxHashSet<(i32, i32)> {
     let mut out = FxHashSet::default();
     for dy in 0..bbox.h as i32 {
