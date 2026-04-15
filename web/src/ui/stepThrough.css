@@ -1,0 +1,38 @@
+.step-through-bar {
+  position: absolute;
+  top: 60px;
+  right: 70px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ccc;
+  font: 11px monospace;
+  padding: 2px 6px;
+  border-radius: 3px;
+  z-index: 10;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+.step-through-btn {
+  background: none;
+  border: 1px solid #555;
+  color: #ccc;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+.step-through-label {
+  min-width: 80px;
+  text-align: center;
+}
+.step-through-fail {
+  background: #442;
+  color: #f66;
+  border: 1px solid #833;
+  cursor: pointer;
+  padding: 0 6px;
+  border-radius: 2px;
+  font-size: 10px;
+  display: none;
+}

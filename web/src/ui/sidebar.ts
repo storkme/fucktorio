@@ -3,402 +3,7 @@ import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 import { niceName, setRecipeFlows } from "../renderer/entities.js";
 import { renderDebugPanel } from "./debugPanel.js";
-
-// ---------------------------------------------------------------------------
-// Style
-// ---------------------------------------------------------------------------
-
-const STYLE = `
-.sidebar-inner {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  box-sizing: border-box;
-  overflow-y: auto;
-  background: #1a1a1a;
-  color: #d4d4d4;
-  font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 12px;
-  scrollbar-width: thin;
-  scrollbar-color: #333 #1a1a1a;
-}
-
-/* ---- Section ---- */
-.sb-section {
-  padding: 10px 12px;
-  border-bottom: 1px solid #252525;
-}
-.sb-section:last-child { border-bottom: none; }
-
-.sb-section-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  color: #6b7280;
-}
-.sb-section-header .sb-section-icon {
-  width: 14px;
-  height: 14px;
-  opacity: 0.5;
-}
-.sb-section-header .sb-section-count {
-  margin-left: auto;
-  color: #4b5563;
-  font-weight: 400;
-  font-size: 10px;
-  letter-spacing: 0;
-}
-
-/* ---- Inputs ---- */
-.sb-input {
-  width: 100%;
-  box-sizing: border-box;
-  background: #222;
-  color: #d4d4d4;
-  border: 1px solid #333;
-  border-radius: 3px;
-  padding: 5px 7px;
-  font-size: 12px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.sb-input:focus { border-color: #555; }
-.sb-input.item-invalid {
-  border-color: #c44;
-  color: #f88;
-}
-
-.sb-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.sb-select {
-  background: #222;
-  color: #d4d4d4;
-  border: 1px solid #333;
-  border-radius: 3px;
-  padding: 4px 6px;
-  font-size: 12px;
-  font-family: inherit;
-  outline: none;
-  cursor: pointer;
-}
-.sb-select:focus { border-color: #555; }
-
-/* ---- Tag pills ---- */
-.sb-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.sb-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 7px;
-  background: #222;
-  border: 1px solid #333;
-  border-radius: 3px;
-  cursor: pointer;
-  user-select: none;
-  font-size: 11px;
-  color: #999;
-  transition: all 0.12s;
-}
-.sb-tag:hover { border-color: #444; background: #282828; }
-.sb-tag.active {
-  background: #1a2a1a;
-  border-color: #3a5a3a;
-  color: #b5cea8;
-}
-.sb-tag img {
-  width: 14px;
-  height: 14px;
-  image-rendering: pixelated;
-}
-.sb-tag .sb-tag-check {
-  font-size: 10px;
-  opacity: 0.4;
-}
-.sb-tag.active .sb-tag-check { opacity: 1; color: #b5cea8; }
-
-/* Fluid inputs get a blue tint */
-.sb-tag.active.fluid {
-  background: #1a1a2a;
-  border-color: #3a3a5a;
-  color: #9cdcfe;
-}
-.sb-tag.active.fluid .sb-tag-check { color: #9cdcfe; }
-
-/* ---- Solver results ---- */
-.sb-solver-empty {
-  color: #4b5563;
-  font-style: italic;
-  padding: 4px 0;
-  font-size: 11px;
-}
-
-.sb-ext-flow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 0;
-  font-size: 11px;
-  color: #9cdcfe;
-}
-.sb-ext-flow img {
-  width: 14px;
-  height: 14px;
-  image-rendering: pixelated;
-}
-.sb-ext-flow .sb-ext-rate {
-  color: #6b7280;
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.sb-machine-group {
-  background: #1e1e1e;
-  border: 1px solid #262626;
-  border-radius: 4px;
-  margin-bottom: 5px;
-  overflow: hidden;
-}
-.sb-machine-group-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 8px;
-  background: #1e1e1e;
-  border-bottom: 1px solid #262626;
-}
-.sb-machine-group-header img {
-  width: 16px;
-  height: 16px;
-  image-rendering: pixelated;
-}
-.sb-machine-group-name {
-  font-weight: 600;
-  color: #dcdcaa;
-  font-size: 11px;
-}
-.sb-machine-group-count {
-  margin-left: auto;
-  color: #6b7280;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.sb-machine-group-body {
-  padding: 4px 8px 6px;
-}
-.sb-machine-flow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 0;
-  font-size: 11px;
-  line-height: 1.4;
-}
-.sb-machine-flow img {
-  width: 13px;
-  height: 13px;
-  image-rendering: pixelated;
-}
-.sb-machine-flow.flow-in { color: #9cdcfe; }
-.sb-machine-flow.flow-out { color: #b5cea8; }
-.sb-machine-flow .flow-rate {
-  font-variant-numeric: tabular-nums;
-}
-
-.sb-divider {
-  height: 1px;
-  background: #262626;
-  margin: 5px 0;
-}
-
-.sb-ext-section-title {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: #4b5563;
-  margin-bottom: 4px;
-  margin-top: 2px;
-}
-
-/* ---- Status bar ---- */
-.sb-status {
-  display: flex;
-  gap: 12px;
-  font-size: 10px;
-  color: #4b5563;
-  padding: 4px 0 0;
-}
-.sb-status span { color: #6b7280; }
-
-/* ---- Belt tier chips ---- */
-.sb-belt-chip {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 2px;
-  font-size: 10px;
-  font-weight: 600;
-  border-left: 3px solid;
-  margin-left: 4px;
-}
-.sb-belt-overflow {
-  color: #f88;
-}
-
-/* ---- Buttons ---- */
-.sb-btn {
-  width: 100%;
-  padding: 7px;
-  border: 1px solid #333;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  font-family: inherit;
-  transition: all 0.15s;
-  outline: none;
-}
-.sb-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-.sb-btn-primary {
-  background: #1a3a1a;
-  color: #6a6;
-  border-color: #3a5a3a;
-}
-.sb-btn-primary:hover:not(:disabled) {
-  background: #1e4a1e;
-  border-color: #4a6a4a;
-}
-.sb-btn-secondary {
-  background: #1a1a2a;
-  color: #69c;
-  border-color: #3a3a5a;
-}
-.sb-btn-secondary:hover:not(:disabled) {
-  background: #1e1e3a;
-  border-color: #4a4a6a;
-}
-
-.sb-copy-status {
-  margin-top: 3px;
-  font-size: 10px;
-  color: #6a6;
-  text-align: center;
-}
-
-/* ---- Display toggles ---- */
-.sb-toggles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 8px;
-}
-.sb-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-  user-select: none;
-  font-size: 11px;
-  color: #888;
-}
-.sb-toggle input {
-  accent-color: #569cd6;
-  width: 13px;
-  height: 13px;
-  margin: 0;
-}
-
-/* ---- Errors (inline) ---- */
-.sb-result-error {
-  color: #f44;
-  font-family: monospace;
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 4px 0;
-}
-
-/* ---- Warnings ---- */
-.sb-warning {
-  color: #fa0;
-  font-size: 11px;
-  padding: 2px 0;
-}
-
-/* ---- Rate suffix ---- */
-.sb-rate-suffix {
-  color: #6b7280;
-  font-size: 10px;
-  margin-left: 2px;
-}
-
-/* ---- Validation issues list ---- */
-.sb-val-ok {
-  color: #6a6;
-  font-size: 11px;
-  padding: 4px 0;
-}
-.sb-val-group {
-  margin-bottom: 4px;
-  border-radius: 3px;
-  overflow: hidden;
-  border: 1px solid #2a2a2a;
-}
-.sb-val-group-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 7px;
-  background: #1e1e1e;
-  cursor: pointer;
-  user-select: none;
-  font-size: 11px;
-}
-.sb-val-group-header:hover { background: #242424; }
-.sb-val-group-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.sb-val-group-name { flex: 1; color: #ccc; }
-.sb-val-group-count {
-  font-size: 10px;
-  color: #666;
-  font-variant-numeric: tabular-nums;
-}
-.sb-val-group-chevron { color: #555; font-size: 10px; }
-.sb-val-group-body { background: #191919; }
-.sb-val-issue {
-  padding: 3px 7px 3px 19px;
-  font-size: 11px;
-  color: #bbb;
-  border-top: 1px solid #222;
-  line-height: 1.4;
-  word-break: break-word;
-}
-.sb-val-issue.clickable {
-  cursor: pointer;
-}
-.sb-val-issue.clickable:hover { background: rgba(255,255,255,0.05); }
-.sb-val-issue.pinned { background: rgba(255,255,255,0.08); }
-`;
+import "./sidebar.css";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -523,13 +128,6 @@ export function renderSidebar(
 ): { getParams(): SidebarParams | null; setParams(params: SidebarParams, opts?: { skipAutoSolve?: boolean }): void; updateValidation(issues: ValidationIssue[], onPanToTile: (x: number, y: number) => void): void } {
   el.innerHTML = "";
 
-  if (!document.getElementById("fucktorio-sidebar-style")) {
-    const styleEl = document.createElement("style");
-    styleEl.id = "fucktorio-sidebar-style";
-    styleEl.textContent = STYLE;
-    document.head.appendChild(styleEl);
-  }
-
   const inner = document.createElement("div");
   inner.className = "sidebar-inner";
 
@@ -550,6 +148,20 @@ export function renderSidebar(
   });
   targetBody.appendChild(datalist);
 
+  function makeField(label: string, control: HTMLElement): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "sb-field";
+    const lbl = document.createElement("span");
+    lbl.className = "sb-field-label";
+    lbl.textContent = label;
+    row.appendChild(lbl);
+    control.style.flex = "1";
+    control.style.minWidth = "0";
+    row.appendChild(control);
+    return row;
+  }
+
+  // Item (full-width, no label prefix — the section header is "Target")
   const itemInput = document.createElement("input");
   itemInput.type = "text";
   itemInput.className = "sb-input";
@@ -558,32 +170,49 @@ export function renderSidebar(
   itemInput.placeholder = "Search item…";
   targetBody.appendChild(itemInput);
 
-  // Rate + Machine row
-  const rateMachineRow = document.createElement("div");
-  rateMachineRow.className = "sb-row";
-  rateMachineRow.style.cssText = "margin-top:6px";
+  // Machine
+  const machineSelect = document.createElement("select");
+  machineSelect.className = "sb-select";
+  engine.allProducerMachines().forEach((m) => machineSelect.appendChild(makeOption(m, "assembling-machine-3")));
+  targetBody.appendChild(makeField("Machine", machineSelect));
 
+  // Belt tier (Auto / Yellow / Red / Blue) — moved up from the former Layout section
+  const beltSelect = document.createElement("select");
+  beltSelect.className = "sb-select";
+  [
+    ["Auto", ""],
+    ["Yellow 15/s", "transport-belt"],
+    ["Red 30/s", "fast-transport-belt"],
+    ["Blue 45/s", "express-transport-belt"],
+  ].forEach(([label, value]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    beltSelect.appendChild(opt);
+  });
+  targetBody.appendChild(makeField("Belt", beltSelect));
+
+  // Rate (numeric with /s suffix)
+  const rateRow = document.createElement("div");
+  rateRow.className = "sb-field";
+  const rateLabel = document.createElement("span");
+  rateLabel.className = "sb-field-label";
+  rateLabel.textContent = "Rate";
+  rateRow.appendChild(rateLabel);
   const rateInput = document.createElement("input");
   rateInput.type = "number";
   rateInput.className = "sb-input";
   rateInput.step = "0.5";
   rateInput.min = "0.1";
-  rateInput.style.cssText = "width:72px;flex-shrink:0";
+  rateInput.style.cssText = "flex:1;min-width:0";
   rateInput.placeholder = "10";
-  rateMachineRow.appendChild(rateInput);
-
+  rateRow.appendChild(rateInput);
   const rateSuffix = document.createElement("span");
   rateSuffix.className = "sb-rate-suffix";
   rateSuffix.textContent = "/s";
-  rateMachineRow.appendChild(rateSuffix);
+  rateRow.appendChild(rateSuffix);
+  targetBody.appendChild(rateRow);
 
-  const machineSelect = document.createElement("select");
-  machineSelect.className = "sb-select";
-  machineSelect.style.cssText = "flex:1;min-width:0";
-  engine.allProducerMachines().forEach((m) => machineSelect.appendChild(makeOption(m, "assembling-machine-3")));
-  rateMachineRow.appendChild(machineSelect);
-
-  targetBody.appendChild(rateMachineRow);
   inner.appendChild(targetSection);
 
   // ==================== INPUTS ====================
@@ -636,57 +265,21 @@ export function renderSidebar(
   solverBody.appendChild(resultContainer);
   inner.appendChild(solverSection);
 
-  // ==================== LAYOUT ====================
-  const { section: layoutSection, body: layoutBody } = makeSection(
-    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="8" y1="2" x2="8" y2="14"/><line x1="2" y1="8" x2="14" y2="8"/></svg>`,
-    "Layout",
-  );
-
-  const beltRow = document.createElement("div");
-  beltRow.className = "sb-row";
-  beltRow.style.cssText = "margin-bottom:6px;align-items:center";
-  const beltLabel = document.createElement("span");
-  beltLabel.style.cssText = "color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;flex-shrink:0";
-  beltLabel.textContent = "Belt";
-  beltRow.appendChild(beltLabel);
-  const beltSelect = document.createElement("select");
-  beltSelect.className = "sb-select";
-  beltSelect.style.cssText = "flex:1;min-width:0";
-  [
-    ["Auto", ""],
-    ["Yellow 15/s", "transport-belt"],
-    ["Red 30/s", "fast-transport-belt"],
-    ["Blue 45/s", "express-transport-belt"],
-  ].forEach(([label, value]) => {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    beltSelect.appendChild(opt);
-  });
-  beltRow.appendChild(beltSelect);
-  layoutBody.appendChild(beltRow);
-
-  const layoutBtn = document.createElement("button");
-  layoutBtn.className = "sb-btn sb-btn-primary";
-  layoutBtn.textContent = "Generate Layout";
-  layoutBtn.disabled = true;
-  layoutBtn.style.cssText = "margin-bottom:5px";
-  layoutBody.appendChild(layoutBtn);
-
+  // Copy-blueprint action — appended to solver body when a layout is ready.
   const blueprintSection = document.createElement("div");
+  blueprintSection.className = "sb-actions";
   blueprintSection.style.display = "none";
 
   const copyBtn = document.createElement("button");
   copyBtn.className = "sb-btn sb-btn-secondary";
   copyBtn.textContent = "Copy Blueprint";
+  copyBtn.style.flex = "1";
   blueprintSection.appendChild(copyBtn);
 
   const copyStatus = document.createElement("div");
   copyStatus.className = "sb-copy-status";
   blueprintSection.appendChild(copyStatus);
-  layoutBody.appendChild(blueprintSection);
-
-  inner.appendChild(layoutSection);
+  solverBody.appendChild(blueprintSection);
 
   // ==================== VALIDATION ====================
   const { section: valSection, body: valBody, countEl: valCountEl } = makeSection(
@@ -750,7 +343,6 @@ export function renderSidebar(
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let previousItem = urlState.item;
-  let currentResult: SolverResult | null = null;
   let currentLayout: LayoutResult | null = null;
 
   function scheduleAutoSolve(): void {
@@ -795,36 +387,29 @@ export function renderSidebar(
     resultContainer.innerHTML = "";
     currentLayout = null;
     blueprintSection.style.display = "none";
+    let result: SolverResult;
     try {
-      const result = engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
-      currentResult = result;
+      result = engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
       renderResult(resultContainer, result);
       callbacks.renderGraph(result);
-      layoutBtn.disabled = false;
       const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
       if (solverCount) solverCount.textContent = `${totalMachines} machines`;
     } catch (err) {
-      currentResult = null;
       callbacks.renderGraph(null);
-      layoutBtn.disabled = true;
       if (solverCount) solverCount.textContent = "error";
       const errDiv = document.createElement("div");
       errDiv.className = "sb-result-error";
       errDiv.textContent = String(err);
       resultContainer.appendChild(errDiv);
+      return;
     }
-  }
 
-  layoutBtn.addEventListener("click", () => {
-    if (!currentResult) return;
+    // Build the layout directly — no explicit button needed since
+    // scheduleAutoSolve already debounces input changes.
     try {
       const maxTier = beltSelect.value || undefined;
-      // Ghost routing is the only routing path now. We always use the
-      // traced variant so the Ghost routes / Regions / Validation overlays
-      // have the trace events they need; the untraced `buildLayout` is
-      // still exposed for parity but unused here.
-      currentLayout = engine.buildLayoutTraced(currentResult, maxTier);
-      setRecipeFlows(currentResult.machines);
+      currentLayout = engine.buildLayoutTraced(result, maxTier);
+      setRecipeFlows(result.machines);
       callbacks.renderLayout(currentLayout);
       if (currentLayout.warnings?.length) {
         for (const w of currentLayout.warnings) {
@@ -835,7 +420,7 @@ export function renderSidebar(
         }
         blueprintSection.style.display = "none";
       } else {
-        blueprintSection.style.display = "block";
+        blueprintSection.style.display = "flex";
       }
       if (currentLayout.trace?.length && options?.getDebugMode?.()) {
         resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
@@ -846,7 +431,7 @@ export function renderSidebar(
       errDiv.textContent = `Layout error: ${err}`;
       resultContainer.appendChild(errDiv);
     }
-  });
+  }
 
   copyBtn.addEventListener("click", async () => {
     if (!currentLayout) return;
@@ -859,6 +444,7 @@ export function renderSidebar(
   itemInput.addEventListener("input", scheduleAutoSolve);
   rateInput.addEventListener("input", scheduleAutoSolve);
   machineSelect.addEventListener("change", scheduleAutoSolve);
+  beltSelect.addEventListener("change", scheduleAutoSolve);
   checkboxes.forEach((cb) => cb.addEventListener("change", scheduleAutoSolve));
 
   runSolve();

@@ -3,24 +3,26 @@ import type { Graphics } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
-import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, isBeltEntity, niceName, getRecipeFlows, TILE_PX, type HighlightController } from "./renderer/entities";
+import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, TILE_PX } from "./renderer/entities";
 import { createSelectionController, type SelectionController } from "./renderer/selection";
 import { renderSidebar, type DisplayToggles } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
 import { renderLanding } from "./ui/landing";
 import {
   setupSnapshotDropZone,
-  showSnapshotBanner,
   decodeSnapshot,
-  type LayoutSnapshot,
-  type BannerCallbacks,
 } from "./ui/snapshotLoader";
 import { initEngine, getEngine } from "./engine";
 import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "./engine";
-import { renderTraceOverlay, renderGhostRoutingOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
-import { renderValidationOverlay, VALIDATION_CIRCLE_ALPHA } from "./renderer/validationOverlay";
+import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
+import { renderValidationOverlay } from "./renderer/validationOverlay";
 import { renderRegionOverlayDetailed, type RegionOverlayItem } from "./renderer/regionOverlay";
-import { classLabel } from "./renderer/regionClassify";
+import * as debugState from "./state/debugState";
+import { createOverlayPanel } from "./ui/overlayPanel";
+import { createIssuesDialog } from "./ui/issuesDialog";
+import { createInspector } from "./ui/inspector";
+import { createSnapshotMode } from "./ui/snapshotMode";
+import { createStepThrough } from "./ui/stepThrough";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -35,12 +37,23 @@ async function main(): Promise<void> {
   const engine = getEngine();
   await initEntityIcons(MACHINE_SLUGS);
 
-  // Route: #/layout goes straight to the generator; anything else shows
-  // the landing page.  Also support the legacy ?generator=true param.
   const appRoot = document.getElementById("app")!;
   const hash = window.location.hash;
   const params = new URLSearchParams(window.location.search);
-  const skipLanding = hash.startsWith("#/layout") || params.has("generator");
+  // Skip the landing page when the URL carries any generator state:
+  // item/rate/machine/in/belt. Lets shared links (e.g. layout URLs
+  // pasted into chat) open straight into the generator without the
+  // extra click through the landing screen.
+  const hasGeneratorParams =
+    params.has("item") ||
+    params.has("rate") ||
+    params.has("machine") ||
+    params.has("in") ||
+    params.has("belt");
+  const skipLanding =
+    hash.startsWith("#/layout") ||
+    params.has("generator") ||
+    hasGeneratorParams;
 
   if (!skipLanding) {
     const landingHost = document.createElement("div");
@@ -50,7 +63,6 @@ async function main(): Promise<void> {
       onOpenGenerator: () => {
         landingHost.remove();
         initGenerator(engine);
-        // Persist layout route so refresh stays on the generator
         window.history.replaceState({}, "", "#/layout");
       },
     });
@@ -64,9 +76,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const container = document.getElementById("canvas-container");
   if (!container) throw new Error("Missing #canvas-container element");
 
-  // Show sidebar + canvas (may be hidden behind landing page).
-  // Explicitly set flex to ensure the two-column layout activates even if
-  // the landing page previously hid #app or the HTML has a different default.
   const appRoot = document.getElementById("app")!;
   appRoot.style.display = "flex";
   const sidebar = document.getElementById("sidebar");
@@ -77,125 +86,38 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   drawGrid(viewport);
   drawGraph(viewport, null);
 
-  // --- Snapshot drag-drop ---
-  setupSnapshotDropZone(container, (snap) => loadSnapshot(snap));
+  debugState.create();
+
+  // --- Modules ---
+  const overlayControls = createOverlayPanel(container);
+  const { debugCb, stepCb, valCb, regionsCb, soloRegionsCb, updateCoords } = overlayControls;
+
+  const inspector = createInspector(container);
+
+  const issuesDialog = createIssuesDialog(container, app, viewport);
+  issuesDialog.setOnValClose(() => {
+    valCb.checked = false;
+    updateValidationOverlay();
+  });
+
+  setupSnapshotDropZone(container, (snap) => snapshotMode.load(snap));
 
   const entityLayer = new Container();
   viewport.addChild(entityLayer);
   viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
 
-  // --- Hover tooltip ---
-  const tooltip = document.createElement("div");
-  tooltip.style.cssText = "position:fixed;background:#1e1e1e;color:#e0e0e0;border:1px solid #555;padding:4px 8px;font:12px monospace;pointer-events:none;border-radius:3px;display:none;z-index:1000;max-width:200px;line-height:1.5";
-  document.body.appendChild(tooltip);
-
-  document.addEventListener("mousemove", (e) => {
-    tooltip.style.left = e.clientX + 14 + "px";
-    tooltip.style.top = e.clientY - 10 + "px";
-  });
-
-  let highlightCtrl: HighlightController | null = null;
-
-  /** Inline <img> tag for an item/entity icon */
-  function iconTag(slug: string, size = 16): string {
-    return `<img src="${import.meta.env.BASE_URL}icons/${slug}.png" width="${size}" height="${size}" style="vertical-align:middle;margin-right:3px;image-rendering:pixelated" onerror="this.style.display='none'">`;
-  }
-
-  function onSelect(entity: PlacedEntity | null): void {
-    if (!entity) {
-      infoPanel.style.display = "none";
-      return;
-    }
-    const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
-    let html = `<div style="display:flex;justify-content:space-between;align-items:start">${iconTag(entity.name)}<b>${niceName(entity.name)}</b><span style="cursor:pointer;color:#888;margin-left:8px" id="info-close">\u00d7</span></div>`;
-    if (entity.recipe) html += `<div style="color:#dcdcaa">${iconTag(entity.recipe)} ${niceName(entity.recipe)}</div>`;
-    if (entity.rate != null) html += `<div style="color:#b5cea8">rate: ${entity.rate.toFixed(1)}/s</div>`;
-    if (entity.carries) html += `<div style="color:#9cdcfe">${iconTag(entity.carries)} ${niceName(entity.carries)}</div>`;
-    // Regular pipes are directionless (connect to all 4 neighbours) — the direction
-    // field on them is meaningless data. Skip showing it to avoid confusion.
-    if (entity.direction && entity.name !== "pipe") html += `<div>${dirArrow[entity.direction] ?? ""} ${entity.direction}</div>`;
-    html += `<div style="color:#888">pos: ${entity.x ?? 0}, ${entity.y ?? 0}</div>`;
-    infoPanel.innerHTML = html;
-    infoPanel.style.display = "block";
-    const closeBtn = document.getElementById("info-close");
-    if (closeBtn) closeBtn.addEventListener("click", () => { infoPanel.style.display = "none"; });
-  }
+  // Click-to-inspect removed; pass no-op to renderLayout.
+  const onSelect = (_entity: PlacedEntity | null): void => {};
 
   function onHover(entity: PlacedEntity | null): void {
-    if (entity) {
-      const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
-      let html = `${iconTag(entity.name)}<b>${niceName(entity.name)}</b>`;
-      if (entity.direction && entity.name !== "pipe") html += `<br>${dirArrow[entity.direction] ?? ""} ${entity.direction}`;
-      if (entity.carries) html += `<br>${iconTag(entity.carries)} ${niceName(entity.carries)}`;
-      if (entity.rate != null) html += `<br><span style="color:#b5cea8">${entity.rate.toFixed(1)}/s</span>`;
-      if (entity.io_type) html += `<br>io: ${entity.io_type}`;
-      if (entity.recipe) {
-        html += `<br>${iconTag(entity.recipe)} ${niceName(entity.recipe)}`;
-        const flows = getRecipeFlows(entity.recipe);
-        if (flows) {
-          for (const inp of flows.inputs) html += `<br><span style="color:#aaa">\u25b6 ${iconTag(inp.item, 14)}${niceName(inp.item)} ${inp.rate.toFixed(1)}/s</span>`;
-          for (const out of flows.outputs) html += `<br><span style="color:#aaa">\u25c0 ${iconTag(out.item, 14)}${niceName(out.item)} ${out.rate.toFixed(1)}/s</span>`;
-        }
-      }
-      if (entity.segment_id) html += `<br><span style="color:#9cdcfe">${entity.segment_id}</span>`;
-      html += `<br>pos: ${entity.x ?? 0}, ${entity.y ?? 0}`;
-      tooltip.innerHTML = html;
-      tooltip.style.display = "block";
-
-      // Belt entities → highlight the connected belt network (upstream dashed, downstream solid)
-      // Everything else → highlight the item chain
-      if (highlightCtrl) {
-        if (isBeltEntity(entity.name)) {
-          highlightCtrl.highlightBeltNetwork(entity);
-        } else {
-          highlightCtrl.highlightItem(highlightCtrl.chainKey(entity));
-        }
-      }
-    } else {
-      tooltip.style.display = "none";
-      if (highlightCtrl) highlightCtrl.clearHighlight();
-    }
+    inspector.onHover(entity);
   }
 
-  // --- Cursor tile position overlay ---
-  // --- Canvas overlay controls (bottom-right, pinned) ---
-  const overlayPanel = document.createElement("div");
-  overlayPanel.style.cssText = "position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#aaa;font:11px monospace;padding:4px 8px;border-radius:3px;z-index:10;display:flex;flex-direction:column;gap:2px;user-select:none";
-  container.style.position = "relative";
-
-  const coordsEl = document.createElement("div");
-  coordsEl.style.cssText = "color:#aaa;font:11px monospace;pointer-events:none";
-  coordsEl.textContent = "x:\u2013 y:\u2013";
-  overlayPanel.appendChild(coordsEl);
-
-  function makeOverlayToggle(label: string, checked = false): HTMLInputElement {
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = checked;
-    cb.style.cssText = "accent-color:#569cd6;width:12px;height:12px;margin:0;vertical-align:middle";
-    const lbl = document.createElement("label");
-    lbl.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;font-size:10px;color:#888";
-    lbl.appendChild(cb);
-    lbl.appendChild(document.createTextNode(label));
-    overlayPanel.appendChild(lbl);
-    return cb;
-  }
-
-  const debugCb = makeOverlayToggle("Debug");
-  const valCb = makeOverlayToggle("Validation");
-  const regionsCb = makeOverlayToggle("SAT Zones");
-  const soloRegionsCb = makeOverlayToggle("Solo regions");
-  const ghostCb = makeOverlayToggle("Ghost routes");
-
-  container.appendChild(overlayPanel);
-
-  // Sidebar toggles — populated via onDisplayToggles callback.
+  // --- Sidebar toggles (populated via onDisplayToggles callback) ---
   let colorCb: HTMLInputElement;
   let rateCb: HTMLInputElement;
 
-  // Solo-regions flag: true whenever solo mode is active (persists across re-renders)
   let soloRegionsActive = false;
-  // Solo-regions state: saved toggle states before solo mode was enabled
   let soloSavedState: {
     colorChecked: boolean;
     rateChecked: boolean;
@@ -205,10 +127,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   } | null = null;
 
   let traceOverlayLayer: Container | null = null;
-  let tracePhaseIndex = -1; // -1 = show all phases
-  let ghostOverlayLayer: Container | null = null;
-  let ghostEntityAlphaSaved: number | null = null; // saved entity alpha before ghost mode
-  let snapshotActive = false; // true when entities are from a PhaseSnapshot
+  let snapshotActive = false;
   let prevSnapshotEntities: Set<string> | null = null;
 
   function entityKey(e: PlacedEntity): string {
@@ -230,74 +149,33 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     return null;
   }
 
-  // --- Step-through controls ---
-  const stepBar = document.createElement("div");
-  stepBar.style.cssText = "position:absolute;top:60px;right:70px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:2px 6px;border-radius:3px;z-index:10;display:none;align-items:center;gap:4px;user-select:none";
-  const prevBtn = document.createElement("button");
-  prevBtn.textContent = "\u25C0";
-  prevBtn.style.cssText = "background:none;border:1px solid #555;color:#ccc;cursor:pointer;padding:0 4px;border-radius:2px;font-size:10px";
-  const phaseLabel = document.createElement("span");
-  phaseLabel.textContent = "all";
-  phaseLabel.style.minWidth = "80px";
-  phaseLabel.style.textAlign = "center";
-  const nextBtn = document.createElement("button");
-  nextBtn.textContent = "\u25B6";
-  nextBtn.style.cssText = "background:none;border:1px solid #555;color:#ccc;cursor:pointer;padding:0 4px;border-radius:2px;font-size:10px";
-  const failBtn = document.createElement("button");
-  failBtn.style.cssText = "background:#442;color:#f66;border:1px solid #833;cursor:pointer;padding:0 6px;border-radius:2px;font-size:10px;display:none";
-  stepBar.appendChild(prevBtn);
-  stepBar.appendChild(phaseLabel);
-  stepBar.appendChild(nextBtn);
-  stepBar.appendChild(failBtn);
-  container.appendChild(stepBar);
-
-  function updateStepControls(): void {
-    if (!debugCb.checked || !lastLayout?.trace?.length) {
-      stepBar.style.display = "none";
-      failBtn.style.display = "none";
-      return;
-    }
-    const trace = lastLayout.trace as TraceEvent[];
-    const phases = getTracePhases(trace);
-    if (phases.length === 0) {
-      stepBar.style.display = "none";
-      failBtn.style.display = "none";
-      return;
-    }
-    stepBar.style.display = "flex";
-
-    // Compute cumulative PhaseTime durations
-    const timeEvents = trace.filter(e => e.phase === "PhaseTime") as Extract<TraceEvent, { phase: "PhaseTime" }>[];
-    // PhaseComplete events carry entity_count
-    const completeEvents = trace.filter(e => e.phase === "PhaseComplete") as Extract<TraceEvent, { phase: "PhaseComplete" }>[];
-
-    if (tracePhaseIndex < 0) {
-      const totalMs = timeEvents.reduce((s, t) => s + t.data.duration_ms, 0);
-      const totalEntities = completeEvents.length > 0 ? completeEvents[completeEvents.length - 1].data.entity_count : 0;
-      phaseLabel.textContent = `all (${phases.length}) — ${totalEntities} entities, ${totalMs}ms`;
-    } else {
-      // Sum PhaseTime events up to and including the current phase's PhaseComplete index
-      const phaseEndIdx = phases[tracePhaseIndex].eventIndex;
-      let elapsedMs = 0;
-      for (const t of timeEvents) {
-        const tIdx = trace.indexOf(t as TraceEvent);
-        if (tIdx <= phaseEndIdx) elapsedMs += t.data.duration_ms;
+  const stepThrough = createStepThrough(container, {
+    getLayout: () => lastLayout,
+    isEnabled: () => debugCb.checked && stepCb.checked,
+    onPhaseChange: () => updateTraceOverlay(),
+    onJumpToFailure: (fromX, fromY) => {
+      const targetX = fromX * TILE_PX + TILE_PX / 2;
+      const targetY = fromY * TILE_PX + TILE_PX / 2;
+      viewport.moveCenter(targetX, targetY);
+      if (traceOverlayLayer) {
+        const marker = traceOverlayLayer.children.find(c =>
+          c.label === "RouteFailure" &&
+          Math.abs(c.x - targetX) < 1 && Math.abs(c.y - targetY) < 1,
+        );
+        if (marker) {
+          let pulses = 0;
+          const interval = setInterval(() => {
+            marker.alpha = marker.alpha < 0.5 ? 1.0 : 0.3;
+            pulses++;
+            if (pulses >= 6) {
+              marker.alpha = 1.0;
+              clearInterval(interval);
+            }
+          }, 100);
+        }
       }
-      const entityCount = completeEvents.find(c => c.data.phase === phases[tracePhaseIndex].name)?.data.entity_count ?? 0;
-      phaseLabel.textContent = `${phases[tracePhaseIndex].name} — ${entityCount} entities, ${elapsedMs}ms`;
-    }
-    prevBtn.disabled = tracePhaseIndex <= 0 && tracePhaseIndex !== -1;
-    nextBtn.disabled = tracePhaseIndex >= phases.length - 1;
-
-    // Failure badge
-    const failCount = trace.filter(e => e.phase === "RouteFailure").length;
-    if (failCount > 0) {
-      failBtn.textContent = `\u26A0 ${failCount}`;
-      failBtn.style.display = "inline-block";
-    } else {
-      failBtn.style.display = "none";
-    }
-  }
+    },
+  });
 
   function updateTraceOverlay(): void {
     if (traceOverlayLayer) {
@@ -306,26 +184,25 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       traceOverlayLayer = null;
     }
 
-    // Step-through: re-render entities from snapshot for the selected phase.
-    const wantSnapshot = debugCb.checked && tracePhaseIndex >= 0 && !!lastLayout?.trace;
+    const phaseIndex = stepThrough.getPhaseIndex();
+    const wantSnapshot = debugCb.checked && stepCb.checked && phaseIndex >= 0 && !!lastLayout?.trace;
     const snapshot = wantSnapshot
-      ? getSnapshotForPhase(lastLayout!.trace as TraceEvent[], tracePhaseIndex)
+      ? getSnapshotForPhase(lastLayout!.trace as TraceEvent[], phaseIndex)
       : null;
 
     if (snapshot) {
       snapshotActive = true;
-      highlightCtrl = renderLayout(
+      const ctrl = renderLayout(
         { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
         entityLayer, onHover, onSelect,
       );
-      // Entity delta highlight: tint newly added entities green for 1 second
+      inspector.setHighlightController(ctrl);
       const newKeys = new Set(snapshot.entities.map(entityKey));
       const prev = prevSnapshotEntities;
       if (prev) {
         const added = snapshot.entities.filter(e => !prev.has(entityKey(e)));
         const addedPositions = new Set(added.map(e => `${e.x},${e.y}`));
         for (const child of entityLayer.children) {
-          // Skip overlay containers and non-graphics children
           if (!("tint" in child) || addedPositions.size === 0) continue;
           const g = child as { x: number; y: number; tint: number };
           const tx = Math.round(g.x / TILE_PX);
@@ -338,107 +215,38 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       }
       prevSnapshotEntities = newKeys;
     } else if (snapshotActive) {
-      // Was showing a snapshot — restore full entity rendering.
       snapshotActive = false;
       prevSnapshotEntities = null;
       if (lastLayout) {
-        highlightCtrl = renderLayout(lastLayout, entityLayer, onHover, onSelect);
+        const ctrl = renderLayout(lastLayout, entityLayer, onHover, onSelect);
+        inspector.setHighlightController(ctrl);
       }
     }
 
-    if (!debugCb.checked || !lastLayout?.trace?.length) {
-      updateStepControls();
+    if (!debugCb.checked || !stepCb.checked || !lastLayout?.trace?.length) {
+      stepThrough.update();
       return;
     }
-    const events = tracePhaseIndex < 0
+    const events = phaseIndex < 0
       ? (lastLayout.trace as TraceEvent[])
-      : eventsUpToPhase(lastLayout.trace as TraceEvent[], tracePhaseIndex);
+      : eventsUpToPhase(lastLayout.trace as TraceEvent[], phaseIndex);
     traceOverlayLayer = renderTraceOverlay(
       events,
       lastLayout.width ?? 0,
       lastLayout.height ?? 0,
       entityLayer,
       (text) => {
-        if (text) {
-          tooltip.innerHTML = `<span style="color:#8af">TRACE</span> ${text}`;
-          tooltip.style.display = "block";
-        } else {
-          tooltip.style.display = "none";
-        }
+        inspector.setTooltipOverride(text ? `<span style="color:#8af">TRACE</span> ${text}` : null);
       },
     );
-    updateStepControls();
+    stepThrough.update();
   }
-
-  prevBtn.addEventListener("click", () => {
-    const phases = getTracePhases((lastLayout?.trace ?? []) as TraceEvent[]);
-    if (tracePhaseIndex === -1) tracePhaseIndex = phases.length - 1;
-    else if (tracePhaseIndex > 0) tracePhaseIndex--;
-    updateTraceOverlay();
-  });
-  nextBtn.addEventListener("click", () => {
-    const phases = getTracePhases((lastLayout?.trace ?? []) as TraceEvent[]);
-    if (tracePhaseIndex < phases.length - 1) tracePhaseIndex++;
-    updateTraceOverlay();
-  });
-
-  // --- Jump to first route failure ---
-  function jumpToFirstFailure(): void {
-    if (!lastLayout?.trace) return;
-    const failures = (lastLayout.trace as TraceEvent[]).filter(e => e.phase === "RouteFailure") as Extract<TraceEvent, { phase: "RouteFailure" }>[];
-    if (failures.length === 0) return;
-    const first = failures[0].data;
-    const targetX = first.from_x * TILE_PX + TILE_PX / 2;
-    const targetY = first.from_y * TILE_PX + TILE_PX / 2;
-    viewport.moveCenter(targetX, targetY);
-    // Pulse the first RouteFailure marker in the overlay
-    if (traceOverlayLayer) {
-      const marker = traceOverlayLayer.children.find(c =>
-        c.label === "RouteFailure" &&
-        Math.abs(c.x - targetX) < 1 && Math.abs(c.y - targetY) < 1,
-      );
-      if (marker) {
-        let pulses = 0;
-        const interval = setInterval(() => {
-          marker.alpha = marker.alpha < 0.5 ? 1.0 : 0.3;
-          pulses++;
-          if (pulses >= 6) {
-            marker.alpha = 1.0;
-            clearInterval(interval);
-          }
-        }, 100);
-      }
-    }
-  }
-
-  failBtn.addEventListener("click", jumpToFirstFailure);
-
-  // --- Keyboard shortcuts for step-through ---
-  document.addEventListener("keydown", (e) => {
-    // Don't fire when typing in inputs
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-    // Only when step bar is visible
-    if (stepBar.style.display === "none") return;
-
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      prevBtn.click();
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      nextBtn.click();
-    } else if (e.key === "f") {
-      e.preventDefault();
-      jumpToFirstFailure();
-    }
-  });
 
   let valOverlayLayer: Container | null = null;
   let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
 
   let regionOverlayLayer: Container | null = null;
-  let regionOverlayItems: RegionOverlayItem[] = [];
   let regionHitTest: ((wx: number, wy: number) => RegionOverlayItem | null) | null = null;
 
   function panToTile(x: number, y: number): void {
@@ -452,9 +260,9 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       valOverlayLayer = null;
       valCircleMap = new Map();
     }
-    clearPulse();
+    issuesDialog.clearPulse();
+    issuesDialog.setCircleMap(valCircleMap);
 
-    // Ensure issues are computed whenever we have a layout (not just when overlay is on).
     if (lastLayout && !cachedValidationIssues) {
       try {
         cachedValidationIssues = engine.validateLayout(lastLayout, null);
@@ -463,32 +271,27 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       }
     }
 
-    // Always update the sidebar validation list regardless of valCb state.
     sidebarCtrl?.updateValidation(cachedValidationIssues ?? [], panToTile);
 
-    if (!valCb.checked || !lastLayout) {
-      populateIssuesPanel(cachedValidationIssues ?? []);
+    if (!debugCb.checked || !valCb.checked || !lastLayout) {
+      issuesDialog.populate(cachedValidationIssues ?? [], debugCb.checked, valCb.checked);
       return;
     }
     if (!cachedValidationIssues || cachedValidationIssues.length === 0) {
-      populateIssuesPanel([]);
+      issuesDialog.populate([], debugCb.checked, valCb.checked);
       return;
     }
     const result = renderValidationOverlay(
       cachedValidationIssues,
       entityLayer,
       (text) => {
-        if (text) {
-          tooltip.innerHTML = `<span style="color:#f44">VALIDATION</span> ${text}`;
-          tooltip.style.display = "block";
-        } else {
-          tooltip.style.display = "none";
-        }
+        inspector.setTooltipOverride(text ? `<span style="color:#f44">VALIDATION</span> ${text}` : null);
       },
     );
     valOverlayLayer = result.layer;
     valCircleMap = result.circleMap;
-    populateIssuesPanel(cachedValidationIssues);
+    issuesDialog.setCircleMap(valCircleMap);
+    issuesDialog.populate(cachedValidationIssues, debugCb.checked, valCb.checked);
   }
 
   function updateRegionOverlay(): void {
@@ -497,330 +300,19 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       regionOverlayLayer.destroy();
       regionOverlayLayer = null;
     }
-    regionOverlayItems = [];
     regionHitTest = null;
-    updateRegionHud();
-    if (!regionsCb?.checked || !lastLayout) return;
+    if (!debugCb.checked || !regionsCb?.checked || !lastLayout) return;
     if (!lastLayout.regions || lastLayout.regions.length === 0) return;
     const detailed = renderRegionOverlayDetailed(lastLayout);
     regionOverlayLayer = detailed.layer;
-    regionOverlayItems = detailed.items;
     regionHitTest = detailed.hitTest;
     entityLayer.addChild(regionOverlayLayer);
-    updateRegionHud();
-  }
-
-  function updateGhostOverlay(): void {
-    if (ghostOverlayLayer) {
-      viewport.removeChild(ghostOverlayLayer);
-      ghostOverlayLayer.destroy();
-      ghostOverlayLayer = null;
-    }
-
-    if (!ghostCb?.checked) {
-      // Restore entity layer alpha when ghost mode is off
-      if (ghostEntityAlphaSaved !== null) {
-        entityLayer.alpha = ghostEntityAlphaSaved;
-        ghostEntityAlphaSaved = null;
-      }
-      return;
-    }
-
-    if (!lastLayout?.trace?.length) return;
-    const events = lastLayout.trace as TraceEvent[];
-    const hasGhostEvents = events.some(e =>
-      e.phase === "GhostSpecRouted" ||
-      e.phase === "GhostSpecFailed" ||
-      e.phase === "GhostClusterSolved" ||
-      e.phase === "GhostClusterFailed" ||
-      e.phase === "GhostRoutingComplete",
-    );
-    if (!hasGhostEvents) return;
-
-    // Save and hide entity layer
-    if (ghostEntityAlphaSaved === null) {
-      ghostEntityAlphaSaved = entityLayer.alpha;
-    }
-    entityLayer.alpha = 0;
-
-    ghostOverlayLayer = renderGhostRoutingOverlay(
-      events,
-      lastLayout.width ?? 0,
-      lastLayout.height ?? 0,
-      viewport,
-      (text) => {
-        if (text) {
-          tooltip.innerHTML = `<span style="color:#8af">GHOST</span> ${text}`;
-          tooltip.style.display = "block";
-        } else {
-          tooltip.style.display = "none";
-        }
-      },
-    );
   }
 
   // --- Item color legend (bottom-left) ---
   const legendEl = document.createElement("div");
   legendEl.style.cssText = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);color:#ccc;font:11px monospace;padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;display:none;max-height:300px;overflow-y:auto";
   container.appendChild(legendEl);
-
-  // --- Ghost mode HUD (top-center) ---
-  // Compact stats block showing region counts by kind and by class.
-  // Only visible when ghost mode is on.
-  const ghostHud = document.createElement("div");
-  ghostHud.style.cssText = "position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(10,10,15,0.85);color:#ccc;font:11px monospace;padding:6px 10px;border-radius:4px;border:1px solid #333;z-index:10;display:none;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,0.5)";
-  container.appendChild(ghostHud);
-
-  // --- Region detail panel (bottom-right) ---
-  // Shown on hover over a region when ghost mode is on. Displays the
-  // engine-assigned kind, classifier output, dimensions, item breakdown,
-  // and SAT stats if applicable.
-  const regionDetail = document.createElement("div");
-  regionDetail.style.cssText = "position:absolute;bottom:8px;right:8px;background:rgba(10,10,15,0.9);color:#ddd;font:11px monospace;padding:8px 12px;border-radius:4px;border:1px solid #444;z-index:10;display:none;max-width:360px;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.6);line-height:1.5";
-  container.appendChild(regionDetail);
-
-  function updateRegionHud(): void {
-    const items = regionOverlayItems;
-    if (items.length === 0) {
-      ghostHud.textContent = "ghost: 0 regions";
-      ghostHud.style.display = "block";
-      return;
-    }
-
-    const kindCounts = new Map<string, number>();
-    const classCounts = new Map<string, number>();
-    for (const it of items) {
-      kindCounts.set(it.region.kind, (kindCounts.get(it.region.kind) ?? 0) + 1);
-      const c = it.classification.cls;
-      classCounts.set(c, (classCounts.get(c) ?? 0) + 1);
-    }
-
-    // Overlap pair count — bbox-overlap test, same as report_zone_overlaps.
-    let overlapPairs = 0;
-    for (let i = 0; i < items.length; i++) {
-      const a = items[i].region;
-      for (let j = i + 1; j < items.length; j++) {
-        const b = items[j].region;
-        const xOverlap = a.x < b.x + b.width && b.x < a.x + a.width;
-        const yOverlap = a.y < b.y + b.height && b.y < a.y + a.height;
-        if (xOverlap && yOverlap) overlapPairs++;
-      }
-    }
-
-    const fmtMap = (m: Map<string, number>, fmt: (k: string) => string) =>
-      [...m.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .map(([k, v]) => `${fmt(k)} ${v}`)
-        .join("  ");
-
-    const kindStr = fmtMap(kindCounts, k => k.replace("_template", "").replace("ghost_", ""));
-    const classStr = fmtMap(classCounts, k => classLabel(k as Parameters<typeof classLabel>[0]));
-    const overlapStr = overlapPairs > 0 ? `  |  ⚠ ${overlapPairs} overlap` : "";
-
-    ghostHud.innerHTML = `<span style="color:#8bf">ghost</span> ${items.length} regions  |  kind: ${kindStr}  |  class: ${classStr}${overlapStr}`;
-    ghostHud.style.display = "block";
-  }
-
-  function showRegionDetail(item: RegionOverlayItem | null): void {
-    if (!item) {
-      regionDetail.style.display = "none";
-      return;
-    }
-    const r = item.region;
-    const c = item.classification;
-    const portStr = r.ports && r.ports.length > 0 ? `${r.ports.length} ports` : "no ports";
-    const itemList = [...c.items.values()]
-      .map(ip => `${ip.name} (${ip.axis}, ${ip.inputs.length}in/${ip.outputs.length}out)`)
-      .join("<br>&nbsp;&nbsp;");
-
-    regionDetail.innerHTML = `
-      <div style="color:#8bf;margin-bottom:4px"><b>${r.kind}</b> → ${classLabel(c.cls)}</div>
-      <div style="color:#aaa">(${r.x}, ${r.y})  ${r.width}×${r.height}  ${portStr}</div>
-      <div style="margin-top:6px;color:#ddd">${c.summary}</div>
-      ${itemList ? `<div style="margin-top:6px;color:#bbb"><b>items:</b><br>&nbsp;&nbsp;${itemList}</div>` : ""}
-    `;
-    regionDetail.style.display = "block";
-  }
-
-  let pinnedRow: HTMLDivElement | null = null;
-
-  function unpinRow(): void {
-    if (pinnedRow) {
-      pinnedRow.style.background = "";
-      pinnedRow = null;
-    }
-    clearPulse();
-  }
-
-  // Escape unpins; clicking outside the issues panel unpins.
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") unpinRow();
-  });
-  document.addEventListener("pointerdown", (e) => {
-    if (pinnedRow && !issuesPanel.contains(e.target as Node)) unpinRow();
-  });
-
-  // Shift held → pause viewport drag so selection box works.
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Shift") viewport.plugins.pause("drag");
-  });
-  document.addEventListener("keyup", (e) => {
-    if (e.key === "Shift") viewport.plugins.resume("drag");
-  });
-  // Also handle shift release when window loses focus.
-  window.addEventListener("blur", () => viewport.plugins.resume("drag"));
-
-  // --- Validation issues floating dialog ---
-  const issuesPanel = document.createElement("div");
-  issuesPanel.style.cssText = "position:absolute;top:8px;right:8px;background:#1a1a1a;color:#e0e0e0;font:11px monospace;border-radius:4px;border:1px solid #333;z-index:10;display:none;max-width:360px;max-height:calc(100% - 24px);overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.5);flex-direction:column";
-  container.appendChild(issuesPanel);
-
-  // Title bar for dragging
-  const issuesTitleBar = document.createElement("div");
-  issuesTitleBar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:#222;border-bottom:1px solid #333;cursor:move;user-select:none;flex-shrink:0";
-  const issuesTitleText = document.createElement("span");
-  issuesTitleText.style.cssText = "font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.8px";
-  issuesTitleText.textContent = "Validation";
-  issuesTitleBar.appendChild(issuesTitleText);
-  const issuesCountBadge = document.createElement("span");
-  issuesCountBadge.style.cssText = "font-size:10px;color:#f66;background:rgba(255,68,68,0.12);padding:1px 6px;border-radius:3px;margin-left:8px";
-  issuesTitleBar.appendChild(issuesCountBadge);
-  const issuesCloseBtn = document.createElement("span");
-  issuesCloseBtn.style.cssText = "cursor:pointer;color:#666;font-size:14px;line-height:1;padding:0 2px";
-  issuesCloseBtn.textContent = "\u00d7";
-  issuesCloseBtn.addEventListener("click", () => {
-    valCb.checked = false;
-    updateValidationOverlay();
-  });
-  issuesTitleBar.appendChild(issuesCloseBtn);
-  issuesPanel.appendChild(issuesTitleBar);
-
-  const issuesBody = document.createElement("div");
-  issuesBody.style.cssText = "overflow-y:auto;max-height:calc(100% - 32px);padding:4px 8px;line-height:1.4";
-  issuesPanel.appendChild(issuesBody);
-
-  // Make the dialog draggable
-  {
-    let dragging = false;
-    let offsetX = 0;
-    let offsetY = 0;
-    issuesTitleBar.addEventListener("pointerdown", (e) => {
-      if ((e.target as HTMLElement) === issuesCloseBtn) return;
-      dragging = true;
-      const rect = issuesPanel.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      offsetX = e.clientX - rect.left + containerRect.left;
-      offsetY = e.clientY - rect.top + containerRect.top;
-      issuesTitleBar.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-    issuesTitleBar.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const x = e.clientX - offsetX;
-      const y = e.clientY - offsetY;
-      issuesPanel.style.left = `${x}px`;
-      issuesPanel.style.top = `${y}px`;
-      issuesPanel.style.right = "auto";
-    });
-    issuesTitleBar.addEventListener("pointerup", () => { dragging = false; });
-  }
-
-  // Pulse state: tracks the markers being pulsed and the Pixi ticker callback.
-  let activePulse: { markers: Graphics[]; tickerFn: () => void } | null = null;
-
-  function clearPulse(): void {
-    if (activePulse) {
-      for (const m of activePulse.markers) m.alpha = VALIDATION_CIRCLE_ALPHA;
-      app.ticker.remove(activePulse.tickerFn);
-      activePulse = null;
-    }
-  }
-
-  function pulseCircle(key: string): void {
-    clearPulse();
-    const markers = valCircleMap.get(key);
-    if (!markers || markers.length === 0) return;
-    // Toggle alpha every ~150ms using the Pixi ticker so the pulse is synced
-    // with the render loop rather than an independent setInterval.
-    let elapsed = 0;
-    let on = true;
-    const tickerFn = (): void => {
-      elapsed += app.ticker.deltaMS;
-      if (elapsed >= 150) {
-        elapsed -= 150;
-        on = !on;
-        const alpha = on ? 1.0 : 0.35;
-        for (const m of markers) m.alpha = alpha;
-      }
-    };
-    app.ticker.add(tickerFn);
-    activePulse = { markers, tickerFn };
-  }
-
-  function populateIssuesPanel(issues: ValidationIssue[]): void {
-    issuesBody.innerHTML = "";
-    pinnedRow = null;
-    clearPulse();
-    if (!valCb.checked || issues.length === 0) {
-      issuesPanel.style.display = "none";
-      return;
-    }
-    issuesPanel.style.display = "flex";
-    const errors = issues.filter(i => i.severity === "Error").length;
-    const warns = issues.length - errors;
-    issuesCountBadge.textContent = errors > 0 ? `${errors} error${errors > 1 ? "s" : ""}` : `${warns} warning${warns > 1 ? "s" : ""}`;
-    issuesCountBadge.style.color = errors > 0 ? "#f66" : "#fa0";
-    issuesCountBadge.style.background = errors > 0 ? "rgba(255,68,68,0.12)" : "rgba(255,170,0,0.12)";
-    for (const issue of issues) {
-      const row = document.createElement("div");
-      row.style.cssText = "padding:3px 0;border-bottom:1px solid #333;cursor:default;display:flex;align-items:baseline;gap:6px;user-select:text";
-      if (issue.x == null || issue.y == null) {
-        row.style.opacity = "0.6";
-      }
-      const dot = document.createElement("span");
-      dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${issue.severity === "Error" ? "#f44" : "#fa0"}`;
-      row.appendChild(dot);
-      const cat = document.createElement("span");
-      cat.style.cssText = `color:${issue.severity === "Error" ? "#f66" : "#fa0"};flex-shrink:0`;
-      cat.textContent = issue.category;
-      row.appendChild(cat);
-      const msg = document.createElement("span");
-      msg.style.cssText = "color:#ccc";
-      msg.textContent = issue.message;
-      row.appendChild(msg);
-      if (issue.x != null && issue.y != null) {
-        row.style.cursor = "pointer";
-        const key = `${issue.x},${issue.y}`;
-        row.addEventListener("mouseenter", () => {
-          if (pinnedRow === row) return;
-          viewport.moveCenter(issue.x! * TILE_PX + TILE_PX / 2, issue.y! * TILE_PX + TILE_PX / 2);
-          pulseCircle(key);
-        });
-        row.addEventListener("mouseleave", () => {
-          if (pinnedRow === row) return;
-          clearPulse();
-        });
-        row.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (pinnedRow === row) {
-            unpinRow();
-          } else {
-            unpinRow();
-            pinnedRow = row;
-            row.style.background = "rgba(255,255,255,0.08)";
-            viewport.moveCenter(issue.x! * TILE_PX + TILE_PX / 2, issue.y! * TILE_PX + TILE_PX / 2);
-            pulseCircle(key);
-          }
-        });
-      }
-      issuesBody.appendChild(row);
-    }
-  }
-
-  // --- Machine info panel (click) ---
-  const infoPanel = document.createElement("div");
-  infoPanel.style.cssText = "position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.8);color:#e0e0e0;font:12px monospace;padding:8px 10px;border-radius:4px;border:1px solid #555;z-index:10;display:none;max-width:250px;line-height:1.5";
-  container.appendChild(infoPanel);
 
   // --- Selection annotation bar ---
   const annotationBar = document.createElement("div");
@@ -832,7 +324,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   annotationBar.appendChild(annotationCount);
 
   const annotationNote = document.createElement("textarea");
-  annotationNote.placeholder = "Add a note…";
+  annotationNote.placeholder = "Add a note\u2026";
   annotationNote.rows = 2;
   annotationNote.style.cssText = "width:100%;box-sizing:border-box;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;border-radius:2px;font:11px monospace;resize:vertical;margin-bottom:4px";
   annotationBar.appendChild(annotationNote);
@@ -844,78 +336,29 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   let lastLayout: LayoutResult | null = null;
   let selectionCtrl: SelectionController | null = null;
-  let activeBanner: HTMLDivElement | null = null;
 
-  function clearSnapshotBanner(): void {
-    if (activeBanner) {
-      activeBanner.remove();
-      activeBanner = null;
-    }
-    // Re-enable sidebar
-    const sidebarEl = document.getElementById("sidebar");
-    sidebarEl?.querySelectorAll("input,select,button").forEach((el) => {
-      (el as HTMLInputElement).disabled = false;
-    });
-  }
-
-  function loadSnapshot(snapshot: LayoutSnapshot): void {
-    // Build a LayoutResult from snapshot data (inject trace events)
-    const layout: LayoutResult = {
-      ...snapshot.layout,
-      trace: snapshot.trace.events as LayoutResult["trace"],
-    } as LayoutResult;
-
-    // Auto-enable debug + validation if there are issues or trace events
-    if (snapshot.trace.events.length > 0) {
-      debugCb.checked = true;
-    }
-    if (snapshot.validation.issues.length > 0) {
-      valCb.checked = true;
-    }
-
-    renderLayoutOnCanvas(layout);
-
-    // Override cached issues with the snapshot's pre-computed validation
-    // (renderLayoutOnCanvas resets cachedValidationIssues, so set it after).
-    if (snapshot.validation.issues.length > 0) {
-      cachedValidationIssues = snapshot.validation.issues as unknown as ValidationIssue[];
-      // Re-render the overlay and sidebar list with the snapshot issues.
-      updateValidationOverlay();
-    }
-
-    // Pre-fill sidebar form with snapshot params. Skip auto-solve —
-    // otherwise the debounced runSolve fires ~150ms later and wipes the
-    // rendered entities when it redraws the DAG.
-    sidebarCtrl?.setParams(snapshot.params, { skipAutoSolve: true });
-
-    // Show banner
-    clearSnapshotBanner();
-    const bannerCallbacks: BannerCallbacks = {
-      onClear: () => {
-        clearSnapshotBanner();
-        entityLayer.removeChildren();
-        lastLayout = null;
-        cachedValidationIssues = null;
-        drawGraph(viewport, null);
-        viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
-        legendEl.style.display = "none";
-        infoPanel.style.display = "none";
-        issuesPanel.style.display = "none";
-        populateIssuesPanel([]);
-        sidebarCtrl?.updateValidation([], panToTile);
-      },
-    };
-    const sidebarEl = document.getElementById("sidebar");
-    if (sidebarEl) {
-      activeBanner = showSnapshotBanner(sidebarEl, snapshot, bannerCallbacks);
-      // Disable recipe/layout controls in snapshot mode, but keep display
-      // toggles (SAT Zones, Solo regions, etc.) fully interactive.
-      sidebarEl.querySelectorAll("input,select,button").forEach((el) => {
-        if (el.closest("[data-snapshot-keep]")) return;
-        (el as HTMLInputElement).disabled = true;
-      });
-    }
-  }
+  const snapshotMode = createSnapshotMode({
+    sidebarEl: document.getElementById("sidebar"),
+    getSidebarCtrl: () => sidebarCtrl,
+    renderLayoutOnCanvas,
+    setCachedValidationIssues: (issues) => { cachedValidationIssues = issues; },
+    updateValidationOverlay,
+    panToTile,
+    onDebugEnable: () => overlayControls.setDebugEnabled(true),
+    onValEnable: () => { valCb.checked = true; },
+    onClear: () => {
+      snapshotMode.clear();
+      entityLayer.removeChildren();
+      lastLayout = null;
+      cachedValidationIssues = null;
+      drawGraph(viewport, null);
+      viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
+      legendEl.style.display = "none";
+      issuesDialog.setVisible(false);
+      issuesDialog.populate([], false, false);
+      sidebarCtrl?.updateValidation([], panToTile);
+    },
+  });
 
   function onSelectionChange(entities: PlacedEntity[]): void {
     if (entities.length === 0) {
@@ -927,7 +370,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }
   }
 
-  let hoveredRegion: RegionOverlayItem | null = null;
   app.canvas.addEventListener("pointermove", (e) => {
     const rect = app.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -935,25 +377,12 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const world = viewport.toWorld(sx, sy);
     const tx = Math.floor(world.x / TILE_PX);
     const ty = Math.floor(world.y / TILE_PX);
-    coordsEl.textContent = `x:${tx} y:${ty}`;
-
-    // Region hover — only when the region overlay is active.
-    if (regionHitTest && regionsCb.checked) {
-      const it = regionHitTest(world.x, world.y);
-      if (it !== hoveredRegion) {
-        hoveredRegion = it;
-        showRegionDetail(it);
-      }
-    } else if (hoveredRegion) {
-      hoveredRegion = null;
-      showRegionDetail(null);
-    }
+    updateCoords(tx, ty);
   });
 
-  // Click-to-pan for a region.
+  // Click-to-pan for a SAT region
   app.canvas.addEventListener("pointerdown", (e) => {
     if (!regionHitTest || !regionsCb.checked) return;
-    // Only the primary button, without modifiers.
     if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     const rect = app.canvas.getBoundingClientRect();
     const world = viewport.toWorld(e.clientX - rect.left, e.clientY - rect.top);
@@ -965,12 +394,19 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     }
   });
 
+  // Shift held → pause viewport drag so selection box works
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") viewport.plugins.pause("drag");
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") viewport.plugins.resume("drag");
+  });
+  window.addEventListener("blur", () => viewport.plugins.resume("drag"));
+
   function renderGraph(result: SolverResult | null): void {
-    // Clear the entity layer when the DAG is redrawn — we've solved again.
     entityLayer.removeChildren();
     drawGraph(viewport, result);
     legendEl.style.display = "none";
-    infoPanel.style.display = "none";
     if (!result) {
       viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
     }
@@ -1005,26 +441,21 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   function renderLayoutOnCanvas(layout: LayoutResult): void {
     lastLayout = layout;
-    tracePhaseIndex = -1;
+    stepThrough.reset();
     snapshotActive = false;
     prevSnapshotEntities = null;
-    // Destroy previous selection controller (new layout = new tile map)
     if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
     annotationBar.style.display = "none";
     annotationNote.value = "";
-    // Clear cached validation state for new layout
     cachedValidationIssues = null;
-    // Replace the DAG with the actual bus layout.
     drawGraph(viewport, null);
-    highlightCtrl = renderLayout(layout, entityLayer, onHover, onSelect);
+    const ctrl = renderLayout(layout, entityLayer, onHover, onSelect);
+    inspector.setHighlightController(ctrl);
     selectionCtrl = createSelectionController(app.canvas, viewport, entityLayer, layout, onSelectionChange);
     buildLegend(layout);
     updateTraceOverlay();
     updateValidationOverlay();
     updateRegionOverlay();
-    // Reset ghost overlay alpha tracking when a new layout is loaded
-    ghostEntityAlphaSaved = null;
-    updateGhostOverlay();
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {
@@ -1033,13 +464,12 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       viewport.fit(true, pxW * 1.1, pxH * 1.2);
       viewport.moveCenter(pxW / 2, pxH / 2);
     }
-    // Re-apply solo-regions dimming after entity layer rebuild
     if (soloRegionsActive) {
       entityLayer.alpha = 0.12;
     }
   }
 
-  // Ctrl+C: copy selection JSON when entities are selected
+  // Ctrl+C / Ctrl+O keyboard shortcuts
   document.addEventListener("keydown", (e) => {
     if (!e.ctrlKey) return;
     if (e.key === "c") {
@@ -1051,7 +481,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       annotationHint.textContent = "Copied!";
       setTimeout(() => { annotationHint.textContent = "Ctrl+C to copy JSON"; }, 2000);
     } else if (e.key === "o") {
-      // Ctrl+O: open snapshot file picker
       e.preventDefault();
       const input = document.createElement("input");
       input.type = "file";
@@ -1062,7 +491,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         try {
           const text = await file.text();
           const snapshot = await decodeSnapshot(text);
-          loadSnapshot(snapshot);
+          snapshotMode.load(snapshot);
         } catch (err) {
           alert(`Failed to load snapshot: ${err}`);
         }
@@ -1090,14 +519,12 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     tabBar.appendChild(tabGenerate);
     tabBar.appendChild(tabCorpus);
 
-    // ---- Panels ----
     const generatePanel = document.createElement("div");
     generatePanel.style.cssText = "flex:1;overflow:hidden;display:flex;flex-direction:column;";
 
     const corpusPanel = document.createElement("div");
     corpusPanel.style.cssText = "flex:1;overflow:hidden;display:none;flex-direction:column;";
 
-    // Make sidebar a flex column
     sidebarEl.style.cssText += ";display:flex;flex-direction:column;padding:0;overflow:hidden;";
     sidebarEl.appendChild(tabBar);
     sidebarEl.appendChild(generatePanel);
@@ -1141,19 +568,23 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       },
     });
 
-    // Wire overlay panel toggles (created above, independent of sidebar)
+    // Wire overlay panel toggles
     debugCb.addEventListener("change", () => {
-      tracePhaseIndex = -1;
+      stepThrough.reset();
+      updateTraceOverlay();
+      updateValidationOverlay();
+      updateRegionOverlay();
+    });
+    stepCb.addEventListener("change", () => {
+      stepThrough.reset();
       updateTraceOverlay();
     });
     valCb.addEventListener("change", updateValidationOverlay);
     regionsCb.addEventListener("change", updateRegionOverlay);
-    ghostCb.addEventListener("change", updateGhostOverlay);
 
     soloRegionsCb.addEventListener("change", () => {
       if (soloRegionsCb.checked) {
         soloRegionsActive = true;
-        // Entering solo mode: save current state
         soloSavedState = {
           colorChecked: colorCb.checked,
           rateChecked: rateCb.checked,
@@ -1162,63 +593,45 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
           entityAlpha: entityLayer.alpha,
         };
 
-        // Turn on SAT zones
         if (!regionsCb.checked) {
           regionsCb.checked = true;
           updateRegionOverlay();
         }
-
-        // Hide item colours
         if (colorCb.checked) {
           colorCb.checked = false;
           setItemColoring(false);
           if (lastLayout) renderLayoutOnCanvas(lastLayout);
         }
-
-        // Hide rate labels
         if (rateCb.checked) {
           rateCb.checked = false;
           setRateOverlay(false);
           if (lastLayout) renderLayoutOnCanvas(lastLayout);
         }
-
-        // Hide validation overlay
         if (valCb.checked) {
           valCb.checked = false;
           updateValidationOverlay();
         }
 
-        // Dim entity layer
         entityLayer.alpha = 0.12;
-
-        // Ensure region overlay is on top after re-render
         updateRegionOverlay();
       } else {
         soloRegionsActive = false;
-        // Exiting solo mode: restore previous state
         if (soloSavedState) {
           entityLayer.alpha = soloSavedState.entityAlpha;
 
-          // Restore regions checkbox
           if (regionsCb.checked !== soloSavedState.regionsChecked) {
             regionsCb.checked = soloSavedState.regionsChecked;
             updateRegionOverlay();
           }
-
-          // Restore validation
           if (valCb.checked !== soloSavedState.valChecked) {
             valCb.checked = soloSavedState.valChecked;
             updateValidationOverlay();
           }
-
-          // Restore item colours
           if (colorCb.checked !== soloSavedState.colorChecked) {
             colorCb.checked = soloSavedState.colorChecked;
             setItemColoring(colorCb.checked);
             if (lastLayout) renderLayoutOnCanvas(lastLayout);
           }
-
-          // Restore rate labels
           if (rateCb.checked !== soloSavedState.rateChecked) {
             rateCb.checked = soloSavedState.rateChecked;
             setRateOverlay(rateCb.checked);

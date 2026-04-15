@@ -8,10 +8,22 @@ export interface FormState {
   belt: string | null;
 }
 
+/** Full list of input pills rendered in the sidebar. */
 export const DEFAULT_INPUTS: string[] = [
   "iron-plate",
   "copper-plate",
   "steel-plate",
+  "stone",
+  "coal",
+  "water",
+  "crude-oil",
+  "iron-ore",
+  "copper-ore",
+];
+
+/** Subset that are checked by default. Plates are left unchecked so
+ * the default view is a "from ore" starting point. */
+export const DEFAULT_CHECKED_INPUTS: string[] = [
   "stone",
   "coal",
   "water",
@@ -32,7 +44,7 @@ export function readUrlState(): FormState {
   const rate = isNaN(rawRate) || rawRate <= 0 ? DEFAULT_RATE : rawRate;
   const machine = params.get("machine");
   const inParam = params.get("in");
-  const inputs = inParam ? inParam.split(",").filter((s) => s.length > 0) : DEFAULT_INPUTS;
+  const inputs = inParam ? inParam.split(",").filter((s) => s.length > 0) : DEFAULT_CHECKED_INPUTS;
   const belt = params.get("belt");
 
   return { item, rate, machine, inputs, belt };
@@ -43,8 +55,8 @@ export function writeUrlState(state: Omit<FormState, "machine"> & { machine: str
     state.item === DEFAULT_ITEM &&
     state.rate === DEFAULT_RATE &&
     state.machine === DEFAULT_MACHINE &&
-    state.inputs.length === DEFAULT_INPUTS.length &&
-    state.inputs.every((v, i) => v === DEFAULT_INPUTS[i]) &&
+    state.inputs.length === DEFAULT_CHECKED_INPUTS.length &&
+    state.inputs.every((v, i) => v === DEFAULT_CHECKED_INPUTS[i]) &&
     !state.belt;
 
   if (isDefault) {
