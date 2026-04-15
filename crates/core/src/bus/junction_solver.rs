@@ -122,10 +122,144 @@ impl GrowingRegion {
         region
     }
 
+    /// Expand the region's bbox by the given per-side deltas, absorb
+    /// every tile inside the new rectangle into the region, and
+    /// recompute the frontiers of already-participating specs. A
+    /// non-participating spec is *only* promoted when its path
+    /// genuinely crosses another participating spec inside the new
+    /// bbox (i.e. they share an interior tile). Specs that just happen
+    /// to pass through the bbox without touching any participating
+    /// path are left as obstacles — promoting them would over-constrain
+    /// the SAT encoder with specs that aren't part of the actual
+    /// crossing being resolved.
+    ///
+    /// This is the growth primitive used by the CEGAR loop: unlike
+    /// `grow()` (which walks each spec's frontier by one step along
+    /// its own axis), `expand_bbox` grows perpendicular to spec axes
+    /// and can absorb perpendicular trunks the seed crossing had never
+    /// heard of — the copper-cable column-4 trunk in the
+    /// tier2_electronic_circuit case being the canonical example.
+    ///
+    /// Returns `true` if the bbox changed.
+    pub fn expand_bbox(
+        &mut self,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+        hard_obstacles: &FxHashSet<(i32, i32)>,
+        strict_obstacles: &FxHashSet<(i32, i32)>,
+    ) -> bool {
+        if left <= 0 && top <= 0 && right <= 0 && bottom <= 0 {
+            return false;
+        }
+        let new_x = self.bbox.x - left.max(0);
+        let new_y = self.bbox.y - top.max(0);
+        let new_w = self.bbox.w + (left.max(0) + right.max(0)) as u32;
+        let new_h = self.bbox.h + (top.max(0) + bottom.max(0)) as u32;
+        self.bbox = Rect {
+            x: new_x,
+            y: new_y,
+            w: new_w,
+            h: new_h,
+        };
+
+        // Absorb every tile in the new bbox into the region's tile set.
+        for dy in 0..new_h as i32 {
+            for dx in 0..new_w as i32 {
+                self.tiles.insert((new_x + dx, new_y + dy));
+            }
+        }
+
+        let in_bbox = |tx: i32, ty: i32| -> bool {
+            tx >= new_x
+                && tx < new_x + new_w as i32
+                && ty >= new_y
+                && ty < new_y + new_h as i32
+        };
+        let in_bbox_range = |path: &[(i32, i32)]| -> Option<(usize, usize)> {
+            let mut first: Option<usize> = None;
+            let mut last: Option<usize> = None;
+            for (i, &(tx, ty)) in path.iter().enumerate() {
+                if in_bbox(tx, ty) {
+                    if first.is_none() {
+                        first = Some(i);
+                    }
+                    last = Some(i);
+                }
+            }
+            match (first, last) {
+                (Some(s), Some(e)) if s < e => Some((s, e)),
+                _ => None,
+            }
+        };
+
+        // 1. Update frontiers for existing participating specs. Keep
+        //    any spec whose in-bbox range is at least 2 tiles and has
+        //    non-collapsed start < end.
+        let mut new_frontiers: FxHashMap<String, (usize, usize)> = FxHashMap::default();
+        let mut kept: Vec<String> = Vec::new();
+        for key in &self.participating {
+            if let Some(path) = routed_paths.get(key) {
+                if let Some(range) = in_bbox_range(path) {
+                    new_frontiers.insert(key.clone(), range);
+                    kept.push(key.clone());
+                    continue;
+                }
+            }
+            // Spec lost its in-bbox presence (shouldn't happen during
+            // monotonic growth, but be defensive): drop it.
+        }
+
+        // 2. Promote a non-participating spec only if its path shares
+        //    at least one in-bbox tile with an existing participating
+        //    spec — that tile is the genuine crossing we want SAT to
+        //    solve jointly. A spec whose path merely passes through
+        //    the bbox without touching any participating path is left
+        //    alone.
+        let kept_tiles: FxHashSet<(i32, i32)> = kept
+            .iter()
+            .filter_map(|k| routed_paths.get(k))
+            .flat_map(|p| {
+                p.iter().copied().filter(|&(tx, ty)| in_bbox(tx, ty))
+            })
+            .collect();
+        let kept_set: FxHashSet<&str> = kept.iter().map(|s| s.as_str()).collect();
+        let mut promoted: Vec<String> = Vec::new();
+        for (key, path) in routed_paths {
+            if kept_set.contains(key.as_str()) {
+                continue;
+            }
+            let Some(range) = in_bbox_range(path) else {
+                continue;
+            };
+            let (start, end) = range;
+            let touches_participating = (start..=end)
+                .any(|i| kept_tiles.contains(&path[i]));
+            if !touches_participating {
+                continue;
+            }
+            new_frontiers.insert(key.clone(), range);
+            promoted.push(key.clone());
+        }
+
+        self.participating = kept;
+        for key in promoted {
+            self.participating.push(key);
+        }
+        self.frontiers = new_frontiers;
+        self.encountered.retain(|k| !self.participating.contains(k));
+
+        self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+        true
+    }
+
     /// Advance each participating spec's frontier by one step in each
     /// direction along its path. Updates the bbox, the tile set, and
     /// the forbidden cache. Returns `true` if any new tile entered the
     /// region.
+    #[allow(dead_code)]
     pub fn grow(
         &mut self,
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
@@ -591,13 +725,26 @@ pub fn solve_crossing(
             });
             return None;
         }
-        if !region.grow(routed_paths, hard_obstacles, strict_obstacles) {
+        // Uniform bbox expansion: +1 on every side each iter. Absorbs
+        // perpendicular trunks the seed crossing never heard of; lets
+        // SAT make joint decisions across the whole absorbed region.
+        // A smarter tap-vs-trunk-aware sequence can replace this once
+        // uniform demonstrates the pipeline is sound.
+        if !region.expand_bbox(
+            1,
+            1,
+            1,
+            1,
+            routed_paths,
+            hard_obstacles,
+            strict_obstacles,
+        ) {
             trace::emit(TraceEvent::JunctionGrowthCapped {
                 tile_x: initial_tile.0,
                 tile_y: initial_tile.1,
                 iters: iter,
                 region_tiles: region.tile_count(),
-                reason: "frontier_exhausted".to_string(),
+                reason: "bbox_expand_failed".to_string(),
             });
             return None;
         }
