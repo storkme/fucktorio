@@ -1321,12 +1321,27 @@ pub fn route_bus_ghost(
             &spec_exit_dirs,
             &entities,
             &strategies,
+            &crossing_set,
         ) else {
             remaining_crossings.insert(tile);
             continue;
         };
 
         let footprint = sol.footprint;
+        // Mark any other crossing tiles inside this zone's footprint as
+        // handled. A grown zone (e.g. a 4-tile wide SAT solution) may span
+        // several original crossing tiles; if we let the loop visit them
+        // independently the solver produces a second, broken solution that
+        // only partially overlaps the first (e.g. a UG output with no input).
+        for &ct in &crossing_set {
+            if ct.0 >= footprint.x
+                && ct.0 < footprint.x + footprint.w as i32
+                && ct.1 >= footprint.y
+                && ct.1 < footprint.y + footprint.h as i32
+            {
+                corridor_handled.insert(ct);
+            }
+        }
         trace::emit(trace::TraceEvent::GhostClusterSolved {
             cluster_id: template_count,
             zone_x: footprint.x,
@@ -1353,7 +1368,47 @@ pub fn route_bus_ghost(
             w: footprint.w,
             h: footprint.h,
         };
-        occupancy.release_for_pertile_template(&release_rect);
+        // Only release trunk Permanent entities for specs that are actually
+        // participating in this crossing zone. Non-participating trunk stubs
+        // (e.g. 1-tile balancer output columns whose path sits inside the
+        // zone bbox but weren't an initial crossing spec) are left in place
+        // so the zone solution routes the participating specs around them
+        // underground without orphaning the stub.
+        //
+        // Note: trunk entities share a coarse segment_id ("trunk:{item}"),
+        // so we key the allowlist by tile position derived from each
+        // participating spec's routed path.
+        // Only preserve 1-tile trunk stubs that are NOT participating in this
+        // zone. These balancer output column stubs sit inside the crossing
+        // zone bbox but the SAT routes the participating specs underground past
+        // them — the stub entity must stay so the belt chain above it is not
+        // broken. All other trunks in the footprint are releasable as normal.
+        let preserve_trunk_tiles: rustc_hash::FxHashSet<(i32, i32)> = routed_paths
+            .iter()
+            .filter(|(key, path)| {
+                path.len() == 1
+                    && !keys_at_tile.contains(&key.as_str())
+                    && (key.starts_with("trunk:") || key.starts_with("tapoff:"))
+            })
+            .flat_map(|(_, path)| path.iter().copied())
+            .filter(|t| release_rect.contains(t.0, t.1))
+            .collect();
+        // Only release ghost surface entities that lie on a participating
+        // spec path. Ghost entities belonging to non-participating specs
+        // (e.g. a copper-cable tap whose path runs through the zone bbox
+        // but is NOT being rerouted) must stay so the belt chain is intact.
+        let releasable_ghost_tiles: rustc_hash::FxHashSet<(i32, i32)> = keys_at_tile
+            .iter()
+            .filter_map(|k| routed_paths.get(*k))
+            .flatten()
+            .filter(|&&t| release_rect.contains(t.0, t.1))
+            .copied()
+            .collect();
+        occupancy.release_for_pertile_template(
+            &release_rect,
+            Some(&releasable_ghost_tiles),
+            Some(&preserve_trunk_tiles),
+        );
         for ent in sol.entities {
             let tile = (ent.x, ent.y);
             if occupancy.is_hard_obstacle(tile) {

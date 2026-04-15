@@ -36,6 +36,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing};
+use crate::bus::region_walker::{walk_affected, AffectedPath, ShadowView, WalkResult};
 use crate::models::{EntityDirection, PlacedEntity, PortPoint};
 use crate::trace::{self, TraceEvent};
 
@@ -277,6 +278,48 @@ impl GrowingRegion {
         }
     }
 
+    /// Promote any encountered spec whose *entire* routed path is already
+    /// inside the current tile set. These specs are "fully engulfed" —
+    /// every tile they occupy is within the zone bbox — and must be routed
+    /// by the SAT solver or they become orphaned crossing specs.
+    ///
+    /// Typical case: a 1-tile trunk column that sits directly on the path
+    /// of a longer tap. The tap's crossing zone grows to include that tile,
+    /// which causes the trunk to appear in `encountered`. Without promotion
+    /// the SAT doesn't know about the trunk and places an entity that
+    /// conflicts with it.
+    #[allow(dead_code)]
+    pub fn promote_fully_enclosed(
+        &mut self,
+        routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+        hard_obstacles: &FxHashSet<(i32, i32)>,
+        strict_obstacles: &FxHashSet<(i32, i32)>,
+    ) {
+        let to_promote: Vec<String> = self
+            .encountered
+            .iter()
+            .filter(|key| {
+                routed_paths
+                    .get(key.as_str())
+                    .is_some_and(|path| path.iter().all(|t| self.tiles.contains(t)))
+            })
+            .cloned()
+            .collect();
+        if to_promote.is_empty() {
+            return;
+        }
+        for key in &to_promote {
+            if let Some(path) = routed_paths.get(key.as_str()) {
+                let start = 0;
+                let end = path.len().saturating_sub(1);
+                self.frontiers.insert(key.clone(), (start, end));
+            }
+            self.participating.push(key.clone());
+        }
+        self.encountered.retain(|k| !to_promote.contains(k));
+        self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+    }
+
     /// Materialize a `Junction` snapshot suitable for strategy input.
     /// Entry/exit points for each participating spec are the first and
     /// last tiles of its current frontier range, with directions taken
@@ -444,6 +487,11 @@ pub fn solve_crossing(
     spec_exit_dirs: &FxHashMap<String, EntityDirection>,
     placed_entities: &[crate::models::PlacedEntity],
     strategies: &[&dyn JunctionStrategy],
+    // All crossing tiles in the layout. Used to detect when a spec's
+    // frontier exit lands on another unresolved crossing — in that case
+    // the zone defers (grows one more step) so the solution exits beyond
+    // all consecutive crossings rather than stopping mid-run.
+    all_crossings: &FxHashSet<(i32, i32)>,
 ) -> Option<JunctionSolution> {
     let mut region = GrowingRegion::from_crossing(
         initial_tile,
@@ -467,6 +515,61 @@ pub fn solve_crossing(
         };
         for strategy in strategies {
             if let Some(sol) = strategy.try_solve(&ctx) {
+                // Deferred-exit check: if any participating spec currently
+                // exits at another unresolved crossing tile (not the initial
+                // tile), the solution would leave a consecutive crossing
+                // unresolved. Grow one more step so the spec's frontier
+                // extends past all consecutive crossings before we commit.
+                let exits_at_crossing = ctx.junction.specs.iter().any(|s| {
+                    let exit = (s.exit.x, s.exit.y);
+                    exit != initial_tile && all_crossings.contains(&exit)
+                });
+                if exits_at_crossing {
+                    break; // skip this iter's solution; fall through to grow
+                }
+
+                // Walker veto: reject solutions that would break a routed
+                // path whose tiles touch the region's bbox (or its 1-tile
+                // perimeter). Catches the tier2_electronic_circuit class
+                // where SAT is locally valid but breaks a perpendicular
+                // trunk the region was unaware of.
+                let bbox = region.bbox;
+                let released = bbox_tiles_set(bbox);
+                let affected: Vec<AffectedPath<'_>> = routed_paths
+                    .iter()
+                    .filter_map(|(seg, tiles)| {
+                        if tiles.iter().any(|&t| near_bbox(bbox, t)) {
+                            let item = spec_items
+                                .get(seg)
+                                .map(|s| s.as_str())
+                                .unwrap_or("");
+                            Some(AffectedPath {
+                                segment_id: seg.as_str(),
+                                tiles: tiles.as_slice(),
+                                item,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let shadow = ShadowView::build(placed_entities, &released, &sol.entities);
+                if let WalkResult::Broken { breaks } = walk_affected(&affected, &shadow) {
+                    if let Some(first) = breaks.first() {
+                        trace::emit(TraceEvent::RegionWalkerVeto {
+                            tile_x: initial_tile.0,
+                            tile_y: initial_tile.1,
+                            strategy: strategy.name().to_string(),
+                            growth_iter: iter,
+                            broken_segment: first.segment_id.clone(),
+                            break_tile_x: first.tile.0,
+                            break_tile_y: first.tile.1,
+                            break_count: breaks.len(),
+                        });
+                    }
+                    continue; // try the next strategy; if all fail, grow
+                }
+
                 trace::emit(TraceEvent::JunctionSolved {
                     tile_x: initial_tile.0,
                     tile_y: initial_tile.1,
@@ -508,4 +611,30 @@ pub fn solve_crossing(
         reason: "iter_cap".to_string(),
     });
     None
+}
+
+/// Every tile inside `bbox` (inclusive on the min side, exclusive on the
+/// max side, per `Rect`'s convention). Used as the "released set" when
+/// building a walker shadow view — a strategy's solution is authoritative
+/// over every tile in its footprint.
+fn bbox_tiles_set(bbox: Rect) -> FxHashSet<(i32, i32)> {
+    let mut out = FxHashSet::default();
+    for dy in 0..bbox.h as i32 {
+        for dx in 0..bbox.w as i32 {
+            out.insert((bbox.x + dx, bbox.y + dy));
+        }
+    }
+    out
+}
+
+/// True iff `(x, y)` falls inside `bbox` expanded by one tile on each
+/// side. The walker uses this to decide which routed paths to check —
+/// anything one tile beyond the bbox can still interact with the
+/// region's boundary entities (e.g. a sideload onto a UG input).
+fn near_bbox(bbox: Rect, (x, y): (i32, i32)) -> bool {
+    let min_x = bbox.x - 1;
+    let min_y = bbox.y - 1;
+    let max_x = bbox.x + bbox.w as i32; // inclusive upper bound with +1 perimeter
+    let max_y = bbox.y + bbox.h as i32;
+    x >= min_x && x <= max_x && y >= min_y && y <= max_y
 }
