@@ -288,6 +288,7 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         spec_belt_tiers: &FxHashMap<String, BeltTier>,
         spec_items: &FxHashMap<String, String>,
+        spec_exit_dirs: &FxHashMap<String, EntityDirection>,
     ) -> Junction {
         let mut specs: Vec<SpecCrossing> = Vec::with_capacity(self.participating.len());
         for key in &self.participating {
@@ -297,8 +298,9 @@ impl GrowingRegion {
             let Some(&(start, end)) = self.frontiers.get(key) else {
                 continue;
             };
-            let entry_dir = direction_at(path, start);
-            let exit_dir = direction_at(path, end);
+            let dir_hint = spec_exit_dirs.get(key).copied();
+            let entry_dir = direction_at(path, start, dir_hint);
+            let exit_dir = direction_at(path, end, dir_hint);
             let entry = PortPoint {
                 x: path[start].0,
                 y: path[start].1,
@@ -334,7 +336,13 @@ impl GrowingRegion {
 
 /// Direction of flow at path index `idx`. Looks at the next step when
 /// possible, falling back to the previous step at the tail of the path.
-fn direction_at(path: &[(i32, i32)], idx: usize) -> EntityDirection {
+/// `fallback` is used when the path is a single tile (no neighbours to
+/// derive direction from) — callers should pass the spec's `exit_dir`.
+fn direction_at(
+    path: &[(i32, i32)],
+    idx: usize,
+    fallback: Option<EntityDirection>,
+) -> EntityDirection {
     if idx + 1 < path.len() {
         let (x0, y0) = path[idx];
         let (x1, y1) = path[idx + 1];
@@ -344,7 +352,7 @@ fn direction_at(path: &[(i32, i32)], idx: usize) -> EntityDirection {
         let (x1, y1) = path[idx];
         step_direction(x1 - x0, y1 - y0)
     } else {
-        EntityDirection::East
+        fallback.unwrap_or(EntityDirection::East)
     }
 }
 
@@ -433,6 +441,7 @@ pub fn solve_crossing(
     unreleasable_obstacles: &FxHashSet<(i32, i32)>,
     spec_belt_tiers: &FxHashMap<String, BeltTier>,
     spec_items: &FxHashMap<String, String>,
+    spec_exit_dirs: &FxHashMap<String, EntityDirection>,
     placed_entities: &[crate::models::PlacedEntity],
     strategies: &[&dyn JunctionStrategy],
 ) -> Option<JunctionSolution> {
@@ -445,7 +454,7 @@ pub fn solve_crossing(
     );
 
     for iter in 0..MAX_GROWTH_ITERS {
-        let junction = region.to_junction(routed_paths, spec_belt_tiers, spec_items);
+        let junction = region.to_junction(routed_paths, spec_belt_tiers, spec_items, spec_exit_dirs);
         let ctx = JunctionStrategyContext {
             junction: &junction,
             region: &region,

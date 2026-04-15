@@ -1243,6 +1243,10 @@ pub fn route_bus_ghost(
         .iter()
         .map(|s| (s.key.clone(), s.item.clone()))
         .collect();
+    let spec_exit_dirs: FxHashMap<String, EntityDirection> = specs
+        .iter()
+        .filter_map(|s| s.exit_dir.map(|d| (s.key.clone(), d)))
+        .collect();
     // Build the obstacle set seen by junction strategies. The narrow
     // `hard` set only covers row-template machines and fluid lanes;
     // SAT (and any future strategy) needs the full picture so it
@@ -1314,6 +1318,7 @@ pub fn route_bus_ghost(
             &unreleasable_obstacles,
             &spec_belt_tiers,
             &spec_items,
+            &spec_exit_dirs,
             &entities,
             &strategies,
         ) else {
@@ -1588,6 +1593,10 @@ fn classify_crossing(
                 } else if i > 0 {
                     let (px2, py2) = path[i - 1];
                     step_direction(px - px2, py - py2)
+                } else if let Some(d) = spec.exit_dir {
+                    // 1-tile path: no neighbour to derive direction from.
+                    // Use the explicit exit_dir set at emission time.
+                    d
                 } else {
                     continue;
                 };
