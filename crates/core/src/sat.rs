@@ -1651,4 +1651,126 @@ mod tests {
             );
         }
     }
+
+    /// 3×4 grown-region experiment for the tier2_electronic_circuit
+    /// sideload bug. Bbox x:3-5, y:9-12. Three item pairs cross:
+    ///   - iron-plate: enters left (3,10) East, exits right (5,10) East
+    ///   - copper-cable col-3: enters top (3,9) South, exits bottom (3,12) South
+    ///   - copper-cable col-4: enters top (4,9) South, exits right (5,11) East
+    ///
+    /// The question is whether the existing SAT encoder can find a
+    /// routing that avoids sideloading (3,9) south-belt into a putative
+    /// iron-plate UG input at (3,10). A valid solution exists by
+    /// undergrounding col-3 copper-cable around the iron-plate crossing.
+    #[test]
+    fn test_3x4_tier2_ec_grown_region() {
+        let zone = CrossingZone {
+            x: 3,
+            y: 9,
+            width: 3,
+            height: 4,
+            boundaries: vec![
+                ZoneBoundary {
+                    x: 3, y: 10,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 5, y: 10,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: false,
+                },
+                ZoneBoundary {
+                    x: 3, y: 9,
+                    direction: EntityDirection::South,
+                    item: "copper-cable".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 3, y: 12,
+                    direction: EntityDirection::South,
+                    item: "copper-cable".into(),
+                    is_input: false,
+                },
+                ZoneBoundary {
+                    x: 4, y: 9,
+                    direction: EntityDirection::South,
+                    item: "copper-cable".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 5, y: 11,
+                    direction: EntityDirection::East,
+                    item: "copper-cable".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![],
+        };
+
+        let result = solve_crossing_zone(&zone, 7, "fast-transport-belt");
+        match &result {
+            Some(sol) => eprintln!(
+                "\n3×4 SAT SOLVED: {} entities ({} vars, {} clauses, {}µs)",
+                sol.entities.len(),
+                sol.stats.variables,
+                sol.stats.clauses,
+                sol.stats.solve_time_us,
+            ),
+            None => eprintln!("\n3×4 SAT returned None (UNSAT or encoder limitation)"),
+        }
+        let solution = result.expect("3×4 grown region should be solvable");
+
+        let by_pos: std::collections::HashMap<(i32, i32), &crate::models::PlacedEntity> =
+            solution.entities.iter().map(|e| ((e.x, e.y), e)).collect();
+
+        eprintln!("       x=3        x=4        x=5");
+        for wy in 9..=12 {
+            eprint!("y={wy:<2} ");
+            for wx in 3..=5 {
+                if let Some(e) = by_pos.get(&(wx, wy)) {
+                    let carry = e.carries.as_deref().unwrap_or("??");
+                    let tag = &carry[..2];
+                    let sym = match (&e.direction, &e.io_type) {
+                        (d, Some(t)) if t == "input" => {
+                            let arrow = match d {
+                                EntityDirection::North => "↑",
+                                EntityDirection::East => "→",
+                                EntityDirection::South => "↓",
+                                EntityDirection::West => "←",
+                            };
+                            format!("UGin{arrow}{tag}")
+                        }
+                        (d, Some(_)) => {
+                            let arrow = match d {
+                                EntityDirection::North => "↑",
+                                EntityDirection::East => "→",
+                                EntityDirection::South => "↓",
+                                EntityDirection::West => "←",
+                            };
+                            format!("UGot{arrow}{tag}")
+                        }
+                        (EntityDirection::North, _) => format!("↑({tag})"),
+                        (EntityDirection::South, _) => format!("↓({tag})"),
+                        (EntityDirection::East,  _) => format!("→({tag})"),
+                        (EntityDirection::West,  _) => format!("←({tag})"),
+                    };
+                    eprint!("{sym:<10} ");
+                } else {
+                    eprint!(".          ");
+                }
+            }
+            eprintln!();
+        }
+        eprintln!();
+
+        for e in &solution.entities {
+            eprintln!(
+                "  ({},{}) {} {:?} carries={:?} io={:?}",
+                e.x, e.y, e.name, e.direction, e.carries, e.io_type
+            );
+        }
+    }
 }

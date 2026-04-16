@@ -1243,6 +1243,10 @@ pub fn route_bus_ghost(
         .iter()
         .map(|s| (s.key.clone(), s.item.clone()))
         .collect();
+    let spec_exit_dirs: FxHashMap<String, EntityDirection> = specs
+        .iter()
+        .filter_map(|s| s.exit_dir.map(|d| (s.key.clone(), d)))
+        .collect();
     // Build the obstacle set seen by junction strategies. The narrow
     // `hard` set only covers row-template machines and fluid lanes;
     // SAT (and any future strategy) needs the full picture so it
@@ -1314,14 +1318,30 @@ pub fn route_bus_ghost(
             &unreleasable_obstacles,
             &spec_belt_tiers,
             &spec_items,
+            &spec_exit_dirs,
             &entities,
             &strategies,
+            &crossing_set,
         ) else {
             remaining_crossings.insert(tile);
             continue;
         };
 
         let footprint = sol.footprint;
+        // Mark any other crossing tiles inside this zone's footprint as
+        // handled. A grown zone (e.g. a 4-tile wide SAT solution) may span
+        // several original crossing tiles; if we let the loop visit them
+        // independently the solver produces a second, broken solution that
+        // only partially overlaps the first (e.g. a UG output with no input).
+        for &ct in &crossing_set {
+            if ct.0 >= footprint.x
+                && ct.0 < footprint.x + footprint.w as i32
+                && ct.1 >= footprint.y
+                && ct.1 < footprint.y + footprint.h as i32
+            {
+                corridor_handled.insert(ct);
+            }
+        }
         trace::emit(trace::TraceEvent::GhostClusterSolved {
             cluster_id: template_count,
             zone_x: footprint.x,
@@ -1348,7 +1368,44 @@ pub fn route_bus_ghost(
             w: footprint.w,
             h: footprint.h,
         };
-        occupancy.release_for_pertile_template(&release_rect);
+        // Preserve every tile in the footprint that the strategy is
+        // NOT explicitly stamping a new entity at. The strategy's
+        // solution is authoritative *exactly* over its proposed
+        // tiles; every other tile's existing claim (trunk belt,
+        // balancer splitter, non-participating tap, whatever) must
+        // remain intact so the chain around the crossing stays
+        // connected.
+        //
+        // This is the minimum-authority rule: we only touch what
+        // the solver explicitly promises to replace. Without it,
+        // uniformly-grown bboxes wipe out unrelated trunk/splitter
+        // entities just because they sit inside the rectangle.
+        let proposed_tiles: rustc_hash::FxHashSet<(i32, i32)> =
+            sol.entities.iter().map(|e| (e.x, e.y)).collect();
+        let preserve_trunk_tiles: rustc_hash::FxHashSet<(i32, i32)> =
+            (0..release_rect.h as i32)
+                .flat_map(|dy| {
+                    (0..release_rect.w as i32)
+                        .map(move |dx| (release_rect.x + dx, release_rect.y + dy))
+                })
+                .filter(|t| !proposed_tiles.contains(t))
+                .collect();
+        // Only release ghost surface entities that lie on a participating
+        // spec path. Ghost entities belonging to non-participating specs
+        // (e.g. a copper-cable tap whose path runs through the zone bbox
+        // but is NOT being rerouted) must stay so the belt chain is intact.
+        let releasable_ghost_tiles: rustc_hash::FxHashSet<(i32, i32)> = keys_at_tile
+            .iter()
+            .filter_map(|k| routed_paths.get(*k))
+            .flatten()
+            .filter(|&&t| release_rect.contains(t.0, t.1))
+            .copied()
+            .collect();
+        occupancy.release_for_pertile_template(
+            &release_rect,
+            Some(&releasable_ghost_tiles),
+            Some(&preserve_trunk_tiles),
+        );
         for ent in sol.entities {
             let tile = (ent.x, ent.y);
             if occupancy.is_hard_obstacle(tile) {
@@ -1588,6 +1645,10 @@ fn classify_crossing(
                 } else if i > 0 {
                     let (px2, py2) = path[i - 1];
                     step_direction(px - px2, py - py2)
+                } else if let Some(d) = spec.exit_dir {
+                    // 1-tile path: no neighbour to derive direction from.
+                    // Use the explicit exit_dir set at emission time.
+                    d
                 } else {
                     continue;
                 };

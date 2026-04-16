@@ -384,7 +384,25 @@ impl Occupancy {
     /// or fluid lanes that the template can't displace.
     ///
     /// Returns the number of claims released.
-    pub fn release_for_pertile_template(&mut self, zone: &Rect) -> usize {
+    ///
+    /// Releases ghost surface and trunk/tapoff permanent entities in `zone`.
+    ///
+    /// `preserve_trunk_tiles`: when `Some`, tiles in this set are kept even
+    /// if they carry a trunk/tapoff Permanent claim — use this to preserve
+    /// 1-tile trunk stubs that the crossing zone solution routes around
+    /// underground rather than replacing. `None` releases all trunk entities
+    /// in the zone (original behaviour).
+    ///
+    /// GhostSurface entities are always fully released within the zone.
+    ///
+    /// Note: trunk entities share a coarse segment_id (`"trunk:{item}"`),
+    /// so the preserve set is keyed by tile position, not segment_id.
+    pub fn release_for_pertile_template(
+        &mut self,
+        zone: &Rect,
+        releasable_ghost_tiles: Option<&rustc_hash::FxHashSet<(i32, i32)>>,
+        preserve_trunk_tiles: Option<&rustc_hash::FxHashSet<(i32, i32)>>,
+    ) -> usize {
         let to_remove: Vec<(i32, i32)> = self
             .claims
             .iter()
@@ -393,12 +411,21 @@ impl Occupancy {
                     return false;
                 }
                 match claim {
-                    Claim::GhostSurface { .. } => true,
-                    Claim::Permanent { entity_idx } => self
-                        .entities
-                        .get(*entity_idx)
-                        .and_then(|e| e.segment_id.as_deref())
-                        .is_some_and(|s| s.starts_with("trunk:") || s.starts_with("tapoff:")),
+                    Claim::GhostSurface { .. } => {
+                        releasable_ghost_tiles.is_none_or(|set| set.contains(*tile))
+                    }
+                    Claim::Permanent { entity_idx } => {
+                        let seg = self
+                            .entities
+                            .get(*entity_idx)
+                            .and_then(|e| e.segment_id.as_deref());
+                        let Some(seg) = seg else { return false; };
+                        if !seg.starts_with("trunk:") && !seg.starts_with("tapoff:") {
+                            return false;
+                        }
+                        // Release UNLESS this tile is in the preserve set.
+                        preserve_trunk_tiles.is_none_or(|set| !set.contains(*tile))
+                    }
                     _ => false,
                 }
             })
@@ -586,7 +613,7 @@ mod tests {
         occ.place(belt(4, 0, "junction:e"), ClaimKindTag::Template).unwrap();
 
         let zone = Rect { x: 0, y: 0, w: 5, h: 1 };
-        let n = occ.release_for_pertile_template(&zone);
+        let n = occ.release_for_pertile_template(&zone, None, None);
         assert_eq!(n, 3, "ghost + trunk + tapoff released");
 
         assert!(occ.is_free((0, 0)));
@@ -602,7 +629,7 @@ mod tests {
         hard.insert((0, 0));
         let mut occ = Occupancy::new(hard, Vec::new(), Vec::new());
         let zone = Rect { x: 0, y: 0, w: 1, h: 1 };
-        let n = occ.release_for_pertile_template(&zone);
+        let n = occ.release_for_pertile_template(&zone, None, None);
         assert_eq!(n, 0);
         assert!(occ.is_hard_obstacle((0, 0)));
     }

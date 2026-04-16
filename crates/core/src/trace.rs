@@ -336,6 +336,24 @@ pub enum TraceEvent {
         region_tiles: usize,
         reason: String,
     },
+    // Emitted when the region walker rejects a strategy's proposed
+    // solution because it would break a routed path that touches the
+    // region's footprint. Caller treats this the same as the strategy
+    // returning `None`: fall through to the next strategy, and if all
+    // strategies fail (or are vetoed), grow and retry.
+    RegionWalkerVeto {
+        tile_x: i32,
+        tile_y: i32,
+        strategy: String,
+        growth_iter: usize,
+        /// Segment id of the first broken path (there may be more).
+        broken_segment: String,
+        /// Tile where the walker's check fired for that path.
+        break_tile_x: i32,
+        break_tile_y: i32,
+        /// Total number of breaks (one per affected path that failed).
+        break_count: usize,
+    },
 
     // Phase-1 instrumentation: emitted after all ghost specs are routed but
     // before crossing resolution. Reports per-tile axis occupancy so we can

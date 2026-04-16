@@ -31,6 +31,7 @@ pub mod ghost_router;
 pub(crate) mod junction;
 pub(crate) mod junction_sat_strategy;
 pub(crate) mod junction_solver;
+pub(crate) mod region_walker;
 pub(crate) mod lane_order;
 pub mod lane_planner;
 pub mod layout;
