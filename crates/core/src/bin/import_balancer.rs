@@ -227,7 +227,9 @@ fn entity_tile(e: &RawEntity) -> (i32, i32) {
     ((e.x - 0.5).round() as i32, (e.y - 0.5).round() as i32)
 }
 
-fn identify_ports(entities: &[RawEntity]) -> (Vec<(i32, i32)>, Vec<(i32, i32)>) {
+type TilePair = (Vec<(i32, i32)>, Vec<(i32, i32)>);
+
+fn identify_ports(entities: &[RawEntity]) -> TilePair {
     let conveyors: Vec<_> = entities
         .iter()
         .filter(|e| e.name == "transport-belt" || e.name == "splitter")
@@ -409,10 +411,8 @@ fn pair_ug_belts(entities: &[TemplateEntity]) -> FxHashMap<(i32, i32), (i32, i32
                 if rx != 0 || (ry > 0) != (dy > 0) { continue; }
                 ry.abs()
             };
-            if dist > 1 {
-                if best.map_or(true, |(_, bd)| dist < bd) {
-                    best = Some(((out.x, out.y), dist));
-                }
+            if dist > 1 && best.is_none_or(|(_, bd)| dist < bd) {
+                best = Some(((out.x, out.y), dist));
             }
         }
 
