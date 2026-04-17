@@ -302,23 +302,28 @@ export function initCorpusPanel(
 
   panel.appendChild(pasteSection);
 
+  let pasteGen = 0;
   pasteArea.addEventListener("input", () => {
     const val = pasteArea.value.trim();
+    const gen = ++pasteGen;
     if (!val) {
       pasteArea.classList.remove("error");
       pasteError.style.display = "none";
       return;
     }
-    try {
-      const layout = parseBlueprint(val);
-      pasteArea.classList.remove("error");
-      pasteError.style.display = "none";
-      onRender(layout);
-    } catch (err) {
-      pasteArea.classList.add("error");
-      pasteError.textContent = String(err);
-      pasteError.style.display = "block";
-    }
+    parseBlueprint(val)
+      .then((layout) => {
+        if (gen !== pasteGen) return;
+        pasteArea.classList.remove("error");
+        pasteError.style.display = "none";
+        onRender(layout);
+      })
+      .catch((err) => {
+        if (gen !== pasteGen) return;
+        pasteArea.classList.add("error");
+        pasteError.textContent = String(err);
+        pasteError.style.display = "block";
+      });
   });
 
   // ---- Filters section ----

@@ -23,6 +23,8 @@ import { createIssuesDialog } from "./ui/issuesDialog";
 import { createInspector } from "./ui/inspector";
 import { createSnapshotMode } from "./ui/snapshotMode";
 import { createStepThrough } from "./ui/stepThrough";
+import { attachBusyOverlay } from "./ui/busyOverlay";
+import { renderLayoutPhaseAnimated, type PhaseAnimationHandle } from "./renderer/phaseAnimation";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -85,6 +87,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const { app, viewport } = await createApp(container);
   drawGrid(viewport);
   drawGraph(viewport, null);
+
+  attachBusyOverlay(container);
 
   debugState.create();
 
@@ -191,6 +195,11 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       : null;
 
     if (snapshot) {
+      // Step-through is about to replace entities wholesale; stop any
+      // in-progress phase animation so its ticker doesn't write alphas on
+      // about-to-be-destroyed graphics.
+      phaseAnimHandle?.cancel();
+      phaseAnimHandle = null;
       snapshotActive = true;
       const ctrl = renderLayout(
         { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
@@ -245,6 +254,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let valOverlayLayer: Container | null = null;
   let valCircleMap: Map<string, Graphics[]> = new Map();
   let cachedValidationIssues: ValidationIssue[] | null = null;
+  let validationInFlightFor: LayoutResult | null = null;
 
   let regionOverlayLayer: Container | null = null;
   let regionHitTest: ((wx: number, wy: number) => RegionOverlayItem | null) | null = null;
@@ -263,12 +273,26 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     issuesDialog.clearPulse();
     issuesDialog.setCircleMap(valCircleMap);
 
-    if (lastLayout && !cachedValidationIssues) {
-      try {
-        cachedValidationIssues = engine.validateLayout(lastLayout, null);
-      } catch {
-        cachedValidationIssues = [];
-      }
+    // If we don't have cached issues yet for the current layout, kick off a
+    // validate in the worker and re-render when it lands. Guard against stale
+    // results by checking lastLayout identity when the promise resolves.
+    if (lastLayout && !cachedValidationIssues && validationInFlightFor !== lastLayout) {
+      const target = lastLayout;
+      validationInFlightFor = target;
+      engine
+        .validateLayout(target, null)
+        .then((issues) => {
+          if (lastLayout !== target) return; // superseded
+          cachedValidationIssues = issues;
+          validationInFlightFor = null;
+          updateValidationOverlay();
+        })
+        .catch(() => {
+          if (lastLayout !== target) return;
+          cachedValidationIssues = [];
+          validationInFlightFor = null;
+          updateValidationOverlay();
+        });
     }
 
     sidebarCtrl?.updateValidation(cachedValidationIssues ?? [], panToTile);
@@ -336,6 +360,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   let lastLayout: LayoutResult | null = null;
   let selectionCtrl: SelectionController | null = null;
+  let phaseAnimHandle: PhaseAnimationHandle | null = null;
 
   const snapshotMode = createSnapshotMode({
     sidebarEl: document.getElementById("sidebar"),
@@ -404,6 +429,9 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   window.addEventListener("blur", () => viewport.plugins.resume("drag"));
 
   function renderGraph(result: SolverResult | null): void {
+    // Stop any in-flight phase animation before we destroy its graphics.
+    phaseAnimHandle?.cancel();
+    phaseAnimHandle = null;
     entityLayer.removeChildren();
     drawGraph(viewport, result);
     legendEl.style.display = "none";
@@ -445,11 +473,26 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     snapshotActive = false;
     prevSnapshotEntities = null;
     if (selectionCtrl) { selectionCtrl.destroy(); selectionCtrl = null; }
+    phaseAnimHandle?.cancel();
+    phaseAnimHandle = null;
     annotationBar.style.display = "none";
     annotationNote.value = "";
     cachedValidationIssues = null;
     drawGraph(viewport, null);
-    const ctrl = renderLayout(layout, entityLayer, onHover, onSelect);
+
+    const traceEvents = Array.isArray(layout.trace) ? layout.trace : [];
+    const hasSnapshots = traceEvents.some(
+      (e) => (e as { phase?: string }).phase === "PhaseSnapshot",
+    );
+
+    let ctrl;
+    if (hasSnapshots) {
+      const out = renderLayoutPhaseAnimated(layout, entityLayer, onHover, onSelect, app);
+      ctrl = out.controller;
+      phaseAnimHandle = out.handle;
+    } else {
+      ctrl = renderLayout(layout, entityLayer, onHover, onSelect);
+    }
     inspector.setHighlightController(ctrl);
     selectionCtrl = createSelectionController(app.canvas, viewport, entityLayer, layout, onSelectionChange);
     buildLegend(layout);

@@ -344,13 +344,16 @@ export function renderSidebar(
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let previousItem = urlState.item;
   let currentLayout: LayoutResult | null = null;
+  let solveGeneration = 0;
 
   function scheduleAutoSolve(): void {
     if (debounceTimer !== null) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(runSolve, 150);
+    debounceTimer = setTimeout(() => {
+      runSolve().catch((err) => console.error("runSolve failed:", err));
+    }, 150);
   }
 
-  function runSolve(): void {
+  async function runSolve(): Promise<void> {
     const targetItem = itemInput.value.trim();
     const targetRate = parseFloat(rateInput.value);
     const machineEntity = machineSelect.value;
@@ -384,17 +387,16 @@ export function renderSidebar(
       belt: beltSelect.value || null,
     });
 
+    const gen = ++solveGeneration;
     resultContainer.innerHTML = "";
     currentLayout = null;
     blueprintSection.style.display = "none";
+
     let result: SolverResult;
     try {
-      result = engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
-      renderResult(resultContainer, result);
-      callbacks.renderGraph(result);
-      const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
-      if (solverCount) solverCount.textContent = `${totalMachines} machines`;
+      result = await engine.solve(targetItem, targetRate, availableInputs, machineSelect.value);
     } catch (err) {
+      if (gen !== solveGeneration) return;
       callbacks.renderGraph(null);
       if (solverCount) solverCount.textContent = "error";
       const errDiv = document.createElement("div");
@@ -403,39 +405,49 @@ export function renderSidebar(
       resultContainer.appendChild(errDiv);
       return;
     }
+    if (gen !== solveGeneration) return;
 
-    // Build the layout directly — no explicit button needed since
-    // scheduleAutoSolve already debounces input changes.
+    renderResult(resultContainer, result);
+    callbacks.renderGraph(result);
+    const totalMachines = result.machines.reduce((sum, m) => sum + Math.ceil(m.count), 0);
+    if (solverCount) solverCount.textContent = `${totalMachines} machines`;
+
+    let layout: LayoutResult;
     try {
       const maxTier = beltSelect.value || undefined;
-      currentLayout = engine.buildLayoutTraced(result, maxTier);
-      setRecipeFlows(result.machines);
-      callbacks.renderLayout(currentLayout);
-      if (currentLayout.warnings?.length) {
-        for (const w of currentLayout.warnings) {
-          const wDiv = document.createElement("div");
-          wDiv.className = "sb-warning";
-          wDiv.textContent = `\u26A0 ${w}`;
-          resultContainer.appendChild(wDiv);
-        }
-        blueprintSection.style.display = "none";
-      } else {
-        blueprintSection.style.display = "flex";
-      }
-      if (currentLayout.trace?.length && options?.getDebugMode?.()) {
-        resultContainer.appendChild(renderDebugPanel(currentLayout.trace));
-      }
+      layout = await engine.buildLayoutTraced(result, maxTier);
     } catch (err) {
+      if (gen !== solveGeneration) return;
       const errDiv = document.createElement("div");
       errDiv.className = "sb-result-error";
       errDiv.textContent = `Layout error: ${err}`;
       resultContainer.appendChild(errDiv);
+      return;
+    }
+    if (gen !== solveGeneration) return;
+
+    currentLayout = layout;
+    setRecipeFlows(result.machines);
+    callbacks.renderLayout(layout);
+    if (layout.warnings?.length) {
+      for (const w of layout.warnings) {
+        const wDiv = document.createElement("div");
+        wDiv.className = "sb-warning";
+        wDiv.textContent = `\u26A0 ${w}`;
+        resultContainer.appendChild(wDiv);
+      }
+      blueprintSection.style.display = "none";
+    } else {
+      blueprintSection.style.display = "flex";
+    }
+    if (layout.trace?.length && options?.getDebugMode?.()) {
+      resultContainer.appendChild(renderDebugPanel(layout.trace));
     }
   }
 
   copyBtn.addEventListener("click", async () => {
     if (!currentLayout) return;
-    const bp = engine.exportBlueprint(currentLayout, itemInput.value.trim());
+    const bp = await engine.exportBlueprint(currentLayout, itemInput.value.trim());
     await navigator.clipboard.writeText(bp);
     copyStatus.textContent = "Copied!";
     setTimeout(() => { copyStatus.textContent = ""; }, 2000);
@@ -447,7 +459,7 @@ export function renderSidebar(
   beltSelect.addEventListener("change", scheduleAutoSolve);
   checkboxes.forEach((cb) => cb.addEventListener("change", scheduleAutoSolve));
 
-  runSolve();
+  runSolve().catch((err) => console.error("runSolve failed:", err));
 
   return {
     getParams() {
