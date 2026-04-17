@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "ghost-mode: tap splitter sideloads crossing-zone UG IN (needs BeltSpec.entry_dir) + copper-cable row 2 rate tracking"]
+#[ignore = "SAT zone at y=10 can't route iron-plate tap from (2,10)-South (splitter-fed) through copper trunks to (5,10)-East within tile cap — region grows to 81 tiles before giving up, tiles (4,11)/(5,11) held by a non-participating copper-cable tap. Needs larger growth budget OR cluster participation rewrite."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]

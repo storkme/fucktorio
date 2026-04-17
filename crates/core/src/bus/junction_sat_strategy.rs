@@ -25,12 +25,57 @@ use rustc_hash::FxHashSet;
 
 use crate::bus::junction::{BeltTier, Rect};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
-use crate::common::ug_max_reach;
+use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
 use crate::sat::{solve_crossing_zone, CrossingZone, ZoneBoundary};
 use crate::trace;
 
 pub struct SatStrategy;
+
+/// Physical flow direction at an entry-boundary tile.
+///
+/// The SAT encoder treats `ZoneBoundary.direction` as the direction items
+/// flow *through* the boundary tile. For a straight-axis entry the spec's
+/// desired exit direction coincides with the physical arrival axis, so
+/// the spec-derived direction is correct. But when an external feeder
+/// (a splitter, stamped belt, UG-out) dumps into the entry tile from a
+/// non-native side, the physical flow direction is the feeder's output
+/// direction, not the spec's axis. Without this override SAT forces the
+/// tile to face the spec's axis, which mis-models the arrival and can
+/// lock the solver into a sideload or produce UNSAT.
+///
+/// Returns `Some(feeder.direction)` if a feeder outputs onto `tile`,
+/// else `None` (use the spec direction). Only belts, splitters, and
+/// UG-outs are considered — UG-ins capture rather than emit, and other
+/// entity types (inserters, machines) don't participate in belt flow.
+fn physical_feeder_direction(
+    tile: (i32, i32),
+    placed_entities: &[PlacedEntity],
+) -> Option<EntityDirection> {
+    for e in placed_entities {
+        // UG-ins consume from the surface; they don't emit onto it.
+        if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("input") {
+            continue;
+        }
+        let emits = is_surface_belt(&e.name)
+            || is_splitter(&e.name)
+            || (is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output"));
+        if !emits {
+            continue;
+        }
+        let (dx, dy) = dir_delta(e.direction);
+        let lands_on_tile = if is_splitter(&e.name) {
+            let (sx, sy) = splitter_second_tile(e);
+            (e.x + dx, e.y + dy) == tile || (sx + dx, sy + dy) == tile
+        } else {
+            (e.x + dx, e.y + dy) == tile
+        };
+        if lands_on_tile {
+            return Some(e.direction);
+        }
+    }
+    None
+}
 
 impl JunctionStrategy for SatStrategy {
     fn name(&self) -> &'static str {
@@ -66,10 +111,19 @@ impl JunctionStrategy for SatStrategy {
         let mut boundaries: Vec<ZoneBoundary> =
             Vec::with_capacity(ctx.junction.specs.len() * 2);
         for spec in &ctx.junction.specs {
+            // Entry direction = physical flow direction at the entry tile.
+            // If an external feeder (splitter / stamped belt / UG-out)
+            // dumps into this tile, use its output direction as the
+            // physical flow. Otherwise fall back to the spec's axis (the
+            // straight-axis case where feeder direction coincides with
+            // spec direction anyway).
+            let entry_direction =
+                physical_feeder_direction((spec.entry.x, spec.entry.y), ctx.placed_entities)
+                    .unwrap_or(spec.entry.direction);
             boundaries.push(ZoneBoundary {
                 x: spec.entry.x,
                 y: spec.entry.y,
-                direction: spec.entry.direction,
+                direction: entry_direction,
                 item: spec.item.clone(),
                 is_input: true,
             });
