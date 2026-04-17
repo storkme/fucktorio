@@ -476,7 +476,17 @@ impl GrowingRegion {
                 continue;
             };
             let dir_hint = spec_exit_dirs.get(key).copied();
-            let entry_dir = direction_at(path, start, dir_hint);
+            // Use arrival direction for the entry tile: items are already
+            // traveling in path[start-1]→path[start] direction when they
+            // reach the zone boundary. Departure (path[start]→path[start+1])
+            // is wrong at corners — e.g. a splitter above the entry tile
+            // outputs South but departure would say East, causing SAT to
+            // place a UG-East-In that the splitter can't feed correctly.
+            let entry_dir = if start > 0 {
+                direction_at(path, start - 1, dir_hint)
+            } else {
+                direction_at(path, start, dir_hint)
+            };
             let exit_dir = direction_at(path, end, dir_hint);
             let entry = PortPoint {
                 x: path[start].0,
