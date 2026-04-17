@@ -138,8 +138,7 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
-    // Step 2: Place splitter stamps as hard obstacles. Trunks are routed via
-    // ghost_astar in Step 4 so horizontal specs can walk through them.
+    // Step 2: Place splitter stamps as hard obstacles.
     // -------------------------------------------------------------------------
     for lane in lanes {
         if lane.is_fluid {
@@ -219,7 +218,120 @@ pub fn route_bus_ghost(
     }
 
     // -------------------------------------------------------------------------
-    // Occupancy refactor (Steps 2-3): construct the parallel `Occupancy` from
+    // Step 3.5: Stamp trunk belts directly (no A*).
+    //
+    // Each trunk segment is stamped as a South-facing Permanent entity before
+    // Occupancy construction and before A* runs. This replaces the old approach
+    // of routing trunks through ghost_astar. Benefits:
+    //   - 1-tile trunk stubs (start == goal) are unconstructable as degenerate
+    //     A* paths; a single South-facing entity is stamped directly instead.
+    //   - Trunk direction is always exactly South — no A* bending.
+    //   - Trunk entities land in `permanent_inits` before Occupancy::new, so
+    //     the Permanent claim is present during all downstream steps.
+    //   - Trunk keys are absent from `routed_paths`, so the junction solver
+    //     only sees crossing specs that are genuinely ghost-routed.
+    //
+    // Trunks stay in `existing_belts` (transparent to A*) so tap-offs and
+    // returns can still route in a straight line through trunk columns. They are
+    // NOT added to `pre_ghost_belts` — instead their tile→item pairs are
+    // collected into `trunk_tile_items` and injected into `ghost_item_at` after
+    // the materialisation reset. This preserves the OLD crossing-detection
+    // mechanism: the `ghost_item_at` filter drops tap entities that land on a
+    // trunk tile, and the `all_ghost_crossings` check still fires for different-
+    // item overlaps so the junction solver can bridge them.
+    // -------------------------------------------------------------------------
+    let mut trunk_tile_items: FxHashMap<(i32, i32), String> = FxHashMap::default();
+    // Synthetic column paths for each trunk lane, keyed by "trunk:{item}".
+    // Injected into `routed_paths` after routing so classify_crossing and
+    // the junction solver can see trunk specs at crossing tiles — the same
+    // way they saw them in the old code when trunks were BeltSpecs routed
+    // through A*.
+    let mut trunk_synth_paths: FxHashMap<String, Vec<(i32, i32)>> = FxHashMap::default();
+    for lane in lanes {
+        if lane.is_fluid {
+            continue;
+        }
+        let x = lane.x;
+        let belt_name = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
+        let trunk_seg_id = Some(format!("trunk:{}", lane.item));
+        let last_tap_y = lane.tap_off_ys.iter().copied().max();
+
+        let mut producer_ys: FxHashSet<i32> = FxHashSet::default();
+        if let Some(pr) = lane.producer_row {
+            if pr < row_spans.len() {
+                producer_ys.insert(row_spans[pr].output_belt_y);
+            }
+        }
+        for &pri in &lane.extra_producer_rows {
+            if pri < row_spans.len() {
+                producer_ys.insert(row_spans[pri].output_belt_y);
+            }
+        }
+
+        // skip_ys mirrors the old trunk-BeltSpec logic exactly: skip all
+        // tap_off_ys (non-last handled by step 2 splitter/continue-belt
+        // stamps; last_tap_y left for the tap spec to stamp an East-facing
+        // belt) and all balancer rows (step 3 already stamped those).
+        let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
+        for &ty in &lane.tap_off_ys {
+            if lane.tap_off_ys.len() > 1 && Some(ty) != last_tap_y {
+                skip_ys.insert(ty - 1);
+            }
+        }
+        if let Some(by) = lane.balancer_y {
+            skip_ys.insert(by);
+        }
+        if let Some((by_start, by_end)) = lane.family_balancer_range {
+            for y in by_start..=by_end {
+                skip_ys.insert(y);
+            }
+        }
+
+        let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
+        all_ys.extend(producer_ys.iter().copied());
+        let start_y = lane.source_y;
+        let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
+        let end_y = if let Some(by) = lane.balancer_y {
+            end_y.max(by + 1)
+        } else {
+            end_y
+        };
+
+        for (seg_start, seg_end) in trunk_segments(start_y, end_y, &skip_ys) {
+            for y in seg_start..=seg_end {
+                let tile = (x, y);
+                if hard.contains(&tile) || existing_belts.contains(&tile) {
+                    continue;
+                }
+                entities.push(PlacedEntity {
+                    name: belt_name.to_string(),
+                    x,
+                    y,
+                    direction: EntityDirection::South,
+                    carries: Some(lane.item.clone()),
+                    segment_id: trunk_seg_id.clone(),
+                    ..Default::default()
+                });
+                // Passable to A* (existing_belts). Not in pre_ghost_belts —
+                // the ghost_item_at mechanism handles dropping conflicting
+                // tap/ret entities at trunk tiles, and preserves crossing
+                // detection so the junction solver can bridge them.
+                existing_belts.insert(tile);
+                trunk_tile_items.insert(tile, lane.item.clone());
+                trunk_synth_paths
+                    .entry(format!("trunk:{}", lane.item))
+                    .or_default()
+                    .push(tile);
+            }
+        }
+    }
+    // Sort each synth path so tiles are ordered top-to-bottom (ascending y).
+    for path in trunk_synth_paths.values_mut() {
+        path.sort_by_key(|&(_, y)| y);
+    }
+
+    // -------------------------------------------------------------------------
+    // Occupancy refactor (Steps 2-3.5): construct the parallel `Occupancy` from
     // the inputs to steps 1-3 of this function. Step 3 of the rollout uses it
     // to mirror materialisation writes; Step 4+ will switch the template and
     // SAT phases over to it as the source of obstacle truth. See
@@ -295,70 +407,6 @@ pub fn route_bus_ghost(
         let has_producers = lane.producer_row.is_some() || !lane.extra_producer_rows.is_empty();
         let last_tap_y = lane.tap_off_ys.iter().copied().max();
         let horiz_belt = belt_entity_for_rate(lane.rate * 2.0, max_belt_tier);
-        let trunk_belt = horiz_belt;
-
-        // Collect the set of producer output ys for this lane; used by the
-        // trunk-segment filter below to drop degenerate stubs.
-        let mut producer_ys: FxHashSet<i32> = FxHashSet::default();
-        if let Some(pr) = lane.producer_row {
-            if pr < row_spans.len() {
-                producer_ys.insert(row_spans[pr].output_belt_y);
-            }
-        }
-        for &pri in &lane.extra_producer_rows {
-            if pri < row_spans.len() {
-                producer_ys.insert(row_spans[pri].output_belt_y);
-            }
-        }
-
-        // Trunk specs — routed first per lane so horizontals see them in
-        // existing_belts. Turn penalty keeps them straight vertical lines.
-        {
-            let mut skip_ys: FxHashSet<i32> = lane.tap_off_ys.iter().copied().collect();
-            for &ty in &lane.tap_off_ys {
-                if lane.tap_off_ys.len() > 1 && Some(ty) != last_tap_y {
-                    skip_ys.insert(ty - 1);
-                }
-            }
-            if let Some(by) = lane.balancer_y {
-                skip_ys.insert(by);
-            }
-            if let Some((by_start, by_end)) = lane.family_balancer_range {
-                for y in by_start..=by_end {
-                    skip_ys.insert(y);
-                }
-            }
-
-            let mut all_ys: Vec<i32> = lane.tap_off_ys.clone();
-            all_ys.extend(producer_ys.iter().copied());
-            let start_y = lane.source_y;
-            let end_y = all_ys.iter().copied().max().unwrap_or(start_y);
-            let end_y = if let Some(by) = lane.balancer_y {
-                end_y.max(by + 1)
-            } else {
-                end_y
-            };
-
-            for (seg_start, seg_end) in trunk_segments(start_y, end_y, &skip_ys) {
-                let trunk_key = format!("trunk:{}:{}:{}", lane.item, x, seg_start);
-                specs.push(BeltSpec {
-                    key: trunk_key,
-                    start: (x, seg_start),
-                    goal: (x, seg_end),
-                    item: lane.item.clone(),
-                    belt_name: trunk_belt,
-                    // exit_dir = South: the trunk flows south toward taps /
-                    // producers / the lane terminus. This is the last-tile
-                    // direction for render_path; without it, length-1 trunk
-                    // segments (lanes whose source_y is immediately above a
-                    // single tap, e.g. a pure-input lane where `trunk_segments`
-                    // returns a 1-tile stub) would fall through to the legacy
-                    // start-vs-goal hint which maps `start == goal` to East
-                    // and strands the trunk stub as a horizontal dead-end.
-                    exit_dir: Some(EntityDirection::South),
-                });
-            }
-        }
 
         // Tap-off specs
         if has_consumers {
@@ -530,7 +578,7 @@ pub fn route_bus_ghost(
     };
 
     #[allow(clippy::needless_late_init)]
-    let routed_paths: FxHashMap<String, Vec<(i32, i32)>>;
+    let mut routed_paths: FxHashMap<String, Vec<(i32, i32)>>;
     let mut all_ghost_crossings: Vec<(i32, i32)> = Vec::new();
     #[allow(clippy::needless_late_init)]
     let unroutable_specs: Vec<String>;
@@ -538,12 +586,9 @@ pub fn route_bus_ghost(
     // same-item overlaps (not conflicts) from different-item overlaps (real).
     let mut ghost_item_at: FxHashMap<(i32, i32), String> = FxHashMap::default();
 
-    // Reorder specs: route ALL trunk specs first (across all lanes), then
-    // horizontal specs. This ensures trunks have continuous tiles in
-    // existing_belts before any horizontal spec claims tiles on their column.
-    let (trunk_specs_ord, horiz_specs_ord): (Vec<&BeltSpec>, Vec<&BeltSpec>) =
-        specs.iter().partition(|s| s.key.starts_with("trunk:"));
-    let ordered_specs: Vec<&BeltSpec> = trunk_specs_ord.into_iter().chain(horiz_specs_ord).collect();
+    // All remaining specs (taps, returns, feeders) — no ordering constraint
+    // since trunks are now stamped as hard obstacles before A* runs.
+    let ordered_specs: Vec<&BeltSpec> = specs.iter().collect();
 
     // -------------------------------------------------------------------------
     // Step 5: Negotiation loop — route all specs, measure same-axis conflicts,
@@ -698,6 +743,12 @@ pub fn route_bus_ghost(
     // Adopt the best routing as the canonical one.
     routed_paths = best_paths;
     unroutable_specs = best_unroutable;
+    // Inject synthetic trunk column paths so classify_crossing and the
+    // junction solver find trunk specs at crossing tiles (same role they
+    // played when trunks were BeltSpecs routed through A*).
+    for (key, path) in &trunk_synth_paths {
+        routed_paths.insert(key.clone(), path.clone());
+    }
 
     // -------------------------------------------------------------------------
     // Materialize entities from the converged routed_paths.
@@ -707,6 +758,15 @@ pub fn route_bus_ghost(
     // -------------------------------------------------------------------------
     existing_belts = pre_routing_existing_belts;
     ghost_item_at.clear();
+    // Pre-load trunk tile → item mappings. In the old code, trunk specs
+    // materialised first and populated ghost_item_at. Now trunks are
+    // pre-stamped and have no routed_paths entry, so we inject them here.
+    // This ensures: (a) tap entities on trunk tiles are dropped by the
+    // ghost_item_at filter, and (b) different-item crossings at trunk tiles
+    // are still added to all_ghost_crossings for the junction solver.
+    for (&tile, item) in &trunk_tile_items {
+        ghost_item_at.insert(tile, item.clone());
+    }
 
     for spec in ordered_specs.iter().copied() {
         if let Some(path) = routed_paths.get(&spec.key).cloned() {
@@ -1230,7 +1290,7 @@ pub fn route_bus_ghost(
     // old direct-call path for every crossing the old code solved.
     // Growth-aware strategies land on top of this scaffold.
 
-    let spec_belt_tiers: FxHashMap<String, BeltTier> = specs
+    let mut spec_belt_tiers: FxHashMap<String, BeltTier> = specs
         .iter()
         .map(|s| {
             (
@@ -1239,7 +1299,7 @@ pub fn route_bus_ghost(
             )
         })
         .collect();
-    let spec_items: FxHashMap<String, String> = specs
+    let mut spec_items: FxHashMap<String, String> = specs
         .iter()
         .map(|s| (s.key.clone(), s.item.clone()))
         .collect();
@@ -1247,6 +1307,20 @@ pub fn route_bus_ghost(
         .iter()
         .filter_map(|s| s.exit_dir.map(|d| (s.key.clone(), d)))
         .collect();
+    // Extend with synthetic trunk entries so classify_crossing can resolve
+    // item name and belt tier for trunk keys found in routed_paths.
+    for lane in lanes {
+        if lane.is_fluid {
+            continue;
+        }
+        let key = format!("trunk:{}", lane.item);
+        spec_items.insert(key.clone(), lane.item.clone());
+        spec_belt_tiers.insert(
+            key,
+            BeltTier::from_name(belt_entity_for_rate(lane.rate * 2.0, max_belt_tier))
+                .unwrap_or(BeltTier::Yellow),
+        );
+    }
     // Build the obstacle set seen by junction strategies. The narrow
     // `hard` set only covers row-template machines and fluid lanes;
     // SAT (and any future strategy) needs the full picture so it
@@ -1294,19 +1368,16 @@ pub fn route_bus_ghost(
         // tile. classify_crossing gates on "exactly two specs with a
         // valid direction at the tile" — if that fails, the crossing
         // is degenerate and we skip to unresolved.
-        if classify_crossing(tile, &routed_paths, &specs).is_none() {
+        if classify_crossing(tile, &routed_paths, &specs, &spec_items, &spec_belt_tiers).is_none() {
             remaining_crossings.insert(tile);
             continue;
         }
-        let keys_at_tile: Vec<&str> = specs
+        // Scan routed_paths directly so synthetic trunk keys (injected
+        // above) are included alongside regular BeltSpec keys.
+        let keys_at_tile: Vec<&str> = routed_paths
             .iter()
-            .filter(|s| {
-                routed_paths
-                    .get(&s.key)
-                    .map(|p| p.contains(&tile))
-                    .unwrap_or(false)
-            })
-            .map(|s| s.key.as_str())
+            .filter(|(_, path)| path.contains(&tile))
+            .map(|(key, _)| key.as_str())
             .collect();
 
         let Some(sol) = junction_solver::solve_crossing(
@@ -1455,8 +1526,14 @@ pub fn route_bus_ghost(
     // where crossings weren't solved.
     let cluster_count = template_count + remaining_crossings.len();
     let max_cluster_tiles = if remaining_crossings.is_empty() { 0 } else { 1 };
-    let mut unresolved_regions =
-        emit_unresolved_junctions(&remaining_crossings, &routed_paths, &specs, &ghost_item_at);
+    let mut unresolved_regions = emit_unresolved_junctions(
+        &remaining_crossings,
+        &routed_paths,
+        &specs,
+        &spec_items,
+        &spec_belt_tiers,
+        &ghost_item_at,
+    );
 
     let mut regions = template_regions;
     regions.append(&mut unresolved_regions);
@@ -1622,21 +1699,38 @@ fn is_horizontal(d: EntityDirection) -> bool {
 
 /// Try to classify a single crossing tile as a 2-path crossing.
 /// Returns CrossingInfo if exactly 2 different-item specs cross at this tile.
+///
+/// `spec_items` and `spec_belt_tiers` are consulted as a fallback for keys
+/// (e.g. synthetic trunk paths) that don't have a corresponding `BeltSpec`
+/// in `specs`.
 fn classify_crossing(
     tile: (i32, i32),
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     specs: &[BeltSpec],
+    spec_items: &FxHashMap<String, String>,
+    spec_belt_tiers: &FxHashMap<String, BeltTier>,
 ) -> Option<CrossingInfo> {
     let (cx, cy) = tile;
 
     let spec_map: FxHashMap<&str, &BeltSpec> = specs.iter().map(|s| (s.key.as_str(), s)).collect();
-    let mut crossing_specs: Vec<(&BeltSpec, EntityDirection)> = Vec::new();
+    // Each entry: (item, belt_name, direction)
+    let mut crossing_specs: Vec<(String, &'static str, EntityDirection)> = Vec::new();
 
     for (key, path) in routed_paths {
-        let spec = match spec_map.get(key.as_str()) {
-            Some(s) => s,
-            None => continue,
+        // Derive item and belt_name from BeltSpec when available; fall back
+        // to the supplementary maps for synthetic trunk paths.
+        let (item, belt_name, exit_dir) = if let Some(spec) = spec_map.get(key.as_str()) {
+            (spec.item.clone(), spec.belt_name, spec.exit_dir)
+        } else if let Some(it) = spec_items.get(key.as_str()) {
+            let tier = spec_belt_tiers
+                .get(key.as_str())
+                .copied()
+                .unwrap_or(BeltTier::Yellow);
+            (it.clone(), belt_name_for_tier(tier), None)
+        } else {
+            continue;
         };
+
         for (i, &(px, py)) in path.iter().enumerate() {
             if px == cx && py == cy {
                 let dir = if i + 1 < path.len() {
@@ -1645,14 +1739,14 @@ fn classify_crossing(
                 } else if i > 0 {
                     let (px2, py2) = path[i - 1];
                     step_direction(px - px2, py - py2)
-                } else if let Some(d) = spec.exit_dir {
+                } else if let Some(d) = exit_dir {
                     // 1-tile path: no neighbour to derive direction from.
                     // Use the explicit exit_dir set at emission time.
                     d
                 } else {
                     continue;
                 };
-                crossing_specs.push((spec, dir));
+                crossing_specs.push((item, belt_name, dir));
                 break;
             }
         }
@@ -1661,15 +1755,15 @@ fn classify_crossing(
     if crossing_specs.len() != 2 {
         return None;
     }
-    let (sa, da) = crossing_specs[0];
-    let (sb, db) = crossing_specs[1];
+    let (ref item_a, belt_a, da) = crossing_specs[0];
+    let (ref item_b, belt_b, db) = crossing_specs[1];
 
     Some(CrossingInfo {
         tile,
-        spec_a: (sa.item.clone(), da),
-        spec_b: (sb.item.clone(), db),
-        belt_a: sa.belt_name,
-        belt_b: sb.belt_name,
+        spec_a: (item_a.clone(), da),
+        spec_b: (item_b.clone(), db),
+        belt_a,
+        belt_b,
     })
 }
 
@@ -1683,9 +1777,11 @@ fn emit_unresolved_junctions(
     remaining: &FxHashSet<(i32, i32)>,
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     specs: &[BeltSpec],
+    spec_items: &FxHashMap<String, String>,
+    spec_belt_tiers: &FxHashMap<String, BeltTier>,
     ghost_item_at: &FxHashMap<(i32, i32), String>,
 ) -> Vec<LayoutRegion> {
-    use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing};
+    use crate::bus::junction::{Junction, Rect, SpecCrossing};
     use crate::models::{PortPoint, RegionKind};
 
     let _ = ghost_item_at;
@@ -1699,7 +1795,8 @@ fn emit_unresolved_junctions(
 
     for (tx, ty) in tiles {
         let bbox = Rect { x: tx, y: ty, w: 1, h: 1 };
-        let junction_specs: Vec<SpecCrossing> = classify_crossing((tx, ty), routed_paths, specs)
+        let junction_specs: Vec<SpecCrossing> =
+            classify_crossing((tx, ty), routed_paths, specs, spec_items, spec_belt_tiers)
             .map(|info| {
                 // 1×1 bbox: entry and exit sit on the same tile; direction
                 // encodes the flow. The lowering in `Junction::to_layout_region`
