@@ -241,7 +241,11 @@ pub fn route_bus_ghost(
     // item overlaps so the junction solver can bridge them.
     // -------------------------------------------------------------------------
     let mut trunk_tile_items: FxHashMap<(i32, i32), String> = FxHashMap::default();
-    // Synthetic column paths for each trunk lane, keyed by "trunk:{item}".
+    // Synthetic column paths for each trunk lane, keyed by "trunk:{item}:{x}".
+    // Keyed per-column (not just per-item) because multi-lane items like a
+    // split copper-cable trunk have multiple vertical columns — merging them
+    // into one path produces bogus horizontal dx between (x,y) and (x+1,y)
+    // tiles at the same y, which mis-classifies the trunk axis.
     // Injected into `routed_paths` after routing so classify_crossing and
     // the junction solver can see trunk specs at crossing tiles — the same
     // way they saw them in the old code when trunks were BeltSpecs routed
@@ -319,7 +323,7 @@ pub fn route_bus_ghost(
                 existing_belts.insert(tile);
                 trunk_tile_items.insert(tile, lane.item.clone());
                 trunk_synth_paths
-                    .entry(format!("trunk:{}", lane.item))
+                    .entry(format!("trunk:{}:{}", lane.item, x))
                     .or_default()
                     .push(tile);
             }
@@ -1308,12 +1312,15 @@ pub fn route_bus_ghost(
         .filter_map(|s| s.exit_dir.map(|d| (s.key.clone(), d)))
         .collect();
     // Extend with synthetic trunk entries so classify_crossing can resolve
-    // item name and belt tier for trunk keys found in routed_paths.
+    // item name and belt tier for trunk keys found in routed_paths. Keys
+    // match the per-column format used when populating `trunk_synth_paths`
+    // ("trunk:{item}:{x}") so multi-lane items register distinct keys per
+    // column.
     for lane in lanes {
         if lane.is_fluid {
             continue;
         }
-        let key = format!("trunk:{}", lane.item);
+        let key = format!("trunk:{}:{}", lane.item, lane.x);
         spec_items.insert(key.clone(), lane.item.clone());
         spec_belt_tiers.insert(
             key,

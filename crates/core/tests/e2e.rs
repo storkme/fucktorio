@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "belt-item-isolation: iron-plate belt at (2,10) feeds into copper-cable at (3,10) — SAT zone routing conflict after entry-direction fix"]
+#[ignore = "ghost-mode: tap splitter sideloads crossing-zone UG IN (needs BeltSpec.entry_dir) + copper-cable row 2 rate tracking"]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
