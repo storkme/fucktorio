@@ -27,10 +27,67 @@ use crate::bus::junction::{BeltTier, Rect};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
-use crate::sat::{solve_crossing_zone, CrossingZone, ZoneBoundary};
-use crate::trace;
+use crate::sat::{solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary};
+use crate::trace::{self, BoundarySnapshot, ExternalFeederSnapshot, TraceEvent};
 
 pub struct SatStrategy;
+
+/// Direction vector for N/E/S/W.
+fn dir_delta(d: EntityDirection) -> (i32, i32) {
+    match d {
+        EntityDirection::North => (0, -1),
+        EntityDirection::East => (1, 0),
+        EntityDirection::South => (0, 1),
+        EntityDirection::West => (-1, 0),
+    }
+}
+
+/// Human-readable direction label for trace events.
+fn dir_label(d: EntityDirection) -> String {
+    match d {
+        EntityDirection::North => "North",
+        EntityDirection::East => "East",
+        EntityDirection::South => "South",
+        EntityDirection::West => "West",
+    }
+    .to_string()
+}
+
+/// Find any entity in `placed` whose output lands on `tile`, for use in
+/// BoundarySnapshot.external_feeder.
+fn find_external_feeder(
+    tile: (i32, i32),
+    placed: &[PlacedEntity],
+) -> Option<ExternalFeederSnapshot> {
+    for e in placed {
+        if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("input") {
+            continue;
+        }
+        let emits = is_surface_belt(&e.name)
+            || is_splitter(&e.name)
+            || (is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output"));
+        if !emits {
+            continue;
+        }
+        let (dx, dy) = dir_delta(e.direction);
+        let lands = if is_splitter(&e.name) {
+            let (s2x, s2y) = splitter_second_tile(e);
+            (e.x + dx, e.y + dy) == tile || (s2x + dx, s2y + dy) == tile
+        } else {
+            (e.x + dx, e.y + dy) == tile
+        };
+        if lands {
+            return Some(ExternalFeederSnapshot {
+                entity_name: e.name.clone(),
+                entity_x: e.x,
+                entity_y: e.y,
+                direction: dir_label(e.direction),
+            });
+        }
+    }
+    None
+}
+
 
 /// Physical flow direction at an entry-boundary tile.
 ///
@@ -139,19 +196,72 @@ impl JunctionStrategy for SatStrategy {
         let forced_empty: Vec<(i32, i32)> =
             ctx.junction.forbidden.iter().copied().collect();
 
+        // Build a snapshot view of the boundaries for the trace event —
+        // mirrors the junction_solver snapshot format so CLI replay
+        // tools can use the same rendering for both.
+        let boundary_snapshots: Vec<BoundarySnapshot> = boundaries
+            .iter()
+            .zip(ctx.junction.specs.iter().flat_map(|s| {
+                [
+                    (s, true),
+                    (s, false),
+                ]
+            }))
+            .map(|(b, (_, is_input))| {
+                let feeder = if is_input {
+                    find_external_feeder((b.x, b.y), ctx.placed_entities)
+                } else {
+                    None
+                };
+                BoundarySnapshot {
+                    x: b.x,
+                    y: b.y,
+                    direction: dir_label(b.direction),
+                    item: b.item.clone(),
+                    is_input: b.is_input,
+                    spec_key: String::new(),
+                    external_feeder: feeder,
+                }
+            })
+            .collect();
+
         let zone = CrossingZone {
             x: ctx.junction.bbox.x,
             y: ctx.junction.bbox.y,
             width: ctx.junction.bbox.w,
             height: ctx.junction.bbox.h,
             boundaries: boundaries.clone(),
-            forced_empty,
+            forced_empty: forced_empty.clone(),
         };
 
-        let solution = solve_crossing_zone(&zone, max_reach, belt_name)?;
+        let (seed_x, seed_y) = ctx.region.initial_tile;
+        let iter = ctx.growth_iter;
+
+        let (entities_opt, stats) = solve_crossing_zone_with_stats(&zone, max_reach, belt_name);
+        let satisfied = entities_opt.is_some();
+        let entities_raw = entities_opt.as_ref().map(|e| e.len()).unwrap_or(0);
+        trace::emit(TraceEvent::SatInvocation {
+            seed_x,
+            seed_y,
+            iter,
+            zone_x: zone.x,
+            zone_y: zone.y,
+            zone_w: zone.width,
+            zone_h: zone.height,
+            boundaries: boundary_snapshots,
+            forced_empty,
+            belt_tier: belt_name.to_string(),
+            max_reach,
+            satisfied,
+            variables: stats.variables,
+            clauses: stats.clauses,
+            solve_time_us: stats.solve_time_us,
+            entities_raw,
+        });
+        let entities = entities_opt?;
 
         let pruned = prune_dangling_sat_entities(
-            solution.entities,
+            entities,
             &boundaries,
             max_reach,
             zone.x,
@@ -174,16 +284,6 @@ impl JunctionStrategy for SatStrategy {
 // ---------------------------------------------------------------------------
 // Dangling belt pruning
 // ---------------------------------------------------------------------------
-
-/// Direction delta for N/E/S/W (index 0–3 matching SAT conventions).
-fn dir_delta(dir: EntityDirection) -> (i32, i32) {
-    match dir {
-        EntityDirection::North => (0, -1),
-        EntityDirection::East  => (1, 0),
-        EntityDirection::South => (0, 1),
-        EntityDirection::West  => (-1, 0),
-    }
-}
 
 fn opposite(dir: EntityDirection) -> EntityDirection {
     match dir {

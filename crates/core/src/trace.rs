@@ -355,6 +355,82 @@ pub enum TraceEvent {
         break_count: usize,
     },
 
+    // Junction solver step-through instrumentation.
+    // These fire alongside the coarser `JunctionSolved` /
+    // `JunctionGrowthCapped` / `JunctionTemplateRejected` /
+    // `RegionWalkerVeto` events to give a full per-iteration view of
+    // the growth loop and each strategy attempt. Designed for CLI
+    // replay + UI step-through.
+
+    /// Emitted once per `solve_crossing` call, at entry (iteration 0
+    /// not yet attempted). Reports the seed and the specs that will
+    /// participate.
+    JunctionGrowthStarted {
+        seed_x: i32,
+        seed_y: i32,
+        participating: Vec<ParticipatingSpec>,
+        /// Stamped entities within `seed_bbox + 1` perimeter that could
+        /// physically affect the zone (splitters, belts, UG belts).
+        /// Useful for understanding external feeds before growth starts.
+        nearby_stamped: Vec<StampedNeighbor>,
+    },
+
+    /// Emitted at the start of each growth iteration, *before*
+    /// strategies are tried. Reports the full zone state at that
+    /// moment.
+    JunctionGrowthIteration {
+        seed_x: i32,
+        seed_y: i32,
+        iter: usize,
+        bbox_x: i32,
+        bbox_y: i32,
+        bbox_w: u32,
+        bbox_h: u32,
+        tiles: Vec<(i32, i32)>,
+        forbidden_tiles: Vec<(i32, i32)>,
+        boundaries: Vec<BoundarySnapshot>,
+        participating: Vec<String>,
+        encountered: Vec<String>,
+    },
+
+    /// Emitted after each strategy.try_solve call within an iteration.
+    /// One per (iter, strategy) pair. Carries the outcome verdict —
+    /// includes walker-veto as Vetoed, template-rejection as Rejected,
+    /// SAT UNSAT as Unsatisfiable, success as Solved.
+    JunctionStrategyAttempt {
+        seed_x: i32,
+        seed_y: i32,
+        iter: usize,
+        strategy: String,
+        outcome: String,
+        detail: String,
+        elapsed_us: u64,
+    },
+
+    /// Emitted by the SAT strategy every time `solve_crossing_zone` is
+    /// called, with the full invocation signature. This is enough to
+    /// replay a single SAT solve in isolation (outside the larger
+    /// junction solver). Complements JunctionStrategyAttempt with
+    /// SAT-specific numbers.
+    SatInvocation {
+        seed_x: i32,
+        seed_y: i32,
+        iter: usize,
+        zone_x: i32,
+        zone_y: i32,
+        zone_w: u32,
+        zone_h: u32,
+        boundaries: Vec<BoundarySnapshot>,
+        forced_empty: Vec<(i32, i32)>,
+        belt_tier: String,
+        max_reach: u32,
+        satisfied: bool,
+        variables: u32,
+        clauses: u32,
+        solve_time_us: u64,
+        entities_raw: usize,
+    },
+
     // Phase-1 instrumentation: emitted after all ghost specs are routed but
     // before crossing resolution. Reports per-tile axis occupancy so we can
     // see same-axis conflicts (Phase 2 negotiation target).
@@ -388,6 +464,67 @@ pub enum TraceEvent {
 // ---------------------------------------------------------------------------
 // Summary structs (lightweight, serializable versions of internal types)
 // ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipatingSpec {
+    pub key: String,
+    pub item: String,
+    pub initial_tile_x: i32,
+    pub initial_tile_y: i32,
+    /// Full path tile count (for context on how much can be grown into
+    /// the region from each end of this spec).
+    pub path_len: usize,
+    /// Initial frontier (start, end) index into the path.
+    pub initial_start: usize,
+    pub initial_end: usize,
+}
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StampedNeighbor {
+    pub x: i32,
+    pub y: i32,
+    pub name: String,
+    /// Direction the entity faces (belts / splitters / UG).
+    pub direction: String,
+    pub carries: Option<String>,
+    pub segment_id: Option<String>,
+    /// True if this entity's output would land on a tile within the
+    /// initial seed's 1-tile perimeter (hint for "this might sideload").
+    pub feeds_seed_area: bool,
+}
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundarySnapshot {
+    pub x: i32,
+    pub y: i32,
+    pub direction: String,
+    pub item: String,
+    pub is_input: bool,
+    /// Spec key that produced this boundary. Useful for correlating a
+    /// growth iteration with the specs' movement frontiers.
+    pub spec_key: String,
+    /// If a physical external feeder landed items on this tile, the
+    /// feeder's entity name + output direction. `None` means no
+    /// external feeder — SAT will assume native (opposite(direction))
+    /// arrival.
+    pub external_feeder: Option<ExternalFeederSnapshot>,
+}
+
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalFeederSnapshot {
+    pub entity_name: String,
+    pub entity_x: i32,
+    pub entity_y: i32,
+    pub direction: String,
+}
 
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]

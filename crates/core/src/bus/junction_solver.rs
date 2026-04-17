@@ -37,8 +37,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing};
 use crate::bus::region_walker::{walk_affected, AffectedPath, ShadowView, WalkResult};
+use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile};
 use crate::models::{EntityDirection, PlacedEntity, PortPoint};
-use crate::trace::{self, TraceEvent};
+use crate::trace::{
+    self, BoundarySnapshot, ExternalFeederSnapshot, ParticipatingSpec, StampedNeighbor,
+    TraceEvent,
+};
 
 /// Growth budget. Small on purpose — this runs per crossing tile and
 /// bad inputs shouldn't melt the pipeline. Revisit once templates that
@@ -645,8 +649,73 @@ pub fn solve_crossing(
         strict_obstacles,
     );
 
+    // Emit start-of-solve snapshot: seed, participating specs, and
+    // stamped entities within the seed's 1-tile perimeter. This gives
+    // the replay tool everything needed to understand the initial
+    // conditions before any growth happens.
+    {
+        let participating: Vec<ParticipatingSpec> = region
+            .participating
+            .iter()
+            .filter_map(|key| {
+                let path = routed_paths.get(key)?;
+                let (start, end) = *region.frontiers.get(key)?;
+                let (ix, iy) = path[start];
+                let item = spec_items
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string());
+                Some(ParticipatingSpec {
+                    key: key.clone(),
+                    item,
+                    initial_tile_x: ix,
+                    initial_tile_y: iy,
+                    path_len: path.len(),
+                    initial_start: start,
+                    initial_end: end,
+                })
+            })
+            .collect();
+        let nearby_stamped = collect_nearby_stamped(initial_tile, placed_entities);
+        trace::emit(TraceEvent::JunctionGrowthStarted {
+            seed_x: initial_tile.0,
+            seed_y: initial_tile.1,
+            participating,
+            nearby_stamped,
+        });
+    }
+
     for iter in 0..MAX_GROWTH_ITERS {
         let junction = region.to_junction(routed_paths, spec_belt_tiers, spec_items, spec_exit_dirs);
+
+        // Snapshot current iteration state before trying strategies.
+        {
+            let boundaries = junction_boundaries_to_snapshots(
+                &junction,
+                &region.participating,
+                placed_entities,
+            );
+            let mut tiles: Vec<(i32, i32)> = region.tiles.iter().copied().collect();
+            tiles.sort();
+            let mut forbidden: Vec<(i32, i32)> =
+                region.forbidden_tiles.iter().copied().collect();
+            forbidden.sort();
+            trace::emit(TraceEvent::JunctionGrowthIteration {
+                seed_x: initial_tile.0,
+                seed_y: initial_tile.1,
+                iter,
+                bbox_x: region.bbox.x,
+                bbox_y: region.bbox.y,
+                bbox_w: region.bbox.w,
+                bbox_h: region.bbox.h,
+                tiles,
+                forbidden_tiles: forbidden,
+                boundaries,
+                participating: region.participating.clone(),
+                encountered: region.encountered.clone(),
+            });
+        }
+
         let ctx = JunctionStrategyContext {
             junction: &junction,
             region: &region,
@@ -658,80 +727,127 @@ pub fn solve_crossing(
             unreleasable_obstacles,
         };
         for strategy in strategies {
-            if let Some(sol) = strategy.try_solve(&ctx) {
-                // Deferred-exit check: if any participating spec currently
-                // exits at another unresolved crossing tile (not the initial
-                // tile), the solution would leave a consecutive crossing
-                // unresolved. Grow one more step so the spec's frontier
-                // extends past all consecutive crossings before we commit.
-                let exits_at_crossing = ctx.junction.specs.iter().any(|s| {
-                    let exit = (s.exit.x, s.exit.y);
-                    exit != initial_tile && all_crossings.contains(&exit)
-                });
-                if exits_at_crossing {
-                    break; // skip this iter's solution; fall through to grow
-                }
-
-                // Walker veto: reject solutions that would break a routed
-                // path whose tiles touch the region's bbox (or its 1-tile
-                // perimeter). Catches the tier2_electronic_circuit class
-                // where SAT is locally valid but breaks a perpendicular
-                // trunk the region was unaware of.
-                //
-                // Release set = exactly the tiles SAT proposed a new
-                // entity for. Everything else keeps its existing entity
-                // in the shadow. Proposed overrides existing at the
-                // shared tile via `ShadowView::build`. This preserves
-                // non-participating trunks that sit inside the bbox but
-                // SAT never promised to own — the walker would
-                // otherwise flag them as MissingEntity.
-                let bbox = region.bbox;
-                let released: FxHashSet<(i32, i32)> =
-                    sol.entities.iter().map(|e| (e.x, e.y)).collect();
-                let affected: Vec<AffectedPath<'_>> = routed_paths
-                    .iter()
-                    .filter_map(|(seg, tiles)| {
-                        if tiles.iter().any(|&t| near_bbox(bbox, t)) {
-                            let item = spec_items
-                                .get(seg)
-                                .map(|s| s.as_str())
-                                .unwrap_or("");
-                            Some(AffectedPath {
-                                segment_id: seg.as_str(),
-                                tiles: tiles.as_slice(),
-                                item,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let shadow = ShadowView::build(placed_entities, &released, &sol.entities);
-                if let WalkResult::Broken { breaks } = walk_affected(&affected, &shadow) {
-                    if let Some(first) = breaks.first() {
-                        trace::emit(TraceEvent::RegionWalkerVeto {
-                            tile_x: initial_tile.0,
-                            tile_y: initial_tile.1,
-                            strategy: strategy.name().to_string(),
-                            growth_iter: iter,
-                            broken_segment: first.segment_id.clone(),
-                            break_tile_x: first.tile.0,
-                            break_tile_y: first.tile.1,
-                            break_count: breaks.len(),
-                        });
-                    }
-                    continue; // try the next strategy; if all fail, grow
-                }
-
-                trace::emit(TraceEvent::JunctionSolved {
-                    tile_x: initial_tile.0,
-                    tile_y: initial_tile.1,
+            let strategy_started = std::time::Instant::now();
+            let result = strategy.try_solve(&ctx);
+            let elapsed_us = strategy_started.elapsed().as_micros() as u64;
+            let Some(sol) = result else {
+                trace::emit(TraceEvent::JunctionStrategyAttempt {
+                    seed_x: initial_tile.0,
+                    seed_y: initial_tile.1,
+                    iter,
                     strategy: strategy.name().to_string(),
-                    growth_iter: iter,
-                    region_tiles: region.tile_count(),
+                    outcome: "Unsatisfiable".to_string(),
+                    detail: String::new(),
+                    elapsed_us,
                 });
-                return Some(sol);
+                continue;
+            };
+
+            // Deferred-exit check: if any participating spec currently
+            // exits at another unresolved crossing tile (not the initial
+            // tile), the solution would leave a consecutive crossing
+            // unresolved. Grow one more step so the spec's frontier
+            // extends past all consecutive crossings before we commit.
+            let exits_at_crossing = ctx.junction.specs.iter().any(|s| {
+                let exit = (s.exit.x, s.exit.y);
+                exit != initial_tile && all_crossings.contains(&exit)
+            });
+            if exits_at_crossing {
+                trace::emit(TraceEvent::JunctionStrategyAttempt {
+                    seed_x: initial_tile.0,
+                    seed_y: initial_tile.1,
+                    iter,
+                    strategy: strategy.name().to_string(),
+                    outcome: "DeferredExit".to_string(),
+                    detail: "spec exits at another unresolved crossing".to_string(),
+                    elapsed_us,
+                });
+                break; // skip this iter's solution; fall through to grow
             }
+
+            // Walker veto: reject solutions that would break a routed
+            // path whose tiles touch the region's bbox (or its 1-tile
+            // perimeter). Catches the tier2_electronic_circuit class
+            // where SAT is locally valid but breaks a perpendicular
+            // trunk the region was unaware of.
+            //
+            // Release set = exactly the tiles SAT proposed a new
+            // entity for. Everything else keeps its existing entity
+            // in the shadow. Proposed overrides existing at the
+            // shared tile via `ShadowView::build`. This preserves
+            // non-participating trunks that sit inside the bbox but
+            // SAT never promised to own — the walker would
+            // otherwise flag them as MissingEntity.
+            let bbox = region.bbox;
+            let released: FxHashSet<(i32, i32)> =
+                sol.entities.iter().map(|e| (e.x, e.y)).collect();
+            let affected: Vec<AffectedPath<'_>> = routed_paths
+                .iter()
+                .filter_map(|(seg, tiles)| {
+                    if tiles.iter().any(|&t| near_bbox(bbox, t)) {
+                        let item = spec_items
+                            .get(seg)
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
+                        Some(AffectedPath {
+                            segment_id: seg.as_str(),
+                            tiles: tiles.as_slice(),
+                            item,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let shadow = ShadowView::build(placed_entities, &released, &sol.entities);
+            if let WalkResult::Broken { breaks } = walk_affected(&affected, &shadow) {
+                let detail = if let Some(first) = breaks.first() {
+                    trace::emit(TraceEvent::RegionWalkerVeto {
+                        tile_x: initial_tile.0,
+                        tile_y: initial_tile.1,
+                        strategy: strategy.name().to_string(),
+                        growth_iter: iter,
+                        broken_segment: first.segment_id.clone(),
+                        break_tile_x: first.tile.0,
+                        break_tile_y: first.tile.1,
+                        break_count: breaks.len(),
+                    });
+                    format!(
+                        "segment={} at ({},{}) breaks={}",
+                        first.segment_id, first.tile.0, first.tile.1, breaks.len()
+                    )
+                } else {
+                    String::new()
+                };
+                trace::emit(TraceEvent::JunctionStrategyAttempt {
+                    seed_x: initial_tile.0,
+                    seed_y: initial_tile.1,
+                    iter,
+                    strategy: strategy.name().to_string(),
+                    outcome: "Vetoed".to_string(),
+                    detail,
+                    elapsed_us,
+                });
+                continue; // try the next strategy; if all fail, grow
+            }
+
+            trace::emit(TraceEvent::JunctionStrategyAttempt {
+                seed_x: initial_tile.0,
+                seed_y: initial_tile.1,
+                iter,
+                strategy: strategy.name().to_string(),
+                outcome: "Solved".to_string(),
+                detail: format!("{} entities placed", sol.entities.len()),
+                elapsed_us,
+            });
+            trace::emit(TraceEvent::JunctionSolved {
+                tile_x: initial_tile.0,
+                tile_y: initial_tile.1,
+                strategy: strategy.name().to_string(),
+                growth_iter: iter,
+                region_tiles: region.tile_count(),
+            });
+            return Some(sol);
         }
 
         if region.tile_count() >= MAX_REGION_TILES {
@@ -804,4 +920,160 @@ fn near_bbox(bbox: Rect, (x, y): (i32, i32)) -> bool {
     let max_x = bbox.x + bbox.w as i32; // inclusive upper bound with +1 perimeter
     let max_y = bbox.y + bbox.h as i32;
     x >= min_x && x <= max_x && y >= min_y && y <= max_y
+}
+
+// ---------------------------------------------------------------------------
+// Trace helpers
+// ---------------------------------------------------------------------------
+
+fn dir_label(d: EntityDirection) -> String {
+    match d {
+        EntityDirection::North => "North",
+        EntityDirection::East => "East",
+        EntityDirection::South => "South",
+        EntityDirection::West => "West",
+    }
+    .to_string()
+}
+
+fn dir_delta(d: EntityDirection) -> (i32, i32) {
+    match d {
+        EntityDirection::North => (0, -1),
+        EntityDirection::East => (1, 0),
+        EntityDirection::South => (0, 1),
+        EntityDirection::West => (-1, 0),
+    }
+}
+
+/// Entities whose footprint (1-tile for belts / UG, 2-tile for
+/// splitters) lies within ±2 tiles of the seed. Includes a
+/// `feeds_seed_area` hint so the replay tool can highlight likely
+/// perpendicular feeders.
+fn collect_nearby_stamped(seed: (i32, i32), placed: &[PlacedEntity]) -> Vec<StampedNeighbor> {
+    let (sx, sy) = seed;
+    let mut out = Vec::new();
+    for e in placed {
+        // Coarse cheap filter: within ±2 of seed.
+        if (e.x - sx).abs() > 2 || (e.y - sy).abs() > 2 {
+            continue;
+        }
+        let feeds = entity_feeds_seed_area(e, seed);
+        out.push(StampedNeighbor {
+            x: e.x,
+            y: e.y,
+            name: e.name.clone(),
+            direction: dir_label(e.direction),
+            carries: e.carries.clone(),
+            segment_id: e.segment_id.clone(),
+            feeds_seed_area: feeds,
+        });
+    }
+    out
+}
+
+/// True iff `entity`'s output lands on the seed tile or any of its 4
+/// direct neighbors. Used by `collect_nearby_stamped` to hint at likely
+/// sources of external feeds.
+fn entity_feeds_seed_area(entity: &PlacedEntity, seed: (i32, i32)) -> bool {
+    let (sx, sy) = seed;
+    // UG-ins consume; they don't emit onto the surface.
+    if is_ug_belt(&entity.name) && entity.io_type.as_deref() == Some("input") {
+        return false;
+    }
+    if !(is_surface_belt(&entity.name)
+        || is_splitter(&entity.name)
+        || (is_ug_belt(&entity.name) && entity.io_type.as_deref() == Some("output")))
+    {
+        return false;
+    }
+    let (dx, dy) = dir_delta(entity.direction);
+    let mut targets: Vec<(i32, i32)> = Vec::with_capacity(2);
+    if is_splitter(&entity.name) {
+        let (s2x, s2y) = splitter_second_tile(entity);
+        targets.push((entity.x + dx, entity.y + dy));
+        targets.push((s2x + dx, s2y + dy));
+    } else {
+        targets.push((entity.x + dx, entity.y + dy));
+    }
+    for (tx, ty) in targets {
+        if tx == sx && ty == sy {
+            return true;
+        }
+        if (tx - sx).abs() + (ty - sy).abs() == 1 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build per-boundary snapshots from a `Junction` + participating spec
+/// keys. Each SpecCrossing yields two boundaries (entry + exit). The
+/// external-feeder annotation is derived by scanning `placed_entities`
+/// for anything that outputs onto the entry tile — same logic as the
+/// SAT strategy's `physical_feeder_direction`.
+fn junction_boundaries_to_snapshots(
+    junction: &Junction,
+    participating_keys: &[String],
+    placed: &[PlacedEntity],
+) -> Vec<BoundarySnapshot> {
+    let mut out = Vec::with_capacity(junction.specs.len() * 2);
+    for (i, sc) in junction.specs.iter().enumerate() {
+        let key = participating_keys
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| String::from("?"));
+        let entry_feeder = find_external_feeder((sc.entry.x, sc.entry.y), placed);
+        out.push(BoundarySnapshot {
+            x: sc.entry.x,
+            y: sc.entry.y,
+            direction: dir_label(sc.entry.direction),
+            item: sc.item.clone(),
+            is_input: true,
+            spec_key: key.clone(),
+            external_feeder: entry_feeder,
+        });
+        out.push(BoundarySnapshot {
+            x: sc.exit.x,
+            y: sc.exit.y,
+            direction: dir_label(sc.exit.direction),
+            item: sc.item.clone(),
+            is_input: false,
+            spec_key: key,
+            external_feeder: None,
+        });
+    }
+    out
+}
+
+fn find_external_feeder(
+    tile: (i32, i32),
+    placed: &[PlacedEntity],
+) -> Option<ExternalFeederSnapshot> {
+    for e in placed {
+        if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("input") {
+            continue;
+        }
+        let emits = is_surface_belt(&e.name)
+            || is_splitter(&e.name)
+            || (is_ug_belt(&e.name) && e.io_type.as_deref() == Some("output"));
+        if !emits {
+            continue;
+        }
+        let (dx, dy) = dir_delta(e.direction);
+        let lands = if is_splitter(&e.name) {
+            let (s2x, s2y) = splitter_second_tile(e);
+            (e.x + dx, e.y + dy) == tile || (s2x + dx, s2y + dy) == tile
+        } else {
+            (e.x + dx, e.y + dy) == tile
+        };
+        if lands {
+            return Some(ExternalFeederSnapshot {
+                entity_name: e.name.clone(),
+                entity_x: e.x,
+                entity_y: e.y,
+                direction: dir_label(e.direction),
+            });
+        }
+    }
+    None
 }

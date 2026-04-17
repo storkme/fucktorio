@@ -886,6 +886,19 @@ pub fn solve_crossing_zone(
     max_ug_reach: u32,
     belt_tier: &str,
 ) -> Option<CrossingZoneSolution> {
+    let (entities, stats) = solve_crossing_zone_with_stats(zone, max_ug_reach, belt_tier);
+    entities.map(|ents| CrossingZoneSolution { entities: ents, stats })
+}
+
+/// Same as `solve_crossing_zone` but always returns the encoder/solver
+/// stats, even on UNSAT. Callers doing instrumentation (trace events,
+/// diagnostics) use this so variables/clauses/solve_time are still
+/// surfaced when the solver couldn't find a satisfying assignment.
+pub fn solve_crossing_zone_with_stats(
+    zone: &CrossingZone,
+    max_ug_reach: u32,
+    belt_tier: &str,
+) -> (Option<Vec<PlacedEntity>>, CrossingZoneStats) {
     let item_names: Vec<String> = {
         let mut names: Vec<String> = zone.boundaries.iter().map(|b| b.item.clone()).collect();
         names.sort();
@@ -905,30 +918,32 @@ pub fn solve_crossing_zone(
     let mut solver = Solver::new();
     solver.add_formula(&cnf.formula);
 
-    let sat = solver.solve().ok()?;
+    let sat_result = solver.solve();
 
     #[cfg(not(target_arch = "wasm32"))]
     let solve_time_us = start.elapsed().as_micros() as u64;
     #[cfg(target_arch = "wasm32")]
     let solve_time_us = 0u64;
 
+    let stats = CrossingZoneStats {
+        variables,
+        clauses,
+        solve_time_us,
+        zone_width: zone.width,
+        zone_height: zone.height,
+    };
+
+    let Ok(sat) = sat_result else {
+        return (None, stats);
+    };
     if !sat {
-        return None;
+        return (None, stats);
     }
 
     let model: Vec<Lit> = solver.model().unwrap_or_default().to_vec();
     let entities = encoder.extract_solution(&model, zone, belt_tier);
 
-    Some(CrossingZoneSolution {
-        entities,
-        stats: CrossingZoneStats {
-            variables,
-            clauses,
-            solve_time_us,
-            zone_width: zone.width,
-            zone_height: zone.height,
-        },
-    })
+    (Some(entities), stats)
 }
 
 // ---------------------------------------------------------------------------
