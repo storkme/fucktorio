@@ -1,19 +1,19 @@
 //! Ghost A* bus router — Phases 2+3 of the ghost-cluster routing rewrite.
 //!
-//! Gated behind `FUCKTORIO_GHOST_ROUTING=1`.
-//!
 //! Algorithm overview:
 //! 1. Build a hard-obstacle set from row_entities (machine footprints, poles, etc.)
 //!    and fluid lane tile reservations.
-//! 2. Place trunks as hard obstacles (South-facing belts at each lane's column).
-//!    Splitter stamps and balancer blocks are also added to hard obstacles.
-//! 3. Route each connecting-belt spec (tap-offs, returns, feeders) with
-//!    `ghost_astar`. Belts are transparent — A* ghosts through them and records
-//!    each crossing tile for Phase 3's SAT resolver.
-//! 4. Union-find ghost crossings into clusters.
-//! 5. SAT-resolve each cluster: extract boundary ports, build CrossingZones,
-//!    solve, replace ghost surface belts with proper UG pairs.
-//! 6. Merge output rows via the existing `merge_output_rows` helper.
+//! 2. Stamp splitters and balancer entities.
+//! 3. Pre-stamp trunk belts (South-facing) directly as Permanent entities.
+//!    Synthetic column paths are recorded in `trunk_synth_paths` and injected
+//!    into `routed_paths` after A* so the junction solver can classify
+//!    trunk/tap crossings correctly.
+//! 4. Route each connecting-belt spec (tap-offs, returns, feeders) via
+//!    `ghost_astar`. Trunk tiles are passable so A* ghosts through them and
+//!    records crossing tiles for the junction resolver.
+//! 5. Negotiate lane conflicts iteratively; adopt best routing.
+//! 6. Resolve crossings: perpendicular template first, SAT fallback.
+//! 7. Merge output rows via the existing `merge_output_rows` helper.
 //!
 //! Returns a `GhostRouteResult` containing all placed entities, ghost crossing
 //! tiles, cluster info, and layout dimensions.
