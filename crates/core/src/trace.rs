@@ -375,6 +375,14 @@ pub enum TraceEvent {
         unroutable_count: u32,
         cost_grid_size: u32,
     },
+
+    // SAT solution pruned of dangling (unreachable / dead-end) belt entities.
+    SatPruned {
+        zone_x: i32,
+        zone_y: i32,
+        total: usize,
+        kept: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
