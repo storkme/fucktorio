@@ -603,39 +603,37 @@ function openPreview(
   card.classList.add("loading");
   entityCountEl.innerHTML = '<span class="fucktorio-spinner"></span>';
 
-  // Yield to let the spinner paint, then do synchronous WASM work
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      let solverResult: SolverResult;
-      let layout: LayoutResult;
-      try {
-        const machine = engine.defaultMachineForItem(entry.item, entry.machine);
-        solverResult = engine.solve(entry.item, entry.rate, entry.inputs, machine);
-        layout = engine.buildLayout(solverResult, entry.beltTier);
-      } catch (err) {
-        card.classList.remove("loading");
-        entityCountEl.textContent = "error";
-        console.error("Landing solve/layout failed:", err);
-        return;
-      }
-
-      entityCountEl.textContent = String(layout.entities.length);
+  // Kick off the solve/layout in the worker. UI stays responsive while it runs.
+  (async () => {
+    let solverResult: SolverResult;
+    let layout: LayoutResult;
+    try {
+      const machine = engine.defaultMachineForItem(entry.item, entry.machine);
+      solverResult = await engine.solve(entry.item, entry.rate, entry.inputs, machine);
+      layout = await engine.buildLayout(solverResult, entry.beltTier);
+    } catch (err) {
       card.classList.remove("loading");
+      entityCountEl.textContent = "error";
+      console.error("Landing solve/layout failed:", err);
+      return;
+    }
 
-      setRecipeFlows(
-        solverResult.machines.map((m) => ({
-          recipe: m.recipe,
-          count: m.count,
-          inputs: m.inputs.map((f) => ({ item: f.item, rate: f.rate })),
-          outputs: m.outputs.map((f) => ({ item: f.item, rate: f.rate })),
-        })),
-      );
+    entityCountEl.textContent = String(layout.entities.length);
+    card.classList.remove("loading");
 
-      showModal(entry, layout, solverResult).catch((err) => {
-        console.error("Modal init failed:", err);
-      });
+    setRecipeFlows(
+      solverResult.machines.map((m) => ({
+        recipe: m.recipe,
+        count: m.count,
+        inputs: m.inputs.map((f) => ({ item: f.item, rate: f.rate })),
+        outputs: m.outputs.map((f) => ({ item: f.item, rate: f.rate })),
+      })),
+    );
+
+    showModal(entry, layout, solverResult).catch((err) => {
+      console.error("Modal init failed:", err);
     });
-  });
+  })();
 }
 
 async function showModal(

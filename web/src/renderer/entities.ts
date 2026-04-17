@@ -792,6 +792,7 @@ export function renderLayout(
   container: Container,
   onHover?: (entity: PlacedEntity | null) => void,
   onSelect?: (entity: PlacedEntity | null) => void,
+  onEntityRendered?: (entity: PlacedEntity, graphics: Graphics[]) => void,
 ): HighlightController {
   container.removeChildren();
 
@@ -936,6 +937,8 @@ export function renderLayout(
     allGraphics.push(g);
 
     container.addChild(g);
+
+    onEntityRendered?.(entity, [g]);
   }
 
   // Build belt connectivity graph (once per layout)
