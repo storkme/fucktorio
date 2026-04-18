@@ -144,6 +144,33 @@ pub fn tile_is_forbidden_kind(name: &str) -> bool {
     !is_surface_belt(name)
 }
 
+/// Classify a balancer `segment_id` as a "simple" single-splitter block
+/// (shapes 1x1, 1x2, 2x1, 2x2) that the junction solver may grow into
+/// and re-route through, vs a multi-splitter block that must be treated
+/// as a hard boundary.
+///
+/// The segment_id format is `balancer:{item}:{n}x{m}[:rest]`. Older
+/// format `balancer:{item}` (no shape) or any parse failure returns
+/// `false` — conservative: unknown balancers are treated as multi-
+/// splitter, so the junction solver will route around them.
+pub fn balancer_seg_is_simple(seg: &str) -> bool {
+    let Some(rest) = seg.strip_prefix("balancer:") else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, ':');
+    let _item = parts.next();
+    let Some(shape) = parts.next() else {
+        return false;
+    };
+    let Some((n, m)) = shape.split_once('x') else {
+        return false;
+    };
+    let (Ok(n), Ok(m)) = (n.parse::<u32>(), m.parse::<u32>()) else {
+        return false;
+    };
+    n <= 2 && m <= 2
+}
+
 /// Inserter reach: how many tiles away the pick-up / drop position is.
 pub fn inserter_reach(name: &str) -> i32 {
     if name == "long-handed-inserter" {

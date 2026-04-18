@@ -67,7 +67,6 @@ pub(crate) fn stamp_family_balancer(
     let belt_tier = belt_entity_for_rate(family.total_rate, max_belt_tier);
     let splitter_name = splitter_for_belt(belt_tier);
     let ug_name = underground_for_belt(belt_tier);
-    let balancer_seg_id = Some(format!("balancer:{}", family.item));
 
     if let Some(template) = templates.get(&template_key) {
         // Direct template match.
@@ -78,8 +77,9 @@ pub(crate) fn stamp_family_balancer(
             origin_x, origin_y, belt_tier, splitter_name, ug_name,
             Some(&family.item),
         );
+        let seg_id = Some(format!("balancer:{}:{}x{}", family.item, n, m));
         for ent in &mut entities {
-            ent.segment_id = balancer_seg_id.clone();
+            ent.segment_id = seg_id.clone();
         }
         return Ok(entities);
     }
@@ -112,8 +112,9 @@ pub(crate) fn stamp_family_balancer(
                     sub_origin_x, sub_origin_y, belt_tier, splitter_name, ug_name,
                     Some(&family.item),
                 );
+                let sub_seg = format!("balancer:{}:{}x{}:{}", family.item, sub_n, sub_m, gi);
                 for ent in &mut ents {
-                    ent.segment_id = Some(format!("balancer:{}:{}", family.item, gi));
+                    ent.segment_id = Some(sub_seg.clone());
                 }
                 all_entities.extend(ents);
             }

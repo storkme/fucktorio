@@ -38,8 +38,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing, SpecOrigin};
 use crate::bus::region_walker::{walk_affected, AffectedPath, ShadowView, WalkResult};
 use crate::common::{
-    is_machine_entity, is_splitter, is_surface_belt, is_ug_belt, machine_size, machine_tiles,
-    splitter_second_tile, tile_is_forbidden_kind,
+    balancer_seg_is_simple, is_machine_entity, is_splitter, is_surface_belt, is_ug_belt,
+    machine_size, machine_tiles, splitter_second_tile, tile_is_forbidden_kind,
 };
 use crate::models::{EntityDirection, PlacedEntity, PortPoint};
 use crate::trace::{
@@ -165,14 +165,44 @@ impl GrowingRegion {
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
         placed_entities: &[PlacedEntity],
+        protected_balancer_tiles: &FxHashSet<(i32, i32)>,
     ) -> bool {
-        if left <= 0 && top <= 0 && right <= 0 && bottom <= 0 {
+        // Clamp each side so growth never crosses into a multi-splitter
+        // balancer bbox. A side is zeroed if any tile in its new strip
+        // overlaps a protected tile — the balancer becomes a hard wall
+        // for the junction region. Simple single-splitter balancers are
+        // not in the protected set so growth still flows through them.
+        let left = clamp_side_against_protected(
+            left.max(0),
+            &self.bbox,
+            ExpandSide::Left,
+            protected_balancer_tiles,
+        );
+        let top = clamp_side_against_protected(
+            top.max(0),
+            &self.bbox,
+            ExpandSide::Top,
+            protected_balancer_tiles,
+        );
+        let right = clamp_side_against_protected(
+            right.max(0),
+            &self.bbox,
+            ExpandSide::Right,
+            protected_balancer_tiles,
+        );
+        let bottom = clamp_side_against_protected(
+            bottom.max(0),
+            &self.bbox,
+            ExpandSide::Bottom,
+            protected_balancer_tiles,
+        );
+        if left == 0 && top == 0 && right == 0 && bottom == 0 {
             return false;
         }
-        let new_x = self.bbox.x - left.max(0);
-        let new_y = self.bbox.y - top.max(0);
-        let new_w = self.bbox.w + (left.max(0) + right.max(0)) as u32;
-        let new_h = self.bbox.h + (top.max(0) + bottom.max(0)) as u32;
+        let new_x = self.bbox.x - left;
+        let new_y = self.bbox.y - top;
+        let new_w = self.bbox.w + (left + right) as u32;
+        let new_h = self.bbox.h + (top + bottom) as u32;
         self.bbox = Rect {
             x: new_x,
             y: new_y,
@@ -612,6 +642,92 @@ impl GrowingRegion {
 /// their footprint; other entities occupy a single tile. Tiles with
 /// no matching entity are absent from the map — callers treat those
 /// as either "no obstacle" or "unknown default-forbidden" per context.
+/// Which side of a bbox an `expand_bbox` request is growing into.
+#[derive(Clone, Copy)]
+enum ExpandSide {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+/// Reduce `amount` until the new strip of tiles on `side` of `bbox`
+/// contains no tile from `protected`. The strip grows outward from the
+/// current bbox edge; if the tile immediately outside the edge is
+/// protected, the side is clamped to 0. Amount is clamped rather than
+/// shrunk in steps because expansion is usually `1` per call.
+fn clamp_side_against_protected(
+    amount: i32,
+    bbox: &Rect,
+    side: ExpandSide,
+    protected: &FxHashSet<(i32, i32)>,
+) -> i32 {
+    if amount <= 0 || protected.is_empty() {
+        return amount.max(0);
+    }
+    let (x0, y0, w, h) = (bbox.x, bbox.y, bbox.w as i32, bbox.h as i32);
+    for step in 1..=amount {
+        let hit = match side {
+            ExpandSide::Left => {
+                let x = x0 - step;
+                (y0..y0 + h).any(|y| protected.contains(&(x, y)))
+            }
+            ExpandSide::Right => {
+                let x = x0 + w + (step - 1);
+                (y0..y0 + h).any(|y| protected.contains(&(x, y)))
+            }
+            ExpandSide::Top => {
+                let y = y0 - step;
+                (x0..x0 + w).any(|x| protected.contains(&(x, y)))
+            }
+            ExpandSide::Bottom => {
+                let y = y0 + h + (step - 1);
+                (x0..x0 + w).any(|x| protected.contains(&(x, y)))
+            }
+        };
+        if hit {
+            return step - 1;
+        }
+    }
+    amount
+}
+
+/// Collect every tile occupied by a multi-splitter balancer (shape
+/// where n>2 or m>2 in `balancer:{item}:{n}x{m}`). These tiles are
+/// treated as hard boundaries by the junction growth loop so SAT never
+/// gets to re-route the balancer internals. Simple single-splitter
+/// balancers (1x1 / 1x2 / 2x1 / 2x2) are omitted — growth is still
+/// allowed to absorb them.
+pub(crate) fn build_protected_balancer_tiles(
+    placed_entities: &[PlacedEntity],
+) -> FxHashSet<(i32, i32)> {
+    let mut out: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for e in placed_entities {
+        let Some(seg) = e.segment_id.as_deref() else {
+            continue;
+        };
+        if !seg.starts_with("balancer:") {
+            continue;
+        }
+        if balancer_seg_is_simple(seg) {
+            continue;
+        }
+        if is_splitter(&e.name) {
+            let (sx, sy) = splitter_second_tile(e);
+            out.insert((e.x, e.y));
+            out.insert((sx, sy));
+        } else if is_machine_entity(&e.name) {
+            let size = machine_size(&e.name);
+            for t in machine_tiles(e.x, e.y, size) {
+                out.insert(t);
+            }
+        } else {
+            out.insert((e.x, e.y));
+        }
+    }
+    out
+}
+
 pub(crate) fn build_tile_kind_map<'a>(
     placed_entities: &'a [PlacedEntity],
     bbox: &Rect,
@@ -839,6 +955,7 @@ pub fn solve_crossing(
         });
     }
 
+    let protected_balancer_tiles = build_protected_balancer_tiles(placed_entities);
     let solve_ctx = SolveCtx {
         initial_tile,
         routed_paths,
@@ -851,6 +968,7 @@ pub fn solve_crossing(
         placed_entities,
         strategies,
         all_crossings,
+        protected_balancer_tiles: &protected_balancer_tiles,
     };
 
     for iter in 0..MAX_GROWTH_ITERS {
@@ -896,6 +1014,7 @@ pub fn solve_crossing(
                 hard_obstacles,
                 strict_obstacles,
                 placed_entities,
+                solve_ctx.protected_balancer_tiles,
             );
             if !changed {
                 continue;
@@ -922,6 +1041,7 @@ pub fn solve_crossing(
             hard_obstacles,
             strict_obstacles,
             placed_entities,
+            solve_ctx.protected_balancer_tiles,
         ) {
             trace::emit(TraceEvent::JunctionGrowthCapped {
                 tile_x: initial_tile.0,
@@ -969,6 +1089,7 @@ struct SolveCtx<'a> {
     placed_entities: &'a [crate::models::PlacedEntity],
     strategies: &'a [&'a dyn JunctionStrategy],
     all_crossings: &'a FxHashSet<(i32, i32)>,
+    protected_balancer_tiles: &'a FxHashSet<(i32, i32)>,
 }
 
 /// Outcome of one strategy attempt on a given region state.
