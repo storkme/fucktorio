@@ -1,4 +1,4 @@
-import type { Engine, SolverResult, LayoutResult, ItemFlow, ValidationIssue } from "../engine.js";
+import type { Engine, SolverResult, LayoutResult, ItemFlow, ValidationIssue, TraceEvent } from "../engine.js";
 import { readUrlState, writeUrlState, DEFAULT_INPUTS } from "../state.js";
 import { beltTierForRate, hexToCss } from "../renderer/colors.js";
 import { niceName, setRecipeFlows } from "../renderer/entities.js";
@@ -97,6 +97,10 @@ const FLUID_ITEMS = new Set(["water", "crude-oil", "petroleum-gas", "light-oil",
 export interface SidebarCallbacks {
   renderGraph: (result: SolverResult | null) => void;
   renderLayout: (layout: LayoutResult) => void;
+  /** Begin a new streaming layout render. Returns the per-event callback that
+   *  sidebar passes into `engine.buildLayoutStreaming`. Cancels any prior
+   *  streaming render first. */
+  startStreaming: () => (evt: TraceEvent) => void;
 }
 
 export interface SidebarParams {
@@ -415,7 +419,8 @@ export function renderSidebar(
     let layout: LayoutResult;
     try {
       const maxTier = beltSelect.value || undefined;
-      layout = await engine.buildLayoutTraced(result, maxTier);
+      const onEvent = callbacks.startStreaming();
+      layout = await engine.buildLayoutStreaming(result, maxTier, onEvent);
     } catch (err) {
       if (gen !== solveGeneration) return;
       const errDiv = document.createElement("div");

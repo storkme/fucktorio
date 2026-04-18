@@ -2,6 +2,7 @@ import type {
   SolverResult,
   LayoutResult,
   ValidationIssue,
+  TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
 export type {
@@ -20,11 +21,21 @@ export type {
   TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
 
-type WorkerResponse = { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string };
+type WorkerResponse =
+  | { id: number; ok: true; result: unknown }
+  | { id: number; ok: false; error: string }
+  | { id: number; streamEvents: unknown[] };
+
+interface PendingEntry {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  onEvent?: (evt: TraceEvent) => void;
+}
 
 let worker: Worker | null = null;
 let nextId = 0;
-const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+const pending = new Map<number, PendingEntry>();
+let activeStreamingId: number | null = null;
 
 let itemsCache: string[] = [];
 let machinesCache: string[] = [];
@@ -45,7 +56,7 @@ export function onEngineActivity(cb: (active: number) => void): () => void {
   return () => activeCountListeners.delete(cb);
 }
 
-function call<T>(payload: Record<string, unknown>): Promise<T> {
+function call<T>(payload: Record<string, unknown>, onEvent?: (evt: TraceEvent) => void): Promise<T> {
   if (!worker) throw new Error("Engine not initialized — call initEngine() first");
   const id = ++nextId;
   onActive(+1);
@@ -53,12 +64,15 @@ function call<T>(payload: Record<string, unknown>): Promise<T> {
     pending.set(id, {
       resolve: (v) => {
         onActive(-1);
+        if (activeStreamingId === id) activeStreamingId = null;
         resolve(v as T);
       },
       reject: (e) => {
         onActive(-1);
+        if (activeStreamingId === id) activeStreamingId = null;
         reject(e);
       },
+      onEvent,
     });
     worker!.postMessage({ id, ...payload });
   });
@@ -74,6 +88,14 @@ export async function initEngine(): Promise<void> {
     const { id } = e.data;
     const p = pending.get(id);
     if (!p) return;
+    if ("streamEvents" in e.data) {
+      // Partial batch of events during a streaming call — forward to listener,
+      // keep pending open until the final response arrives.
+      if (p.onEvent) {
+        for (const evt of e.data.streamEvents) p.onEvent(evt as TraceEvent);
+      }
+      return;
+    }
     pending.delete(id);
     if (e.data.ok) p.resolve(e.data.result);
     else p.reject(new Error(e.data.error));
@@ -93,12 +115,16 @@ export async function initEngine(): Promise<void> {
   defaultMachineCache = new Map(defaults);
 }
 
-function solve(
+async function solve(
   targetItem: string,
   targetRate: number,
   availableInputs: string[],
   machineEntity: string,
 ): Promise<SolverResult> {
+  // If a streaming layout is in flight, the user has just typed a new target
+  // and is waiting for feedback — kill the old WASM work so solve isn't
+  // queued behind a slow layout that's about to be thrown away anyway.
+  if (activeStreamingId !== null) await supersedeWorker();
   return call<SolverResult>({
     method: "solve",
     targetItem,
@@ -122,6 +148,56 @@ function buildLayout(result: SolverResult, maxBeltTier?: string): Promise<Layout
 
 function buildLayoutTraced(result: SolverResult, maxBeltTier?: string): Promise<LayoutResult> {
   return call<LayoutResult>({ method: "layoutTraced", result, maxBeltTier: maxBeltTier ?? null });
+}
+
+/**
+ * Kill the current worker and respawn a fresh one. Rejects all pending
+ * promises so stale callers see the supersession. Used to cancel an
+ * in-flight streaming layout when the user triggers a new solve.
+ */
+async function supersedeWorker(): Promise<void> {
+  if (!worker) return;
+  worker.terminate();
+  worker = null;
+  const superseded = new Error("Engine superseded by a newer request");
+  for (const [, p] of pending) p.reject(superseded);
+  pending.clear();
+  activeStreamingId = null;
+  await initEngine();
+}
+
+async function buildLayoutStreaming(
+  result: SolverResult,
+  maxBeltTier: string | undefined,
+  onEvent: (evt: TraceEvent) => void,
+): Promise<LayoutResult> {
+  if (activeStreamingId !== null) {
+    await supersedeWorker();
+  }
+  const id = ++nextId;
+  activeStreamingId = id;
+  onActive(+1);
+  return new Promise<LayoutResult>((resolve, reject) => {
+    pending.set(id, {
+      resolve: (v) => {
+        onActive(-1);
+        if (activeStreamingId === id) activeStreamingId = null;
+        resolve(v as LayoutResult);
+      },
+      reject: (e) => {
+        onActive(-1);
+        if (activeStreamingId === id) activeStreamingId = null;
+        reject(e);
+      },
+      onEvent,
+    });
+    worker!.postMessage({
+      id,
+      method: "layoutStreaming",
+      result,
+      maxBeltTier: maxBeltTier ?? null,
+    });
+  });
 }
 
 function exportBlueprint(layout: LayoutResult, label: string): Promise<string> {
@@ -149,6 +225,7 @@ export type Engine = {
   allProducerMachines: typeof allProducerMachines;
   buildLayout: typeof buildLayout;
   buildLayoutTraced: typeof buildLayoutTraced;
+  buildLayoutStreaming: typeof buildLayoutStreaming;
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
   validateLayout: typeof validateLayout;
@@ -161,6 +238,7 @@ export function getEngine(): Engine {
     allProducerMachines,
     buildLayout,
     buildLayoutTraced,
+    buildLayoutStreaming,
     exportBlueprint,
     defaultMachineForItem,
     validateLayout,

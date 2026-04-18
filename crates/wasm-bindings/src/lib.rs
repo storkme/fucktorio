@@ -61,6 +61,50 @@ pub fn layout_traced(solver_result: SolverResult, max_belt_tier: Option<String>)
         .map_err(|e| JsError::new(&e))
 }
 
+/// Filter predicate — determines which TraceEvent variants are forwarded to
+/// the streaming JS callback. The full event set remains collected in
+/// `LayoutResult.trace` for post-hoc consumption.
+///
+/// v1 streams only `PhaseSnapshot` — enough for the renderer to progressively
+/// commit entities as phases complete. Per-event overlays (SAT pulses, ghost
+/// paths, etc.) are deferred to a follow-up using a shared-Graphics
+/// draw-per-frame pattern; the naive "Graphics per event" approach saturated
+/// Pixi's render tree on large layouts. Widening the filter is a one-line
+/// change here when the renderer is ready.
+fn streamable(evt: &fucktorio_core::trace::TraceEvent) -> bool {
+    use fucktorio_core::trace::TraceEvent as T;
+    matches!(evt, T::PhaseSnapshot { .. })
+}
+
+/// Streaming variant — invokes `emit` synchronously for every filtered trace
+/// event during the layout run. The JS callback fires on the worker thread;
+/// use it to `postMessage` events to the main thread as the engine emits
+/// them. Returns the completed `LayoutResult` with the *full* (unfiltered)
+/// `trace` populated, so callers that ignore streaming still get a usable
+/// result identical to `layout_traced`.
+#[wasm_bindgen]
+pub fn layout_streaming(
+    solver_result: SolverResult,
+    max_belt_tier: Option<String>,
+    emit: &js_sys::Function,
+) -> Result<LayoutResult, JsError> {
+    let emit = emit.clone();
+    let on_event: Box<dyn FnMut(&fucktorio_core::trace::TraceEvent)> = Box::new(move |evt| {
+        if !streamable(evt) {
+            return;
+        }
+        if let Ok(js_evt) = serde_wasm_bindgen::to_value(evt) {
+            let _ = emit.call1(&JsValue::NULL, &js_evt);
+        }
+    });
+    fucktorio_core::bus::layout::build_bus_layout_streaming(
+        &solver_result,
+        max_belt_tier.as_deref(),
+        on_event,
+    )
+    .map_err(|e| JsError::new(&e))
+}
+
 #[wasm_bindgen]
 pub fn export_blueprint(layout_result: LayoutResult, label: String) -> String {
     blueprint::export(&layout_result, &label)

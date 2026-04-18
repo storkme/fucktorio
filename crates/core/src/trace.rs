@@ -15,6 +15,7 @@ use crate::models::PlacedEntity;
 
 thread_local! {
     static COLLECTOR: RefCell<Option<Vec<TraceEvent>>> = const { RefCell::new(None) };
+    static SINK: RefCell<Option<Box<dyn FnMut(&TraceEvent)>>> = const { RefCell::new(None) };
 }
 
 /// Start trace collection for the current thread. Returns a guard that
@@ -33,8 +34,30 @@ impl Drop for TraceGuard {
     }
 }
 
-/// Emit a trace event. No-op if no trace is active.
+/// Install a sink that sees every emitted event as it happens.
+/// Coexists with the collector — both fire on each emit. Returns a guard
+/// that removes the sink on drop.
+pub fn set_sink(sink: Box<dyn FnMut(&TraceEvent)>) -> SinkGuard {
+    SINK.with(|s| *s.borrow_mut() = Some(sink));
+    SinkGuard
+}
+
+/// RAII guard — clears the sink on drop.
+pub struct SinkGuard;
+
+impl Drop for SinkGuard {
+    fn drop(&mut self) {
+        SINK.with(|s| *s.borrow_mut() = None);
+    }
+}
+
+/// Emit a trace event. No-op if neither a collector nor a sink is active.
 pub fn emit(event: TraceEvent) {
+    SINK.with(|s| {
+        if let Some(ref mut sink) = *s.borrow_mut() {
+            sink(&event);
+        }
+    });
     COLLECTOR.with(|c| {
         if let Some(ref mut events) = *c.borrow_mut() {
             events.push(event);
