@@ -345,7 +345,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     if (!debugCb.checked || !regionsCb?.checked || !lastLayout) return;
 
     if (lastLayout.regions && lastLayout.regions.length > 0) {
-      const detailed = renderRegionOverlayDetailed(lastLayout);
+      const detailed = renderRegionOverlayDetailed(lastLayout, lastLayout.trace);
       regionOverlayLayer = detailed.layer;
       regionHitTest = detailed.hitTest;
       entityLayer.addChild(regionOverlayLayer);

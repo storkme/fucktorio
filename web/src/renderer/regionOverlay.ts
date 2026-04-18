@@ -1,7 +1,89 @@
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import { TILE_PX, itemColor } from "./entities";
-import type { LayoutResult, LayoutRegion, EntityDirection, RegionKind, RegionPort } from "../engine";
+import type { LayoutResult, LayoutRegion, EntityDirection, RegionKind, RegionPort, TraceEvent } from "../engine";
 import { classifyRegion, kindColor, classColor, classLabel, type RegionClassification } from "./regionClassify";
+
+type GhostSpecRoutedEvent = Extract<TraceEvent, { phase: "GhostSpecRouted" }>;
+
+type TileDir = "N" | "S" | "E" | "W";
+
+function tileDirection(ax: number, ay: number, bx: number, by: number): TileDir {
+  if (bx > ax) return "E";
+  if (bx < ax) return "W";
+  if (by > ay) return "S";
+  return "N";
+}
+
+function drawGhostBeltTile(g: Graphics, tx: number, ty: number, dir: TileDir, color: number): void {
+  const cx = tx * TILE_PX + TILE_PX / 2;
+  const cy = ty * TILE_PX + TILE_PX / 2;
+  const r = TILE_PX * 0.36;
+  const hw = TILE_PX * 0.18;
+  const isHoriz = dir === "E" || dir === "W";
+  const rw = isHoriz ? r : hw;
+  const rh = isHoriz ? hw : r;
+  g.rect(cx - rw, cy - rh, rw * 2, rh * 2).fill({ color, alpha: 0.2 });
+  // Arrowhead
+  const dx = dir === "E" ? 1 : dir === "W" ? -1 : 0;
+  const dy = dir === "S" ? 1 : dir === "N" ? -1 : 0;
+  const tipX = cx + dx * r;
+  const tipY = cy + dy * r;
+  const perpX = -dy * TILE_PX * 0.18;
+  const perpY = dx * TILE_PX * 0.18;
+  g.moveTo(tipX + dx * TILE_PX * 0.12, tipY + dy * TILE_PX * 0.12)
+    .lineTo(tipX - dx * TILE_PX * 0.06 + perpX, tipY - dy * TILE_PX * 0.06 + perpY)
+    .lineTo(tipX - dx * TILE_PX * 0.06 - perpX, tipY - dy * TILE_PX * 0.06 - perpY)
+    .closePath()
+    .fill({ color, alpha: 0.5 });
+}
+
+function itemFromSpecKey(key: string): string {
+  const i = key.indexOf(":");
+  return i >= 0 ? key.slice(0, i) : key;
+}
+
+function renderGhostBeltsInScope(
+  layer: Container,
+  events: readonly TraceEvent[],
+  regions: readonly LayoutRegionWithPorts[],
+): void {
+  if (regions.length === 0) return;
+  const routed = events.filter((e): e is GhostSpecRoutedEvent => e.phase === "GhostSpecRouted");
+  if (routed.length === 0) return;
+
+  // Build set of in-scope tiles: union of region bboxes expanded by 1
+  const inScope = new Set<string>();
+  for (const r of regions) {
+    for (let x = r.x - 1; x < r.x + r.width + 1; x++) {
+      for (let y = r.y - 1; y < r.y + r.height + 1; y++) {
+        inScope.add(`${x},${y}`);
+      }
+    }
+  }
+
+  const g = new Graphics();
+  for (const evt of routed) {
+    const tiles = evt.data.tiles;
+    if (!tiles || tiles.length === 0) continue;
+    const item = itemFromSpecKey(evt.data.spec_key);
+    const color = itemColor(item);
+    for (let i = 0; i < tiles.length; i++) {
+      const [tx, ty] = tiles[i];
+      if (!inScope.has(`${tx},${ty}`)) continue;
+      let dir: TileDir;
+      if (i < tiles.length - 1) {
+        dir = tileDirection(tx, ty, tiles[i + 1][0], tiles[i + 1][1]);
+      } else if (i > 0) {
+        dir = tileDirection(tiles[i - 1][0], tiles[i - 1][1], tx, ty);
+      } else {
+        // Single-tile path — direction is undefined; arbitrary fallback.
+        dir = "E";
+      }
+      drawGhostBeltTile(g, tx, ty, dir, color);
+    }
+  }
+  layer.addChild(g);
+}
 
 interface LayoutRegionWithPorts {
   kind: RegionKind;
@@ -175,13 +257,17 @@ export interface RegionOverlayResult {
   hitTest: (wx: number, wy: number) => RegionOverlayItem | null;
 }
 
-export function renderRegionOverlayDetailed(layout: LayoutResult): RegionOverlayResult {
+export function renderRegionOverlayDetailed(layout: LayoutResult, events?: readonly TraceEvent[]): RegionOverlayResult {
   const layer = new Container();
   const regions = (layout.regions ?? []) as LayoutRegionWithPorts[];
   const items: RegionOverlayItem[] = [];
 
   if (regions.length === 0) {
     return { layer, items, hitTest: () => null };
+  }
+
+  if (events && events.length > 0) {
+    renderGhostBeltsInScope(layer, events, regions);
   }
 
   for (const region of regions) {
