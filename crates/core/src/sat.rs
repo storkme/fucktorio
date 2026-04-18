@@ -104,6 +104,23 @@ fn idx_to_entity_dir(d: usize) -> EntityDirection {
     }
 }
 
+fn opposite_idx(d: usize) -> usize {
+    match d {
+        DIR_N => DIR_S,
+        DIR_E => DIR_W,
+        DIR_S => DIR_N,
+        DIR_W => DIR_E,
+        _ => unreachable!(),
+    }
+}
+
+/// A `ZoneBoundary` is "interior" when its tile is in `forced_empty` — i.e.
+/// the boundary represents flow entering or exiting at a Permanent entity's
+/// in-bbox tile, with no SAT entity placed there.
+fn is_interior_boundary(b: &ZoneBoundary, zone: &CrossingZone) -> bool {
+    zone.forced_empty.contains(&(b.x, b.y))
+}
+
 // ---------------------------------------------------------------------------
 // Per-tile variable block
 // ---------------------------------------------------------------------------
@@ -233,10 +250,30 @@ impl CrossingEncoder {
 
     /// Build the full CNF formula.
     fn encode(&self, zone: &CrossingZone, max_ug_reach: u32) -> Cnf {
+        // Interior-output sinks: forced_empty tiles that act as flow exits
+        // for the zone (an output ZoneBoundary points at them). Items
+        // entering these tiles are consumed by an external Permanent
+        // entity, so the adjacency rule "neighbor of an outputting belt
+        // must be non-empty" must be relaxed for this neighbor.
+        let interior_output_sinks: Vec<(u32, u32)> = zone
+            .boundaries
+            .iter()
+            .filter(|b| !b.is_input && is_interior_boundary(b, zone))
+            .filter_map(|b| {
+                let lx = (b.x - zone.x) as u32;
+                let ly = (b.y - zone.y) as u32;
+                if lx < self.width && ly < self.height {
+                    Some((lx, ly))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         let mut cnf = Cnf::new();
         self.encode_type_constraints(&mut cnf);
         self.encode_direction_constraints(&mut cnf);
-        self.encode_adjacency(&mut cnf);
+        self.encode_adjacency(&mut cnf, &interior_output_sinks);
         self.encode_underground(&mut cnf, max_ug_reach);
         self.encode_single_incoming(&mut cnf);
         if self.n_item_bits > 0 {
@@ -295,7 +332,7 @@ impl CrossingEncoder {
 
     // -- Adjacency: belt flowing dir d requires compatible neighbor ----------
 
-    fn encode_adjacency(&self, cnf: &mut Cnf) {
+    fn encode_adjacency(&self, cnf: &mut Cnf, interior_output_sinks: &[(u32, u32)]) {
         for y in 0..self.height {
             for x in 0..self.width {
                 let t = self.tiles[self.idx(x, y)];
@@ -315,14 +352,25 @@ impl CrossingEncoder {
 
                     let n = self.tiles[self.idx(nx as u32, ny as u32)];
 
-                    // belt AND out_dir[d] -> neighbor not empty
-                    cnf.add(&[
-                        t.is_belt.negative(),
-                        t.out_dir[d].negative(),
-                        n.is_belt.positive(),
-                        n.is_ug_in.positive(),
-                        n.is_ug_out.positive(),
-                    ]);
+                    // Interior-output sink: items "leak" into a Permanent
+                    // consumer at the boundary tile. Skip the
+                    // neighbor-non-empty rule (the boundary tile IS empty
+                    // by forced_empty); the directional/U-turn rules
+                    // remain harmless because the empty tile satisfies
+                    // every `n.is_*.negative()` literal trivially.
+                    let neighbor_is_sink =
+                        interior_output_sinks.contains(&(nx as u32, ny as u32));
+
+                    if !neighbor_is_sink {
+                        // belt AND out_dir[d] -> neighbor not empty
+                        cnf.add(&[
+                            t.is_belt.negative(),
+                            t.out_dir[d].negative(),
+                            n.is_belt.positive(),
+                            n.is_ug_in.positive(),
+                            n.is_ug_out.positive(),
+                        ]);
+                    }
 
                     // belt out d -> neighbor ug_in must face d (same direction)
                     cnf.add(&[
@@ -340,14 +388,16 @@ impl CrossingEncoder {
                         n.is_ug_out.negative(),
                     ]);
 
-                    // ug_out facing d -> neighbor not empty (items exit UG)
-                    cnf.add(&[
-                        t.is_ug_out.negative(),
-                        t.out_dir[d].negative(),
-                        n.is_belt.positive(),
-                        n.is_ug_in.positive(),
-                        n.is_ug_out.positive(),
-                    ]);
+                    if !neighbor_is_sink {
+                        // ug_out facing d -> neighbor not empty (items exit UG)
+                        cnf.add(&[
+                            t.is_ug_out.negative(),
+                            t.out_dir[d].negative(),
+                            n.is_belt.positive(),
+                            n.is_ug_in.positive(),
+                            n.is_ug_out.positive(),
+                        ]);
+                    }
 
                     // ug_out out d -> neighbor ug_in must face d
                     cnf.add(&[
@@ -697,6 +747,138 @@ impl CrossingEncoder {
 
     // -- Boundary conditions ------------------------------------------------
 
+    /// Perimeter arm: a "normal" boundary where SAT must place an entity at
+    /// the boundary tile itself. Belt or UG-in/out facing `direction`,
+    /// carrying `item`, with anti-loop protection on the three non-source
+    /// sides for inputs.
+    fn encode_perimeter_boundary(
+        &self,
+        cnf: &mut Cnf,
+        b: &ZoneBoundary,
+        lx: u32,
+        ly: u32,
+        boundary_tiles: &mut std::collections::HashSet<(u32, u32)>,
+    ) {
+        boundary_tiles.insert((lx, ly));
+        let t = self.tiles[self.idx(lx, ly)];
+        let d = entity_dir_to_idx(b.direction);
+
+        if b.is_input {
+            // Input: items enter zone flowing dir d. Tile can be
+            // belt (surface) or ug_in (items enter underground).
+            cnf.add(&[t.is_belt.positive(), t.is_ug_in.positive()]);
+            cnf.add(&[t.out_dir[d].positive()]);
+
+            // No in-grid entity may output toward an input boundary.
+            // Items at an input boundary enter from outside the zone;
+            // allowing in-grid paths to flow back into the input would
+            // create loops (items circling around an input tile).
+            for &fd in &ALL_DIRS {
+                let (fdx, fdy) = dir_delta(fd);
+                let px = lx as i32 - fdx;
+                let py = ly as i32 - fdy;
+                if self.in_bounds(px, py) {
+                    let p = self.tiles[self.idx(px as u32, py as u32)];
+                    cnf.add(&[p.is_belt.negative(), p.out_dir[fd].negative()]);
+                    cnf.add(&[p.is_ug_out.negative(), p.out_dir[fd].negative()]);
+                }
+            }
+        } else {
+            // Output: items exit zone flowing dir d. Tile can be
+            // belt or ug_out.
+            cnf.add(&[t.is_belt.positive(), t.is_ug_out.positive()]);
+            cnf.add(&[t.out_dir[d].positive()]);
+        }
+
+        // Fix item bits on the boundary tile.
+        self.fix_item_bits(cnf, &t, &b.item);
+    }
+
+    /// Interior arm: the boundary tile is in `forced_empty`, so there is no
+    /// SAT entity to constrain there. Instead, propagate the flow
+    /// constraints to the adjacent in-zone tile.
+    ///
+    /// `direction` is always the boundary tile's output axis, matching the
+    /// perimeter convention.
+    /// - Input boundary: flow goes from the boundary tile *in* direction
+    ///   `d`, landing on `boundary + dir_delta(d)`. That neighbor must
+    ///   carry the item and must not point back.
+    /// - Output boundary: flow arrives at the boundary tile *from*
+    ///   direction `opposite(d)`, originating on `boundary +
+    ///   dir_delta(opposite(d))`. That neighbor must carry the item and
+    ///   must output in direction `d` (toward the boundary tile).
+    fn encode_interior_boundary(
+        &self,
+        cnf: &mut Cnf,
+        b: &ZoneBoundary,
+        lx: u32,
+        ly: u32,
+        boundary_tiles: &mut std::collections::HashSet<(u32, u32)>,
+    ) {
+        let d = entity_dir_to_idx(b.direction);
+        // Neighbor position depends on input/output:
+        // - input: neighbor = boundary + d (receives flow going d)
+        // - output: neighbor = boundary + opposite(d) (sends flow into boundary)
+        let neighbor_dir_idx = if b.is_input { d } else { opposite_idx(d) };
+        let (dx, dy) = dir_delta(neighbor_dir_idx);
+        let nx = lx as i32 + dx;
+        let ny = ly as i32 + dy;
+        if !self.in_bounds(nx, ny) {
+            // Degenerate: neighbor out of bounds. Nothing to constrain —
+            // the boundary tile is already pinned empty by forced_empty,
+            // so the zone is effectively infeasible on this port. Leave
+            // as-is; SAT will return UNSAT from the item-transport rules.
+            return;
+        }
+        let (nx, ny) = (nx as u32, ny as u32);
+
+        // Suppress the "non-boundary edge can't output off-grid" rule for
+        // the neighbor. If the neighbor sits on the grid edge, its
+        // boundary-like role here overrides that default.
+        boundary_tiles.insert((nx, ny));
+
+        let n = self.tiles[self.idx(nx, ny)];
+
+        // Fix item bits on the neighbor.
+        self.fix_item_bits(cnf, &n, &b.item);
+
+        if b.is_input {
+            // Neighbor receives flow from the boundary tile. It must be a
+            // surface belt or a UG-in (ug_out would mean items emerge
+            // here from underground, inconsistent with items arriving
+            // from the boundary tile).
+            cnf.add(&[n.is_belt.positive(), n.is_ug_in.positive()]);
+
+            // Neighbor must not output back at the boundary tile (no
+            // loop into the Permanent source).
+            cnf.add(&[n.out_dir[opposite_idx(d)].negative()]);
+        } else {
+            // Output: neighbor must send flow toward the boundary tile.
+            // It's a surface belt or UG-out (ug_in would consume rather
+            // than emit). Direction is `d` (from neighbor toward boundary
+            // is the same axis the boundary tile would have output on).
+            cnf.add(&[n.is_belt.positive(), n.is_ug_out.positive()]);
+            cnf.add(&[n.out_dir[d].positive()]);
+        }
+    }
+
+    /// Apply item-bit constraints so the given tile carries `item`.
+    fn fix_item_bits(&self, cnf: &mut Cnf, t: &TileVars, item: &str) {
+        let item_idx = self
+            .item_names
+            .iter()
+            .position(|n| *n == item)
+            .unwrap_or(0);
+        for bit in 0..self.n_item_bits as usize {
+            let val = (item_idx >> bit) & 1;
+            if val == 1 {
+                cnf.add(&[t.item_bits[bit].positive()]);
+            } else {
+                cnf.add(&[t.item_bits[bit].negative()]);
+            }
+        }
+    }
+
     fn encode_boundaries(&self, cnf: &mut Cnf, zone: &CrossingZone) {
         // Track which local tiles have boundary conditions.
         let mut boundary_tiles = std::collections::HashSet::new();
@@ -708,50 +890,10 @@ impl CrossingEncoder {
                 continue;
             }
 
-            boundary_tiles.insert((lx, ly));
-            let t = self.tiles[self.idx(lx, ly)];
-            let d = entity_dir_to_idx(b.direction);
-
-            if b.is_input {
-                // Input: items enter zone flowing dir d. Tile can be
-                // belt (surface) or ug_in (items enter underground).
-                cnf.add(&[t.is_belt.positive(), t.is_ug_in.positive()]);
-                cnf.add(&[t.out_dir[d].positive()]);
-
-                // No in-grid entity may output toward an input boundary.
-                // Items at an input boundary enter from outside the zone;
-                // allowing in-grid paths to flow back into the input would
-                // create loops (items circling around an input tile).
-                for &fd in &ALL_DIRS {
-                    let (fdx, fdy) = dir_delta(fd);
-                    let px = lx as i32 - fdx;
-                    let py = ly as i32 - fdy;
-                    if self.in_bounds(px, py) {
-                        let p = self.tiles[self.idx(px as u32, py as u32)];
-                        cnf.add(&[p.is_belt.negative(), p.out_dir[fd].negative()]);
-                        cnf.add(&[p.is_ug_out.negative(), p.out_dir[fd].negative()]);
-                    }
-                }
+            if is_interior_boundary(b, zone) {
+                self.encode_interior_boundary(cnf, b, lx, ly, &mut boundary_tiles);
             } else {
-                // Output: items exit zone flowing dir d. Tile can be
-                // belt or ug_out.
-                cnf.add(&[t.is_belt.positive(), t.is_ug_out.positive()]);
-                cnf.add(&[t.out_dir[d].positive()]);
-            }
-
-            // Fix item bits.
-            let item_idx = self
-                .item_names
-                .iter()
-                .position(|n| *n == b.item)
-                .unwrap_or(0);
-            for bit in 0..self.n_item_bits as usize {
-                let val = (item_idx >> bit) & 1;
-                if val == 1 {
-                    cnf.add(&[t.item_bits[bit].positive()]);
-                } else {
-                    cnf.add(&[t.item_bits[bit].negative()]);
-                }
+                self.encode_perimeter_boundary(cnf, b, lx, ly, &mut boundary_tiles);
             }
         }
 
@@ -1787,5 +1929,188 @@ mod tests {
                 e.x, e.y, e.name, e.direction, e.carries, e.io_type
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Interior-tile boundary tests
+    //
+    // Boundaries whose (x, y) is in forced_empty represent flow entering or
+    // exiting at a Permanent entity's tile inside the bbox. SAT places no
+    // entity there; the neighbor in `direction` carries the constraint.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_interior_input_boundary_3x3() {
+        // 3×3 zone, input boundary at interior (0,0) dir=East.
+        // Output boundary at (2,0) dir=East (perimeter, exits east).
+        // Expected: no entity at (0,0); (1,0) carries iron-plate and does
+        // NOT point West (cannot loop back into the Permanent source).
+        let zone = CrossingZone {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 3,
+            boundaries: vec![
+                ZoneBoundary {
+                    x: 0,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 2,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![(0, 0)],
+        };
+
+        let sol = solve_crossing_zone(&zone, 4, "transport-belt")
+            .expect("interior-input zone should be SAT");
+
+        // (0,0) has no SAT entity — forced_empty.
+        assert!(
+            !sol.entities.iter().any(|e| e.x == 0 && e.y == 0),
+            "forced_empty tile (0,0) must be empty"
+        );
+
+        // (1,0) carries iron-plate and faces East (direct route to exit).
+        let neighbor = sol
+            .entities
+            .iter()
+            .find(|e| e.x == 1 && e.y == 0)
+            .expect("neighbor (1,0) must hold an entity");
+        assert_ne!(
+            neighbor.direction,
+            EntityDirection::West,
+            "neighbor must not point back at source"
+        );
+    }
+
+    #[test]
+    fn test_interior_output_boundary_3x3() {
+        // Mirror: input on perimeter at (0,1) dir=East, output at
+        // interior (2,1) dir=East. Neighbor (1,1) must output East into
+        // the Permanent consumer.
+        let zone = CrossingZone {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 3,
+            boundaries: vec![
+                ZoneBoundary {
+                    x: 0,
+                    y: 1,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 2,
+                    y: 1,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![(2, 1)],
+        };
+
+        let sol = solve_crossing_zone(&zone, 4, "transport-belt")
+            .expect("interior-output zone should be SAT");
+
+        assert!(
+            !sol.entities.iter().any(|e| e.x == 2 && e.y == 1),
+            "forced_empty tile (2,1) must be empty"
+        );
+
+        let feeder = sol
+            .entities
+            .iter()
+            .find(|e| e.x == 1 && e.y == 1)
+            .expect("neighbor (1,1) must hold a belt/UG-out outputting east");
+        assert_eq!(feeder.direction, EntityDirection::East);
+    }
+
+    #[test]
+    fn test_interior_both_boundaries() {
+        // Both endpoints interior: (0,0) input East, (2,0) output East.
+        // Zone interior is just (1,0); a single east-facing belt there
+        // satisfies the flow.
+        let zone = CrossingZone {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 3,
+            boundaries: vec![
+                ZoneBoundary {
+                    x: 0,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 2,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![(0, 0), (2, 0)],
+        };
+
+        let sol = solve_crossing_zone(&zone, 4, "transport-belt")
+            .expect("both-interior zone should be SAT");
+
+        assert!(!sol.entities.iter().any(|e| e.x == 0 && e.y == 0));
+        assert!(!sol.entities.iter().any(|e| e.x == 2 && e.y == 0));
+
+        let mid = sol
+            .entities
+            .iter()
+            .find(|e| e.x == 1 && e.y == 0)
+            .expect("middle tile must hold an entity carrying iron-plate");
+        assert_eq!(mid.direction, EntityDirection::East);
+    }
+
+    #[test]
+    fn test_interior_neighbor_also_forced_empty_unsat() {
+        // Degenerate: the only in-zone neighbor of the interior input is
+        // also forced_empty, so there's nowhere for the item to land.
+        // Expected: UNSAT (or solver returns None).
+        let zone = CrossingZone {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 1,
+            boundaries: vec![
+                ZoneBoundary {
+                    x: 0,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: true,
+                },
+                ZoneBoundary {
+                    x: 2,
+                    y: 0,
+                    direction: EntityDirection::East,
+                    item: "iron-plate".into(),
+                    is_input: false,
+                },
+            ],
+            forced_empty: vec![(0, 0), (1, 0)],
+        };
+
+        assert!(
+            solve_crossing_zone(&zone, 4, "transport-belt").is_none(),
+            "interior-neighbor-also-forced-empty must be UNSAT"
+        );
     }
 }

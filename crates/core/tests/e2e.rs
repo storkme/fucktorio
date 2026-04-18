@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "SAT zone at y=10 can't route iron-plate tap from (2,10)-South (splitter-fed) through copper trunks to (5,10)-East within tile cap — region grows to 81 tiles before giving up, tiles (4,11)/(5,11) held by a non-participating copper-cable tap. Needs larger growth budget OR cluster participation rewrite."]
+#[ignore = "Interior-tile boundaries now correctly move iron-plate IN to (2,9) South via the splitter-feeder detection. SAT iter 1 satisfies but defers; iter 2 SAT satisfies, walker veto fires (SAT's underground reroute breaks the originally-routed iron-plate ghost through (3,10), a copper-cable trunk tile). Iter 3+ go UNSAT because the copper-cable spec's trunk path is fully Permanent (forbidden) — SAT has no routable tiles for it. Needs (a) cluster-participation rewrite to drop fully-Permanent specs, and (b) walker-veto relaxation when SAT reroutes a spec via underground."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]

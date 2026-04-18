@@ -30,6 +30,15 @@ use crate::models::{EntityDirection, PlacedEntity};
 use crate::sat::{solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary};
 use crate::trace::{self, BoundarySnapshot, ExternalFeederSnapshot, TraceEvent};
 
+/// A feeder/consumer tile candidate found adjacent to a spec entry/exit.
+struct FeederHit {
+    /// The tile of the Permanent entity that physically interacts with
+    /// the boundary (for splitters, the specific one of two tiles).
+    entity_tile: (i32, i32),
+    /// The Permanent entity's facing direction.
+    entity_direction: EntityDirection,
+}
+
 pub struct SatStrategy;
 
 /// Direction vector for N/E/S/W.
@@ -109,8 +118,20 @@ fn physical_feeder_direction(
     tile: (i32, i32),
     placed_entities: &[PlacedEntity],
 ) -> Option<EntityDirection> {
+    physical_feeder_hit(tile, placed_entities).map(|hit| hit.entity_direction)
+}
+
+/// Find a Permanent entity (splitter / belt / UG-out) whose output lands
+/// on `tile`. Returns the *specific* feeder tile and direction.
+///
+/// For splitters, returns the one of the two tiles that physically emits
+/// onto `tile` (the tile from which `tile = feeder_tile + dir_delta(dir)`).
+fn physical_feeder_hit(
+    tile: (i32, i32),
+    placed_entities: &[PlacedEntity],
+) -> Option<FeederHit> {
     for e in placed_entities {
-        // UG-ins consume from the surface; they don't emit onto it.
+        // UG-ins consume; they don't emit onto the surface.
         if is_ug_belt(&e.name) && e.io_type.as_deref() == Some("input") {
             continue;
         }
@@ -121,17 +142,87 @@ fn physical_feeder_direction(
             continue;
         }
         let (dx, dy) = dir_delta(e.direction);
-        let lands_on_tile = if is_splitter(&e.name) {
+        if is_splitter(&e.name) {
             let (sx, sy) = splitter_second_tile(e);
-            (e.x + dx, e.y + dy) == tile || (sx + dx, sy + dy) == tile
-        } else {
-            (e.x + dx, e.y + dy) == tile
-        };
-        if lands_on_tile {
-            return Some(e.direction);
+            if (e.x + dx, e.y + dy) == tile {
+                return Some(FeederHit {
+                    entity_tile: (e.x, e.y),
+                    entity_direction: e.direction,
+                });
+            }
+            if (sx + dx, sy + dy) == tile {
+                return Some(FeederHit {
+                    entity_tile: (sx, sy),
+                    entity_direction: e.direction,
+                });
+            }
+        } else if (e.x + dx, e.y + dy) == tile {
+            return Some(FeederHit {
+                entity_tile: (e.x, e.y),
+                entity_direction: e.direction,
+            });
         }
     }
     None
+}
+
+/// If a Permanent flow-source entity has a tile inside `bbox` AND in
+/// `forbidden`, and that tile emits onto `spec_entry`, return
+/// `(interior_tile, feeder.direction)`. Otherwise None — caller falls
+/// back to the perimeter boundary model.
+///
+/// "Interior" means the boundary lives at the Permanent entity's tile
+/// rather than at the first SAT-placeable tile downstream. Lets SAT route
+/// the downstream tile freely instead of pinning it to the arrival axis.
+fn interior_input_boundary(
+    spec_entry: (i32, i32),
+    bbox: &Rect,
+    forbidden: &FxHashSet<(i32, i32)>,
+    placed_entities: &[PlacedEntity],
+) -> Option<((i32, i32), EntityDirection)> {
+    let hit = physical_feeder_hit(spec_entry, placed_entities)?;
+    let (tx, ty) = hit.entity_tile;
+    if bbox.contains(tx, ty) && forbidden.contains(&(tx, ty)) {
+        Some(((tx, ty), hit.entity_direction))
+    } else {
+        None
+    }
+}
+
+/// Symmetric to `interior_input_boundary`: if the tile immediately past
+/// `spec_exit` in direction `spec_exit_dir` (i.e. the next tile downstream
+/// of the zone exit) is inside `bbox` AND in `forbidden` AND is occupied
+/// by a Permanent entity, the boundary can move to that interior tile.
+///
+/// Direction stays as `spec_exit_dir`: the boundary tile's "output axis"
+/// is whatever direction items would continue moving in once they reach
+/// the Permanent consumer.
+fn interior_output_boundary(
+    spec_exit: (i32, i32),
+    spec_exit_dir: EntityDirection,
+    bbox: &Rect,
+    forbidden: &FxHashSet<(i32, i32)>,
+    placed_entities: &[PlacedEntity],
+) -> Option<((i32, i32), EntityDirection)> {
+    let (dx, dy) = dir_delta(spec_exit_dir);
+    let consumer = (spec_exit.0 + dx, spec_exit.1 + dy);
+    if !bbox.contains(consumer.0, consumer.1) || !forbidden.contains(&consumer) {
+        return None;
+    }
+    // Confirm a Permanent entity actually occupies `consumer`.
+    let occupied = placed_entities.iter().any(|e| {
+        if is_splitter(&e.name) {
+            let (sx, sy) = splitter_second_tile(e);
+            (e.x, e.y) == consumer || (sx, sy) == consumer
+        } else {
+            (e.x, e.y) == consumer
+        }
+    });
+    if occupied {
+        Some((consumer, spec_exit_dir))
+    } else {
+        None
+    }
 }
 
 impl JunctionStrategy for SatStrategy {
@@ -165,29 +256,62 @@ impl JunctionStrategy for SatStrategy {
         let max_reach = ug_max_reach(belt_name);
 
         // Two boundaries per spec — one input (entry), one output (exit).
+        //
+        // Boundary positioning has three modes:
+        //   1. **Interior** — a Permanent flow-source/consumer has a tile
+        //      inside the bbox AND in `forbidden`. The boundary lives at
+        //      that interior tile; SAT places no entity there but
+        //      constrains the adjacent in-zone tile to receive/send the
+        //      flow. Frees the in-zone tile to face any direction SAT
+        //      finds convenient.
+        //   2. **Perimeter + arrival override** — feeder is OUTSIDE the
+        //      bbox and dumps into the spec's entry tile. The boundary
+        //      stays at the spec's tile but `direction` is overridden to
+        //      the feeder's output direction so SAT models the arrival
+        //      axis correctly.
+        //   3. **Perimeter (default)** — straight-axis crossing. Boundary
+        //      at the spec's tile with the spec's direction.
         let mut boundaries: Vec<ZoneBoundary> =
             Vec::with_capacity(ctx.junction.specs.len() * 2);
         for spec in &ctx.junction.specs {
-            // Entry direction = physical flow direction at the entry tile.
-            // If an external feeder (splitter / stamped belt / UG-out)
-            // dumps into this tile, use its output direction as the
-            // physical flow. Otherwise fall back to the spec's axis (the
-            // straight-axis case where feeder direction coincides with
-            // spec direction anyway).
-            let entry_direction =
-                physical_feeder_direction((spec.entry.x, spec.entry.y), ctx.placed_entities)
+            let (entry_x, entry_y, entry_direction) = match interior_input_boundary(
+                (spec.entry.x, spec.entry.y),
+                &ctx.junction.bbox,
+                &ctx.junction.forbidden,
+                ctx.placed_entities,
+            ) {
+                Some(((ix, iy), dir)) => (ix, iy, dir),
+                None => {
+                    let dir = physical_feeder_direction(
+                        (spec.entry.x, spec.entry.y),
+                        ctx.placed_entities,
+                    )
                     .unwrap_or(spec.entry.direction);
+                    (spec.entry.x, spec.entry.y, dir)
+                }
+            };
             boundaries.push(ZoneBoundary {
-                x: spec.entry.x,
-                y: spec.entry.y,
+                x: entry_x,
+                y: entry_y,
                 direction: entry_direction,
                 item: spec.item.clone(),
                 is_input: true,
             });
+
+            let (exit_x, exit_y, exit_direction) = match interior_output_boundary(
+                (spec.exit.x, spec.exit.y),
+                spec.exit.direction,
+                &ctx.junction.bbox,
+                &ctx.junction.forbidden,
+                ctx.placed_entities,
+            ) {
+                Some(((ix, iy), dir)) => (ix, iy, dir),
+                None => (spec.exit.x, spec.exit.y, spec.exit.direction),
+            };
             boundaries.push(ZoneBoundary {
-                x: spec.exit.x,
-                y: spec.exit.y,
-                direction: spec.exit.direction,
+                x: exit_x,
+                y: exit_y,
+                direction: exit_direction,
                 item: spec.item.clone(),
                 is_input: false,
             });
@@ -517,5 +641,120 @@ mod tests {
         ];
         let result = prune_dangling_sat_entities(entities, &boundaries, 4, 0, 0);
         assert_eq!(result.len(), 2, "full path should be untouched");
+    }
+
+    // -- Interior-boundary helpers ------------------------------------------
+
+    fn make_splitter(x: i32, y: i32, dir: EntityDirection) -> PlacedEntity {
+        PlacedEntity {
+            name: "splitter".into(),
+            x,
+            y,
+            direction: dir,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_interior_input_boundary_from_splitter() {
+        // South-facing splitter at (1,9)+(2,9). Bbox is 3×3 from (2,9),
+        // so (2,9) is inside the bbox AND in forbidden. The spec's entry
+        // is at (2,10) (the tile the splitter feeds into). The interior
+        // boundary should land at (2,9) dir=South.
+        let splitter = make_splitter(1, 9, EntityDirection::South);
+        let placed = vec![splitter];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let mut forbidden = FxHashSet::default();
+        forbidden.insert((2, 9));
+
+        let result = interior_input_boundary(
+            (2, 10),
+            &bbox,
+            &forbidden,
+            &placed,
+        );
+        assert_eq!(result, Some(((2, 9), EntityDirection::South)));
+    }
+
+    #[test]
+    fn test_interior_input_boundary_external_splitter_returns_none() {
+        // Splitter wholly OUTSIDE bbox: bbox starts at (3,9), splitter
+        // at (1,9)+(2,9). Spec entry at (2,10) — but (2,10) is also
+        // outside the bbox here, so the splitter feed lands externally.
+        // The Permanent feeder tile (1,9) and (2,9) are NOT in forbidden.
+        // Expected: None (fall back to perimeter model).
+        let splitter = make_splitter(1, 9, EntityDirection::South);
+        let placed = vec![splitter];
+        let bbox = Rect { x: 3, y: 9, w: 3, h: 3 };
+        let forbidden = FxHashSet::default();
+
+        let result = interior_input_boundary(
+            (2, 10),
+            &bbox,
+            &forbidden,
+            &placed,
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_interior_input_boundary_belt_feeder() {
+        // Single-tile belt feeder (not a splitter): an east-facing belt
+        // at (5,5) emits onto (6,5). Bbox covers (5,5)+forbidden.
+        let belt = make_belt(5, 5, EntityDirection::East, "iron-plate");
+        let placed = vec![belt];
+        let bbox = Rect { x: 5, y: 5, w: 3, h: 3 };
+        let mut forbidden = FxHashSet::default();
+        forbidden.insert((5, 5));
+
+        let result = interior_input_boundary(
+            (6, 5),
+            &bbox,
+            &forbidden,
+            &placed,
+        );
+        assert_eq!(result, Some(((5, 5), EntityDirection::East)));
+    }
+
+    #[test]
+    fn test_interior_output_boundary_from_consumer() {
+        // Spec exit at (5,5) flowing East. The next tile (6,5) is in
+        // bbox AND forbidden AND occupied by some Permanent entity
+        // (a splitter for example). Boundary moves to (6,5) dir=East.
+        let consumer = make_splitter(6, 5, EntityDirection::South);
+        let placed = vec![consumer];
+        let bbox = Rect { x: 5, y: 5, w: 3, h: 3 };
+        let mut forbidden = FxHashSet::default();
+        forbidden.insert((6, 5));
+
+        let result = interior_output_boundary(
+            (5, 5),
+            EntityDirection::East,
+            &bbox,
+            &forbidden,
+            &placed,
+        );
+        assert_eq!(result, Some(((6, 5), EntityDirection::East)));
+    }
+
+    #[test]
+    fn test_interior_output_boundary_no_consumer() {
+        // Spec exit at (5,5) East. Next tile (6,5) is in forbidden
+        // (e.g. a tap-off underground passage), but no Permanent entity
+        // sits there. Expected: None — we don't want to invent a
+        // consumer where none exists.
+        let placed: Vec<PlacedEntity> = vec![];
+        let bbox = Rect { x: 5, y: 5, w: 3, h: 3 };
+        let mut forbidden = FxHashSet::default();
+        forbidden.insert((6, 5));
+
+        let result = interior_output_boundary(
+            (5, 5),
+            EntityDirection::East,
+            &bbox,
+            &forbidden,
+            &placed,
+        );
+        assert_eq!(result, None);
     }
 }
