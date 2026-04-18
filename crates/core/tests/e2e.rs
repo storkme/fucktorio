@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Interior-tile boundaries now correctly move iron-plate IN to (2,9) South via the splitter-feeder detection. SAT iter 1 satisfies but defers; iter 2 SAT satisfies, walker veto fires (SAT's underground reroute breaks the originally-routed iron-plate ghost through (3,10), a copper-cable trunk tile). Iter 3+ go UNSAT because the copper-cable spec's trunk path is fully Permanent (forbidden) — SAT has no routable tiles for it. Needs (a) cluster-participation rewrite to drop fully-Permanent specs, and (b) walker-veto relaxation when SAT reroutes a spec via underground."]
+#[ignore = "After interior-boundary + reachability-walker fixes: SAT iter 1 defers, iter 2 SAT 'satisfies' a bogus solution (encoder's auto-interior-detection fires for the iron-plate OUT at (4,10) — a forbidden tile sitting on a copper-cable trunk, not a legitimate iron consumer) and the reachability walker correctly rejects it. Iter 3+ go UNSAT because the copper-cable spec's trunk path is fully Permanent — SAT has no routable tiles for it. Needs (a) cluster-participation rewrite to drop fully-Permanent specs from the participating list, and (b) tighten the encoder's interior-arm so it only fires for boundaries the strategy deliberately marked interior (not just any forced_empty boundary tile)."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]

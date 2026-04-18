@@ -1,23 +1,21 @@
-//! Region walker: structural reachability check for the junction solver's
-//! CEGAR (counter-example guided) loop.
+//! Region walker: reachability check for the junction solver's CEGAR
+//! (counter-example guided) loop.
 //!
 //! When a `JunctionStrategy` returns a candidate solution for a growing
 //! region, we can't commit it blindly — the strategy only knows about the
 //! specs it was handed, not about other routed paths that touch the
 //! region's footprint. The walker is the veto: it merges the proposed
-//! entities into a shadow view of the world and walks every affected
-//! path end-to-end. If any walk fails, the solution is rejected and the
-//! outer loop grows the region and retries.
+//! entities into a shadow view of the world and asks, for every
+//! affected path, "can items still flow from this path's entry to its
+//! exit through the shadow's belt graph?" If any path can't, the
+//! solution is rejected and the outer loop grows the region and retries.
 //!
-//! Scope, deliberately small for the MVP:
-//! - Checks presence + item match at each tile on each affected path.
-//! - Accepts UG passthroughs (same-path UG in → paired UG out) and
-//!   hidden-middle tiles between them.
-//! - Does *not* yet verify flow direction at each step; a belt carrying
-//!   the right item is treated as "probably fine." The assumption is
-//!   that the downstream validator still runs on the committed layout
-//!   and catches direction bugs we miss here. This keeps the walker
-//!   simple enough to trust and cheap enough to run on every iteration.
+//! The check is **reachability**, not tile-match. SAT may legitimately
+//! reroute a path via a longer surface detour or via underground —
+//! tile-by-tile match would reject those even though the flow is fine.
+//! BFS through the shadow's belt graph (filtered to entities carrying
+//! the path's item, jumping UG pairs and splitter siblings) lets us
+//! accept any topologically valid solution.
 //!
 //! The walker is intentionally decoupled from `GrowingRegion` and
 //! `JunctionStrategyContext`. The caller constructs an `AffectedPath`
@@ -25,7 +23,9 @@
 //! lives in the caller.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 
+use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile};
 use crate::models::{EntityDirection, PlacedEntity};
 
 /// A routed path the caller wants us to verify against the shadow view.
@@ -88,7 +88,16 @@ pub enum BreakReason {
     /// Found a UG input on this path but couldn't find a paired UG
     /// output further along the path carrying the same item and
     /// facing the same direction.
+    ///
+    /// Retained for compatibility with telemetry consumers; the
+    /// reachability-based walker no longer produces it. UG pairing
+    /// problems now surface as `Unreachable` instead.
     UnpairedUgIn { direction: EntityDirection },
+    /// SAT solution leaves the path's exit unreachable from its entry
+    /// in the shadow's belt graph. Catches surface detours that drop
+    /// items mid-route, broken UG pairings, items hopping into the
+    /// wrong-item belt, etc.
+    Unreachable,
 }
 
 /// A view of the world after a region's proposed entities are committed:
@@ -152,83 +161,57 @@ pub fn walk_affected(paths: &[AffectedPath<'_>], shadow: &ShadowView) -> WalkRes
 }
 
 fn walk_single(path: &AffectedPath<'_>, shadow: &ShadowView) -> Result<(), WalkBreak> {
-    let tiles = path.tiles;
-    if tiles.is_empty() {
+    let Some(&start) = path.tiles.first() else {
+        return Ok(());
+    };
+    let Some(&end) = path.tiles.last() else {
+        return Ok(());
+    };
+
+    // Entry must exist and carry the right item. (Reachability BFS
+    // alone wouldn't distinguish "entry empty" from "exit unreachable",
+    // and the entry tile is always SAT/router-owned so missing/wrong
+    // there is genuinely the strategy's fault.)
+    let Some(entry) = shadow.get(start) else {
+        return Err(WalkBreak {
+            segment_id: path.segment_id.to_string(),
+            tile: start,
+            reason: BreakReason::MissingEntity,
+        });
+    };
+    if entry.carries.as_deref() != Some(path.item) {
+        return Err(WalkBreak {
+            segment_id: path.segment_id.to_string(),
+            tile: start,
+            reason: BreakReason::ItemMismatch {
+                expected: path.item.into(),
+                actual: entry.carries.clone(),
+            },
+        });
+    }
+
+    if start == end {
         return Ok(());
     }
-    let mut i = 0usize;
-    while i < tiles.len() {
-        let t = tiles[i];
-        // Factorio UG corridor rule: if this tile sits strictly between
-        // a UG input and a paired UG output on THIS path, anything can
-        // live on the surface here (or nothing) — the flow passes
-        // underneath. Handled up-front so a perpendicular surface belt
-        // sitting on top of our corridor doesn't trigger a spurious
-        // item-mismatch break.
-        if is_hidden_middle_of_own_ug(tiles, i, path.item, shadow) {
-            i += 1;
-            continue;
-        }
-        match shadow.get(t) {
-            Some(e) => {
-                // Item must match. Wrong carries means SAT replaced our
-                // belt with something else (the tier2_ec sideload bug).
-                if e.carries.as_deref() != Some(path.item) {
-                    return Err(WalkBreak {
-                        segment_id: path.segment_id.to_string(),
-                        tile: t,
-                        reason: BreakReason::ItemMismatch {
-                            expected: path.item.into(),
-                            actual: e.carries.clone(),
-                        },
-                    });
-                }
-                // A UG input on this path jumps to its paired output
-                // further along the sequence; tiles between them are
-                // hidden middles we don't need to verify.
-                if is_ug_in(e) {
-                    let dir = e.direction;
-                    let paired = (i + 1..tiles.len()).find(|&j| {
-                        shadow
-                            .get(tiles[j])
-                            .map(|e2| {
-                                is_ug_out(e2)
-                                    && e2.direction == dir
-                                    && e2.carries.as_deref() == Some(path.item)
-                            })
-                            .unwrap_or(false)
-                    });
-                    match paired {
-                        Some(j) => {
-                            i = j + 1;
-                            continue;
-                        }
-                        None => {
-                            return Err(WalkBreak {
-                                segment_id: path.segment_id.to_string(),
-                                tile: t,
-                                reason: BreakReason::UnpairedUgIn { direction: dir },
-                            });
-                        }
-                    }
-                }
-                i += 1;
-            }
-            None => {
-                // Empty tile and not a hidden middle — broken.
-                return Err(WalkBreak {
-                    segment_id: path.segment_id.to_string(),
-                    tile: t,
-                    reason: BreakReason::MissingEntity,
-                });
-            }
-        }
+
+    let (belt_dir, ug_pairs, sibs) = build_belt_graph_for_item(shadow, path.item);
+    if bfs_reach(start, end, &belt_dir, &ug_pairs, &sibs) {
+        Ok(())
+    } else {
+        Err(WalkBreak {
+            segment_id: path.segment_id.to_string(),
+            tile: start,
+            reason: BreakReason::Unreachable,
+        })
     }
-    Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Belt graph extraction + BFS
+// ---------------------------------------------------------------------------
+
 fn is_ug(e: &PlacedEntity) -> bool {
-    e.name.contains("underground-belt")
+    is_ug_belt(&e.name)
 }
 
 fn is_ug_in(e: &PlacedEntity) -> bool {
@@ -239,33 +222,157 @@ fn is_ug_out(e: &PlacedEntity) -> bool {
     is_ug(e) && e.io_type.as_deref() == Some("output")
 }
 
-/// True iff `tiles[idx]` sits strictly between a UG-input and matching
-/// UG-output on this same path. A matching pair carries the same item.
-fn is_hidden_middle_of_own_ug(
-    tiles: &[(i32, i32)],
-    idx: usize,
-    item: &str,
-    shadow: &ShadowView,
-) -> bool {
-    // Find the nearest UG input on this path at some j < idx.
-    let in_idx = (0..idx).rev().find(|&j| {
-        shadow
-            .get(tiles[j])
-            .map(|e| is_ug_in(e) && e.carries.as_deref() == Some(item))
-            .unwrap_or(false)
-    });
-    let Some(in_idx) = in_idx else { return false; };
-    // Find a matching UG output strictly after idx.
-    let out_idx = (idx + 1..tiles.len()).find(|&k| {
-        shadow
-            .get(tiles[k])
-            .map(|e| is_ug_out(e) && e.carries.as_deref() == Some(item))
-            .unwrap_or(false)
-    });
-    match out_idx {
-        Some(k) => in_idx < idx && idx < k,
-        None => false,
+fn dir_to_vec(d: EntityDirection) -> (i32, i32) {
+    match d {
+        EntityDirection::North => (0, -1),
+        EntityDirection::East => (1, 0),
+        EntityDirection::South => (0, 1),
+        EntityDirection::West => (-1, 0),
     }
+}
+
+/// Extract the per-item belt-flow graph from the shadow.
+///
+/// Mirrors `validate::belt_flow::build_*` helpers but localized to a
+/// single item subset: we only care about tiles relevant to the path
+/// we're checking.
+///
+/// Returns three maps:
+/// - `belt_dir_map`: tile → output direction. Includes belts, UG-in,
+///   UG-out, splitters (both tiles).
+/// - `ug_pairs`: symmetric map of UG-in ↔ UG-out tiles. Pairing rule:
+///   nearest UG-out matching direction + colinear with UG-in's facing,
+///   no closer UG-in/out blocks the corridor.
+/// - `splitter_siblings`: symmetric map for the two tiles of each
+///   splitter.
+fn build_belt_graph_for_item(
+    shadow: &ShadowView,
+    item: &str,
+) -> (
+    FxHashMap<(i32, i32), EntityDirection>,
+    FxHashMap<(i32, i32), (i32, i32)>,
+    FxHashMap<(i32, i32), (i32, i32)>,
+) {
+    let mut belt_dir_map: FxHashMap<(i32, i32), EntityDirection> = FxHashMap::default();
+    let mut splitter_siblings: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
+    let mut ug_inputs: Vec<(i32, i32, EntityDirection)> = Vec::new();
+    let mut ug_outputs: Vec<(i32, i32, EntityDirection)> = Vec::new();
+
+    for e in shadow.by_tile.values() {
+        if e.carries.as_deref() != Some(item) {
+            continue;
+        }
+        if is_surface_belt(&e.name) {
+            belt_dir_map.insert((e.x, e.y), e.direction);
+        } else if is_splitter(&e.name) {
+            let second = splitter_second_tile(e);
+            belt_dir_map.insert((e.x, e.y), e.direction);
+            belt_dir_map.insert(second, e.direction);
+            splitter_siblings.insert((e.x, e.y), second);
+            splitter_siblings.insert(second, (e.x, e.y));
+        } else if is_ug_in(e) {
+            belt_dir_map.insert((e.x, e.y), e.direction);
+            ug_inputs.push((e.x, e.y, e.direction));
+        } else if is_ug_out(e) {
+            belt_dir_map.insert((e.x, e.y), e.direction);
+            ug_outputs.push((e.x, e.y, e.direction));
+        }
+    }
+
+    // UG pairing: for each UG-in pick the closest in-line UG-out facing
+    // the same direction, item already filtered above.
+    let mut ug_pairs: FxHashMap<(i32, i32), (i32, i32)> = FxHashMap::default();
+    let mut used_outputs: FxHashSet<(i32, i32)> = FxHashSet::default();
+    for &(ix, iy, idir) in &ug_inputs {
+        let (dx, dy) = dir_to_vec(idir);
+        let mut best: Option<(i32, i32)> = None;
+        let mut best_dist = i32::MAX;
+        for &(ox, oy, odir) in &ug_outputs {
+            if odir != idir || used_outputs.contains(&(ox, oy)) {
+                continue;
+            }
+            let rx = ox - ix;
+            let ry = oy - iy;
+            // Must be colinear with the UG-in's facing direction.
+            let dist = if dx != 0 {
+                if ry != 0 || (rx > 0) != (dx > 0) {
+                    continue;
+                }
+                rx.abs()
+            } else {
+                if rx != 0 || (ry > 0) != (dy > 0) {
+                    continue;
+                }
+                ry.abs()
+            };
+            if dist > 1 && dist < best_dist {
+                best_dist = dist;
+                best = Some((ox, oy));
+            }
+        }
+        if let Some(out) = best {
+            ug_pairs.insert((ix, iy), out);
+            ug_pairs.insert(out, (ix, iy));
+            used_outputs.insert(out);
+        }
+    }
+
+    (belt_dir_map, ug_pairs, splitter_siblings)
+}
+
+/// Direction-aware BFS through the belt graph from `start`. Returns
+/// true iff `target` is visited. Mirrors
+/// `validate::belt_flow::bfs_belt_downstream` but short-circuits.
+fn bfs_reach(
+    start: (i32, i32),
+    target: (i32, i32),
+    belt_dir_map: &FxHashMap<(i32, i32), EntityDirection>,
+    ug_pairs: &FxHashMap<(i32, i32), (i32, i32)>,
+    splitter_siblings: &FxHashMap<(i32, i32), (i32, i32)>,
+) -> bool {
+    if !belt_dir_map.contains_key(&start) {
+        return false;
+    }
+    if start == target {
+        return true;
+    }
+    let mut visited: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
+    visited.insert(start);
+    queue.push_back(start);
+
+    while let Some((x, y)) = queue.pop_front() {
+        // Step in the entity's output direction.
+        if let Some(&d) = belt_dir_map.get(&(x, y)) {
+            let (dx, dy) = dir_to_vec(d);
+            let nb = (x + dx, y + dy);
+            if belt_dir_map.contains_key(&nb) && visited.insert(nb) {
+                if nb == target {
+                    return true;
+                }
+                queue.push_back(nb);
+            }
+        }
+        // Underground tunnel jump.
+        if let Some(&paired) = ug_pairs.get(&(x, y)) {
+            if visited.insert(paired) {
+                if paired == target {
+                    return true;
+                }
+                queue.push_back(paired);
+            }
+        }
+        // Splitter sibling — items on one tile are also on the other.
+        if let Some(&sib) = splitter_siblings.get(&(x, y)) {
+            if visited.insert(sib) {
+                if sib == target {
+                    return true;
+                }
+                queue.push_back(sib);
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +444,8 @@ mod tests {
     fn fails_on_item_mismatch_tier2_ec_bug() {
         // Simulates the buggy tier2_electronic_circuit layout: column-3
         // copper-cable is broken at (3,10) by an iron-plate UG input
-        // that SAT placed there. The walker must reject this.
+        // that SAT placed there. The walker must reject this — copper
+        // can't reach (3,11) from (3,8) because (3,10) carries iron.
         let existing = vec![
             belt(3, 8, EntityDirection::South, "copper-cable"),
             belt(3, 9, EntityDirection::South, "copper-cable"),
@@ -362,8 +470,10 @@ mod tests {
         match result {
             WalkResult::Broken { breaks } => {
                 assert_eq!(breaks.len(), 1);
-                assert_eq!(breaks[0].tile, (3, 10));
-                matches!(breaks[0].reason, BreakReason::ItemMismatch { .. });
+                // Reachability reports the break at the entry tile;
+                // the iron-plate gap at (3,10) makes (3,11) unreachable.
+                assert_eq!(breaks[0].tile, (3, 8));
+                assert!(matches!(breaks[0].reason, BreakReason::Unreachable));
             }
             _ => panic!("expected Broken, got {result:?}"),
         }
@@ -424,7 +534,9 @@ mod tests {
     #[test]
     fn fails_on_missing_entity_outside_ug_pair() {
         // Path expects belts at (2,2)..(2,4) but (2,3) is empty in the
-        // shadow and there's no UG pair to justify it.
+        // shadow and there's no UG pair to justify it. Reachability
+        // reports the break at the path entry — the gap leaves (2,4)
+        // unreachable from (2,2).
         let existing = vec![
             belt(2, 2, EntityDirection::South, "iron-plate"),
             belt(2, 4, EntityDirection::South, "iron-plate"),
@@ -439,16 +551,20 @@ mod tests {
         match walk_affected(&[path], &shadow) {
             WalkResult::Broken { breaks } => {
                 assert_eq!(breaks.len(), 1);
-                assert_eq!(breaks[0].tile, (2, 3));
-                assert!(matches!(breaks[0].reason, BreakReason::MissingEntity));
+                assert_eq!(breaks[0].tile, (2, 2));
+                assert!(matches!(breaks[0].reason, BreakReason::Unreachable));
             }
-            r => panic!("expected Broken(MissingEntity), got {r:?}"),
+            r => panic!("expected Broken(Unreachable), got {r:?}"),
         }
     }
 
     #[test]
     fn fails_on_unpaired_ug_in() {
         // Path has a UG input at (1,1) but no matching UG output later.
+        // Without a paired UG-out, the BFS can't tunnel anywhere from
+        // (1,1) — it tries to step East to (2,1) but no entity there,
+        // so (3,1) is unreachable. Reported as Unreachable (not the
+        // legacy UnpairedUgIn variant).
         let proposed = vec![ug_in(1, 1, EntityDirection::East, "iron-plate")];
         let shadow = ShadowView::build(&[], &FxHashSet::default(), &proposed);
         let tiles = vec![(1, 1), (2, 1), (3, 1)];
@@ -460,9 +576,9 @@ mod tests {
         match walk_affected(&[path], &shadow) {
             WalkResult::Broken { breaks } => {
                 assert_eq!(breaks[0].tile, (1, 1));
-                assert!(matches!(breaks[0].reason, BreakReason::UnpairedUgIn { .. }));
+                assert!(matches!(breaks[0].reason, BreakReason::Unreachable));
             }
-            r => panic!("expected Broken(UnpairedUgIn), got {r:?}"),
+            r => panic!("expected Broken(Unreachable), got {r:?}"),
         }
     }
 
@@ -477,5 +593,74 @@ mod tests {
         let e = shadow.get((4, 4)).unwrap();
         assert_eq!(e.carries.as_deref(), Some("iron-plate"));
         assert_eq!(e.direction, EntityDirection::East);
+    }
+
+    #[test]
+    fn passes_when_sat_detours_around_obstacle() {
+        // Original ghost path: iron-plate East at (2,10)→(3,10)→(4,10)
+        // →(5,10). SAT can't use (3,10)/(4,10) (foreign Permanent
+        // belts there), so it routes south then back up:
+        //   (2,10) S → (2,11) E → (3,11) E → (4,11) E → (5,11) N → (5,10).
+        // Reachability must accept this even though the original tile
+        // sequence is no longer item-matched mid-path.
+        let existing = vec![
+            // The blocking foreign belts (copper) — appear in shadow,
+            // not on the path's released set.
+            belt(3, 10, EntityDirection::South, "copper-cable"),
+            belt(4, 10, EntityDirection::South, "copper-cable"),
+        ];
+        let released: FxHashSet<(i32, i32)> = [(2, 10), (5, 10)].into_iter().collect();
+        let proposed = vec![
+            belt(2, 10, EntityDirection::South, "iron-plate"),
+            belt(2, 11, EntityDirection::East, "iron-plate"),
+            belt(3, 11, EntityDirection::East, "iron-plate"),
+            belt(4, 11, EntityDirection::East, "iron-plate"),
+            belt(5, 11, EntityDirection::North, "iron-plate"),
+            belt(5, 10, EntityDirection::East, "iron-plate"),
+        ];
+        let shadow = ShadowView::build(&existing, &released, &proposed);
+
+        let tiles = vec![(2, 10), (3, 10), (4, 10), (5, 10)];
+        let iron = AffectedPath {
+            segment_id: "tap:iron-plate#0",
+            tiles: &tiles,
+            item: "iron-plate",
+        };
+        let result = walk_affected(&[iron], &shadow);
+        assert!(
+            result.is_passed(),
+            "SAT detour around obstacle should pass reachability, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn passes_when_ug_corridor_replaces_surface() {
+        // Original ghost path: iron-plate East at (2,10)→(3,10)→(4,10)
+        // →(5,10) all surface. SAT collapses the middle into a UG
+        // corridor: UG-in East at (2,10), UG-out East at (5,10), with
+        // foreign Permanent copper-cable belts at (3,10)/(4,10) in the
+        // shadow.
+        let existing = vec![
+            belt(3, 10, EntityDirection::South, "copper-cable"),
+            belt(4, 10, EntityDirection::South, "copper-cable"),
+        ];
+        let released: FxHashSet<(i32, i32)> = [(2, 10), (5, 10)].into_iter().collect();
+        let proposed = vec![
+            ug_in(2, 10, EntityDirection::East, "iron-plate"),
+            ug_out(5, 10, EntityDirection::East, "iron-plate"),
+        ];
+        let shadow = ShadowView::build(&existing, &released, &proposed);
+
+        let tiles = vec![(2, 10), (3, 10), (4, 10), (5, 10)];
+        let iron = AffectedPath {
+            segment_id: "tap:iron-plate#0",
+            tiles: &tiles,
+            item: "iron-plate",
+        };
+        let result = walk_affected(&[iron], &shadow);
+        assert!(
+            result.is_passed(),
+            "UG corridor through foreign tiles should pass via ug_pairs, got {result:?}"
+        );
     }
 }
