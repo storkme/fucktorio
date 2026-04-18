@@ -23,7 +23,7 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::bus::junction::{BeltTier, Rect, SpecOrigin};
+use crate::bus::junction::{BeltTier, Rect, SpecCrossing, SpecOrigin};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
@@ -225,6 +225,126 @@ fn interior_output_boundary(
     }
 }
 
+/// Synthesize SAT boundaries from the in-bbox splitters' actual
+/// wiring. When the bbox absorbs a splitter, we can't just mark its
+/// tiles as `forbidden` and move on — the splitter is an active flow
+/// device, and without telling SAT about its inputs/outputs SAT will
+/// happily invent routings that bypass the splitter (e.g. UG-tunneling
+/// underneath the trunk's splitter tile), producing "satisfied"
+/// solutions that don't match physics.
+///
+/// For each splitter tile inside `bbox`, we examine the tiles
+/// immediately upstream (input side) and downstream (output side) of
+/// that lane, and emit interior `ZoneBoundary`s for the connections
+/// that are actually wired up in `placed_entities`:
+///
+/// - **Interior OUTPUT** at the splitter tile, direction = splitter's
+///   direction, if the input-side neighbor has a feeder entity
+///   carrying the splitter's item. This forces SAT to route the
+///   in-zone flow *into* the splitter rather than bypassing it.
+///
+/// - **Interior INPUT** at the splitter tile, direction = splitter's
+///   direction, if the output-side neighbor is wired with a
+///   belt-like entity carrying a compatible item. This forces SAT
+///   to honor the splitter's output — the downstream tile must
+///   carry the splitter's item.
+///
+/// Unconnected lane-sides get no boundary (per the
+/// "*if they are connected when we absorb them*" rule): we don't
+/// invent a feeder or consumer where the real topology has none.
+fn splitter_topology_boundaries(
+    placed_entities: &[PlacedEntity],
+    bbox: &Rect,
+) -> Vec<ZoneBoundary> {
+    let mut out = Vec::new();
+    for e in placed_entities {
+        if !is_splitter(&e.name) {
+            continue;
+        }
+        let Some(item) = e.carries.as_deref() else {
+            continue;
+        };
+        let tiles = [(e.x, e.y), splitter_second_tile(e)];
+        let (dx, dy) = dir_delta(e.direction);
+        for &(sx, sy) in &tiles {
+            if !bbox.contains(sx, sy) {
+                continue;
+            }
+            let input_nb = (sx - dx, sy - dy);
+            let output_nb = (sx + dx, sy + dy);
+
+            // Input side: any belt-like entity at `input_nb` that
+            // outputs onto `(sx,sy)` carrying `item`. Surface belts,
+            // splitters, UG-outs all count (each can emit). We
+            // require a matching item to avoid tying together
+            // flow-paths of different items — SAT models items
+            // independently.
+            let input_wired = placed_entities.iter().any(|n| {
+                if n.carries.as_deref() != Some(item) {
+                    return false;
+                }
+                if is_ug_belt(&n.name) && n.io_type.as_deref() != Some("output") {
+                    return false; // UG-in doesn't emit onto surface
+                }
+                if !(is_surface_belt(&n.name) || is_splitter(&n.name) || is_ug_belt(&n.name)) {
+                    return false;
+                }
+                let (ndx, ndy) = dir_delta(n.direction);
+                if is_splitter(&n.name) {
+                    let (nsx, nsy) = splitter_second_tile(n);
+                    (n.x + ndx, n.y + ndy) == (sx, sy)
+                        || (nsx + ndx, nsy + ndy) == (sx, sy)
+                } else {
+                    (n.x == input_nb.0 && n.y == input_nb.1)
+                        && (n.x + ndx, n.y + ndy) == (sx, sy)
+                }
+            });
+            if input_wired {
+                out.push(ZoneBoundary {
+                    x: sx,
+                    y: sy,
+                    direction: e.direction,
+                    item: item.to_string(),
+                    is_input: false, // splitter's input-side = zone OUT
+                    interior: true,
+                });
+            }
+
+            // Output side: any belt-like entity at `output_nb`
+            // carrying a compatible item. We don't filter by the
+            // receiver's facing — any belt accepts input from any
+            // side (sideloads are permissible on surface belts; the
+            // perpendicular-UG-in rule is enforced separately by the
+            // encoder's interior-input arm).
+            let output_wired = placed_entities.iter().any(|n| {
+                if n.carries.as_deref() != Some(item) {
+                    return false;
+                }
+                if !(is_surface_belt(&n.name) || is_splitter(&n.name) || is_ug_belt(&n.name)) {
+                    return false;
+                }
+                if is_splitter(&n.name) {
+                    let (nsx, nsy) = splitter_second_tile(n);
+                    (n.x, n.y) == output_nb || (nsx, nsy) == output_nb
+                } else {
+                    (n.x, n.y) == output_nb
+                }
+            });
+            if output_wired {
+                out.push(ZoneBoundary {
+                    x: sx,
+                    y: sy,
+                    direction: e.direction,
+                    item: item.to_string(),
+                    is_input: true, // splitter's output-side = zone IN
+                    interior: true,
+                });
+            }
+        }
+    }
+    out
+}
+
 impl JunctionStrategy for SatStrategy {
     fn name(&self) -> &'static str {
         "sat"
@@ -321,22 +441,45 @@ impl JunctionStrategy for SatStrategy {
             });
         }
 
+        // Capture the count of spec-derived boundaries before we
+        // append splitter-topology boundaries. The snapshot builder
+        // below uses this to pair the first N boundaries with specs
+        // (for origin tagging) and tag the rest as origin=splitter.
+        let n_spec_boundaries = boundaries.len();
+
+        // Splitter topology: for every splitter whose tile is inside
+        // the bbox, read its actual wiring in `placed_entities` and
+        // emit interior boundaries for the connected lanes. Forces
+        // SAT to honor the splitter's real flow rather than routing
+        // around it.
+        boundaries.extend(splitter_topology_boundaries(
+            ctx.placed_entities,
+            &ctx.junction.bbox,
+        ));
+
         let forced_empty: Vec<(i32, i32)> =
             ctx.junction.forbidden.iter().copied().collect();
 
         // Build a snapshot view of the boundaries for the trace event —
         // mirrors the junction_solver snapshot format so CLI replay
-        // tools can use the same rendering for both.
-        let boundary_snapshots: Vec<BoundarySnapshot> = boundaries
+        // tools can use the same rendering for both. First block:
+        // spec-derived boundaries paired with their specs. Second
+        // block: splitter-topology boundaries tagged "splitter".
+        let spec_pairs: Vec<(&ZoneBoundary, &SpecCrossing, bool)> = boundaries
             .iter()
+            .take(n_spec_boundaries)
             .zip(ctx.junction.specs.iter().flat_map(|s| {
                 [
                     (s, true),
                     (s, false),
                 ]
             }))
-            .map(|(b, (spec, is_input))| {
-                let feeder = if is_input {
+            .map(|(b, (s, is_input))| (b, s, is_input))
+            .collect();
+        let mut boundary_snapshots: Vec<BoundarySnapshot> = spec_pairs
+            .iter()
+            .map(|(b, spec, is_input)| {
+                let feeder = if *is_input {
                     find_external_feeder((b.x, b.y), ctx.placed_entities)
                 } else {
                     None
@@ -358,6 +501,19 @@ impl JunctionStrategy for SatStrategy {
                 }
             })
             .collect();
+        for b in boundaries.iter().skip(n_spec_boundaries) {
+            boundary_snapshots.push(BoundarySnapshot {
+                x: b.x,
+                y: b.y,
+                direction: dir_label(b.direction),
+                item: b.item.clone(),
+                is_input: b.is_input,
+                interior: b.interior,
+                spec_key: String::new(),
+                origin: "splitter".to_string(),
+                external_feeder: None,
+            });
+        }
 
         let zone = CrossingZone {
             x: ctx.junction.bbox.x,
@@ -872,5 +1028,125 @@ mod tests {
             4,
             "interior-boundary specs should retain their UG endpoints; got {pruned:#?}"
         );
+    }
+
+    // -- Splitter topology helpers ------------------------------------------
+
+    fn make_surface_belt(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
+        PlacedEntity {
+            name: "fast-transport-belt".into(),
+            x,
+            y,
+            direction: dir,
+            carries: Some(item.into()),
+            ..Default::default()
+        }
+    }
+
+    fn make_splitter_at(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
+        PlacedEntity {
+            name: "fast-splitter".into(),
+            x,
+            y,
+            direction: dir,
+            carries: Some(item.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_splitter_topology_both_lanes_wired() {
+        // South-facing splitter at (1,9)/(2,9). Feeders above at (1,8)
+        // and (2,8), consumers below at (1,10) and (2,10). Expect 4
+        // synthetic boundaries: IN+OUT on each splitter tile.
+        let placed = vec![
+            make_splitter_at(1, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 10, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 10, EntityDirection::East, "iron-plate"),
+        ];
+        let bbox = Rect { x: 1, y: 8, w: 5, h: 5 };
+        let bounds = splitter_topology_boundaries(&placed, &bbox);
+        assert_eq!(bounds.len(), 4, "expected 4 boundaries, got {bounds:#?}");
+        // 2 IN (downstream wired) + 2 OUT (upstream wired)
+        let ins = bounds.iter().filter(|b| b.is_input).count();
+        let outs = bounds.iter().filter(|b| !b.is_input).count();
+        assert_eq!(ins, 2);
+        assert_eq!(outs, 2);
+        assert!(bounds.iter().all(|b| b.interior));
+        assert!(bounds.iter().all(|b| b.direction == EntityDirection::South));
+        assert!(bounds.iter().all(|b| b.item == "iron-plate"));
+    }
+
+    #[test]
+    fn test_splitter_topology_one_lane_unwired() {
+        // Lane 2 input side (2,8) has no entity; lane 2 output (2,10)
+        // is still wired. Expect 3 boundaries: lane 1 IN+OUT, lane 2 IN.
+        let placed = vec![
+            make_splitter_at(1, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 10, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 10, EntityDirection::East, "iron-plate"),
+        ];
+        let bbox = Rect { x: 1, y: 8, w: 5, h: 5 };
+        let bounds = splitter_topology_boundaries(&placed, &bbox);
+        assert_eq!(bounds.len(), 3, "expected 3 boundaries, got {bounds:#?}");
+        // Lane 1 (splitter tile (1,9)): IN + OUT
+        assert_eq!(
+            bounds.iter().filter(|b| (b.x, b.y) == (1, 9)).count(),
+            2
+        );
+        // Lane 2 (splitter tile (2,9)): just IN (output side wired)
+        let lane2: Vec<_> = bounds.iter().filter(|b| (b.x, b.y) == (2, 9)).collect();
+        assert_eq!(lane2.len(), 1);
+        assert!(lane2[0].is_input);
+    }
+
+    #[test]
+    fn test_splitter_topology_outside_bbox() {
+        // Splitter wholly outside bbox → 0 boundaries.
+        let placed = vec![
+            make_splitter_at(1, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 10, EntityDirection::South, "iron-plate"),
+        ];
+        let bbox = Rect { x: 20, y: 20, w: 3, h: 3 };
+        let bounds = splitter_topology_boundaries(&placed, &bbox);
+        assert!(bounds.is_empty());
+    }
+
+    #[test]
+    fn test_splitter_topology_straddling_edge() {
+        // Bbox covers (2,9) but not (1,9). Only lane 2 should
+        // contribute boundaries.
+        let placed = vec![
+            make_splitter_at(1, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 8, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 10, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 10, EntityDirection::East, "iron-plate"),
+        ];
+        let bbox = Rect { x: 2, y: 8, w: 3, h: 5 };
+        let bounds = splitter_topology_boundaries(&placed, &bbox);
+        assert_eq!(bounds.len(), 2);
+        assert!(bounds.iter().all(|b| (b.x, b.y) == (2, 9)));
+    }
+
+    #[test]
+    fn test_splitter_topology_item_mismatch_skipped() {
+        // Feeder at (1,8) carries a different item — don't emit an
+        // input boundary. Output side still OK (same item).
+        let placed = vec![
+            make_splitter_at(1, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(1, 8, EntityDirection::South, "copper-plate"), // wrong item
+            make_surface_belt(1, 10, EntityDirection::South, "iron-plate"),
+        ];
+        let bbox = Rect { x: 1, y: 8, w: 5, h: 5 };
+        let bounds = splitter_topology_boundaries(&placed, &bbox);
+        // Only lane 1 output is wired. Expect 1 IN boundary at (1,9).
+        assert_eq!(bounds.len(), 1);
+        assert!(bounds[0].is_input);
+        assert_eq!((bounds[0].x, bounds[0].y), (1, 9));
     }
 }

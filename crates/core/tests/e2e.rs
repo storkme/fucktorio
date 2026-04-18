@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "After belt-permissive junction SAT zones: 0 errors, 1 UG-sideload warning remains. SAT now has access to the surrounding trunk belts (iron-plate trunk at x=1, copper-cable trunks) as SAT-routable, with forbidden shrunk from 11 → 3 tiles (just splitters). The 3 prior input-rate-delivery warnings on y=19 are gone. The remaining warning at (2,10) is structural: the iron splitter at (1,9)/(2,9) South only outputs onto (2,10) from the north, forcing a perpendicular feed into any east-facing crossing entry. Fixing it requires either a layout-level change (iron tap getting more horizontal buffer) or a different splitter orientation — neither is a SAT concern."]
+#[ignore = "After belt-permissive + splitter-topology + perpendicular-UG-in rule: SAT has an honest model of the iron+copper splitter flows and can't sideload into UG-ins. But SAT still satisfies iter 2 with a solution the reachability walker rejects (iron-plate tap doesn't reach (5,10) in the SAT placement), iter 3+ go UNSAT. Growth caps, original ghost layout ships with belt-item-isolation error. Remaining bug is in the SAT routing or walker reasoning — the splitter-topology change correctly forces (1,8) surface-belt feed instead of UG bypass, but something downstream still doesn't connect iron to its exit. Next to investigate."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
