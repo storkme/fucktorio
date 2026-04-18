@@ -60,6 +60,7 @@ pub const MAX_REGION_TILES: usize = 64;
 /// Mutable state threaded through the growth loop. Not consumed by
 /// strategies directly — they see a `Junction` snapshot built via
 /// `to_junction`.
+#[derive(Clone)]
 pub struct GrowingRegion {
     /// The crossing tile that seeded this region. Kept for trace events
     /// and strategies that want to know where the "original" problem was.
@@ -831,174 +832,25 @@ pub fn solve_crossing(
         });
     }
 
+    let solve_ctx = SolveCtx {
+        initial_tile,
+        routed_paths,
+        spec_belt_tiers,
+        spec_items,
+        spec_exit_dirs,
+        hard_obstacles,
+        strict_obstacles,
+        unreleasable_obstacles,
+        placed_entities,
+        strategies,
+        all_crossings,
+    };
+
     for iter in 0..MAX_GROWTH_ITERS {
-        let junction = region.to_junction(routed_paths, spec_belt_tiers, spec_items, spec_exit_dirs);
-
-        // Snapshot current iteration state before trying strategies.
-        {
-            let boundaries = junction_boundaries_to_snapshots(
-                &junction,
-                &region.participating,
-                &region.encountered,
-                placed_entities,
-            );
-            let mut tiles: Vec<(i32, i32)> = region.tiles.iter().copied().collect();
-            tiles.sort();
-            let mut forbidden: Vec<(i32, i32)> =
-                region.forbidden_tiles.iter().copied().collect();
-            forbidden.sort();
-            trace::emit(TraceEvent::JunctionGrowthIteration {
-                seed_x: initial_tile.0,
-                seed_y: initial_tile.1,
-                iter,
-                bbox_x: region.bbox.x,
-                bbox_y: region.bbox.y,
-                bbox_w: region.bbox.w,
-                bbox_h: region.bbox.h,
-                tiles,
-                forbidden_tiles: forbidden,
-                boundaries,
-                participating: region.participating.clone(),
-                encountered: region.encountered.clone(),
-            });
-        }
-
-        let ctx = JunctionStrategyContext {
-            junction: &junction,
-            region: &region,
-            growth_iter: iter,
-            routed_paths,
-            hard_obstacles,
-            strict_obstacles,
-            placed_entities,
-            unreleasable_obstacles,
-        };
-        for strategy in strategies {
-            #[cfg(not(target_arch = "wasm32"))]
-            let strategy_started = std::time::Instant::now();
-            let result = strategy.try_solve(&ctx);
-            #[cfg(not(target_arch = "wasm32"))]
-            let elapsed_us = strategy_started.elapsed().as_micros() as u64;
-            #[cfg(target_arch = "wasm32")]
-            let elapsed_us = 0u64;
-            let Some(sol) = result else {
-                trace::emit(TraceEvent::JunctionStrategyAttempt {
-                    seed_x: initial_tile.0,
-                    seed_y: initial_tile.1,
-                    iter,
-                    strategy: strategy.name().to_string(),
-                    outcome: "Unsatisfiable".to_string(),
-                    detail: String::new(),
-                    elapsed_us,
-                });
-                continue;
-            };
-
-            // Deferred-exit check: if any participating spec currently
-            // exits at another unresolved crossing tile (not the initial
-            // tile), the solution would leave a consecutive crossing
-            // unresolved. Grow one more step so the spec's frontier
-            // extends past all consecutive crossings before we commit.
-            let exits_at_crossing = ctx.junction.specs.iter().any(|s| {
-                let exit = (s.exit.x, s.exit.y);
-                exit != initial_tile && all_crossings.contains(&exit)
-            });
-            if exits_at_crossing {
-                trace::emit(TraceEvent::JunctionStrategyAttempt {
-                    seed_x: initial_tile.0,
-                    seed_y: initial_tile.1,
-                    iter,
-                    strategy: strategy.name().to_string(),
-                    outcome: "DeferredExit".to_string(),
-                    detail: "spec exits at another unresolved crossing".to_string(),
-                    elapsed_us,
-                });
-                break; // skip this iter's solution; fall through to grow
-            }
-
-            // Walker veto: reject solutions that would break a routed
-            // path whose tiles touch the region's bbox (or its 1-tile
-            // perimeter). Catches the tier2_electronic_circuit class
-            // where SAT is locally valid but breaks a perpendicular
-            // trunk the region was unaware of.
-            //
-            // Release set = exactly the tiles SAT proposed a new
-            // entity for. Everything else keeps its existing entity
-            // in the shadow. Proposed overrides existing at the
-            // shared tile via `ShadowView::build`. This preserves
-            // non-participating trunks that sit inside the bbox but
-            // SAT never promised to own — the walker would
-            // otherwise flag them as MissingEntity.
-            let bbox = region.bbox;
-            let released: FxHashSet<(i32, i32)> =
-                sol.entities.iter().map(|e| (e.x, e.y)).collect();
-            let affected: Vec<AffectedPath<'_>> = routed_paths
-                .iter()
-                .filter_map(|(seg, tiles)| {
-                    if tiles.iter().any(|&t| near_bbox(bbox, t)) {
-                        let item = spec_items
-                            .get(seg)
-                            .map(|s| s.as_str())
-                            .unwrap_or("");
-                        Some(AffectedPath {
-                            segment_id: seg.as_str(),
-                            tiles: tiles.as_slice(),
-                            item,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let shadow = ShadowView::build(placed_entities, &released, &sol.entities);
-            if let WalkResult::Broken { breaks } = walk_affected(&affected, &shadow) {
-                let detail = if let Some(first) = breaks.first() {
-                    trace::emit(TraceEvent::RegionWalkerVeto {
-                        tile_x: initial_tile.0,
-                        tile_y: initial_tile.1,
-                        strategy: strategy.name().to_string(),
-                        growth_iter: iter,
-                        broken_segment: first.segment_id.clone(),
-                        break_tile_x: first.tile.0,
-                        break_tile_y: first.tile.1,
-                        break_count: breaks.len(),
-                    });
-                    format!(
-                        "segment={} at ({},{}) breaks={}",
-                        first.segment_id, first.tile.0, first.tile.1, breaks.len()
-                    )
-                } else {
-                    String::new()
-                };
-                trace::emit(TraceEvent::JunctionStrategyAttempt {
-                    seed_x: initial_tile.0,
-                    seed_y: initial_tile.1,
-                    iter,
-                    strategy: strategy.name().to_string(),
-                    outcome: "Vetoed".to_string(),
-                    detail,
-                    elapsed_us,
-                });
-                continue; // try the next strategy; if all fail, grow
-            }
-
-            trace::emit(TraceEvent::JunctionStrategyAttempt {
-                seed_x: initial_tile.0,
-                seed_y: initial_tile.1,
-                iter,
-                strategy: strategy.name().to_string(),
-                outcome: "Solved".to_string(),
-                detail: format!("{} entities placed", sol.entities.len()),
-                elapsed_us,
-            });
-            trace::emit(TraceEvent::JunctionSolved {
-                tile_x: initial_tile.0,
-                tile_y: initial_tile.1,
-                strategy: strategy.name().to_string(),
-                growth_iter: iter,
-                region_tiles: region.tile_count(),
-            });
-            return Some(sol);
+        // Attempt 1: the current region as-is.
+        match try_solve_on_region(&region, iter, None, &solve_ctx) {
+            TryOutcome::Solved(sol) => return Some(sol),
+            TryOutcome::Continue => {}
         }
 
         if region.tile_count() >= MAX_REGION_TILES {
@@ -1011,11 +863,49 @@ pub fn solve_crossing(
             });
             return None;
         }
-        // Uniform bbox expansion: +1 on every side each iter. Absorbs
-        // perpendicular trunks the seed crossing never heard of; lets
-        // SAT make joint decisions across the whole absorbed region.
-        // A smarter tap-vs-trunk-aware sequence can replace this once
-        // uniform demonstrates the pipeline is sound.
+
+        // Attempt 2: try every +1 single-side expansion of the current
+        // region before committing to a larger uniform grow. For a 3×3
+        // zone this produces four 3×4 / 4×3 shapes, each strictly
+        // containing the current region. First walker-valid SAT solve
+        // wins. If all four variants fail, fall through to the uniform
+        // expansion below — which absorbs perpendicular trunks that a
+        // single-side grow wouldn't have touched.
+        //
+        // We run variants sequentially here (SAT on these zones is
+        // low-ms) and let the caller's usual trace events distinguish
+        // them by the bbox dimensions in `JunctionGrowthIteration`.
+        // TODO(parallel): swap to `std::thread::scope` once the trace
+        // framework aggregates across workers; for now sequential is
+        // simpler and deterministic.
+        for (label, (left, top, right, bottom)) in SINGLE_SIDE_VARIANTS {
+            let mut variant = region.clone();
+            let changed = variant.expand_bbox(
+                *left,
+                *top,
+                *right,
+                *bottom,
+                routed_paths,
+                hard_obstacles,
+                strict_obstacles,
+                placed_entities,
+            );
+            if !changed {
+                continue;
+            }
+            if variant.tile_count() > MAX_REGION_TILES {
+                continue;
+            }
+            match try_solve_on_region(&variant, iter, Some(label), &solve_ctx) {
+                TryOutcome::Solved(sol) => return Some(sol),
+                TryOutcome::Continue => {}
+            }
+        }
+
+        // Fallback: uniform +1 on all sides. Absorbs perpendicular
+        // trunks/taps the one-side variants wouldn't have seen. When
+        // none of the single-side variants solve, we need joint
+        // decisions across the wider region.
         if !region.expand_bbox(
             1,
             1,
@@ -1045,6 +935,217 @@ pub fn solve_crossing(
         reason: "iter_cap".to_string(),
     });
     None
+}
+
+/// Four single-side +1 expansions. Each tuple is `(label, (left, top,
+/// right, bottom))`. Applied in a fixed order so iteration is
+/// deterministic — the solver picks the first walker-valid success.
+const SINGLE_SIDE_VARIANTS: &[(&str, (i32, i32, i32, i32))] = &[
+    ("variant-west", (1, 0, 0, 0)),
+    ("variant-north", (0, 1, 0, 0)),
+    ("variant-east", (0, 0, 1, 0)),
+    ("variant-south", (0, 0, 0, 1)),
+];
+
+/// Immutable references threaded through the growth loop. Extracted so
+/// `try_solve_on_region` can be called per-iter and per-variant without
+/// dragging a dozen parameters through each call.
+struct SolveCtx<'a> {
+    initial_tile: (i32, i32),
+    routed_paths: &'a FxHashMap<String, Vec<(i32, i32)>>,
+    spec_belt_tiers: &'a FxHashMap<String, BeltTier>,
+    spec_items: &'a FxHashMap<String, String>,
+    spec_exit_dirs: &'a FxHashMap<String, EntityDirection>,
+    hard_obstacles: &'a FxHashSet<(i32, i32)>,
+    strict_obstacles: &'a FxHashSet<(i32, i32)>,
+    unreleasable_obstacles: &'a FxHashSet<(i32, i32)>,
+    placed_entities: &'a [crate::models::PlacedEntity],
+    strategies: &'a [&'a dyn JunctionStrategy],
+    all_crossings: &'a FxHashSet<(i32, i32)>,
+}
+
+/// Outcome of one strategy attempt on a given region state.
+enum TryOutcome {
+    Solved(JunctionSolution),
+    Continue,
+}
+
+/// Snapshot the iteration, run every strategy on the region, and apply
+/// the walker veto. Mirrors the original in-loop body so the outer
+/// growth loop can call it per-iter *and* per-variant.
+///
+/// `variant` identifies the specific shape being tried when multiple
+/// candidates share an `iter` number (for trace disambiguation). `None`
+/// means "this is the primary attempt for the iter, no variant".
+fn try_solve_on_region(
+    region: &GrowingRegion,
+    iter: usize,
+    variant: Option<&str>,
+    ctx: &SolveCtx,
+) -> TryOutcome {
+    let junction = region.to_junction(
+        ctx.routed_paths,
+        ctx.spec_belt_tiers,
+        ctx.spec_items,
+        ctx.spec_exit_dirs,
+    );
+
+    let boundaries = junction_boundaries_to_snapshots(
+        &junction,
+        &region.participating,
+        &region.encountered,
+        ctx.placed_entities,
+    );
+    let mut tiles: Vec<(i32, i32)> = region.tiles.iter().copied().collect();
+    tiles.sort();
+    let mut forbidden: Vec<(i32, i32)> = region.forbidden_tiles.iter().copied().collect();
+    forbidden.sort();
+    trace::emit(TraceEvent::JunctionGrowthIteration {
+        seed_x: ctx.initial_tile.0,
+        seed_y: ctx.initial_tile.1,
+        iter,
+        bbox_x: region.bbox.x,
+        bbox_y: region.bbox.y,
+        bbox_w: region.bbox.w,
+        bbox_h: region.bbox.h,
+        tiles,
+        forbidden_tiles: forbidden,
+        boundaries,
+        participating: region.participating.clone(),
+        encountered: region.encountered.clone(),
+    });
+
+    let strategy_ctx = JunctionStrategyContext {
+        junction: &junction,
+        region,
+        growth_iter: iter,
+        routed_paths: ctx.routed_paths,
+        hard_obstacles: ctx.hard_obstacles,
+        strict_obstacles: ctx.strict_obstacles,
+        placed_entities: ctx.placed_entities,
+        unreleasable_obstacles: ctx.unreleasable_obstacles,
+    };
+    // Append the variant suffix so the trace can distinguish a primary
+    // attempt from per-variant attempts at the same iter number.
+    let variant_suffix = variant.map(|v| format!(" [{v}]")).unwrap_or_default();
+
+    for strategy in ctx.strategies {
+        #[cfg(not(target_arch = "wasm32"))]
+        let strategy_started = std::time::Instant::now();
+        let result = strategy.try_solve(&strategy_ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let elapsed_us = strategy_started.elapsed().as_micros() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let elapsed_us = 0u64;
+        let Some(sol) = result else {
+            trace::emit(TraceEvent::JunctionStrategyAttempt {
+                seed_x: ctx.initial_tile.0,
+                seed_y: ctx.initial_tile.1,
+                iter,
+                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                outcome: "Unsatisfiable".to_string(),
+                detail: String::new(),
+                elapsed_us,
+            });
+            continue;
+        };
+
+        // Deferred-exit: a participating spec's frontier exits on
+        // another unresolved crossing. Skip this attempt so the
+        // growth loop can push the frontier past all consecutive
+        // crossings before committing.
+        let exits_at_crossing = strategy_ctx.junction.specs.iter().any(|s| {
+            let exit = (s.exit.x, s.exit.y);
+            exit != ctx.initial_tile && ctx.all_crossings.contains(&exit)
+        });
+        if exits_at_crossing {
+            trace::emit(TraceEvent::JunctionStrategyAttempt {
+                seed_x: ctx.initial_tile.0,
+                seed_y: ctx.initial_tile.1,
+                iter,
+                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                outcome: "DeferredExit".to_string(),
+                detail: "spec exits at another unresolved crossing".to_string(),
+                elapsed_us,
+            });
+            break; // skip this iter's solution; fall through to grow
+        }
+
+        // Walker veto: shadow-view simulate the routed paths with
+        // SAT's proposed placements and reject if any routed path
+        // breaks. Catches locally-valid SAT solutions that break a
+        // perpendicular trunk.
+        let bbox = region.bbox;
+        let released: FxHashSet<(i32, i32)> =
+            sol.entities.iter().map(|e| (e.x, e.y)).collect();
+        let affected: Vec<AffectedPath<'_>> = ctx
+            .routed_paths
+            .iter()
+            .filter_map(|(seg, tiles)| {
+                if tiles.iter().any(|&t| near_bbox(bbox, t)) {
+                    let item = ctx.spec_items.get(seg).map(|s| s.as_str()).unwrap_or("");
+                    Some(AffectedPath {
+                        segment_id: seg.as_str(),
+                        tiles: tiles.as_slice(),
+                        item,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let shadow = ShadowView::build(ctx.placed_entities, &released, &sol.entities);
+        if let WalkResult::Broken { breaks } = walk_affected(&affected, &shadow) {
+            let detail = if let Some(first) = breaks.first() {
+                trace::emit(TraceEvent::RegionWalkerVeto {
+                    tile_x: ctx.initial_tile.0,
+                    tile_y: ctx.initial_tile.1,
+                    strategy: format!("{}{}", strategy.name(), variant_suffix),
+                    growth_iter: iter,
+                    broken_segment: first.segment_id.clone(),
+                    break_tile_x: first.tile.0,
+                    break_tile_y: first.tile.1,
+                    break_count: breaks.len(),
+                });
+                format!(
+                    "segment={} at ({},{}) breaks={}",
+                    first.segment_id, first.tile.0, first.tile.1, breaks.len()
+                )
+            } else {
+                String::new()
+            };
+            trace::emit(TraceEvent::JunctionStrategyAttempt {
+                seed_x: ctx.initial_tile.0,
+                seed_y: ctx.initial_tile.1,
+                iter,
+                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                outcome: "Vetoed".to_string(),
+                detail,
+                elapsed_us,
+            });
+            continue;
+        }
+
+        trace::emit(TraceEvent::JunctionStrategyAttempt {
+            seed_x: ctx.initial_tile.0,
+            seed_y: ctx.initial_tile.1,
+            iter,
+            strategy: format!("{}{}", strategy.name(), variant_suffix),
+            outcome: "Solved".to_string(),
+            detail: format!("{} entities placed", sol.entities.len()),
+            elapsed_us,
+        });
+        trace::emit(TraceEvent::JunctionSolved {
+            tile_x: ctx.initial_tile.0,
+            tile_y: ctx.initial_tile.1,
+            strategy: format!("{}{}", strategy.name(), variant_suffix),
+            growth_iter: iter,
+            region_tiles: region.tile_count(),
+        });
+        return TryOutcome::Solved(sol);
+    }
+
+    TryOutcome::Continue
 }
 
 /// Every tile inside `bbox` (inclusive on the min side, exclusive on the
