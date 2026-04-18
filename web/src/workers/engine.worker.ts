@@ -7,6 +7,7 @@ import wasmInit, {
   export_blueprint,
   layout,
   layout_traced,
+  layout_streaming,
   parse_blueprint,
   validate_layout,
 } from "../wasm-pkg/fucktorio_wasm.js";
@@ -30,6 +31,7 @@ type Request =
     }
   | { id: number; method: "layout"; result: SolverResult; maxBeltTier: string | null }
   | { id: number; method: "layoutTraced"; result: SolverResult; maxBeltTier: string | null }
+  | { id: number; method: "layoutStreaming"; result: SolverResult; maxBeltTier: string | null }
   | { id: number; method: "exportBlueprint"; layout: LayoutResult; label: string }
   | {
       id: number;
@@ -91,6 +93,31 @@ self.onmessage = async (e: MessageEvent<Request>) => {
       case "layoutTraced":
         result = layout_traced(req.result, req.maxBeltTier ?? undefined);
         break;
+      case "layoutStreaming": {
+        const id = req.id;
+        // Batch events before postMessage. The layout engine can emit
+        // thousands of trace events per run; one postMessage per event
+        // would saturate the main thread's event-loop with structured-
+        // clone overhead. 64 events per batch keeps message count ~50×
+        // lower without perceptibly delaying the visual stream.
+        const BATCH_SIZE = 64;
+        let batch: unknown[] = [];
+        const flushBatch = (): void => {
+          if (batch.length === 0) return;
+          (self as unknown as Worker).postMessage({ id, streamEvents: batch });
+          batch = [];
+        };
+        const emit = (evt: unknown): void => {
+          batch.push(evt);
+          if (batch.length >= BATCH_SIZE) flushBatch();
+        };
+        try {
+          result = layout_streaming(req.result, req.maxBeltTier ?? undefined, emit);
+        } finally {
+          flushBatch();
+        }
+        break;
+      }
       case "exportBlueprint":
         result = export_blueprint(req.layout, req.label);
         break;

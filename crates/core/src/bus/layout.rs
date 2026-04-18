@@ -335,6 +335,21 @@ pub fn build_bus_layout_traced(
     Ok(result)
 }
 
+/// Streaming variant — mirrors every emitted `TraceEvent` to `on_event` as it
+/// happens, and also returns them in `LayoutResult.trace` at the end. Used by
+/// the web app to render pipeline progress live while the engine runs.
+pub fn build_bus_layout_streaming(
+    solver_result: &SolverResult,
+    max_belt_tier: Option<&str>,
+    mut on_event: Box<dyn FnMut(&crate::trace::TraceEvent)>,
+) -> Result<LayoutResult, String> {
+    let _collector_guard = crate::trace::start_trace();
+    let _sink_guard = crate::trace::set_sink(Box::new(move |evt| on_event(evt)));
+    let mut result = build_bus_layout(solver_result, max_belt_tier)?;
+    result.trace = Some(crate::trace::drain_events());
+    Ok(result)
+}
+
 /// Estimate bus width before full lane planning.
 fn estimate_bus_width(solver_result: &SolverResult) -> i32 {
     // Count external solid inputs

@@ -28,6 +28,7 @@ import { createSnapshotMode } from "./ui/snapshotMode";
 import { createStepThrough } from "./ui/stepThrough";
 import { attachBusyOverlay } from "./ui/busyOverlay";
 import { renderLayoutPhaseAnimated, type PhaseAnimationHandle } from "./renderer/phaseAnimation";
+import { createStreamingRenderer, type StreamingRendererHandle } from "./renderer/streamingRenderer";
 
 const MACHINE_SLUGS = [
   "assembling-machine-1", "assembling-machine-2", "assembling-machine-3",
@@ -202,10 +203,12 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
     if (snapshot) {
       // Step-through is about to replace entities wholesale; stop any
-      // in-progress phase animation so its ticker doesn't write alphas on
-      // about-to-be-destroyed graphics.
+      // in-progress phase/streaming animation so its ticker doesn't write
+      // alphas on about-to-be-destroyed graphics.
       phaseAnimHandle?.cancel();
       phaseAnimHandle = null;
+      streamingHandle?.cancel();
+      streamingHandle = null;
       snapshotActive = true;
       const ctrl = renderLayout(
         { ...lastLayout!, entities: snapshot.entities, width: snapshot.width, height: snapshot.height },
@@ -389,6 +392,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let lastLayout: LayoutResult | null = null;
   let selectionCtrl: SelectionController | null = null;
   let phaseAnimHandle: PhaseAnimationHandle | null = null;
+  let streamingHandle: StreamingRendererHandle | null = null;
 
   const snapshotMode = createSnapshotMode({
     sidebarEl: document.getElementById("sidebar"),
@@ -465,15 +469,26 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   window.addEventListener("blur", () => viewport.plugins.resume("drag"));
 
   function renderGraph(result: SolverResult | null): void {
-    // Stop any in-flight phase animation before we destroy its graphics.
+    // Stop any in-flight animations before we destroy their graphics.
     phaseAnimHandle?.cancel();
     phaseAnimHandle = null;
+    streamingHandle?.cancel();
+    streamingHandle = null;
     entityLayer.removeChildren();
     drawGraph(viewport, result);
     legendEl.style.display = "none";
     if (!result) {
       viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
     }
+  }
+
+  function startStreaming(): (evt: TraceEvent) => void {
+    // Cancel any prior streaming render before starting a fresh one. The
+    // entity layer has already been cleared by renderGraph just before this
+    // call; the new handle attaches fresh sub-layers.
+    streamingHandle?.cancel();
+    streamingHandle = createStreamingRenderer(entityLayer, app, onHover, onSelect);
+    return (evt) => streamingHandle?.onEvent(evt);
   }
 
   function buildLegend(layout: LayoutResult): void {
@@ -516,18 +531,34 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     cachedValidationIssues = null;
     drawGraph(viewport, null);
 
-    const traceEvents = Array.isArray(layout.trace) ? layout.trace : [];
-    const hasSnapshots = traceEvents.some(
-      (e) => (e as { phase?: string }).phase === "PhaseSnapshot",
-    );
-
     let ctrl;
-    if (hasSnapshots) {
-      const out = renderLayoutPhaseAnimated(layout, entityLayer, onHover, onSelect, app);
-      ctrl = out.controller;
-      phaseAnimHandle = out.handle;
+    const streamedCtrl = streamingHandle?.hasCommittedEntities()
+      ? streamingHandle.getHighlightController()
+      : null;
+
+    if (streamingHandle && streamedCtrl) {
+      // Streaming already drew entities into entityLayer's sub-layers.
+      // Snap any in-flight fades + overlays to their final state; keep the
+      // streaming graphics as the authoritative render.
+      streamingHandle.finish();
+      streamingHandle = null;
+      ctrl = streamedCtrl;
     } else {
-      ctrl = renderLayout(layout, entityLayer, onHover, onSelect);
+      // Non-streaming path: corpus, parsed blueprints, or fallback if the
+      // streaming handle somehow never saw a PhaseSnapshot.
+      streamingHandle?.cancel();
+      streamingHandle = null;
+      const traceEvents = Array.isArray(layout.trace) ? layout.trace : [];
+      const hasSnapshots = traceEvents.some(
+        (e) => (e as { phase?: string }).phase === "PhaseSnapshot",
+      );
+      if (hasSnapshots) {
+        const out = renderLayoutPhaseAnimated(layout, entityLayer, onHover, onSelect, app);
+        ctrl = out.controller;
+        phaseAnimHandle = out.handle;
+      } else {
+        ctrl = renderLayout(layout, entityLayer, onHover, onSelect);
+      }
     }
     inspector.setHighlightController(ctrl);
     selectionCtrl = createSelectionController(app.canvas, viewport, entityLayer, layout, onSelectionChange);
@@ -626,6 +657,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     sidebarCtrl = renderSidebar(generatePanel, engine, {
       renderGraph,
       renderLayout: renderLayoutOnCanvas,
+      startStreaming,
     }, {
       getDebugMode: () => debugCb.checked,
       onDisplayToggles: (toggles: DisplayToggles) => {
