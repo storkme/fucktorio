@@ -264,9 +264,41 @@ impl CrossingEncoder {
     fn in_bounds(&self, x: i32, y: i32) -> bool {
         x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32
     }
+}
+
+/// Emit all `size`-sized subsets of `vars` (starting index `start`) as
+/// CNF clauses of negated literals. Used by `encode_ug_budget` for the
+/// pairwise at-most-K encoding.
+fn emit_at_most_k_clauses(
+    vars: &[Var],
+    size: usize,
+    start: usize,
+    current: &mut Vec<Var>,
+    cnf: &mut Cnf,
+) {
+    if current.len() == size {
+        let clause: Vec<Lit> = current.iter().map(|v| v.negative()).collect();
+        cnf.add(&clause);
+        return;
+    }
+    let needed = size - current.len();
+    let end = vars.len().saturating_sub(needed);
+    for i in start..=end {
+        current.push(vars[i]);
+        emit_at_most_k_clauses(vars, size, i + 1, current, cnf);
+        current.pop();
+    }
+}
+
+impl CrossingEncoder {
 
     /// Build the full CNF formula.
-    fn encode(&self, zone: &CrossingZone, max_ug_reach: u32) -> Cnf {
+    ///
+    /// `max_ug_ins`: optional cap on the number of `is_ug_in` tiles in
+    /// the solution. `Some(0)` hard-forbids UG (surface-only). `Some(k)`
+    /// allows at most `k` UG corridors. `None` = unlimited. Callers use
+    /// this to cost-shape the solver toward simpler layouts.
+    fn encode(&self, zone: &CrossingZone, max_ug_reach: u32, max_ug_ins: Option<u32>) -> Cnf {
         // Interior-output sinks: forced_empty tiles that act as flow exits
         // for the zone (an output ZoneBoundary points at them). Items
         // entering these tiles are consumed by an external Permanent
@@ -306,7 +338,44 @@ impl CrossingEncoder {
             self.encode_item_transport(&mut cnf);
         }
         self.encode_boundaries(&mut cnf, zone);
+        self.encode_ug_budget(&mut cnf, max_ug_ins);
         cnf
+    }
+
+    /// Cap the number of `is_ug_in` entities in the solution. Used to
+    /// nudge SAT toward simpler layouts: without a budget it'll happily
+    /// place UG pairs on items that could route on the surface just
+    /// because nothing penalises it.
+    ///
+    /// - `None`: no constraint.
+    /// - `Some(0)`: hard-forbid every UG entity (both input and
+    ///   output — a stray UG-out without a matching UG-in would be
+    ///   meaningless). Equivalent to the old "surface only" pass.
+    /// - `Some(k)` for `k ≥ 1`: at most `k` of the `is_ug_in` tiles may
+    ///   be true. UG-outs are paired to UG-ins by the existing
+    ///   `encode_underground` logic, so bounding UG-ins effectively
+    ///   bounds UG corridors.
+    ///
+    /// Encoding: pairwise (no auxiliary variables). For every
+    /// `(k+1)`-subset of UG-in vars, add the clause "at least one is
+    /// false". That's `C(n, k+1)` clauses; cheap for our sizes (n ≤ 100
+    /// tiles, k ≤ 3 in practice).
+    fn encode_ug_budget(&self, cnf: &mut Cnf, max_ug_ins: Option<u32>) {
+        let Some(k) = max_ug_ins else { return; };
+        if k == 0 {
+            for t in &self.tiles {
+                cnf.add(&[t.is_ug_in.negative()]);
+                cnf.add(&[t.is_ug_out.negative()]);
+            }
+            return;
+        }
+        let ug_ins: Vec<Var> = self.tiles.iter().map(|t| t.is_ug_in).collect();
+        let k = k as usize;
+        if k >= ug_ins.len() {
+            return; // trivially satisfied — capacity exceeds candidate count
+        }
+        let mut current: Vec<Var> = Vec::with_capacity(k + 1);
+        emit_at_most_k_clauses(&ug_ins, k + 1, 0, &mut current, cnf);
     }
 
     // -- Type: at most one of {belt, ug_in, ug_out} per tile ----------------
@@ -1198,12 +1267,16 @@ fn ug_name_for_tier(belt_tier: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 /// Solve a crossing zone, returning placed entities or None if unsatisfiable.
+/// Unrestricted: both surface and underground-belt entities are allowed,
+/// no UG budget. Callers that want to cost-shape the solver should use
+/// `solve_crossing_zone_with_stats` directly with a `max_ug_ins` cap.
 pub fn solve_crossing_zone(
     zone: &CrossingZone,
     max_ug_reach: u32,
     belt_tier: &str,
 ) -> Option<CrossingZoneSolution> {
-    let (entities, stats) = solve_crossing_zone_with_stats(zone, max_ug_reach, belt_tier);
+    let (entities, stats) =
+        solve_crossing_zone_with_stats(zone, max_ug_reach, belt_tier, None);
     entities.map(|ents| CrossingZoneSolution { entities: ents, stats })
 }
 
@@ -1211,10 +1284,18 @@ pub fn solve_crossing_zone(
 /// stats, even on UNSAT. Callers doing instrumentation (trace events,
 /// diagnostics) use this so variables/clauses/solve_time are still
 /// surfaced when the solver couldn't find a satisfying assignment.
+///
+/// `max_ug_ins`: optional cap on the number of UG corridors.
+/// - `None`: unlimited (original behaviour).
+/// - `Some(0)`: hard-forbid UG entities (surface-only routing).
+/// - `Some(k)` for `k ≥ 1`: at most `k` UG-in tiles, used to find the
+///   simplest layout that still routes (e.g. spend exactly one UG on a
+///   real crossing and keep every other item on the surface).
 pub fn solve_crossing_zone_with_stats(
     zone: &CrossingZone,
     max_ug_reach: u32,
     belt_tier: &str,
+    max_ug_ins: Option<u32>,
 ) -> (Option<Vec<PlacedEntity>>, CrossingZoneStats) {
     let item_names: Vec<String> = {
         let mut names: Vec<String> = zone.boundaries.iter().map(|b| b.item.clone()).collect();
@@ -1224,7 +1305,7 @@ pub fn solve_crossing_zone_with_stats(
     };
 
     let encoder = CrossingEncoder::new(zone.width, zone.height, item_names);
-    let cnf = encoder.encode(zone, max_ug_reach);
+    let cnf = encoder.encode(zone, max_ug_reach, max_ug_ins);
 
     let variables = encoder.total_vars;
     let clauses = cnf.count;

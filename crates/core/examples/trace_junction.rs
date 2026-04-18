@@ -242,6 +242,7 @@ fn print_cluster(sx: i32, sy: i32, events: &[&TraceEvent]) {
                 clauses,
                 solve_time_us,
                 entities_raw,
+                proposed_entities,
                 ..
             } => {
                 println!(
@@ -262,6 +263,25 @@ fn print_cluster(sx: i32, sy: i32, events: &[&TraceEvent]) {
                         "           forced_empty: {}",
                         format_tile_list(forced_empty, 12)
                     );
+                }
+                if !proposed_entities.is_empty() {
+                    println!("           proposed entities (pre-prune):");
+                    for e in proposed_entities {
+                        let io = e
+                            .io_type
+                            .as_deref()
+                            .map(|s| format!(" {s}"))
+                            .unwrap_or_default();
+                        let carries = e
+                            .carries
+                            .as_deref()
+                            .map(|s| format!(" {s}"))
+                            .unwrap_or_default();
+                        println!(
+                            "             ({:3},{:3}) {:<24} {:<5}{io}{carries}",
+                            e.x, e.y, e.name, e.direction
+                        );
+                    }
                 }
             }
             TraceEvent::JunctionSolved {

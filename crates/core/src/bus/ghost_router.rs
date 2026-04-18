@@ -1371,11 +1371,30 @@ pub fn route_bus_ghost(
         .chain(hard.iter().copied())
         .collect();
     let perp_strategy = PerpendicularTemplateStrategy;
-    let sat_strategy = SatStrategy;
-    // Strategy order = priority: cheap templates run first, then
-    // escalation to SAT on the grown region when the fixed-footprint
-    // template can't make space.
-    let strategies: [&dyn JunctionStrategy; 2] = [&perp_strategy, &sat_strategy];
+    let sat_surface = SatStrategy::surface_only();
+    let sat_1ug = SatStrategy::with(
+        "sat-1ug",
+        crate::bus::junction_sat_strategy::SatConstraints::max_ug_ins(1),
+    );
+    let sat_2ug = SatStrategy::with(
+        "sat-2ug",
+        crate::bus::junction_sat_strategy::SatConstraints::max_ug_ins(2),
+    );
+    let sat_full = SatStrategy::unrestricted();
+    // Strategy order = priority. Walker vetoes bad proposals from any
+    // of them; escalation happens naturally by falling through to the
+    // next strategy in the list.
+    //   1. cheap templates (fixed footprint, no search)
+    //   2. surface-only SAT — simplest layout, no UG at all
+    //   3-4. SAT with an increasing UG budget — the solver has to
+    //        justify each corridor by infeasibility at the previous
+    //        cap, so it won't spend UG pairs on items that surface
+    //        could route (e.g. a straight iron trunk next to a genuine
+    //        copper-cable crossing).
+    //   5. SAT unrestricted — final fallback for layouts that need
+    //      more than 2 UG corridors in one junction.
+    let strategies: [&dyn JunctionStrategy; 5] =
+        [&perp_strategy, &sat_surface, &sat_1ug, &sat_2ug, &sat_full];
 
     for &tile in &crossing_set {
         if corridor_handled.contains(&tile) {

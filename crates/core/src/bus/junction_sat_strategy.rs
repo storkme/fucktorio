@@ -39,7 +39,73 @@ struct FeederHit {
     entity_direction: EntityDirection,
 }
 
-pub struct SatStrategy;
+/// Knobs the outer loop tunes when asking SAT to solve a junction.
+/// Strategies in priority order: the first config that satisfies AND
+/// passes the walker wins. New cost dimensions (entity budget, specific
+/// per-item constraints, …) should land here so the outer loop stays a
+/// plain list of configs without ballooning into per-dimension strategy
+/// structs.
+#[derive(Debug, Clone, Copy)]
+pub struct SatConstraints {
+    /// Maximum number of underground-belt input tiles. Each UG-in
+    /// pairs with exactly one UG-out, so this effectively caps the
+    /// number of UG corridors in the zone.
+    /// - `None`: unlimited — the original SAT behaviour.
+    /// - `Some(0)`: surface-only. Forbids UG entirely.
+    /// - `Some(k)`: at most `k` corridors. Used to spend the UG budget
+    ///   only where surface routing is genuinely infeasible (real
+    ///   crossings, tight turns), keeping everything else on the
+    ///   surface.
+    pub max_ug_ins: Option<u32>,
+}
+
+impl SatConstraints {
+    /// Unrestricted — matches the original SAT behaviour.
+    pub const fn unrestricted() -> Self {
+        Self { max_ug_ins: None }
+    }
+
+    /// Hard-forbid underground-belt entities.
+    pub const fn surface_only() -> Self {
+        Self { max_ug_ins: Some(0) }
+    }
+
+    /// Cap the number of UG corridors at `n`.
+    pub const fn max_ug_ins(n: u32) -> Self {
+        Self { max_ug_ins: Some(n) }
+    }
+}
+
+impl Default for SatConstraints {
+    fn default() -> Self {
+        Self::unrestricted()
+    }
+}
+
+pub struct SatStrategy {
+    name: &'static str,
+    constraints: SatConstraints,
+}
+
+impl SatStrategy {
+    /// Custom-named strategy with arbitrary constraints. Used when the
+    /// pre-canned variants below aren't enough.
+    pub const fn with(name: &'static str, constraints: SatConstraints) -> Self {
+        Self { name, constraints }
+    }
+
+    /// Surface-only pass. Tried first so SAT only reaches for UG when
+    /// it genuinely can't route on the surface.
+    pub const fn surface_only() -> Self {
+        Self::with("sat-surface", SatConstraints::surface_only())
+    }
+
+    /// Unrestricted pass. The original SAT behaviour — used as the
+    /// fallback when budgeted passes fail.
+    pub const fn unrestricted() -> Self {
+        Self::with("sat", SatConstraints::unrestricted())
+    }
+}
 
 /// Direction vector for N/E/S/W.
 fn dir_delta(d: EntityDirection) -> (i32, i32) {
@@ -449,7 +515,7 @@ fn belt_topology_boundaries(
 
 impl JunctionStrategy for SatStrategy {
     fn name(&self) -> &'static str {
-        "sat"
+        self.name
     }
 
     fn try_solve(&self, ctx: &JunctionStrategyContext) -> Option<JunctionSolution> {
@@ -645,7 +711,12 @@ impl JunctionStrategy for SatStrategy {
         let (seed_x, seed_y) = ctx.region.initial_tile;
         let iter = ctx.growth_iter;
 
-        let (entities_opt, stats) = solve_crossing_zone_with_stats(&zone, max_reach, belt_name);
+        let (entities_opt, stats) = solve_crossing_zone_with_stats(
+            &zone,
+            max_reach,
+            belt_name,
+            self.constraints.max_ug_ins,
+        );
         let satisfied = entities_opt.is_some();
         let entities_raw = entities_opt.as_ref().map(|e| e.len()).unwrap_or(0);
         let proposed_entities: Vec<SatProposedEntity> = entities_opt
