@@ -448,7 +448,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     const world = viewport.toWorld(e.clientX - rect.left, e.clientY - rect.top);
     const jc = junctionHitTest?.(world.x, world.y) ?? null;
     if (jc) {
-      junctionDebugger.open(jc);
+      junctionDebugger.open(jc, lastLayout?.trace);
       return;
     }
     const it = regionHitTest?.(world.x, world.y) ?? null;

@@ -89,6 +89,25 @@
 }
 .jd-terminal-btn { margin-left: auto; }
 
+.jd-toggle-row {
+  display: flex;
+  gap: 16px;
+  padding: 4px 10px;
+  background: #1e1e1e;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #bbb;
+}
+.jd-toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.jd-toggle-row input[type="checkbox"] { margin: 0; }
+
 .jd-body {
   display: flex;
   gap: 12px;
@@ -223,6 +242,54 @@
   text-shadow: 0 0 2px #000;
   line-height: 1;
   pointer-events: none;
+}
+
+/* SAT-proposed entity glyph — directional chevron / UG triangle /
+ * splitter bar, tinted by carried item via --entity-color. Sits above
+ * the ghost dot but below boundary edge markers so the boundaries
+ * still read clearly when both overlays are on. */
+.jd-cell__sat-entity {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  font-size: calc(var(--cell) * 0.62);
+  line-height: 1;
+  color: var(--entity-color, #ddd);
+  text-shadow: 0 0 2px #000, 0 0 2px #000;
+  pointer-events: none;
+  font-weight: 700;
+}
+.jd-cell__sat-entity--ug-in  { opacity: 0.95; }
+.jd-cell__sat-entity--ug-out { opacity: 0.95; }
+.jd-cell__sat-entity--splitter {
+  /* Tilt the bar to read as "splitter body" rather than a minus sign. */
+  font-size: calc(var(--cell) * 0.8);
+  letter-spacing: -0.1em;
+}
+
+/* Ghost-path overlay: a low-opacity strip of item-colored pips near the
+ * cell centre. Multiple pips on one tile = a crossing — which is the
+ * whole reason to enable this overlay. */
+.jd-cell__ghost-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 1px;
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 0;
+}
+.jd-cell__ghost-pip {
+  display: inline-block;
+  width: calc(var(--cell) * 0.2);
+  height: calc(var(--cell) * 0.2);
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 
 .jd-legend {

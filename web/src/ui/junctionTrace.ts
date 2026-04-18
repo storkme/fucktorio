@@ -31,6 +31,7 @@ type SatInvocationEvent = Extract<TraceEvent, { phase: "SatInvocation" }>;
 type SolvedEvent = Extract<TraceEvent, { phase: "JunctionSolved" }>;
 type CappedEvent = Extract<TraceEvent, { phase: "JunctionGrowthCapped" }>;
 type VetoEvent = Extract<TraceEvent, { phase: "RegionWalkerVeto" }>;
+type GhostSpecRoutedEvent = Extract<TraceEvent, { phase: "GhostSpecRouted" }>;
 
 export interface Bbox {
   x: number;
@@ -375,4 +376,61 @@ export function terminalIteration(cluster: JunctionCluster): JunctionIteration |
 export function formatFeeder(f: ExternalFeederSnapshot | undefined): string {
   if (!f) return "";
   return `${f.entity_name}@(${f.entity_x},${f.entity_y}) ${f.direction}`;
+}
+
+/**
+ * The pre-SAT ghost routing for one spec. Sourced from `GhostSpecRouted`
+ * events in the layout trace. Useful when diagnosing why SAT is failing
+ * on a cluster — the ghost routing shows which crossings SAT is trying
+ * to resolve and which surface belts it's replacing.
+ */
+export interface GhostPathRecord {
+  /** Item name parsed from `specKey` (everything before the first colon). */
+  item: string;
+  /** Full spec key, e.g. `trunk:copper-cable:3`. */
+  specKey: string;
+  /** Ordered tile sequence the ghost router produced for this spec. */
+  tiles: [number, number][];
+}
+
+function itemFromSpecKey(key: string): string {
+  const i = key.indexOf(":");
+  return i >= 0 ? key.slice(0, i) : key;
+}
+
+/**
+ * Collect every `GhostSpecRouted` path whose tiles touch `bbox` expanded
+ * by `pad` on every side. Returns one record per spec; empty list when
+ * the layout trace has no ghost-routing events.
+ */
+export function ghostPathsNearBbox(
+  trace: readonly TraceEvent[],
+  bbox: Bbox,
+  pad: number,
+): GhostPathRecord[] {
+  const xMin = bbox.x - pad;
+  const xMax = bbox.x + bbox.w + pad;
+  const yMin = bbox.y - pad;
+  const yMax = bbox.y + bbox.h + pad;
+  const out: GhostPathRecord[] = [];
+  for (const evt of trace) {
+    if (evt.phase !== "GhostSpecRouted") continue;
+    const data = (evt as GhostSpecRoutedEvent).data;
+    const tiles = data.tiles;
+    if (!tiles || tiles.length === 0) continue;
+    let touches = false;
+    for (const [tx, ty] of tiles) {
+      if (tx >= xMin && tx < xMax && ty >= yMin && ty < yMax) {
+        touches = true;
+        break;
+      }
+    }
+    if (!touches) continue;
+    out.push({
+      item: itemFromSpecKey(data.spec_key),
+      specKey: data.spec_key,
+      tiles: tiles as [number, number][],
+    });
+  }
+  return out;
 }

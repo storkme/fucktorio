@@ -28,7 +28,7 @@ use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionSt
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
 use crate::sat::{solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary};
-use crate::trace::{self, BoundarySnapshot, ExternalFeederSnapshot, TraceEvent};
+use crate::trace::{self, BoundarySnapshot, ExternalFeederSnapshot, SatProposedEntity, TraceEvent};
 
 /// A feeder/consumer tile candidate found adjacent to a spec entry/exit.
 struct FeederHit {
@@ -648,6 +648,21 @@ impl JunctionStrategy for SatStrategy {
         let (entities_opt, stats) = solve_crossing_zone_with_stats(&zone, max_reach, belt_name);
         let satisfied = entities_opt.is_some();
         let entities_raw = entities_opt.as_ref().map(|e| e.len()).unwrap_or(0);
+        let proposed_entities: Vec<SatProposedEntity> = entities_opt
+            .as_ref()
+            .map(|es| {
+                es.iter()
+                    .map(|e| SatProposedEntity {
+                        x: e.x,
+                        y: e.y,
+                        name: e.name.clone(),
+                        direction: dir_label(e.direction),
+                        carries: e.carries.clone(),
+                        io_type: e.io_type.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         trace::emit(TraceEvent::SatInvocation {
             seed_x,
             seed_y,
@@ -666,6 +681,7 @@ impl JunctionStrategy for SatStrategy {
             clauses: stats.clauses,
             solve_time_us: stats.solve_time_us,
             entities_raw,
+            proposed_entities,
         });
         let entities = entities_opt?;
 

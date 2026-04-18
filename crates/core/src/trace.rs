@@ -468,6 +468,11 @@ pub enum TraceEvent {
         clauses: u32,
         solve_time_us: u64,
         entities_raw: usize,
+        /// Entities SAT produced, captured before `prune_dangling_sat_entities`.
+        /// Empty when `satisfied=false`. Lets the junction debugger render
+        /// the candidate layout — especially useful on walker veto, where
+        /// the solution is otherwise discarded.
+        proposed_entities: Vec<SatProposedEntity>,
     },
 
     // Phase-1 instrumentation: emitted after all ghost specs are routed but
@@ -574,6 +579,23 @@ pub struct ExternalFeederSnapshot {
     pub entity_x: i32,
     pub entity_y: i32,
     pub direction: String,
+}
+
+/// Minimal view of an entity SAT proposed for a crossing zone. Captured
+/// pre-prune so the junction debugger can show exactly what SAT produced
+/// — including entities that the dangling-prune step later drops.
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatProposedEntity {
+    pub x: i32,
+    pub y: i32,
+    pub name: String,
+    pub direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub carries: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_type: Option<String>,
 }
 
 #[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]

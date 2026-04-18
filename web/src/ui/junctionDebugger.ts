@@ -3,18 +3,24 @@
 // junctionTrace.ts.
 
 import type { Viewport } from "pixi-viewport";
-import type { BoundarySnapshot } from "../wasm-pkg/fucktorio_wasm.js";
-import { TILE_PX } from "../renderer/entities";
+import type {
+  BoundarySnapshot,
+  SatProposedEntity,
+  TraceEvent,
+} from "../wasm-pkg/fucktorio_wasm.js";
+import { TILE_PX, itemColor } from "../renderer/entities";
 import {
   formatFeeder,
+  ghostPathsNearBbox,
   terminalIteration,
+  type GhostPathRecord,
   type JunctionCluster,
   type JunctionIteration,
 } from "./junctionTrace";
 import "./junctionDebugger.css";
 
 export interface JunctionDebuggerControls {
-  open(cluster: JunctionCluster): void;
+  open(cluster: JunctionCluster, trace?: readonly TraceEvent[]): void;
   close(): void;
   isOpen(): boolean;
 }
@@ -59,6 +65,27 @@ export function createJunctionDebugger(
   terminalBtn.title = "jump to default (terminal) iteration";
   stepper.append(prevBtn, stepLabel, nextBtn, terminalBtn);
 
+  // Overlay toggles sit on their own row so the stepper stays readable
+  // at narrow widths. SAT entities are useful by default (that's what
+  // you're debugging); ghost paths are loud, so off by default.
+  const toggleRow = document.createElement("div");
+  toggleRow.className = "jd-toggle-row";
+  const satToggle = document.createElement("input");
+  satToggle.type = "checkbox";
+  satToggle.checked = true;
+  satToggle.id = "jd-toggle-sat";
+  const satLabel = document.createElement("label");
+  satLabel.htmlFor = satToggle.id;
+  satLabel.append(satToggle, document.createTextNode(" SAT entities"));
+  const ghostToggle = document.createElement("input");
+  ghostToggle.type = "checkbox";
+  ghostToggle.checked = false;
+  ghostToggle.id = "jd-toggle-ghost";
+  const ghostLabel = document.createElement("label");
+  ghostLabel.htmlFor = ghostToggle.id;
+  ghostLabel.append(ghostToggle, document.createTextNode(" Ghost paths"));
+  toggleRow.append(satLabel, ghostLabel);
+
   const body = document.createElement("div");
   body.className = "jd-body";
   const minimapWrap = document.createElement("div");
@@ -75,7 +102,7 @@ export function createJunctionDebugger(
   footer.className = "jd-footer";
   footer.textContent = "Esc to close · \u2190/\u2192 step · Home/End first/last · click tile to pan";
 
-  modal.append(titleBar, stepper, body, footer);
+  modal.append(titleBar, stepper, toggleRow, body, footer);
   container.append(backdrop, modal);
 
   // ----- Draggable titlebar ------------------------------------------------
@@ -106,9 +133,16 @@ export function createJunctionDebugger(
   // ----- State -------------------------------------------------------------
   let currentCluster: JunctionCluster | null = null;
   let currentIter = 0;
+  // Full layout trace for ghost-path extraction. Passed in by `open` so
+  // the debugger stays agnostic to how the trace was fetched.
+  let currentTrace: readonly TraceEvent[] | null = null;
+  // Memoized ghost paths per iter bbox — keyed by `${x},${y},${w},${h}`.
+  let ghostPathCache: Map<string, GhostPathRecord[]> = new Map();
 
-  function open(cluster: JunctionCluster): void {
+  function open(cluster: JunctionCluster, trace?: readonly TraceEvent[]): void {
     currentCluster = cluster;
+    currentTrace = trace ?? null;
+    ghostPathCache = new Map();
     currentIter = cluster.defaultIterIndex;
     backdrop.classList.add("jd-open");
     modal.classList.add("jd-open");
@@ -118,6 +152,8 @@ export function createJunctionDebugger(
 
   function closeModal(): void {
     currentCluster = null;
+    currentTrace = null;
+    ghostPathCache = new Map();
     backdrop.classList.remove("jd-open");
     modal.classList.remove("jd-open");
   }
@@ -144,6 +180,17 @@ export function createJunctionDebugger(
     viewport.moveCenter(cx, cy);
   }
 
+  function ghostPathsForIter(it: JunctionIteration): GhostPathRecord[] {
+    if (!currentTrace) return [];
+    const key = `${it.bbox.x},${it.bbox.y},${it.bbox.w},${it.bbox.h}`;
+    let cached = ghostPathCache.get(key);
+    if (!cached) {
+      cached = ghostPathsNearBbox(currentTrace, it.bbox, 1);
+      ghostPathCache.set(key, cached);
+    }
+    return cached;
+  }
+
   function render(): void {
     if (!currentCluster) return;
     const c = currentCluster;
@@ -160,7 +207,16 @@ export function createJunctionDebugger(
     nextBtn.disabled = currentIter >= n - 1;
     terminalBtn.disabled = currentIter === c.defaultIterIndex;
 
-    renderMinimap(minimap, c, it);
+    const overlays: OverlayOptions = {
+      showSatEntities: satToggle.checked,
+      showGhostPaths: ghostToggle.checked,
+      ghostPaths: it && ghostToggle.checked ? ghostPathsForIter(it) : [],
+    };
+    // Hide the ghost-paths toggle entirely when we have no trace to
+    // extract from — keeps the UI honest about which overlays are
+    // actually wired.
+    ghostLabel.style.display = currentTrace ? "" : "none";
+    renderMinimap(minimap, c, it, overlays);
     renderDetail(detail, c, it);
   }
 
@@ -174,6 +230,8 @@ export function createJunctionDebugger(
   terminalBtn.addEventListener("click", () => {
     if (currentCluster) setIter(currentCluster.defaultIterIndex);
   });
+  satToggle.addEventListener("change", render);
+  ghostToggle.addEventListener("change", render);
 
   // Capture-phase keyboard handler so we win the race against any
   // bubble-phase global shortcuts (e.g. stepThrough's ArrowLeft/Right).
@@ -275,10 +333,17 @@ function effectiveBoundaries(it: JunctionIteration): BoundarySnapshot[] {
   return it.sat?.boundaries ?? it.boundaries;
 }
 
+interface OverlayOptions {
+  showSatEntities: boolean;
+  showGhostPaths: boolean;
+  ghostPaths: readonly GhostPathRecord[];
+}
+
 function renderMinimap(
   el: HTMLDivElement,
   cluster: JunctionCluster,
   it: JunctionIteration | undefined,
+  overlays: OverlayOptions,
 ): void {
   el.innerHTML = "";
   if (!it) return;
@@ -299,6 +364,30 @@ function renderMinimap(
   const forbiddenIn = new Set(it.forbidden.map(([x, y]) => `${x},${y}`));
   const boundaryByTile = new Map<string, BoundarySnapshot>();
   for (const b of effectiveBoundaries(it)) boundaryByTile.set(`${b.x},${b.y}`, b);
+
+  // SAT-proposed entities (pre-prune). Indexed by tile so the per-cell
+  // loop can overlay a glyph without scanning the list each time.
+  const satByTile = new Map<string, SatProposedEntity>();
+  if (overlays.showSatEntities && it.sat?.proposed_entities) {
+    for (const e of it.sat.proposed_entities) {
+      satByTile.set(`${e.x},${e.y}`, e);
+    }
+  }
+
+  // Ghost-path items per tile. A single tile can sit on multiple ghost
+  // paths (the crossings we care about); record every item that touches
+  // it so we can hint at the conflict visually.
+  const ghostItemsByTile = new Map<string, string[]>();
+  if (overlays.showGhostPaths) {
+    for (const p of overlays.ghostPaths) {
+      for (const [tx, ty] of p.tiles) {
+        const key = `${tx},${ty}`;
+        const list = ghostItemsByTile.get(key) ?? [];
+        if (!list.includes(p.item)) list.push(p.item);
+        ghostItemsByTile.set(key, list);
+      }
+    }
+  }
 
   const attach = (el as unknown as { __attachPan?: (c: HTMLDivElement, tx: number, ty: number) => void })
     .__attachPan;
@@ -324,6 +413,37 @@ function renderMinimap(
 
       if (tx === cluster.seed.x && ty === cluster.seed.y) {
         cell.classList.add("jd-cell--seed");
+      }
+
+      // Ghost-path dot sits at the back of the stack so SAT glyphs and
+      // boundary markers still read on top. Multiple items on the same
+      // tile stack as a tiny row of colored squares — that's exactly
+      // the crossing conflict the user wants to see.
+      const ghostItems = ghostItemsByTile.get(key);
+      if (ghostItems && ghostItems.length > 0) {
+        const dot = document.createElement("span");
+        dot.className = "jd-cell__ghost-dot";
+        // Paint each item as a ~4px colored square stacked horizontally.
+        for (const item of ghostItems) {
+          const pip = document.createElement("span");
+          pip.className = "jd-cell__ghost-pip";
+          pip.style.background = colorHex(item);
+          pip.title = `ghost path · ${item}`;
+          dot.appendChild(pip);
+        }
+        cell.appendChild(dot);
+      }
+
+      const sat = satByTile.get(key);
+      if (sat) {
+        const glyph = document.createElement("span");
+        glyph.className = ["jd-cell__sat-entity", satEntityKindClass(sat)]
+          .filter(Boolean)
+          .join(" ");
+        glyph.style.setProperty("--entity-color", colorHex(sat.carries ?? ""));
+        glyph.textContent = satGlyph(sat);
+        glyph.title = `SAT · ${sat.name}${sat.carries ? ` · ${sat.carries}` : ""} · ${sat.direction}${sat.io_type ? ` · ${sat.io_type}` : ""}`;
+        cell.appendChild(glyph);
       }
 
       if (it.veto && it.veto.break_tile_x === tx && it.veto.break_tile_y === ty) {
@@ -407,6 +527,60 @@ function itemAbbr(item: string): string {
   const parts = item.split("-");
   if (parts.length === 1) return parts[0].slice(0, 2);
   return (parts[0][0] ?? "") + (parts[1][0] ?? "");
+}
+
+function colorHex(item: string): string {
+  // itemColor returns 0xRRGGBB; pad to six hex chars.
+  const n = itemColor(item) >>> 0;
+  return "#" + n.toString(16).padStart(6, "0");
+}
+
+/**
+ * Classify a SAT-proposed entity for CSS — surface belts, UG-in / UG-out,
+ * splitter. Non-belt entities (poles, inserters) fall into the generic
+ * class and get a `?` glyph so they're at least visible.
+ */
+function satEntityKindClass(e: SatProposedEntity): string {
+  if (e.name.includes("underground-belt")) {
+    return e.io_type === "input"
+      ? "jd-cell__sat-entity--ug-in"
+      : "jd-cell__sat-entity--ug-out";
+  }
+  if (e.name.includes("splitter")) return "jd-cell__sat-entity--splitter";
+  if (e.name.includes("transport-belt")) return "jd-cell__sat-entity--belt";
+  return "jd-cell__sat-entity--other";
+}
+
+/**
+ * Single-char glyph for the cell. Surface belts get a directional
+ * chevron; UG-in shows a filled triangle pointing into the ground
+ * (flow direction); UG-out shows an outline triangle pointing out
+ * (flow direction); splitters get a thick bar. Everything falls back
+ * to a dot so we don't render a blank cell.
+ */
+function satGlyph(e: SatProposedEntity): string {
+  const kind = satEntityKindClass(e);
+  if (kind === "jd-cell__sat-entity--ug-in") {
+    // Filled triangle in flow direction to read as "diving under".
+    switch (e.direction) {
+      case "North": return "\u25b2"; // ▲
+      case "East":  return "\u25b6"; // ▶
+      case "South": return "\u25bc"; // ▼
+      case "West":  return "\u25c0"; // ◀
+    }
+  }
+  if (kind === "jd-cell__sat-entity--ug-out") {
+    // Open triangle to distinguish from UG-in.
+    switch (e.direction) {
+      case "North": return "\u25b3"; // △
+      case "East":  return "\u25b7"; // ▷
+      case "South": return "\u25bd"; // ▽
+      case "West":  return "\u25c1"; // ◁
+    }
+  }
+  if (kind === "jd-cell__sat-entity--splitter") return "\u25ac"; // ▬
+  if (kind === "jd-cell__sat-entity--belt") return dirGlyph(e.direction);
+  return "\u00b7"; // middle dot fallback
 }
 
 function renderDetail(
