@@ -652,6 +652,7 @@ impl JunctionStrategy for SatStrategy {
             seed_x,
             seed_y,
             iter,
+            variant: ctx.growth_variant.to_string(),
             zone_x: zone.x,
             zone_y: zone.y,
             zone_w: zone.width,

@@ -727,6 +727,13 @@ pub struct JunctionStrategyContext<'a> {
     /// escalation read this; the scaffold wrapper ignores it.
     #[allow(dead_code)]
     pub growth_iter: usize,
+    /// Variant label for the current attempt. Empty string for the
+    /// primary attempt on the current region; non-empty for the
+    /// speculative one-side expansion variants
+    /// ("variant-west"/"-north"/"-east"/"-south"). Strategies forward
+    /// this to their `SatInvocation` trace event so the debugger can
+    /// disambiguate variant attempts that share an iter number.
+    pub growth_variant: &'a str,
     pub routed_paths: &'a FxHashMap<String, Vec<(i32, i32)>>,
     pub hard_obstacles: &'a FxHashSet<(i32, i32)>,
     /// Tiles outside the narrow `hard_obstacles` set that strategies
@@ -1000,10 +1007,16 @@ fn try_solve_on_region(
     tiles.sort();
     let mut forbidden: Vec<(i32, i32)> = region.forbidden_tiles.iter().copied().collect();
     forbidden.sort();
+    // Variant tag for trace events. Empty string = primary attempt on
+    // the current region; non-empty = speculative single-side expansion.
+    // The web debugger groups per-iter state keyed by (iter, variant).
+    let variant_tag = variant.unwrap_or("").to_string();
+
     trace::emit(TraceEvent::JunctionGrowthIteration {
         seed_x: ctx.initial_tile.0,
         seed_y: ctx.initial_tile.1,
         iter,
+        variant: variant_tag.clone(),
         bbox_x: region.bbox.x,
         bbox_y: region.bbox.y,
         bbox_w: region.bbox.w,
@@ -1019,15 +1032,13 @@ fn try_solve_on_region(
         junction: &junction,
         region,
         growth_iter: iter,
+        growth_variant: &variant_tag,
         routed_paths: ctx.routed_paths,
         hard_obstacles: ctx.hard_obstacles,
         strict_obstacles: ctx.strict_obstacles,
         placed_entities: ctx.placed_entities,
         unreleasable_obstacles: ctx.unreleasable_obstacles,
     };
-    // Append the variant suffix so the trace can distinguish a primary
-    // attempt from per-variant attempts at the same iter number.
-    let variant_suffix = variant.map(|v| format!(" [{v}]")).unwrap_or_default();
 
     for strategy in ctx.strategies {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1042,7 +1053,8 @@ fn try_solve_on_region(
                 seed_x: ctx.initial_tile.0,
                 seed_y: ctx.initial_tile.1,
                 iter,
-                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                variant: variant_tag.clone(),
+                strategy: strategy.name().to_string(),
                 outcome: "Unsatisfiable".to_string(),
                 detail: String::new(),
                 elapsed_us,
@@ -1063,7 +1075,8 @@ fn try_solve_on_region(
                 seed_x: ctx.initial_tile.0,
                 seed_y: ctx.initial_tile.1,
                 iter,
-                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                variant: variant_tag.clone(),
+                strategy: strategy.name().to_string(),
                 outcome: "DeferredExit".to_string(),
                 detail: "spec exits at another unresolved crossing".to_string(),
                 elapsed_us,
@@ -1100,8 +1113,9 @@ fn try_solve_on_region(
                 trace::emit(TraceEvent::RegionWalkerVeto {
                     tile_x: ctx.initial_tile.0,
                     tile_y: ctx.initial_tile.1,
-                    strategy: format!("{}{}", strategy.name(), variant_suffix),
+                    strategy: strategy.name().to_string(),
                     growth_iter: iter,
+                    variant: variant_tag.clone(),
                     broken_segment: first.segment_id.clone(),
                     break_tile_x: first.tile.0,
                     break_tile_y: first.tile.1,
@@ -1118,7 +1132,8 @@ fn try_solve_on_region(
                 seed_x: ctx.initial_tile.0,
                 seed_y: ctx.initial_tile.1,
                 iter,
-                strategy: format!("{}{}", strategy.name(), variant_suffix),
+                variant: variant_tag.clone(),
+                strategy: strategy.name().to_string(),
                 outcome: "Vetoed".to_string(),
                 detail,
                 elapsed_us,
@@ -1130,15 +1145,18 @@ fn try_solve_on_region(
             seed_x: ctx.initial_tile.0,
             seed_y: ctx.initial_tile.1,
             iter,
-            strategy: format!("{}{}", strategy.name(), variant_suffix),
+            variant: variant_tag.clone(),
+            strategy: strategy.name().to_string(),
             outcome: "Solved".to_string(),
             detail: format!("{} entities placed", sol.entities.len()),
             elapsed_us,
         });
+        // JunctionSolved stays with the plain strategy name — terminal
+        // event for the whole cluster, no variant to disambiguate.
         trace::emit(TraceEvent::JunctionSolved {
             tile_x: ctx.initial_tile.0,
             tile_y: ctx.initial_tile.1,
-            strategy: format!("{}{}", strategy.name(), variant_suffix),
+            strategy: strategy.name().to_string(),
             growth_iter: iter,
             region_tiles: region.tile_count(),
         });

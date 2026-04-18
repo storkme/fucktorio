@@ -138,18 +138,71 @@
   outline-offset: -2px;
   z-index: 1;
 }
-.jd-cell--boundary-in {
-  outline: 2px solid #4f4;
-  outline-offset: -2px;
+/* Edge markers: highlight one side of a cell with a coloured bar and
+ * direction chevrons, instead of outlining the whole cell. The chevrons
+ * always point in the flow direction; the bar sits on the entry edge
+ * for inputs and the exit edge for outputs, so the flow physically
+ * "crosses" the highlighted edge. */
+.jd-edge {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   z-index: 2;
+  pointer-events: none;
+  font-size: calc(var(--cell) * 0.42);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  text-shadow: 0 0 2px #000;
+  line-height: 1;
 }
-.jd-cell--boundary-out {
-  outline: 2px solid #f44;
-  outline-offset: -2px;
-  z-index: 2;
+/* Horizontal edges: full width across the top/bottom */
+.jd-edge--top,
+.jd-edge--bottom {
+  left: 0;
+  right: 0;
+  height: calc(var(--cell) * 0.36);
 }
-.jd-cell--interior-bdry {
-  outline-style: dashed;
+.jd-edge--top { top: 0; }
+.jd-edge--bottom { bottom: 0; }
+/* Vertical edges: full height down the left/right; chevrons written
+ * vertically so they still read as arrows along the edge. */
+.jd-edge--left,
+.jd-edge--right {
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cell) * 0.36);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: -0.12em;
+}
+.jd-edge--left { left: 0; }
+.jd-edge--right { right: 0; }
+/* IN boundaries (items entering the zone) — green */
+.jd-edge--in {
+  background: linear-gradient(rgba(64, 200, 96, 0.85), rgba(64, 200, 96, 0.45));
+  color: #eaffea;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+.jd-edge--in.jd-edge--left,
+.jd-edge--in.jd-edge--right {
+  background: linear-gradient(to right, rgba(64, 200, 96, 0.85), rgba(64, 200, 96, 0.45));
+}
+/* OUT boundaries (items leaving the zone) — red/orange */
+.jd-edge--out {
+  background: linear-gradient(rgba(240, 96, 64, 0.85), rgba(240, 96, 64, 0.45));
+  color: #ffe6d8;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+.jd-edge--out.jd-edge--left,
+.jd-edge--out.jd-edge--right {
+  background: linear-gradient(to right, rgba(240, 96, 64, 0.85), rgba(240, 96, 64, 0.45));
+}
+/* Interior boundaries (flow through a Permanent entity like a splitter
+ * body) — dashed outline so they're visually distinct from perimeter. */
+.jd-edge--interior {
+  border: 1px dashed rgba(255, 255, 255, 0.55);
+  box-sizing: border-box;
 }
 .jd-cell--break {
   outline: 3px solid #f0f;

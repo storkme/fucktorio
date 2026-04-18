@@ -46,11 +46,25 @@ export interface AttemptRecord {
   elapsedUs: number;
 }
 
-export type SatInvocationData = Omit<SatInvocationEvent["data"], "seed_x" | "seed_y" | "iter">;
-export type WalkerVetoData = Omit<VetoEvent["data"], "tile_x" | "tile_y" | "growth_iter">;
+export type SatInvocationData = Omit<
+  SatInvocationEvent["data"],
+  "seed_x" | "seed_y" | "iter" | "variant"
+>;
+export type WalkerVetoData = Omit<
+  VetoEvent["data"],
+  "tile_x" | "tile_y" | "growth_iter" | "variant"
+>;
 
 export interface JunctionIteration {
   iter: number;
+  /**
+   * Sub-iteration variant label. Empty string = primary attempt on the
+   * current region; non-empty = a speculative +1 single-side expansion
+   * like "variant-east". Multiple variants can share an `iter` number;
+   * the debugger groups them keyed by `(iter, variant)` so each gets
+   * its own bbox / boundaries / SAT invocation / veto.
+   */
+  variant: string;
   bbox: Bbox;
   tiles: [number, number][];
   forbidden: [number, number][];
@@ -139,8 +153,12 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
     seed: { x: number; y: number };
     participating: ParticipatingSpec[];
     nearbyStamped: StampedNeighbor[];
-    // Map from iter number → record under construction
-    iters: Map<number, JunctionIteration>;
+    // Map keyed by `${iter}|${variant}` so per-iter variants don't
+    // overwrite each other. Primary attempts use variant="".
+    iters: Map<string, JunctionIteration>;
+    // Preserve insertion order so the UI renders variants in the
+    // sequence they were tried (primary first, then west/north/east/south).
+    iterOrder: string[];
     outcome: ClusterOutcome;
     order: number;
   }
@@ -156,6 +174,7 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
         participating: [],
         nearbyStamped: [],
         iters: new Map(),
+        iterOrder: [],
         outcome: { kind: "Open" },
         order: builders.size,
       };
@@ -164,11 +183,19 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
     return b;
   };
 
-  const getIter = (b: Builder, iter: number): JunctionIteration => {
-    let it = b.iters.get(iter);
+  const iterKey = (iter: number, variant: string) => `${iter}|${variant}`;
+
+  const getIter = (
+    b: Builder,
+    iter: number,
+    variant: string,
+  ): JunctionIteration => {
+    const k = iterKey(iter, variant);
+    let it = b.iters.get(k);
     if (!it) {
       it = {
         iter,
+        variant,
         bbox: { x: 0, y: 0, w: 0, h: 0 },
         tiles: [],
         forbidden: [],
@@ -179,7 +206,8 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
         sat: null,
         veto: null,
       };
-      b.iters.set(iter, it);
+      b.iters.set(k, it);
+      b.iterOrder.push(k);
     }
     return it;
   };
@@ -196,7 +224,7 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
         break;
       }
       case "JunctionGrowthIteration": {
-        const it = getIter(b, ev.data.iter);
+        const it = getIter(b, ev.data.iter, ev.data.variant);
         it.bbox = {
           x: ev.data.bbox_x,
           y: ev.data.bbox_y,
@@ -211,7 +239,7 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
         break;
       }
       case "JunctionStrategyAttempt": {
-        const it = getIter(b, ev.data.iter);
+        const it = getIter(b, ev.data.iter, ev.data.variant);
         it.attempts.push({
           strategy: ev.data.strategy,
           outcome: ev.data.outcome,
@@ -221,23 +249,24 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
         break;
       }
       case "SatInvocation": {
-        const it = getIter(b, ev.data.iter);
-        // Store the SAT-specific data (excluding redundant keys).
+        const it = getIter(b, ev.data.iter, ev.data.variant);
         const {
           seed_x: _sx,
           seed_y: _sy,
           iter: _iter,
+          variant: _variant,
           ...rest
         } = ev.data;
         it.sat = rest;
         break;
       }
       case "RegionWalkerVeto": {
-        const it = getIter(b, ev.data.growth_iter);
+        const it = getIter(b, ev.data.growth_iter, ev.data.variant);
         const {
           tile_x: _tx,
           tile_y: _ty,
           growth_iter: _gi,
+          variant: _variant,
           ...rest
         } = ev.data;
         it.veto = rest;
@@ -267,12 +296,29 @@ export function groupJunctionClusters(trace: readonly TraceEvent[]): JunctionClu
   const clusters: JunctionCluster[] = [];
   const sorted = Array.from(builders.values()).sort((a, b) => a.order - b.order);
   for (const b of sorted) {
-    const iterations = Array.from(b.iters.values()).sort((a, b) => a.iter - b.iter);
-    // Default iter: Solved → growthIter's index; otherwise last iter.
+    // Preserve insertion order (primary first, then variants in the
+    // order they were attempted). Within the same iter group this puts
+    // variant="" before "variant-west"/etc., which matches what the user
+    // expects to see when stepping through.
+    const iterations = b.iterOrder.map((k) => b.iters.get(k)!);
+    // Default iter: pick the solved attempt for a Solved cluster (any
+    // variant); otherwise the last attempt.
     let defaultIterIndex = Math.max(0, iterations.length - 1);
     if (b.outcome.kind === "Solved") {
-      const idx = iterations.findIndex((it) => it.iter === (b.outcome as { growthIter: number }).growthIter);
-      if (idx >= 0) defaultIterIndex = idx;
+      const growthIter = (b.outcome as { growthIter: number }).growthIter;
+      // Prefer an iteration whose attempts include a Solved outcome at
+      // the matching growth_iter — that's the variant that actually won.
+      const idx = iterations.findIndex(
+        (it) =>
+          it.iter === growthIter &&
+          it.attempts.some((a) => a.outcome === "Solved"),
+      );
+      if (idx >= 0) {
+        defaultIterIndex = idx;
+      } else {
+        const fallback = iterations.findIndex((it) => it.iter === growthIter);
+        if (fallback >= 0) defaultIterIndex = fallback;
+      }
     }
     clusters.push({
       seed: b.seed,

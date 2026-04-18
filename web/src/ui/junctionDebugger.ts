@@ -154,7 +154,8 @@ export function createJunctionDebugger(
     pill.textContent = pillText(c);
 
     const n = c.iterations.length;
-    stepLabel.textContent = `iter ${it ? it.iter : "-"} · ${currentIter + 1} / ${n}`;
+    const variantSuffix = it && it.variant ? ` · ${it.variant}` : "";
+    stepLabel.textContent = `iter ${it ? it.iter : "-"}${variantSuffix} · ${currentIter + 1} / ${n}`;
     prevBtn.disabled = currentIter <= 0;
     nextBtn.disabled = currentIter >= n - 1;
     terminalBtn.disabled = currentIter === c.defaultIterIndex;
@@ -336,12 +337,26 @@ function renderMinimap(
 
       const b = boundaryByTile.get(key);
       if (b) {
-        cell.classList.add(b.is_input ? "jd-cell--boundary-in" : "jd-cell--boundary-out");
-        if (b.interior) cell.classList.add("jd-cell--interior-bdry");
-        const glyph = document.createElement("span");
-        glyph.className = "jd-cell__glyph";
-        glyph.textContent = dirGlyph(b.direction);
-        cell.appendChild(glyph);
+        // Highlight the *edge* where flow crosses, not the whole cell.
+        // For an IN boundary: items enter the cell coming from the
+        // side opposite the flow direction, so we mark that edge. For
+        // an OUT boundary: items exit the cell through the edge on
+        // the flow-direction side.
+        const edge = boundaryEdge(b.is_input, b.direction);
+        const marker = document.createElement("span");
+        marker.className = [
+          "jd-edge",
+          `jd-edge--${edge}`,
+          b.is_input ? "jd-edge--in" : "jd-edge--out",
+          b.interior ? "jd-edge--interior" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        // Chevrons always point in the flow direction. Repeated glyphs
+        // ride along the edge so direction reads cleanly even at 12px
+        // cells.
+        marker.textContent = dirGlyph(b.direction).repeat(3);
+        cell.appendChild(marker);
         const label = document.createElement("span");
         label.className = "jd-cell__label";
         label.textContent = itemAbbr(b.item);
@@ -369,6 +384,22 @@ function dirGlyph(dir: string): string {
     case "West": return "\u2190";
     default: return "?";
   }
+}
+
+/**
+ * Which edge of the boundary's cell the flow actually crosses.
+ * Inputs cross the edge OPPOSITE the flow direction (items come from
+ * that side); outputs cross the edge MATCHING the flow direction
+ * (items leave toward that side).
+ */
+function boundaryEdge(
+  isInput: boolean,
+  dir: string,
+): "top" | "right" | "bottom" | "left" {
+  const map: Record<string, "top" | "right" | "bottom" | "left"> = isInput
+    ? { North: "bottom", East: "left", South: "top", West: "right" }
+    : { North: "top", East: "right", South: "bottom", West: "left" };
+  return map[dir] ?? "top";
 }
 
 function itemAbbr(item: string): string {

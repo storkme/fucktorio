@@ -369,6 +369,9 @@ pub enum TraceEvent {
         tile_y: i32,
         strategy: String,
         growth_iter: usize,
+        /// Variant label (see `JunctionGrowthIteration::variant`). Empty
+        /// for the primary attempt at this iter.
+        variant: String,
         /// Segment id of the first broken path (there may be more).
         broken_segment: String,
         /// Tile where the walker's check fired for that path.
@@ -405,6 +408,13 @@ pub enum TraceEvent {
         seed_x: i32,
         seed_y: i32,
         iter: usize,
+        /// Sub-iteration label. Empty string for the primary attempt on
+        /// the current region; otherwise names a speculative single-side
+        /// expansion variant ("variant-west", "variant-north",
+        /// "variant-east", "variant-south"). The debugger groups the
+        /// per-iter state keyed by `(iter, variant)` so variants don't
+        /// overwrite each other.
+        variant: String,
         bbox_x: i32,
         bbox_y: i32,
         bbox_w: u32,
@@ -424,6 +434,9 @@ pub enum TraceEvent {
         seed_x: i32,
         seed_y: i32,
         iter: usize,
+        /// Variant label (see `JunctionGrowthIteration::variant`). Empty
+        /// for the primary attempt at this iter.
+        variant: String,
         strategy: String,
         outcome: String,
         detail: String,
@@ -439,6 +452,9 @@ pub enum TraceEvent {
         seed_x: i32,
         seed_y: i32,
         iter: usize,
+        /// Variant label (see `JunctionGrowthIteration::variant`). Empty
+        /// for the primary attempt at this iter.
+        variant: String,
         zone_x: i32,
         zone_y: i32,
         zone_w: u32,
