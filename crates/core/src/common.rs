@@ -131,6 +131,19 @@ pub fn is_inserter(name: &str) -> bool {
     INSERTER_ENTITIES.contains(&name)
 }
 
+/// Return `true` if an entity with this name must stay `forbidden`
+/// inside a junction SAT zone.
+///
+/// Surface belts are the only zone-permissive entity: SAT may lift and
+/// re-stamp them as surface belts, undergrounds, or different
+/// directions as long as item flow is preserved. Everything else
+/// (splitters, UG entrances/exits, inserters, machines, poles, pipes)
+/// must remain as-is — those tiles stay in `forbidden_tiles`. Unknown
+/// names default to forbidden (conservative).
+pub fn tile_is_forbidden_kind(name: &str) -> bool {
+    !is_surface_belt(name)
+}
+
 /// Inserter reach: how many tiles away the pick-up / drop position is.
 pub fn inserter_reach(name: &str) -> i32 {
     if name == "long-handed-inserter" {

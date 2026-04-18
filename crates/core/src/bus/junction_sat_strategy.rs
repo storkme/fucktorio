@@ -23,7 +23,7 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::bus::junction::{BeltTier, Rect};
+use crate::bus::junction::{BeltTier, Rect, SpecOrigin};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
@@ -335,11 +335,15 @@ impl JunctionStrategy for SatStrategy {
                     (s, false),
                 ]
             }))
-            .map(|(b, (_, is_input))| {
+            .map(|(b, (spec, is_input))| {
                 let feeder = if is_input {
                     find_external_feeder((b.x, b.y), ctx.placed_entities)
                 } else {
                     None
+                };
+                let origin = match spec.origin {
+                    SpecOrigin::Participating => "participating".to_string(),
+                    SpecOrigin::Encountered => "encountered".to_string(),
                 };
                 BoundarySnapshot {
                     x: b.x,
@@ -349,6 +353,7 @@ impl JunctionStrategy for SatStrategy {
                     is_input: b.is_input,
                     interior: b.interior,
                     spec_key: String::new(),
+                    origin,
                     external_feeder: feeder,
                 }
             })

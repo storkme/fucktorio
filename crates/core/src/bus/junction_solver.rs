@@ -35,9 +35,12 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing};
+use crate::bus::junction::{BeltTier, Junction, Rect, SpecCrossing, SpecOrigin};
 use crate::bus::region_walker::{walk_affected, AffectedPath, ShadowView, WalkResult};
-use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile};
+use crate::common::{
+    is_machine_entity, is_splitter, is_surface_belt, is_ug_belt, machine_size, machine_tiles,
+    splitter_second_tile, tile_is_forbidden_kind,
+};
 use crate::models::{EntityDirection, PlacedEntity, PortPoint};
 use crate::trace::{
     self, BoundarySnapshot, ExternalFeederSnapshot, ParticipatingSpec, StampedNeighbor,
@@ -92,6 +95,7 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
+        placed_entities: &[PlacedEntity],
     ) -> Self {
         let mut tiles = FxHashSet::default();
         tiles.insert(initial_tile);
@@ -122,7 +126,12 @@ impl GrowingRegion {
             bbox,
             frontiers,
         };
-        region.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+        region.refresh_forbidden(
+            routed_paths,
+            hard_obstacles,
+            strict_obstacles,
+            placed_entities,
+        );
         region
     }
 
@@ -154,6 +163,7 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
+        placed_entities: &[PlacedEntity],
     ) -> bool {
         if left <= 0 && top <= 0 && right <= 0 && bottom <= 0 {
             return false;
@@ -176,27 +186,17 @@ impl GrowingRegion {
             }
         }
 
-        let in_bbox = |tx: i32, ty: i32| -> bool {
-            tx >= new_x
-                && tx < new_x + new_w as i32
-                && ty >= new_y
-                && ty < new_y + new_h as i32
+        let bbox = Rect {
+            x: new_x,
+            y: new_y,
+            w: new_w,
+            h: new_h,
         };
-        let in_bbox_range = |path: &[(i32, i32)]| -> Option<(usize, usize)> {
-            let mut first: Option<usize> = None;
-            let mut last: Option<usize> = None;
-            for (i, &(tx, ty)) in path.iter().enumerate() {
-                if in_bbox(tx, ty) {
-                    if first.is_none() {
-                        first = Some(i);
-                    }
-                    last = Some(i);
-                }
-            }
-            match (first, last) {
-                (Some(s), Some(e)) if s < e => Some((s, e)),
-                _ => None,
-            }
+        let in_bbox = |tx: i32, ty: i32| -> bool { bbox.contains(tx, ty) };
+        // Both loops below want "genuine" crossings (≥2 distinct
+        // in-bbox tiles), so apply the strict `s < e` filter inline.
+        let strict_range = |path: &[(i32, i32)]| -> Option<(usize, usize)> {
+            path_bbox_range(path, &bbox).filter(|(s, e)| s < e)
         };
 
         // 1. Update frontiers for existing participating specs. Keep
@@ -206,7 +206,7 @@ impl GrowingRegion {
         let mut kept: Vec<String> = Vec::new();
         for key in &self.participating {
             if let Some(path) = routed_paths.get(key) {
-                if let Some(range) = in_bbox_range(path) {
+                if let Some(range) = strict_range(path) {
                     new_frontiers.insert(key.clone(), range);
                     kept.push(key.clone());
                     continue;
@@ -235,7 +235,7 @@ impl GrowingRegion {
             if kept_set.contains(key.as_str()) {
                 continue;
             }
-            let Some(range) = in_bbox_range(path) else {
+            let Some(range) = strict_range(path) else {
                 continue;
             };
             let (start, end) = range;
@@ -255,7 +255,12 @@ impl GrowingRegion {
         self.frontiers = new_frontiers;
         self.encountered.retain(|k| !self.participating.contains(k));
 
-        self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+        self.refresh_forbidden(
+            routed_paths,
+            hard_obstacles,
+            strict_obstacles,
+            placed_entities,
+        );
         true
     }
 
@@ -269,6 +274,7 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
+        placed_entities: &[PlacedEntity],
     ) -> bool {
         let mut added_any = false;
         let keys: Vec<String> = self.participating.clone();
@@ -299,7 +305,12 @@ impl GrowingRegion {
         }
         if added_any {
             self.recompute_bbox();
-            self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+            self.refresh_forbidden(
+                routed_paths,
+                hard_obstacles,
+                strict_obstacles,
+                placed_entities,
+            );
         }
         added_any
     }
@@ -342,22 +353,41 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
+        placed_entities: &[PlacedEntity],
     ) {
         self.forbidden_tiles.clear();
         self.encountered.clear();
-        // Walk every tile in the bbox and flag obstacles. Walking the
-        // bbox rectangle (not just participating tiles) lets strategies
-        // see the full geometry they have to work within. Frontier
-        // endpoint tiles (the entry/exit ports for participating specs)
-        // are exempted from the obstacle check: a tap-off path's first
-        // tile may land on a Permanent splitter on the trunk column,
-        // and forbidding it would make the SAT zone infeasible because
-        // SAT requires its boundary ports to be free. Interior path
-        // tiles are NOT exempted — if a previous strategy iteration
-        // stamped a Permanent belt that happens to lie on this spec's
-        // interior path, the new strategy must still treat it as an
-        // obstacle so it doesn't double-stamp.
-        let port_tiles: FxHashSet<(i32, i32)> = self
+
+        // Build a tile → entity-name index from the current layout.
+        // Used to classify strict-obstacle tiles: simple surface belts
+        // are *permissive* inside a SAT zone (SAT is free to lift and
+        // re-stamp them). Splitters, UG entrances/exits, inserters,
+        // machines, poles, pipes — all forbidden.
+        let tile_kind = build_tile_kind_map(placed_entities, &self.bbox);
+
+        // First pass: determine encountered specs (non-participating
+        // specs whose path crosses the current bbox). Each contributes
+        // entry + exit endpoints to the port-exemption set, so that
+        // SAT can place boundary-port entities there.
+        let participating: FxHashSet<&str> =
+            self.participating.iter().map(|s| s.as_str()).collect();
+        for (key, path) in routed_paths {
+            if participating.contains(key.as_str()) {
+                continue;
+            }
+            if path_bbox_range(path, &self.bbox).is_some()
+                && !self.encountered.iter().any(|k| k == key)
+            {
+                self.encountered.push(key.clone());
+            }
+        }
+
+        // Port tiles are exempt from forbidden. Participating frontiers
+        // contribute their current entry+exit; encountered specs
+        // contribute their first+last in-bbox tiles. Without this, SAT
+        // rejects zones whose boundary ports land on tiles occupied by
+        // Permanent feeders.
+        let mut port_tiles: FxHashSet<(i32, i32)> = self
             .frontiers
             .iter()
             .filter_map(|(key, &(start, end))| {
@@ -365,53 +395,45 @@ impl GrowingRegion {
             })
             .flat_map(|(p, start, end)| [p[start], p[end]])
             .collect();
-        for y in self.bbox.y..self.bbox.y + self.bbox.h as i32 {
-            for x in self.bbox.x..self.bbox.x + self.bbox.w as i32 {
-                if port_tiles.contains(&(x, y)) {
-                    continue;
-                }
-                if hard_obstacles.contains(&(x, y))
-                    || strict_obstacles.contains(&(x, y))
-                {
-                    self.forbidden_tiles.insert((x, y));
+        for key in &self.encountered {
+            if let Some(path) = routed_paths.get(key) {
+                if let Some((start, end)) = path_bbox_range(path, &self.bbox) {
+                    port_tiles.insert(path[start]);
+                    port_tiles.insert(path[end]);
                 }
             }
         }
-        let participating: FxHashSet<&str> = self
-            .participating
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        for (key, path) in routed_paths {
-            if participating.contains(key.as_str()) {
-                continue;
-            }
-            let mut encountered = false;
-            for &(tx, ty) in path {
-                if tx < self.bbox.x
-                    || tx >= self.bbox.x + self.bbox.w as i32
-                    || ty < self.bbox.y
-                    || ty >= self.bbox.y + self.bbox.h as i32
-                {
+
+        // Walk every tile in the bbox and flag obstacles. A tile in
+        // either obstacle set is forbidden iff the entity occupying it
+        // is NOT a simple surface belt. Surface belts become
+        // SAT-routable: SAT may re-stamp them as belts, UGs, or
+        // different directions. Both `hard_obstacles` and
+        // `strict_obstacles` can contain belt tiles — the ghost router
+        // dumps splitter-output belts, balancer belts, and row-template
+        // belts into one or the other — so we apply the same filter to
+        // both. Port tiles are always exempt (a boundary port landing
+        // on a Permanent would otherwise be infeasible). Tiles in an
+        // obstacle set with NO matching entity in `tile_kind` default
+        // forbidden (conservative).
+        for y in self.bbox.y..self.bbox.y + self.bbox.h as i32 {
+            for x in self.bbox.x..self.bbox.x + self.bbox.w as i32 {
+                let t = (x, y);
+                if port_tiles.contains(&t) {
                     continue;
                 }
-                // Tiles that are *also* on a participating spec's
-                // path are conflict tiles, not forbidden. The whole
-                // point of growing the region is that the inner
-                // solver gets to re-route participating tiles —
-                // marking them forbidden would make any port sitting
-                // on one infeasible (SAT rejects a zone with a port
-                // at a forced-empty tile, which is exactly what
-                // happens at the UG-out-axis-conflict shape).
-                if self.tiles.contains(&(tx, ty)) {
-                    encountered = true;
+                let in_any_obstacle =
+                    hard_obstacles.contains(&t) || strict_obstacles.contains(&t);
+                if !in_any_obstacle {
                     continue;
                 }
-                self.forbidden_tiles.insert((tx, ty));
-                encountered = true;
-            }
-            if encountered && !self.encountered.iter().any(|k| k == key) {
-                self.encountered.push(key.clone());
+                let forbidden_kind = tile_kind
+                    .get(&t)
+                    .map(|n| tile_is_forbidden_kind(n))
+                    .unwrap_or(true);
+                if forbidden_kind {
+                    self.forbidden_tiles.insert(t);
+                }
             }
         }
     }
@@ -432,6 +454,7 @@ impl GrowingRegion {
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
+        placed_entities: &[PlacedEntity],
     ) {
         let to_promote: Vec<String> = self
             .encountered
@@ -455,7 +478,12 @@ impl GrowingRegion {
             self.participating.push(key.clone());
         }
         self.encountered.retain(|k| !to_promote.contains(k));
-        self.refresh_forbidden(routed_paths, hard_obstacles, strict_obstacles);
+        self.refresh_forbidden(
+            routed_paths,
+            hard_obstacles,
+            strict_obstacles,
+            placed_entities,
+        );
     }
 
     /// Materialize a `Junction` snapshot suitable for strategy input.
@@ -515,6 +543,58 @@ impl GrowingRegion {
                 belt_tier,
                 entry,
                 exit,
+                origin: SpecOrigin::Participating,
+            });
+        }
+        // Encountered specs: paths that cross the bbox but didn't seed
+        // this cluster. Each gets a pair of SAT boundaries (IN where
+        // the path first enters the bbox, OUT where it last exits) so
+        // SAT can route the item through — instead of treating the
+        // path tiles as forbidden obstacles. Note: if the path merely
+        // touches the bbox at a single tile we skip it (no meaningful
+        // crossing to route). Paths that zig-zag in and out of the
+        // bbox get one IN/OUT pair spanning first→last in-bbox
+        // indices; intermediate excursions are collapsed (acceptable —
+        // SAT isn't obliged to mirror the ghost-router path exactly).
+        for key in &self.encountered {
+            let Some(path) = routed_paths.get(key) else {
+                continue;
+            };
+            let Some((start, end)) = path_bbox_range(path, &self.bbox) else {
+                continue;
+            };
+            if start >= end {
+                continue;
+            }
+            let dir_hint = spec_exit_dirs.get(key).copied();
+            let entry_dir = if start > 0 {
+                direction_at(path, start - 1, dir_hint)
+            } else {
+                direction_at(path, start, dir_hint)
+            };
+            let exit_dir = direction_at(path, end, dir_hint);
+            let item = spec_items
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            let belt_tier = spec_belt_tiers
+                .get(key)
+                .copied()
+                .unwrap_or(BeltTier::Yellow);
+            specs.push(SpecCrossing {
+                item,
+                belt_tier,
+                entry: PortPoint {
+                    x: path[start].0,
+                    y: path[start].1,
+                    direction: entry_dir,
+                },
+                exit: PortPoint {
+                    x: path[end].0,
+                    y: path[end].1,
+                    direction: exit_dir,
+                },
+                origin: SpecOrigin::Encountered,
             });
         }
         Junction {
@@ -522,6 +602,71 @@ impl GrowingRegion {
             forbidden: self.forbidden_tiles.clone(),
             specs,
         }
+    }
+}
+
+/// Build a sparse (tile → entity-name) lookup covering every tile in
+/// `bbox` that a `PlacedEntity` from `placed_entities` occupies.
+/// Splitters contribute both tiles; machines contribute every tile in
+/// their footprint; other entities occupy a single tile. Tiles with
+/// no matching entity are absent from the map — callers treat those
+/// as either "no obstacle" or "unknown default-forbidden" per context.
+pub(crate) fn build_tile_kind_map<'a>(
+    placed_entities: &'a [PlacedEntity],
+    bbox: &Rect,
+) -> FxHashMap<(i32, i32), &'a str> {
+    let mut tile_kind: FxHashMap<(i32, i32), &'a str> = FxHashMap::default();
+    let mut insert = |t: (i32, i32), name: &'a str| {
+        if bbox.contains(t.0, t.1) {
+            tile_kind.insert(t, name);
+        }
+    };
+    for e in placed_entities {
+        let name = e.name.as_str();
+        if is_splitter(name) {
+            let (sx, sy) = splitter_second_tile(e);
+            insert((e.x, e.y), name);
+            insert((sx, sy), name);
+        } else if is_machine_entity(name) {
+            // Assembling machines / furnaces / chemical plants / etc.
+            // expand to their full footprint. machine_size has a
+            // defaults-to-3 fallback for unknown names, so guard with
+            // is_machine_entity to avoid treating belts as 3x3.
+            let size = machine_size(name);
+            for t in machine_tiles(e.x, e.y, size) {
+                insert(t, name);
+            }
+        } else {
+            // Single-tile entities: belts, UG-in/out, inserters, poles,
+            // pipes, beacons, etc.
+            insert((e.x, e.y), name);
+        }
+    }
+    tile_kind
+}
+
+/// First and last indices where `path` intersects `bbox`. Returns
+/// `None` if the path never enters the bbox. Includes single-tile
+/// crossings (start == end); callers that need strict crossings (at
+/// least two distinct in-bbox tiles) should check `end > start`
+/// themselves.
+pub(crate) fn path_bbox_range(
+    path: &[(i32, i32)],
+    bbox: &Rect,
+) -> Option<(usize, usize)> {
+    let mut first: Option<usize> = None;
+    let mut last: Option<usize> = None;
+    for (i, &(tx, ty)) in path.iter().enumerate() {
+        if bbox.contains(tx, ty) {
+            if first.is_none() {
+                first = Some(i);
+            }
+            last = Some(i);
+        }
+    }
+    match (first, last) {
+        (Some(s), Some(e)) => Some((s, e)),
+        _ => None,
     }
 }
 
@@ -647,6 +792,7 @@ pub fn solve_crossing(
         routed_paths,
         hard_obstacles,
         strict_obstacles,
+        placed_entities,
     );
 
     // Emit start-of-solve snapshot: seed, participating specs, and
@@ -693,6 +839,7 @@ pub fn solve_crossing(
             let boundaries = junction_boundaries_to_snapshots(
                 &junction,
                 &region.participating,
+                &region.encountered,
                 placed_entities,
             );
             let mut tiles: Vec<(i32, i32)> = region.tiles.iter().copied().collect();
@@ -877,6 +1024,7 @@ pub fn solve_crossing(
             routed_paths,
             hard_obstacles,
             strict_obstacles,
+            placed_entities,
         ) {
             trace::emit(TraceEvent::JunctionGrowthCapped {
                 tile_x: initial_tile.0,
@@ -1010,22 +1158,46 @@ fn entity_feeds_seed_area(entity: &PlacedEntity, seed: (i32, i32)) -> bool {
     false
 }
 
-/// Build per-boundary snapshots from a `Junction` + participating spec
-/// keys. Each SpecCrossing yields two boundaries (entry + exit). The
-/// external-feeder annotation is derived by scanning `placed_entities`
-/// for anything that outputs onto the entry tile — same logic as the
-/// SAT strategy's `physical_feeder_direction`.
+/// Build per-boundary snapshots from a `Junction` + participating +
+/// encountered spec keys. Each SpecCrossing yields two boundaries
+/// (entry + exit). The external-feeder annotation is derived by
+/// scanning `placed_entities` for anything that outputs onto the entry
+/// tile — same logic as the SAT strategy's `physical_feeder_direction`.
+/// Participating specs fill the first N slots (by their order in
+/// `participating_keys`); encountered specs follow, keyed by
+/// `encountered_keys`.
 fn junction_boundaries_to_snapshots(
     junction: &Junction,
     participating_keys: &[String],
+    encountered_keys: &[String],
     placed: &[PlacedEntity],
 ) -> Vec<BoundarySnapshot> {
     let mut out = Vec::with_capacity(junction.specs.len() * 2);
-    for (i, sc) in junction.specs.iter().enumerate() {
-        let key = participating_keys
-            .get(i)
-            .cloned()
-            .unwrap_or_else(|| String::from("?"));
+    let mut p_idx = 0;
+    let mut e_idx = 0;
+    for sc in &junction.specs {
+        let key = match sc.origin {
+            SpecOrigin::Participating => {
+                let k = participating_keys
+                    .get(p_idx)
+                    .cloned()
+                    .unwrap_or_else(|| String::from("?"));
+                p_idx += 1;
+                k
+            }
+            SpecOrigin::Encountered => {
+                let k = encountered_keys
+                    .get(e_idx)
+                    .cloned()
+                    .unwrap_or_else(|| String::from("?"));
+                e_idx += 1;
+                k
+            }
+        };
+        let origin = match sc.origin {
+            SpecOrigin::Participating => "participating".to_string(),
+            SpecOrigin::Encountered => "encountered".to_string(),
+        };
         let entry_feeder = find_external_feeder((sc.entry.x, sc.entry.y), placed);
         out.push(BoundarySnapshot {
             x: sc.entry.x,
@@ -1035,6 +1207,7 @@ fn junction_boundaries_to_snapshots(
             is_input: true,
             interior: false,
             spec_key: key.clone(),
+            origin: origin.clone(),
             external_feeder: entry_feeder,
         });
         out.push(BoundarySnapshot {
@@ -1045,6 +1218,7 @@ fn junction_boundaries_to_snapshots(
             is_input: false,
             interior: false,
             spec_key: key,
+            origin,
             external_feeder: None,
         });
     }

@@ -514,6 +514,12 @@ pub struct BoundarySnapshot {
     /// Spec key that produced this boundary. Useful for correlating a
     /// growth iteration with the specs' movement frontiers.
     pub spec_key: String,
+    /// Whether this boundary comes from a spec that seeded the cluster
+    /// (`"participating"`) or a spec that merely passes through the
+    /// cluster's bbox (`"encountered"`). Encountered specs contribute
+    /// boundary pairs so SAT can route them instead of treating their
+    /// belts as forbidden obstacles.
+    pub origin: String,
     /// If a physical external feeder landed items on this tile, the
     /// feeder's entity name + output direction. `None` means no
     /// external feeder — SAT will assume native (opposite(direction))

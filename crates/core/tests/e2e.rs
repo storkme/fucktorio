@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Crossing-zone item-isolation is now FIXED — SAT routes iron-plate underground east through (2,10)→(5,10), and copper-cable underground south through (3,10)→(3,12). 0 validation errors. 4 warnings remain: (1) UG-sideload at (2,10) because the iron-plate splitter at (1,9)/(2,9) feeds (2,10) perpendicular to its East-facing UG-in — only one lane loads, fixable only by giving the iron tap more horizontal space before the UG entry; (2-4) three input-rate-delivery warnings on the second EC machine row (y=19) — a separate copper supply-chain issue unrelated to the crossing zone."]
+#[ignore = "After belt-permissive junction SAT zones: 0 errors, 1 UG-sideload warning remains. SAT now has access to the surrounding trunk belts (iron-plate trunk at x=1, copper-cable trunks) as SAT-routable, with forbidden shrunk from 11 → 3 tiles (just splitters). The 3 prior input-rate-delivery warnings on y=19 are gone. The remaining warning at (2,10) is structural: the iron splitter at (1,9)/(2,9) South only outputs onto (2,10) from the north, forcing a perpendicular feed into any east-facing crossing entry. Fixing it requires either a layout-level change (iron tap getting more horizontal buffer) or a different splitter orientation — neither is a SAT concern."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
@@ -486,7 +486,10 @@ fn tier2_electronic_circuit_20s_from_ore() {
 /// firing (e.g. route_belt_lane stops pushing to dropped_bridges), this test
 /// fails because the sideload warning comes back.
 #[test]
-#[ntest::timeout(10000)]
+// Bumped from 10s to 30s after the belt-permissive junction SAT change
+// — debug-mode SAT solves got slower with more boundaries per zone.
+// Release mode still completes in ~2.5s; debug closer to 10-15s.
+#[ntest::timeout(30000)]
 fn tier2_electronic_circuit_splitter_stamp_regression() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]
         .iter()

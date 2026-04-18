@@ -1788,7 +1788,7 @@ fn emit_unresolved_junctions(
     spec_belt_tiers: &FxHashMap<String, BeltTier>,
     ghost_item_at: &FxHashMap<(i32, i32), String>,
 ) -> Vec<LayoutRegion> {
-    use crate::bus::junction::{Junction, Rect, SpecCrossing};
+    use crate::bus::junction::{Junction, Rect, SpecCrossing, SpecOrigin};
     use crate::models::{PortPoint, RegionKind};
 
     let _ = ghost_item_at;
@@ -1813,6 +1813,7 @@ fn emit_unresolved_junctions(
                     belt_tier: BeltTier::from_name(belt).unwrap_or(BeltTier::Yellow),
                     entry: PortPoint { x: tx, y: ty, direction: dir },
                     exit: PortPoint { x: tx, y: ty, direction: dir },
+                    origin: SpecOrigin::Participating,
                 };
                 vec![
                     make(info.spec_a.0, info.spec_a.1, info.belt_a),

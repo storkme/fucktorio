@@ -94,6 +94,16 @@ impl BeltTier {
     }
 }
 
+/// Whether a spec seeded this cluster (participating) or just happens
+/// to pass through the cluster's bbox (encountered). Encountered specs
+/// get SAT boundary pairs so SAT can route them, but they don't drive
+/// growth decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecOrigin {
+    Participating,
+    Encountered,
+}
+
 /// One spec crossing a junction. Exactly one entry + one exit per spec.
 #[derive(Debug, Clone)]
 pub struct SpecCrossing {
@@ -101,6 +111,7 @@ pub struct SpecCrossing {
     pub belt_tier: BeltTier,
     pub entry: PortPoint,
     pub exit: PortPoint,
+    pub origin: SpecOrigin,
 }
 
 impl SpecCrossing {
