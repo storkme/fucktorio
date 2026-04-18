@@ -23,7 +23,7 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::bus::junction::{BeltTier, Rect, SpecCrossing, SpecOrigin};
+use crate::bus::junction::{BeltTier, Rect, SpecOrigin};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
@@ -166,26 +166,48 @@ fn physical_feeder_hit(
     None
 }
 
-/// If a Permanent flow-source entity has a tile inside `bbox` AND in
-/// `forbidden`, and that tile emits onto `spec_entry`, return
-/// `(interior_tile, feeder.direction)`. Otherwise None — caller falls
-/// back to the perimeter boundary model.
+/// Walk the feeder chain backward from `spec_entry` until the next
+/// upstream feeder lies outside `bbox` (or there is no feeder). Returns
+/// the final in-bbox tile and the physical flow direction at that tile.
 ///
-/// "Interior" means the boundary lives at the Permanent entity's tile
-/// rather than at the first SAT-placeable tile downstream. Lets SAT route
-/// the downstream tile freely instead of pinning it to the arrival axis.
-fn interior_input_boundary(
+/// At each step we consult `physical_feeder_hit` for the tile we're on;
+/// if it points to a Permanent/belt-like entity inside the bbox, we
+/// advance to that entity's tile and inherit its direction. The loop
+/// terminates when:
+///   - the spec tile has no physical feeder (orphan);
+///   - the feeder's tile is outside the bbox (perimeter crossing);
+///   - we'd re-enter a tile we've already visited (cycle safety).
+///
+/// Generalizes the prior single-step `interior_input_boundary`: with a
+/// chain of in-bbox belts + a splitter feeder, the boundary keeps
+/// moving back until it sits at the real perimeter-crossing tile rather
+/// than the first-spec-path tile.
+fn walk_entry_to_perimeter(
     spec_entry: (i32, i32),
+    spec_dir: EntityDirection,
     bbox: &Rect,
-    forbidden: &FxHashSet<(i32, i32)>,
     placed_entities: &[PlacedEntity],
-) -> Option<((i32, i32), EntityDirection)> {
-    let hit = physical_feeder_hit(spec_entry, placed_entities)?;
-    let (tx, ty) = hit.entity_tile;
-    if bbox.contains(tx, ty) && forbidden.contains(&(tx, ty)) {
-        Some(((tx, ty), hit.entity_direction))
-    } else {
-        None
+) -> ((i32, i32), EntityDirection) {
+    let mut current = spec_entry;
+    // Initial direction: whatever the physical feeder at the spec entry
+    // says, falling back to the spec's own direction if there's no
+    // feeder. Mirrors the old `physical_feeder_direction` override.
+    let mut current_dir = physical_feeder_direction(current, placed_entities)
+        .unwrap_or(spec_dir);
+    let mut visited: FxHashSet<(i32, i32)> = FxHashSet::default();
+    visited.insert(current);
+    loop {
+        let Some(hit) = physical_feeder_hit(current, placed_entities) else {
+            return (current, current_dir);
+        };
+        if !bbox.contains(hit.entity_tile.0, hit.entity_tile.1) {
+            return (current, current_dir);
+        }
+        if !visited.insert(hit.entity_tile) {
+            return (current, current_dir);
+        }
+        current = hit.entity_tile;
+        current_dir = hit.entity_direction;
     }
 }
 
@@ -345,6 +367,86 @@ fn splitter_topology_boundaries(
     out
 }
 
+/// Synthesize SAT boundaries from absorbed **surface belts** whose
+/// physical feeder or target lies outside the bbox. Complements
+/// `splitter_topology_boundaries` for the belt-permissive case: even
+/// though SAT is free to re-stamp surface belts, the item flow
+/// crossing the bbox perimeter is a fixed boundary condition (the
+/// upstream splitter / balancer / trunk outside the bbox will keep
+/// feeding these tiles regardless of what SAT does inside).
+///
+/// Emits perimeter-style boundaries (`interior: false`) at the belt's
+/// tile, with the belt's direction and item:
+///
+/// - **IN** if `physical_feeder_hit(T)` returns a feeder whose tile is
+///   outside the bbox. Flow enters the zone here from outside.
+///
+/// - **OUT** if `T + dir_delta(belt.dir)` is outside the bbox. Flow
+///   leaves the zone here to an outside consumer.
+///
+/// Belts with a fully-internal feeder+target contribute nothing (SAT
+/// has full freedom over that interior region). Belts whose tile is
+/// outside the bbox are skipped — only absorbed belts contribute
+/// topology, per the "we only map inputs/outputs of the belts if they
+/// are connected when we absorb them" rule.
+///
+/// Splitters are handled by `splitter_topology_boundaries` and skipped
+/// here. UG-in/out are skipped for now (grey area — their tunnels
+/// jump through non-adjacent tiles, which the perimeter-crossing check
+/// doesn't model cleanly).
+fn belt_topology_boundaries(
+    placed_entities: &[PlacedEntity],
+    bbox: &Rect,
+) -> Vec<ZoneBoundary> {
+    let mut out = Vec::new();
+    for e in placed_entities {
+        if !is_surface_belt(&e.name) {
+            continue;
+        }
+        let Some(item) = e.carries.as_deref() else {
+            continue;
+        };
+        if !bbox.contains(e.x, e.y) {
+            continue;
+        }
+        let (dx, dy) = dir_delta(e.direction);
+
+        // IN: flow enters the bbox at this belt if its physical feeder
+        // sits outside the bbox. A belt with no feeder at all is an
+        // "orphan" — don't invent an input where no physical source
+        // connects (keeps us from treating broken ghost-stamped belts
+        // like (5,10) iron-east @ iter1 as entries when their feeder
+        // chain is silently broken by a currently-mis-stamped tile).
+        if let Some(hit) = physical_feeder_hit((e.x, e.y), placed_entities) {
+            if !bbox.contains(hit.entity_tile.0, hit.entity_tile.1) {
+                out.push(ZoneBoundary {
+                    x: e.x,
+                    y: e.y,
+                    direction: e.direction,
+                    item: item.to_string(),
+                    is_input: true,
+                    interior: false,
+                });
+            }
+        }
+
+        // OUT: flow leaves the bbox if the belt's immediate output
+        // tile lies outside the bbox.
+        let target = (e.x + dx, e.y + dy);
+        if !bbox.contains(target.0, target.1) {
+            out.push(ZoneBoundary {
+                x: e.x,
+                y: e.y,
+                direction: e.direction,
+                item: item.to_string(),
+                is_input: false,
+                interior: false,
+            });
+        }
+    }
+    out
+}
+
 impl JunctionStrategy for SatStrategy {
     fn name(&self) -> &'static str {
         "sat"
@@ -394,26 +496,19 @@ impl JunctionStrategy for SatStrategy {
         let mut boundaries: Vec<ZoneBoundary> =
             Vec::with_capacity(ctx.junction.specs.len() * 2);
         for spec in &ctx.junction.specs {
-            let (entry_x, entry_y, entry_direction, entry_interior) =
-                match interior_input_boundary(
-                    (spec.entry.x, spec.entry.y),
-                    &ctx.junction.bbox,
-                    &ctx.junction.forbidden,
-                    ctx.placed_entities,
-                ) {
-                    Some(((ix, iy), dir)) => (ix, iy, dir, true),
-                    None => {
-                        let dir = physical_feeder_direction(
-                            (spec.entry.x, spec.entry.y),
-                            ctx.placed_entities,
-                        )
-                        .unwrap_or(spec.entry.direction);
-                        (spec.entry.x, spec.entry.y, dir, false)
-                    }
-                };
+            // Walk the feeder chain backward from the spec's entry until
+            // we leave the bbox. Interior iff the final tile sits in
+            // forbidden (e.g. splitter body); perimeter otherwise.
+            let (entry_tile, entry_direction) = walk_entry_to_perimeter(
+                (spec.entry.x, spec.entry.y),
+                spec.entry.direction,
+                &ctx.junction.bbox,
+                ctx.placed_entities,
+            );
+            let entry_interior = ctx.junction.forbidden.contains(&entry_tile);
             boundaries.push(ZoneBoundary {
-                x: entry_x,
-                y: entry_y,
+                x: entry_tile.0,
+                y: entry_tile.1,
                 direction: entry_direction,
                 item: spec.item.clone(),
                 is_input: true,
@@ -441,52 +536,88 @@ impl JunctionStrategy for SatStrategy {
             });
         }
 
-        // Capture the count of spec-derived boundaries before we
-        // append splitter-topology boundaries. The snapshot builder
-        // below uses this to pair the first N boundaries with specs
-        // (for origin tagging) and tag the rest as origin=splitter.
-        let n_spec_boundaries = boundaries.len();
+        // Tag each accumulated boundary with its origin so snapshots
+        // can distinguish participating/encountered spec-derived
+        // boundaries from splitter-topology and belt-topology synthesis.
+        // We zip after the spec loop completes (each spec contributes
+        // two consecutive boundaries: IN then OUT).
+        let mut origins: Vec<String> = ctx
+            .junction
+            .specs
+            .iter()
+            .flat_map(|s| {
+                let o = match s.origin {
+                    SpecOrigin::Participating => "participating",
+                    SpecOrigin::Encountered => "encountered",
+                };
+                [o.to_string(), o.to_string()]
+            })
+            .collect();
+        debug_assert_eq!(origins.len(), boundaries.len());
 
         // Splitter topology: for every splitter whose tile is inside
         // the bbox, read its actual wiring in `placed_entities` and
-        // emit interior boundaries for the connected lanes. Forces
-        // SAT to honor the splitter's real flow rather than routing
-        // around it.
-        boundaries.extend(splitter_topology_boundaries(
-            ctx.placed_entities,
-            &ctx.junction.bbox,
-        ));
+        // emit interior boundaries for the connected lanes.
+        let splitter_bounds =
+            splitter_topology_boundaries(ctx.placed_entities, &ctx.junction.bbox);
+        for _ in &splitter_bounds {
+            origins.push("splitter".to_string());
+        }
+        boundaries.extend(splitter_bounds);
+
+        // Belt topology: surface belts whose feeder/target crosses the
+        // bbox perimeter. Complements splitter topology for the
+        // belt-permissive case — catches balancer-output and trunk
+        // belts that flow into/out of the bbox but aren't on any
+        // spec's routed path.
+        let belt_bounds =
+            belt_topology_boundaries(ctx.placed_entities, &ctx.junction.bbox);
+        for _ in &belt_bounds {
+            origins.push("belt".to_string());
+        }
+        boundaries.extend(belt_bounds);
+
+        // Dedup by (x, y, direction, item, is_input). When the spec
+        // walk lands on a splitter tile and splitter-topology emits
+        // the same boundary, or when a belt-topology boundary matches
+        // a walked spec boundary, we'd otherwise hand SAT duplicate
+        // clauses. Kept-boundary wins its origin (first in order —
+        // specs, then splitter, then belt — so splitter/belt origins
+        // only show up for boundaries the specs didn't produce).
+        // EntityDirection isn't Hash; encode as u8 for the dedup key.
+        let dir_idx = |d: EntityDirection| -> u8 {
+            match d {
+                EntityDirection::North => 0,
+                EntityDirection::East => 1,
+                EntityDirection::South => 2,
+                EntityDirection::West => 3,
+            }
+        };
+        let mut seen: FxHashSet<(i32, i32, u8, String, bool)> = FxHashSet::default();
+        let mut keep_idx: Vec<bool> = Vec::with_capacity(boundaries.len());
+        for b in &boundaries {
+            let key = (b.x, b.y, dir_idx(b.direction), b.item.clone(), b.is_input);
+            keep_idx.push(seen.insert(key));
+        }
+        let (boundaries, origins): (Vec<_>, Vec<_>) = boundaries
+            .into_iter()
+            .zip(origins)
+            .zip(keep_idx)
+            .filter_map(|((b, o), keep)| if keep { Some((b, o)) } else { None })
+            .unzip();
 
         let forced_empty: Vec<(i32, i32)> =
             ctx.junction.forbidden.iter().copied().collect();
 
-        // Build a snapshot view of the boundaries for the trace event —
-        // mirrors the junction_solver snapshot format so CLI replay
-        // tools can use the same rendering for both. First block:
-        // spec-derived boundaries paired with their specs. Second
-        // block: splitter-topology boundaries tagged "splitter".
-        let spec_pairs: Vec<(&ZoneBoundary, &SpecCrossing, bool)> = boundaries
+        // Build snapshots: origin was tracked in parallel above.
+        let boundary_snapshots: Vec<BoundarySnapshot> = boundaries
             .iter()
-            .take(n_spec_boundaries)
-            .zip(ctx.junction.specs.iter().flat_map(|s| {
-                [
-                    (s, true),
-                    (s, false),
-                ]
-            }))
-            .map(|(b, (s, is_input))| (b, s, is_input))
-            .collect();
-        let mut boundary_snapshots: Vec<BoundarySnapshot> = spec_pairs
-            .iter()
-            .map(|(b, spec, is_input)| {
-                let feeder = if *is_input {
+            .zip(&origins)
+            .map(|(b, origin)| {
+                let feeder = if b.is_input {
                     find_external_feeder((b.x, b.y), ctx.placed_entities)
                 } else {
                     None
-                };
-                let origin = match spec.origin {
-                    SpecOrigin::Participating => "participating".to_string(),
-                    SpecOrigin::Encountered => "encountered".to_string(),
                 };
                 BoundarySnapshot {
                     x: b.x,
@@ -496,24 +627,11 @@ impl JunctionStrategy for SatStrategy {
                     is_input: b.is_input,
                     interior: b.interior,
                     spec_key: String::new(),
-                    origin,
+                    origin: origin.clone(),
                     external_feeder: feeder,
                 }
             })
             .collect();
-        for b in boundaries.iter().skip(n_spec_boundaries) {
-            boundary_snapshots.push(BoundarySnapshot {
-                x: b.x,
-                y: b.y,
-                direction: dir_label(b.direction),
-                item: b.item.clone(),
-                is_input: b.is_input,
-                interior: b.interior,
-                spec_key: String::new(),
-                origin: "splitter".to_string(),
-                external_feeder: None,
-            });
-        }
 
         let zone = CrossingZone {
             x: ctx.junction.bbox.x,
@@ -845,64 +963,85 @@ mod tests {
     }
 
     #[test]
-    fn test_interior_input_boundary_from_splitter() {
+    fn test_walk_entry_from_splitter() {
         // South-facing splitter at (1,9)+(2,9). Bbox is 3×3 from (2,9),
-        // so (2,9) is inside the bbox AND in forbidden. The spec's entry
-        // is at (2,10) (the tile the splitter feeds into). The interior
-        // boundary should land at (2,9) dir=South.
+        // so (2,9) is inside the bbox. Spec entry at (2,10) flowing East;
+        // the walk should step one tile upstream to the splitter body
+        // (2,9) with the splitter's south direction.
         let splitter = make_splitter(1, 9, EntityDirection::South);
         let placed = vec![splitter];
         let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
-        let mut forbidden = FxHashSet::default();
-        forbidden.insert((2, 9));
-
-        let result = interior_input_boundary(
+        let (tile, dir) = walk_entry_to_perimeter(
             (2, 10),
+            EntityDirection::East,
             &bbox,
-            &forbidden,
             &placed,
         );
-        assert_eq!(result, Some(((2, 9), EntityDirection::South)));
+        assert_eq!(tile, (2, 9));
+        assert_eq!(dir, EntityDirection::South);
     }
 
     #[test]
-    fn test_interior_input_boundary_external_splitter_returns_none() {
-        // Splitter wholly OUTSIDE bbox: bbox starts at (3,9), splitter
-        // at (1,9)+(2,9). Spec entry at (2,10) — but (2,10) is also
-        // outside the bbox here, so the splitter feed lands externally.
-        // The Permanent feeder tile (1,9) and (2,9) are NOT in forbidden.
-        // Expected: None (fall back to perimeter model).
+    fn test_walk_entry_external_splitter_stops_at_spec() {
+        // Splitter wholly OUTSIDE bbox; the first upstream feeder we
+        // reach from the spec entry falls outside bbox immediately, so
+        // the walk stays at the spec entry (but with physical feeder
+        // direction override if present).
         let splitter = make_splitter(1, 9, EntityDirection::South);
         let placed = vec![splitter];
         let bbox = Rect { x: 3, y: 9, w: 3, h: 3 };
-        let forbidden = FxHashSet::default();
-
-        let result = interior_input_boundary(
+        let (tile, dir) = walk_entry_to_perimeter(
             (2, 10),
+            EntityDirection::East,
             &bbox,
-            &forbidden,
             &placed,
         );
-        assert_eq!(result, None);
+        // (2,10) itself is outside bbox, but walk doesn't check that —
+        // it checks whether the *feeder tile* sits outside bbox. The
+        // feeder (2,9) is outside bbox, so we stop at (2,10) with the
+        // feeder's direction (South, from physical_feeder_direction
+        // override).
+        assert_eq!(tile, (2, 10));
+        assert_eq!(dir, EntityDirection::South);
     }
 
     #[test]
-    fn test_interior_input_boundary_belt_feeder() {
-        // Single-tile belt feeder (not a splitter): an east-facing belt
-        // at (5,5) emits onto (6,5). Bbox covers (5,5)+forbidden.
+    fn test_walk_entry_multi_step_belt_chain() {
+        // Chain of belts (3,8) -> (3,9) -> (3,10), all south. Bbox
+        // covers (3,9) and (3,10) but not (3,8). Spec entry (3,10):
+        // walk should step back to (3,9) — feeder at (3,8) is outside
+        // bbox so that's where we stop.
+        let b1 = make_belt(3, 8, EntityDirection::South, "copper");
+        let b2 = make_belt(3, 9, EntityDirection::South, "copper");
+        let b3 = make_belt(3, 10, EntityDirection::South, "copper");
+        let placed = vec![b1, b2, b3];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let (tile, dir) = walk_entry_to_perimeter(
+            (3, 10),
+            EntityDirection::South,
+            &bbox,
+            &placed,
+        );
+        assert_eq!(tile, (3, 9));
+        assert_eq!(dir, EntityDirection::South);
+    }
+
+    #[test]
+    fn test_walk_entry_belt_feeder() {
+        // Single east-facing belt at (5,5) feeding (6,5). Walk from
+        // (6,5) with spec dir South: feeder at (5,5) is inside bbox so
+        // step back; feeder for (5,5) is outside bbox so stop.
         let belt = make_belt(5, 5, EntityDirection::East, "iron-plate");
         let placed = vec![belt];
         let bbox = Rect { x: 5, y: 5, w: 3, h: 3 };
-        let mut forbidden = FxHashSet::default();
-        forbidden.insert((5, 5));
-
-        let result = interior_input_boundary(
+        let (tile, dir) = walk_entry_to_perimeter(
             (6, 5),
+            EntityDirection::South,
             &bbox,
-            &forbidden,
             &placed,
         );
-        assert_eq!(result, Some(((5, 5), EntityDirection::East)));
+        assert_eq!(tile, (5, 5));
+        assert_eq!(dir, EntityDirection::East);
     }
 
     #[test]
@@ -1148,5 +1287,117 @@ mod tests {
         assert_eq!(bounds.len(), 1);
         assert!(bounds[0].is_input);
         assert_eq!((bounds[0].x, bounds[0].y), (1, 9));
+    }
+
+    // -- Belt topology helpers ----------------------------------------------
+
+    #[test]
+    fn test_belt_topology_feeder_outside_emits_in() {
+        // Surface belt at (3,9) South feeder at (3,8), which is OUT of
+        // the 3×3 bbox (2,9..4,11). Expect IN (3,9) South.
+        let placed = vec![
+            make_surface_belt(3, 8, EntityDirection::South, "copper-cable"), // feeder outside bbox
+            make_surface_belt(3, 9, EntityDirection::South, "copper-cable"),
+            make_surface_belt(3, 10, EntityDirection::South, "copper-cable"), // target inside bbox
+        ];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        assert_eq!(bounds.len(), 1, "got {bounds:#?}");
+        let b = &bounds[0];
+        assert_eq!((b.x, b.y), (3, 9));
+        assert_eq!(b.direction, EntityDirection::South);
+        assert_eq!(b.item, "copper-cable");
+        assert!(b.is_input);
+        assert!(!b.interior);
+    }
+
+    #[test]
+    fn test_belt_topology_target_outside_emits_out() {
+        // Belt at (3,11) South: target (3,12) is outside bbox. Expect OUT.
+        let placed = vec![
+            make_surface_belt(3, 10, EntityDirection::South, "copper-cable"),
+            make_surface_belt(3, 11, EntityDirection::South, "copper-cable"),
+            // (3,12) outside bbox; no entity needed there
+        ];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        // (3,10) is interior (feeder/target both in bbox)
+        // (3,11) emits OUT; and its feeder (3,10) is in bbox so no IN.
+        let outs: Vec<_> = bounds.iter().filter(|b| !b.is_input && (b.x, b.y) == (3, 11)).collect();
+        assert_eq!(outs.len(), 1, "got {bounds:#?}");
+        assert_eq!(outs[0].direction, EntityDirection::South);
+    }
+
+    #[test]
+    fn test_belt_topology_fully_internal_skipped() {
+        // Belt chain entirely inside bbox with feeder+target also inside
+        // should contribute no boundaries.
+        let placed = vec![
+            make_surface_belt(2, 9, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 10, EntityDirection::South, "iron-plate"),
+            make_surface_belt(2, 11, EntityDirection::South, "iron-plate"),
+        ];
+        // (2,9) feeder is outside bbox, (2,11) target is outside: those
+        // two endpoints emit. The middle (2,10) is fully internal.
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        let middle: Vec<_> = bounds.iter().filter(|b| (b.x, b.y) == (2, 10)).collect();
+        assert!(middle.is_empty(), "middle belt should emit nothing, got {bounds:#?}");
+    }
+
+    #[test]
+    fn test_belt_topology_orphan_no_feeder_skipped() {
+        // Belt with no physical feeder (orphan) should NOT emit IN —
+        // we don't want to invent entries for broken stamps.
+        let placed = vec![
+            make_surface_belt(5, 10, EntityDirection::East, "iron-plate"), // no feeder
+        ];
+        let bbox = Rect { x: 3, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        let ins: Vec<_> = bounds.iter().filter(|b| b.is_input && (b.x, b.y) == (5, 10)).collect();
+        assert!(ins.is_empty(), "orphan belt should not emit IN, got {bounds:#?}");
+    }
+
+    #[test]
+    fn test_belt_topology_skips_splitters() {
+        // Splitters are handled by splitter_topology_boundaries; this
+        // helper must not emit for them.
+        let placed = vec![
+            make_splitter_at(3, 9, EntityDirection::South, "copper-cable"),
+        ];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        assert!(bounds.is_empty(), "splitter tiles must be skipped, got {bounds:#?}");
+    }
+
+    #[test]
+    fn test_belt_topology_tier2_scenario() {
+        // Tier-2 electronic-circuit 3×3 iter1 bbox (2,9..4,11).
+        // Copper flow at column 3 & 4 enters from the north (splitter
+        // at (3,8)+(4,8) outside bbox), exits south at (3,11) and east
+        // at (4,11). This is what the user's trace reported as buggy.
+        let placed = vec![
+            // Splitter outside bbox (feeds columns 3 & 4)
+            make_splitter_at(3, 8, EntityDirection::South, "copper-cable"),
+            // Balancer output belts inside bbox
+            make_surface_belt(3, 9, EntityDirection::South, "copper-cable"),
+            make_surface_belt(4, 9, EntityDirection::South, "copper-cable"),
+            // Trunk belts crossing the zone
+            make_surface_belt(3, 10, EntityDirection::South, "copper-cable"),
+            make_surface_belt(4, 10, EntityDirection::South, "copper-cable"),
+            make_surface_belt(3, 11, EntityDirection::South, "copper-cable"),
+            make_surface_belt(4, 11, EntityDirection::East, "copper-cable"),
+        ];
+        let bbox = Rect { x: 2, y: 9, w: 3, h: 3 };
+        let bounds = belt_topology_boundaries(&placed, &bbox);
+        let ins: Vec<_> = bounds.iter().filter(|b| b.is_input).collect();
+        let outs: Vec<_> = bounds.iter().filter(|b| !b.is_input).collect();
+        // Expected: IN (3,9) S, IN (4,9) S, OUT (3,11) S, OUT (4,11) E
+        assert_eq!(ins.len(), 2, "ins={ins:#?}");
+        assert_eq!(outs.len(), 2, "outs={outs:#?}");
+        assert!(ins.iter().any(|b| (b.x, b.y) == (3, 9) && b.direction == EntityDirection::South));
+        assert!(ins.iter().any(|b| (b.x, b.y) == (4, 9) && b.direction == EntityDirection::South));
+        assert!(outs.iter().any(|b| (b.x, b.y) == (3, 11) && b.direction == EntityDirection::South));
+        assert!(outs.iter().any(|b| (b.x, b.y) == (4, 11) && b.direction == EntityDirection::East));
     }
 }

@@ -213,6 +213,16 @@ pub fn route_bus_ghost(
             } else {
                 hard.insert((ent.x, ent.y));
             }
+            // Splitters occupy two tiles. Without this the second tile
+            // would be invisible to the obstacle set — it wouldn't be
+            // classified as a splitter body by the junction solver's
+            // forbidden pass, so SAT could try to stamp something there
+            // and the splitter-topology synthesis wouldn't see the tile
+            // as in-bbox+forbidden.
+            if crate::common::is_splitter(&ent.name) {
+                let (sx, sy) = crate::common::splitter_second_tile(ent);
+                hard.insert((sx, sy));
+            }
         }
         entities.extend(balancer_ents);
     }

@@ -272,7 +272,16 @@ impl CrossingEncoder {
         // entering these tiles are consumed by an external Permanent
         // entity, so the adjacency rule "neighbor of an outputting belt
         // must be non-empty" must be relaxed for this neighbor.
-        let interior_output_sinks: Vec<(u32, u32)> = zone
+        //
+        // The direction matters: a south-facing splitter body at (4,8)
+        // accepts flow only from the north (i.e. from a tile outputting
+        // South onto (4,8)); it doesn't accept items sideloaded from the
+        // east. Earlier encoders stored sinks as `(x, y)` and relaxed
+        // in all directions, which let SAT route `fast-transport-belt
+        // West` from (5,8) into the splitter body — not valid physics.
+        // Store the sink's direction alongside so adjacency only relaxes
+        // when `t.out_dir[d]` matches the sink's boundary direction.
+        let interior_output_sinks: Vec<(u32, u32, usize)> = zone
             .boundaries
             .iter()
             .filter(|b| !b.is_input && is_interior_boundary(b, zone))
@@ -280,7 +289,7 @@ impl CrossingEncoder {
                 let lx = (b.x - zone.x) as u32;
                 let ly = (b.y - zone.y) as u32;
                 if lx < self.width && ly < self.height {
-                    Some((lx, ly))
+                    Some((lx, ly, entity_dir_to_idx(b.direction)))
                 } else {
                     None
                 }
@@ -349,7 +358,7 @@ impl CrossingEncoder {
 
     // -- Adjacency: belt flowing dir d requires compatible neighbor ----------
 
-    fn encode_adjacency(&self, cnf: &mut Cnf, interior_output_sinks: &[(u32, u32)]) {
+    fn encode_adjacency(&self, cnf: &mut Cnf, interior_output_sinks: &[(u32, u32, usize)]) {
         for y in 0..self.height {
             for x in 0..self.width {
                 let t = self.tiles[self.idx(x, y)];
@@ -375,8 +384,12 @@ impl CrossingEncoder {
                     // by forced_empty); the directional/U-turn rules
                     // remain harmless because the empty tile satisfies
                     // every `n.is_*.negative()` literal trivially.
-                    let neighbor_is_sink =
-                        interior_output_sinks.contains(&(nx as u32, ny as u32));
+                    // Sink relaxation applies only when the tile's
+                    // output direction matches the sink boundary's
+                    // direction — a south-facing consumer accepts
+                    // only south-flowing input, not east-from-the-west.
+                    let neighbor_is_sink = interior_output_sinks
+                        .contains(&(nx as u32, ny as u32, d));
 
                     if !neighbor_is_sink {
                         // belt AND out_dir[d] -> neighbor not empty
@@ -805,6 +818,38 @@ impl CrossingEncoder {
             // belt or ug_out.
             cnf.add(&[t.is_belt.positive(), t.is_ug_out.positive()]);
             cnf.add(&[t.out_dir[d].positive()]);
+
+            // Sourcing: an OUT-boundary surface belt must actually be
+            // fed from upstream. Without this, SAT is free to place an
+            // isolated `fast-transport-belt East iron` at the boundary
+            // tile with no incoming flow, since the item-transport
+            // rules only *forward-propagate* items (A→B implies
+            // A.item=B.item) but never require B to have an A. Once a
+            // forced_item_bits clause pins `iron` at the OUT tile, the
+            // solver can leave the tile unsourced.
+            //
+            // Rule: if T is a belt outputting `d`, then the tile
+            // directly upstream (T − dir_delta(d)) must itself be a
+            // belt or UG-out outputting `d` toward T. UG-out boundaries
+            // are exempt — their source is the paired UG-in elsewhere,
+            // not the adjacent surface tile.
+            let (dx, dy) = dir_delta(d);
+            let sx = lx as i32 - dx;
+            let sy = ly as i32 - dy;
+            if self.in_bounds(sx, sy) {
+                let s = self.tiles[self.idx(sx as u32, sy as u32)];
+                // T.is_ug_out OR (S.is_belt OR S.is_ug_out)
+                cnf.add(&[
+                    t.is_ug_out.positive(),
+                    s.is_belt.positive(),
+                    s.is_ug_out.positive(),
+                ]);
+                // T.is_ug_out OR S.out_dir[d]
+                cnf.add(&[t.is_ug_out.positive(), s.out_dir[d].positive()]);
+            } else {
+                // No upstream tile exists on-grid → T must be UG-out.
+                cnf.add(&[t.is_ug_out.positive()]);
+            }
         }
 
         // Fix item bits on the boundary tile.
@@ -830,7 +875,7 @@ impl CrossingEncoder {
         b: &ZoneBoundary,
         lx: u32,
         ly: u32,
-        boundary_tiles: &mut std::collections::HashSet<(u32, u32)>,
+        _boundary_tiles: &mut std::collections::HashSet<(u32, u32)>,
     ) {
         let d = entity_dir_to_idx(b.direction);
         // Neighbor position depends on input/output:
@@ -849,10 +894,16 @@ impl CrossingEncoder {
         }
         let (nx, ny) = (nx as u32, ny as u32);
 
-        // Suppress the "non-boundary edge can't output off-grid" rule for
-        // the neighbor. If the neighbor sits on the grid edge, its
-        // boundary-like role here overrides that default.
-        boundary_tiles.insert((nx, ny));
+        // NOTE: we do NOT add the neighbor to `boundary_tiles` here.
+        // Doing so would suppress the "non-boundary edge can't output
+        // off-grid" rule for the neighbor in every direction, which
+        // lets SAT route items off the grid along an axis that has
+        // nothing to do with the boundary's flow direction (observed
+        // in tier2_electronic_circuit iter-2: iron-plate boundary at
+        // interior (1,9) S, but neighbor (1,10) got free rein to face
+        // West and leak iron off-grid into (0,10)). The neighbor is a
+        // normal interior tile; keeping it subject to the off-grid
+        // block forces SAT to route flow through other in-zone tiles.
 
         let n = self.tiles[self.idx(nx, ny)];
 
@@ -959,6 +1010,99 @@ impl CrossingEncoder {
             cnf.add(&[t.is_belt.negative()]);
             cnf.add(&[t.is_ug_in.negative()]);
             cnf.add(&[t.is_ug_out.negative()]);
+        }
+
+        // Belt sourcing: every surface belt tile inside the zone must
+        // have at least one in-bounds neighbor that physically outputs
+        // onto it (either a surface belt or a UG-out facing this tile).
+        // Without this clause, SAT is free to plant a belt that carries
+        // the required item but has no upstream — the item is pinned
+        // by `fix_item_bits` on the boundary, and the forward-only
+        // item-transport rules never check that the tile is actually
+        // *reached* by a flow path. The walker catches these phantom
+        // solutions with `BreakReason::Unreachable`, forcing the
+        // region-growth loop to waste iterations on bigger bboxes.
+        //
+        // Tiles that act as the zone's item sources are exempt:
+        //   - Perimeter IN boundary: the tile itself is the source.
+        //   - Interior IN boundary: the in-zone neighbour that receives
+        //     from the Permanent feeder is a source.
+        // UG-outs don't need a surface source — their underground pair
+        // provides items — so the constraint only fires on `is_belt`.
+        let mut source_tiles: std::collections::HashSet<(u32, u32)> =
+            std::collections::HashSet::new();
+        for b in &zone.boundaries {
+            if !b.is_input {
+                continue;
+            }
+            let lx = b.x - zone.x;
+            let ly = b.y - zone.y;
+            if lx < 0 || ly < 0 {
+                continue;
+            }
+            let (lxu, lyu) = (lx as u32, ly as u32);
+            if lxu >= self.width || lyu >= self.height {
+                continue;
+            }
+            if is_interior_boundary(b, zone) {
+                let d = entity_dir_to_idx(b.direction);
+                let (dx, dy) = dir_delta(d);
+                let nx = lx + dx;
+                let ny = ly + dy;
+                if self.in_bounds(nx, ny) {
+                    source_tiles.insert((nx as u32, ny as u32));
+                }
+            } else {
+                source_tiles.insert((lxu, lyu));
+            }
+        }
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if source_tiles.contains(&(x, y)) {
+                    continue;
+                }
+                let t = self.tiles[self.idx(x, y)];
+                // Collect M_d = (is_belt ∨ is_ug_out) ∧ out_dir[opp] terms
+                // for each in-bounds neighbor. In CNF, distribute the
+                // disjunction over the conjunctions by enumerating every
+                // way to pick one factor per neighbor.
+                let mut terms: Vec<(Lit, Lit, Lit)> = Vec::new();
+                for &d in &ALL_DIRS {
+                    let (dx, dy) = dir_delta(d);
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if !self.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let n = self.tiles[self.idx(nx as u32, ny as u32)];
+                    let opp = opposite_idx(d);
+                    terms.push((
+                        n.is_belt.positive(),
+                        n.is_ug_out.positive(),
+                        n.out_dir[opp].positive(),
+                    ));
+                }
+                if terms.is_empty() {
+                    // No in-bounds neighbors → tile cannot source a belt.
+                    cnf.add(&[t.is_belt.negative()]);
+                    continue;
+                }
+                let k = terms.len();
+                for combo in 0..(1 << k) {
+                    let mut lits: Vec<Lit> = vec![t.is_belt.negative()];
+                    for (i, &(p1, p2, q)) in terms.iter().enumerate() {
+                        if (combo >> i) & 1 == 1 {
+                            // Pick the out_dir singleton for neighbor i.
+                            lits.push(q);
+                        } else {
+                            // Pick the is_belt/is_ug_out disjunction for i.
+                            lits.push(p1);
+                            lits.push(p2);
+                        }
+                    }
+                    cnf.add(&lits);
+                }
+            }
         }
     }
 
