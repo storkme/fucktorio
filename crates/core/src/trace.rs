@@ -506,6 +506,11 @@ pub struct BoundarySnapshot {
     pub direction: String,
     pub item: String,
     pub is_input: bool,
+    /// True iff the strategy moved this boundary onto a Permanent
+    /// entity's tile inside the bbox (in `forced_empty`). The encoder
+    /// then propagates flow constraints to the in-zone neighbour rather
+    /// than placing an entity at this tile.
+    pub interior: bool,
     /// Spec key that produced this boundary. Useful for correlating a
     /// growth iteration with the specs' movement frontiers.
     pub spec_key: String,

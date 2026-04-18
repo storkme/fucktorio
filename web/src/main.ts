@@ -17,6 +17,9 @@ import type { SolverResult, LayoutResult, PlacedEntity, ValidationIssue } from "
 import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, type PhaseSnapshot } from "./renderer/traceOverlay";
 import { renderValidationOverlay } from "./renderer/validationOverlay";
 import { renderRegionOverlayDetailed, type RegionOverlayItem } from "./renderer/regionOverlay";
+import { renderJunctionZoneOverlay } from "./renderer/junctionZoneOverlay";
+import { groupJunctionClusters, type JunctionCluster } from "./ui/junctionTrace";
+import { createJunctionDebugger } from "./ui/junctionDebugger";
 import * as debugState from "./state/debugState";
 import { createOverlayPanel } from "./ui/overlayPanel";
 import { createIssuesDialog } from "./ui/issuesDialog";
@@ -104,6 +107,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     updateValidationOverlay();
   });
 
+  const junctionDebugger = createJunctionDebugger(container, viewport);
+
   setupSnapshotDropZone(container, (snap) => snapshotMode.load(snap));
 
   const entityLayer = new Container();
@@ -156,6 +161,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   const stepThrough = createStepThrough(container, {
     getLayout: () => lastLayout,
     isEnabled: () => debugCb.checked && stepCb.checked,
+    isModalBlocking: () => junctionDebugger.isOpen(),
     onPhaseChange: () => updateTraceOverlay(),
     onJumpToFailure: (fromX, fromY) => {
       const targetX = fromX * TILE_PX + TILE_PX / 2;
@@ -258,6 +264,8 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   let regionOverlayLayer: Container | null = null;
   let regionHitTest: ((wx: number, wy: number) => RegionOverlayItem | null) | null = null;
+  let junctionOverlayLayer: Container | null = null;
+  let junctionHitTest: ((wx: number, wy: number) => JunctionCluster | null) | null = null;
 
   function panToTile(x: number, y: number): void {
     viewport.moveCenter(x * TILE_PX + TILE_PX / 2, y * TILE_PX + TILE_PX / 2);
@@ -324,13 +332,33 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       regionOverlayLayer.destroy();
       regionOverlayLayer = null;
     }
+    if (junctionOverlayLayer) {
+      entityLayer.removeChild(junctionOverlayLayer);
+      junctionOverlayLayer.destroy();
+      junctionOverlayLayer = null;
+    }
     regionHitTest = null;
+    junctionHitTest = null;
     if (!debugCb.checked || !regionsCb?.checked || !lastLayout) return;
-    if (!lastLayout.regions || lastLayout.regions.length === 0) return;
-    const detailed = renderRegionOverlayDetailed(lastLayout);
-    regionOverlayLayer = detailed.layer;
-    regionHitTest = detailed.hitTest;
-    entityLayer.addChild(regionOverlayLayer);
+
+    if (lastLayout.regions && lastLayout.regions.length > 0) {
+      const detailed = renderRegionOverlayDetailed(lastLayout);
+      regionOverlayLayer = detailed.layer;
+      regionHitTest = detailed.hitTest;
+      entityLayer.addChild(regionOverlayLayer);
+    }
+
+    // Junction overlay: derived from trace events, drawn on top so it
+    // takes click priority over the generic region rectangles.
+    if (lastLayout.trace?.length) {
+      const clusters = groupJunctionClusters(lastLayout.trace as TraceEvent[]);
+      if (clusters.length > 0) {
+        const jo = renderJunctionZoneOverlay(clusters);
+        junctionOverlayLayer = jo.layer;
+        junctionHitTest = jo.hitTest;
+        entityLayer.addChild(junctionOverlayLayer);
+      }
+    }
   }
 
   // --- Item color legend (bottom-left) ---
@@ -382,6 +410,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       issuesDialog.setVisible(false);
       issuesDialog.populate([], false, false);
       sidebarCtrl?.updateValidation([], panToTile);
+      junctionDebugger.close();
     },
   });
 
@@ -405,13 +434,20 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     updateCoords(tx, ty);
   });
 
-  // Click-to-pan for a SAT region
+  // Click handling for SAT regions + junction zones. Junction click
+  // takes precedence: it opens the step-through modal. Non-junction
+  // regions fall through to the legacy pan-to-center behaviour.
   app.canvas.addEventListener("pointerdown", (e) => {
-    if (!regionHitTest || !regionsCb.checked) return;
+    if (!regionsCb.checked) return;
     if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     const rect = app.canvas.getBoundingClientRect();
     const world = viewport.toWorld(e.clientX - rect.left, e.clientY - rect.top);
-    const it = regionHitTest(world.x, world.y);
+    const jc = junctionHitTest?.(world.x, world.y) ?? null;
+    if (jc) {
+      junctionDebugger.open(jc);
+      return;
+    }
+    const it = regionHitTest?.(world.x, world.y) ?? null;
     if (it) {
       const cx = (it.region.x + it.region.width / 2) * TILE_PX;
       const cy = (it.region.y + it.region.height / 2) * TILE_PX;

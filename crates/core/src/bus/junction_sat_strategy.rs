@@ -347,6 +347,7 @@ impl JunctionStrategy for SatStrategy {
                     direction: dir_label(b.direction),
                     item: b.item.clone(),
                     is_input: b.is_input,
+                    interior: b.interior,
                     spec_key: String::new(),
                     external_feeder: feeder,
                 }

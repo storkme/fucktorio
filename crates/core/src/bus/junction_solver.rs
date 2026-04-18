@@ -1033,6 +1033,7 @@ fn junction_boundaries_to_snapshots(
             direction: dir_label(sc.entry.direction),
             item: sc.item.clone(),
             is_input: true,
+            interior: false,
             spec_key: key.clone(),
             external_feeder: entry_feeder,
         });
@@ -1042,6 +1043,7 @@ fn junction_boundaries_to_snapshots(
             direction: dir_label(sc.exit.direction),
             item: sc.item.clone(),
             is_input: false,
+            interior: false,
             spec_key: key,
             external_feeder: None,
         });

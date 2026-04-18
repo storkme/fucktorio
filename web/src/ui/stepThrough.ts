@@ -10,6 +10,10 @@ export interface StepThroughDeps {
   onPhaseChange(): void;
   /** Called when the user clicks the failure badge; main.ts pans + pulses the marker. */
   onJumpToFailure(fromX: number, fromY: number): void;
+  /** Optional: junction debugger modal open-state. When it's open, the
+   * global ←/→ step-through keyboard shortcuts are suppressed so the
+   * modal can drive iteration stepping instead. */
+  isModalBlocking?: () => boolean;
 }
 
 export interface StepThroughControls {
@@ -120,6 +124,7 @@ export function createStepThrough(
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     if (bar.style.display === "none") return;
+    if (deps.isModalBlocking?.()) return;
 
     if (e.key === "ArrowLeft") {
       e.preventDefault();
