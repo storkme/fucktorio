@@ -263,6 +263,17 @@ function buildLegend(): HTMLDivElement {
   return l;
 }
 
+/**
+ * Prefer the SAT-invocation's boundary list when SAT ran this iter —
+ * those reflect the strategy-level modifications (interior-boundary
+ * detection, physical-feeder direction overrides) that SAT actually
+ * reasoned about. Fall back to the raw growth-iteration boundaries
+ * when no SAT strategy fired.
+ */
+function effectiveBoundaries(it: JunctionIteration): BoundarySnapshot[] {
+  return it.sat?.boundaries ?? it.boundaries;
+}
+
 function renderMinimap(
   el: HTMLDivElement,
   cluster: JunctionCluster,
@@ -286,7 +297,7 @@ function renderMinimap(
   const tilesIn = new Set(it.tiles.map(([x, y]) => `${x},${y}`));
   const forbiddenIn = new Set(it.forbidden.map(([x, y]) => `${x},${y}`));
   const boundaryByTile = new Map<string, BoundarySnapshot>();
-  for (const b of it.boundaries) boundaryByTile.set(`${b.x},${b.y}`, b);
+  for (const b of effectiveBoundaries(it)) boundaryByTile.set(`${b.x},${b.y}`, b);
 
   const attach = (el as unknown as { __attachPan?: (c: HTMLDivElement, tx: number, ty: number) => void })
     .__attachPan;
@@ -460,22 +471,25 @@ function renderParticipating(
 }
 
 function renderBoundaries(it: JunctionIteration): HTMLDetailsElement {
-  const { details, bodyEl } = section("Boundaries");
-  if (it.boundaries.length === 0) {
+  const boundaries = effectiveBoundaries(it);
+  const titleSuffix = it.sat ? " (as fed to SAT)" : " (spec perimeter)";
+  const { details, bodyEl } = section(`Boundaries${titleSuffix}`);
+  if (boundaries.length === 0) {
     const row = document.createElement("div");
     row.className = "jd-row jd-row--dim";
     row.textContent = "(none)";
     bodyEl.appendChild(row);
     return details;
   }
-  for (const b of it.boundaries) {
+  for (const b of boundaries) {
     const row = document.createElement("div");
     row.className = "jd-row";
     const tag = b.is_input ? "IN " : "OUT";
     const interior = b.interior ? " (interior)" : "";
     const feeder = b.external_feeder ? ` ← ${formatFeeder(b.external_feeder)}` : "";
     row.style.color = b.is_input ? "#9f9" : "#f99";
-    row.textContent = `${tag} (${b.x},${b.y}) ${dirGlyph(b.direction)} ${b.direction} · ${b.item}${interior} · ${b.spec_key}${feeder}`;
+    const specTag = b.spec_key ? ` · ${b.spec_key}` : "";
+    row.textContent = `${tag} (${b.x},${b.y}) ${dirGlyph(b.direction)} ${b.direction} · ${b.item}${interior}${specTag}${feeder}`;
     bodyEl.appendChild(row);
   }
   return details;
