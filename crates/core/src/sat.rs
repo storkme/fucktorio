@@ -46,6 +46,20 @@ pub struct ZoneBoundary {
     pub item: String,
     /// True if the belt is entering the zone, false if leaving.
     pub is_input: bool,
+    /// True iff the strategy intentionally placed this boundary on a
+    /// Permanent entity's tile inside the bbox (i.e. the boundary tile
+    /// is in `forced_empty` AND the strategy verified the Permanent is
+    /// a legitimate item-matched flow source/sink). When true, the
+    /// encoder propagates flow constraints to the in-zone neighbor
+    /// instead of trying to place an entity at the boundary tile.
+    ///
+    /// Defaults to `false`. Only the SAT strategy's interior-detection
+    /// helpers (interior_input_boundary / interior_output_boundary in
+    /// junction_sat_strategy.rs) set this to `true`. A boundary tile
+    /// that happens to land in `forced_empty` *without* the flag is
+    /// treated as perimeter — and SAT will return UNSAT, forcing the
+    /// region to grow.
+    pub interior: bool,
 }
 
 /// Result of solving a crossing zone.
@@ -114,11 +128,14 @@ fn opposite_idx(d: usize) -> usize {
     }
 }
 
-/// A `ZoneBoundary` is "interior" when its tile is in `forced_empty` — i.e.
-/// the boundary represents flow entering or exiting at a Permanent entity's
-/// in-bbox tile, with no SAT entity placed there.
-fn is_interior_boundary(b: &ZoneBoundary, zone: &CrossingZone) -> bool {
-    zone.forced_empty.contains(&(b.x, b.y))
+/// A `ZoneBoundary` is "interior" when the strategy explicitly marked it
+/// so. Boundaries that *coincidentally* land on a `forced_empty` tile
+/// (e.g. a perimeter exit that happens to fall on an unrelated Permanent
+/// entity that doesn't carry the spec's item) are NOT treated as
+/// interior — those go through the perimeter arm and are correctly
+/// rejected as UNSAT, forcing the region to grow.
+fn is_interior_boundary(b: &ZoneBoundary, _zone: &CrossingZone) -> bool {
+    b.interior
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1130,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 // Trunk out (bottom)
                 ZoneBoundary {
@@ -1121,6 +1139,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
                 // Tap-off in (left)
                 ZoneBoundary {
@@ -1129,6 +1148,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 // Tap-off out (right)
                 ZoneBoundary {
@@ -1137,6 +1157,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![],
@@ -1186,6 +1207,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 12,
@@ -1193,6 +1215,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 10,
@@ -1200,6 +1223,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 14,
@@ -1207,6 +1231,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![],
@@ -1243,6 +1268,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 0,
@@ -1250,6 +1276,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
             ],
             forced_empty: vec![],
@@ -1286,6 +1313,7 @@ mod tests {
                 direction: EntityDirection::South,
                 item: item.clone(),
                 is_input: true,
+                interior: false,
             });
             boundaries.push(ZoneBoundary {
                 x: trunk_x,
@@ -1293,6 +1321,7 @@ mod tests {
                 direction: EntityDirection::South,
                 item,
                 is_input: false,
+                interior: false,
             });
         }
 
@@ -1305,6 +1334,7 @@ mod tests {
                 direction: EntityDirection::East,
                 item: item.clone(),
                 is_input: true,
+                interior: false,
             });
             boundaries.push(ZoneBoundary {
                 x: (width - 1) as i32,
@@ -1312,6 +1342,7 @@ mod tests {
                 direction: EntityDirection::East,
                 item,
                 is_input: false,
+                interior: false,
             });
         }
 
@@ -1725,6 +1756,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "copper-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 // IN2: copper-cable enters right column y=7, flowing West into grid
                 ZoneBoundary {
@@ -1733,6 +1765,7 @@ mod tests {
                     direction: EntityDirection::West,
                     item: "copper-cable".into(),
                     is_input: true,
+                    interior: false,
                 },
                 // OUT1: copper-plate exits right column y=8, flowing East
                 ZoneBoundary {
@@ -1741,6 +1774,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "copper-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
                 // OUT2: copper-cable exits bottom row x=4, flowing South
                 ZoneBoundary {
@@ -1749,6 +1783,7 @@ mod tests {
                     direction: EntityDirection::South,
                     item: "copper-cable".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![],
@@ -1832,36 +1867,42 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 5, y: 10,
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 3, y: 9,
                     direction: EntityDirection::South,
                     item: "copper-cable".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 3, y: 12,
                     direction: EntityDirection::South,
                     item: "copper-cable".into(),
                     is_input: false,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 4, y: 9,
                     direction: EntityDirection::South,
                     item: "copper-cable".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 5, y: 11,
                     direction: EntityDirection::East,
                     item: "copper-cable".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![],
@@ -1957,6 +1998,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: true,
                 },
                 ZoneBoundary {
                     x: 2,
@@ -1964,6 +2006,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![(0, 0)],
@@ -2008,6 +2051,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: false,
                 },
                 ZoneBoundary {
                     x: 2,
@@ -2015,6 +2059,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: true,
                 },
             ],
             forced_empty: vec![(2, 1)],
@@ -2053,6 +2098,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: true,
                 },
                 ZoneBoundary {
                     x: 2,
@@ -2060,6 +2106,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: true,
                 },
             ],
             forced_empty: vec![(0, 0), (2, 0)],
@@ -2096,6 +2143,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: true,
+                    interior: true,
                 },
                 ZoneBoundary {
                     x: 2,
@@ -2103,6 +2151,7 @@ mod tests {
                     direction: EntityDirection::East,
                     item: "iron-plate".into(),
                     is_input: false,
+                    interior: false,
                 },
             ],
             forced_empty: vec![(0, 0), (1, 0)],

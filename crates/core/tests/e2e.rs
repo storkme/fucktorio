@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "After interior-boundary + reachability-walker fixes: SAT iter 1 defers, iter 2 SAT 'satisfies' a bogus solution (encoder's auto-interior-detection fires for the iron-plate OUT at (4,10) — a forbidden tile sitting on a copper-cable trunk, not a legitimate iron consumer) and the reachability walker correctly rejects it. Iter 3+ go UNSAT because the copper-cable spec's trunk path is fully Permanent — SAT has no routable tiles for it. Needs (a) cluster-participation rewrite to drop fully-Permanent specs from the participating list, and (b) tighten the encoder's interior-arm so it only fires for boundaries the strategy deliberately marked interior (not just any forced_empty boundary tile)."]
+#[ignore = "Iron-plate IN moves to splitter (2,9) interior + copper IN to splitter (3,9) interior. SAT iter 1 defers, iter 2 satisfies but the reachability walker rejects (SAT routes both iron and copper UG corridors through (3,10) but the result doesn't reach iron's exit at (5,10) in the shadow's belt graph — likely because SAT's UG model allows physically-impossible crossing UG corridors that don't actually carry items in the validated layout). Iter 3+ UNSAT because copper-cable's trunk path is fully Permanent — no SAT-routable tiles. Needs (a) cluster-participation rewrite to drop fully-Permanent specs, and (b) investigate the iter 2 SAT solution's iron-plate flow (likely a missing 'no two UG corridors crossing at one tile' encoder clause)."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]

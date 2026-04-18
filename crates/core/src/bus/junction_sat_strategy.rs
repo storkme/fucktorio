@@ -274,46 +274,50 @@ impl JunctionStrategy for SatStrategy {
         let mut boundaries: Vec<ZoneBoundary> =
             Vec::with_capacity(ctx.junction.specs.len() * 2);
         for spec in &ctx.junction.specs {
-            let (entry_x, entry_y, entry_direction) = match interior_input_boundary(
-                (spec.entry.x, spec.entry.y),
-                &ctx.junction.bbox,
-                &ctx.junction.forbidden,
-                ctx.placed_entities,
-            ) {
-                Some(((ix, iy), dir)) => (ix, iy, dir),
-                None => {
-                    let dir = physical_feeder_direction(
-                        (spec.entry.x, spec.entry.y),
-                        ctx.placed_entities,
-                    )
-                    .unwrap_or(spec.entry.direction);
-                    (spec.entry.x, spec.entry.y, dir)
-                }
-            };
+            let (entry_x, entry_y, entry_direction, entry_interior) =
+                match interior_input_boundary(
+                    (spec.entry.x, spec.entry.y),
+                    &ctx.junction.bbox,
+                    &ctx.junction.forbidden,
+                    ctx.placed_entities,
+                ) {
+                    Some(((ix, iy), dir)) => (ix, iy, dir, true),
+                    None => {
+                        let dir = physical_feeder_direction(
+                            (spec.entry.x, spec.entry.y),
+                            ctx.placed_entities,
+                        )
+                        .unwrap_or(spec.entry.direction);
+                        (spec.entry.x, spec.entry.y, dir, false)
+                    }
+                };
             boundaries.push(ZoneBoundary {
                 x: entry_x,
                 y: entry_y,
                 direction: entry_direction,
                 item: spec.item.clone(),
                 is_input: true,
+                interior: entry_interior,
             });
 
-            let (exit_x, exit_y, exit_direction) = match interior_output_boundary(
-                (spec.exit.x, spec.exit.y),
-                spec.exit.direction,
-                &ctx.junction.bbox,
-                &ctx.junction.forbidden,
-                ctx.placed_entities,
-            ) {
-                Some(((ix, iy), dir)) => (ix, iy, dir),
-                None => (spec.exit.x, spec.exit.y, spec.exit.direction),
-            };
+            let (exit_x, exit_y, exit_direction, exit_interior) =
+                match interior_output_boundary(
+                    (spec.exit.x, spec.exit.y),
+                    spec.exit.direction,
+                    &ctx.junction.bbox,
+                    &ctx.junction.forbidden,
+                    ctx.placed_entities,
+                ) {
+                    Some(((ix, iy), dir)) => (ix, iy, dir, true),
+                    None => (spec.exit.x, spec.exit.y, spec.exit.direction, false),
+                };
             boundaries.push(ZoneBoundary {
                 x: exit_x,
                 y: exit_y,
                 direction: exit_direction,
                 item: spec.item.clone(),
                 is_input: false,
+                interior: exit_interior,
             });
         }
 
@@ -620,8 +624,8 @@ mod tests {
             make_belt(1, 1, EntityDirection::East, "iron-plate"), // orphan
         ];
         let boundaries = vec![
-            ZoneBoundary { x: 0, y: 0, direction: EntityDirection::East, item: "iron-plate".into(), is_input: true },
-            ZoneBoundary { x: 2, y: 0, direction: EntityDirection::East, item: "iron-plate".into(), is_input: false },
+            ZoneBoundary { x: 0, y: 0, direction: EntityDirection::East, item: "iron-plate".into(), is_input: true, interior: false },
+            ZoneBoundary { x: 2, y: 0, direction: EntityDirection::East, item: "iron-plate".into(), is_input: false, interior: false },
         ];
         let result = prune_dangling_sat_entities(entities, &boundaries, 4, 0, 0);
         assert_eq!(result.len(), 3, "orphan at (1,1) should be pruned");
@@ -636,8 +640,8 @@ mod tests {
             make_belt(1, 0, EntityDirection::East, "copper-plate"),
         ];
         let boundaries = vec![
-            ZoneBoundary { x: 0, y: 0, direction: EntityDirection::East, item: "copper-plate".into(), is_input: true },
-            ZoneBoundary { x: 1, y: 0, direction: EntityDirection::East, item: "copper-plate".into(), is_input: false },
+            ZoneBoundary { x: 0, y: 0, direction: EntityDirection::East, item: "copper-plate".into(), is_input: true, interior: false },
+            ZoneBoundary { x: 1, y: 0, direction: EntityDirection::East, item: "copper-plate".into(), is_input: false, interior: false },
         ];
         let result = prune_dangling_sat_entities(entities, &boundaries, 4, 0, 0);
         assert_eq!(result.len(), 2, "full path should be untouched");
