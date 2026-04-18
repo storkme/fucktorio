@@ -1396,28 +1396,42 @@ pub fn route_bus_ghost(
     let strategies: [&dyn JunctionStrategy; 5] =
         [&perp_strategy, &sat_surface, &sat_1ug, &sat_2ug, &sat_full];
 
-    for &tile in &crossing_set {
-        if corridor_handled.contains(&tile) {
+    // Group adjacent crossings that share a spec into a single cluster
+    // and solve each cluster jointly. A single crossing is still a
+    // valid 1-tile cluster. Clustering prevents the old failure mode
+    // where N identical adjacent crossings each grew a 9×9 zone
+    // independently, overlapped heavily, and corrupted one another.
+    let clusters = cluster_adjacent_crossings(&crossing_set, &routed_paths);
+
+    for cluster in &clusters {
+        if cluster.iter().any(|t| corridor_handled.contains(t)) {
             continue;
         }
-        // Collect keys of every spec whose path passes through this
-        // tile. classify_crossing gates on "exactly two specs with a
-        // valid direction at the tile" — if that fails, the crossing
-        // is degenerate and we skip to unresolved.
-        if classify_crossing(tile, &routed_paths, &specs, &spec_items, &spec_belt_tiers).is_none() {
-            remaining_crossings.insert(tile);
+        // classify_crossing gates on "exactly two specs with a valid
+        // direction at the tile" — require it of every cluster member.
+        // If any member is degenerate the whole cluster defers to
+        // unresolved, matching today's per-tile conservatism.
+        if cluster.iter().any(|&t| {
+            classify_crossing(t, &routed_paths, &specs, &spec_items, &spec_belt_tiers)
+                .is_none()
+        }) {
+            for &t in cluster {
+                remaining_crossings.insert(t);
+            }
             continue;
         }
-        // Scan routed_paths directly so synthetic trunk keys (injected
+        // Union of spec keys across every cluster tile. Scan
+        // routed_paths directly so synthetic trunk keys (injected
         // above) are included alongside regular BeltSpec keys.
+        let cluster_tiles: FxHashSet<(i32, i32)> = cluster.iter().copied().collect();
         let keys_at_tile: Vec<&str> = routed_paths
             .iter()
-            .filter(|(_, path)| path.contains(&tile))
+            .filter(|(_, path)| path.iter().any(|t| cluster_tiles.contains(t)))
             .map(|(key, _)| key.as_str())
             .collect();
 
         let Some(sol) = junction_solver::solve_crossing(
-            tile,
+            cluster.as_slice(),
             &keys_at_tile,
             &routed_paths,
             &hard,
@@ -1430,9 +1444,17 @@ pub fn route_bus_ghost(
             &strategies,
             &crossing_set,
         ) else {
-            remaining_crossings.insert(tile);
+            for &t in cluster {
+                remaining_crossings.insert(t);
+            }
             continue;
         };
+
+        // Every cluster member is now handled, regardless of whether
+        // it sits inside the solution footprint.
+        for &t in cluster {
+            corridor_handled.insert(t);
+        }
 
         let footprint = sol.footprint;
         // Mark any other crossing tiles inside this zone's footprint as
@@ -1731,6 +1753,80 @@ fn is_perpendicular(a: EntityDirection, b: EntityDirection) -> bool {
 
 fn is_horizontal(d: EntityDirection) -> bool {
     matches!(d, EntityDirection::East | EntityDirection::West)
+}
+
+/// Group crossing tiles into clusters. Two tiles belong to the same
+/// cluster iff they are 4-connected neighbours AND their spec-key sets
+/// (derived from `routed_paths`) intersect. The shared-spec gate
+/// prevents merging unrelated crossings that happen to be adjacent.
+///
+/// Deterministic output: each cluster is sorted `(y, x)` internally,
+/// and the outer Vec is sorted by its first tile.
+fn cluster_adjacent_crossings(
+    crossing_set: &FxHashSet<(i32, i32)>,
+    routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
+) -> Vec<Vec<(i32, i32)>> {
+    if crossing_set.is_empty() {
+        return Vec::new();
+    }
+    let tiles: Vec<(i32, i32)> = {
+        let mut v: Vec<(i32, i32)> = crossing_set.iter().copied().collect();
+        v.sort_unstable_by_key(|&(x, y)| (y, x));
+        v
+    };
+    let index_of: FxHashMap<(i32, i32), usize> = tiles
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| (t, i))
+        .collect();
+
+    // tile → set of spec keys whose path passes through it.
+    let mut tile_specs: Vec<FxHashSet<&str>> =
+        vec![FxHashSet::default(); tiles.len()];
+    for (key, path) in routed_paths {
+        for t in path {
+            if let Some(&i) = index_of.get(t) {
+                tile_specs[i].insert(key.as_str());
+            }
+        }
+    }
+
+    // Union-find with path compression.
+    let mut parent: Vec<usize> = (0..tiles.len()).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for (i, &(x, y)) in tiles.iter().enumerate() {
+        for &(dx, dy) in &[(1, 0), (0, 1)] {
+            let Some(&j) = index_of.get(&(x + dx, y + dy)) else {
+                continue;
+            };
+            if tile_specs[i].is_disjoint(&tile_specs[j]) {
+                continue;
+            }
+            let ri = find(&mut parent, i);
+            let rj = find(&mut parent, j);
+            if ri != rj {
+                parent[ri] = rj;
+            }
+        }
+    }
+
+    let mut groups: FxHashMap<usize, Vec<(i32, i32)>> = FxHashMap::default();
+    for (i, &tile) in tiles.iter().enumerate() {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(tile);
+    }
+    let mut clusters: Vec<Vec<(i32, i32)>> = groups.into_values().collect();
+    for c in &mut clusters {
+        c.sort_unstable_by_key(|&(x, y)| (y, x));
+    }
+    clusters.sort_unstable_by_key(|c| (c[0].1, c[0].0));
+    clusters
 }
 
 /// Try to classify a single crossing tile as a 2-path crossing.
@@ -2304,4 +2400,101 @@ fn is_belt_like(name: &str) -> bool {
             | "fast-splitter"
             | "express-splitter"
     )
+}
+
+#[cfg(test)]
+mod cluster_adjacent_crossings_tests {
+    use super::*;
+
+    fn paths(entries: &[(&str, &[(i32, i32)])]) -> FxHashMap<String, Vec<(i32, i32)>> {
+        entries
+            .iter()
+            .map(|(k, ts)| ((*k).to_string(), ts.to_vec()))
+            .collect()
+    }
+
+    fn crossings(tiles: &[(i32, i32)]) -> FxHashSet<(i32, i32)> {
+        tiles.iter().copied().collect()
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let cs = FxHashSet::default();
+        let rp = FxHashMap::default();
+        assert!(cluster_adjacent_crossings(&cs, &rp).is_empty());
+    }
+
+    #[test]
+    fn single_tile_becomes_single_cluster() {
+        let cs = crossings(&[(5, 5)]);
+        let rp = paths(&[("tap:iron-plate", &[(5, 5)])]);
+        let clusters = cluster_adjacent_crossings(&cs, &rp);
+        assert_eq!(clusters, vec![vec![(5, 5)]]);
+    }
+
+    #[test]
+    fn adjacent_sharing_spec_merge() {
+        // Five adjacent crossings on row 90, all sharing the same tap
+        // (iron-plate row 90) plus individual trunk columns.
+        let cs = crossings(&[(13, 90), (14, 90), (15, 90), (16, 90), (17, 90)]);
+        let rp = paths(&[
+            ("tap:iron-plate", &[
+                (13, 90), (14, 90), (15, 90), (16, 90), (17, 90),
+            ]),
+            ("trunk:copper-cable:13", &[(13, 89), (13, 90), (13, 91)]),
+            ("trunk:copper-cable:14", &[(14, 89), (14, 90), (14, 91)]),
+            ("trunk:copper-cable:15", &[(15, 89), (15, 90), (15, 91)]),
+            ("trunk:copper-cable:16", &[(16, 89), (16, 90), (16, 91)]),
+            ("trunk:copper-cable:17", &[(17, 89), (17, 90), (17, 91)]),
+        ]);
+        let clusters = cluster_adjacent_crossings(&cs, &rp);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(
+            clusters[0],
+            vec![(13, 90), (14, 90), (15, 90), (16, 90), (17, 90)]
+        );
+    }
+
+    #[test]
+    fn adjacent_without_shared_spec_stay_separate() {
+        // Two 4-adjacent crossings but with DISJOINT spec sets — must
+        // NOT merge. Different two-item crossings that happen to touch.
+        let cs = crossings(&[(10, 10), (11, 10)]);
+        let rp = paths(&[
+            ("tap:a", &[(10, 10)]),
+            ("trunk:b", &[(10, 9), (10, 10), (10, 11)]),
+            ("tap:c", &[(11, 10)]),
+            ("trunk:d", &[(11, 9), (11, 10), (11, 11)]),
+        ]);
+        let clusters = cluster_adjacent_crossings(&cs, &rp);
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters, vec![vec![(10, 10)], vec![(11, 10)]]);
+    }
+
+    #[test]
+    fn non_adjacent_sharing_spec_stay_separate() {
+        // Two crossings that share a spec (a tap running across both)
+        // but are NOT 4-adjacent — must NOT merge. 4-connectivity is
+        // the conservative requirement.
+        let cs = crossings(&[(5, 5), (8, 5)]);
+        let rp = paths(&[
+            ("tap:iron-plate", &[(5, 5), (6, 5), (7, 5), (8, 5)]),
+            ("trunk:a", &[(5, 4), (5, 5), (5, 6)]),
+            ("trunk:b", &[(8, 4), (8, 5), (8, 6)]),
+        ]);
+        let clusters = cluster_adjacent_crossings(&cs, &rp);
+        assert_eq!(clusters.len(), 2);
+    }
+
+    #[test]
+    fn diagonal_adjacency_does_not_merge() {
+        // 8-connected neighbours that are NOT 4-connected must stay
+        // separate.
+        let cs = crossings(&[(5, 5), (6, 6)]);
+        let rp = paths(&[
+            ("tap:x", &[(5, 5), (6, 6)]),
+        ]);
+        let clusters = cluster_adjacent_crossings(&cs, &rp);
+        assert_eq!(clusters.len(), 2);
+    }
 }

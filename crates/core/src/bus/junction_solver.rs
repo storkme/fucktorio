@@ -86,40 +86,59 @@ pub struct GrowingRegion {
 }
 
 impl GrowingRegion {
-    /// Seed the region with one tile and a list of specs crossing it.
-    /// Each spec's frontier starts collapsed at the index of `initial_tile`
-    /// in that spec's routed path. Specs whose path doesn't contain the
-    /// tile are silently skipped.
-    pub fn from_crossing(
-        initial_tile: (i32, i32),
+    /// Seed the region from a cluster of adjacent crossing tiles. The
+    /// initial bbox is the min-rect containing every seed (filled into
+    /// `tiles` to match `expand_bbox`'s rectangle invariant). Each
+    /// spec's frontier is seeded at the first tile in its path that
+    /// falls inside the initial bbox; specs whose path doesn't enter
+    /// the bbox are silently skipped.
+    ///
+    /// `seeds` must be non-empty. `initial_tile` is set to `seeds[0]`
+    /// for trace-event and `all_crossings` deferred-exit purposes —
+    /// cluster members other than the first are still recognized via
+    /// `all_crossings` lookups, which don't require the seed to be the
+    /// representative tile.
+    pub fn from_crossings(
+        seeds: &[(i32, i32)],
         initial_specs: &[&str],
         routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
         hard_obstacles: &FxHashSet<(i32, i32)>,
         strict_obstacles: &FxHashSet<(i32, i32)>,
         placed_entities: &[PlacedEntity],
     ) -> Self {
+        assert!(!seeds.is_empty(), "from_crossings: seeds must be non-empty");
+        let min_x = seeds.iter().map(|(x, _)| *x).min().unwrap();
+        let max_x = seeds.iter().map(|(x, _)| *x).max().unwrap();
+        let min_y = seeds.iter().map(|(_, y)| *y).min().unwrap();
+        let max_y = seeds.iter().map(|(_, y)| *y).max().unwrap();
+        let bbox = Rect {
+            x: min_x,
+            y: min_y,
+            w: (max_x - min_x + 1) as u32,
+            h: (max_y - min_y + 1) as u32,
+        };
+
         let mut tiles = FxHashSet::default();
-        tiles.insert(initial_tile);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                tiles.insert((x, y));
+            }
+        }
+
         let mut frontiers = FxHashMap::default();
         let mut participating = Vec::new();
         for &key in initial_specs {
             let Some(path) = routed_paths.get(key) else {
                 continue;
             };
-            let Some(idx) = path.iter().position(|&t| t == initial_tile) else {
+            let Some(idx) = path.iter().position(|&t| bbox.contains(t.0, t.1)) else {
                 continue;
             };
             frontiers.insert(key.to_string(), (idx, idx));
             participating.push(key.to_string());
         }
-        let bbox = Rect {
-            x: initial_tile.0,
-            y: initial_tile.1,
-            w: 1,
-            h: 1,
-        };
         let mut region = Self {
-            initial_tile,
+            initial_tile: seeds[0],
             participating,
             encountered: Vec::new(),
             tiles,
@@ -887,13 +906,18 @@ pub trait JunctionStrategy {
     fn try_solve(&self, ctx: &JunctionStrategyContext) -> Option<JunctionSolution>;
 }
 
-/// Outer loop. Builds a `GrowingRegion` from the initial crossing tile
-/// and iterates: try every strategy on the current region, grow, repeat.
-/// Returns the first successful solution, or `None` if every strategy
-/// failed within the growth budget.
+/// Outer loop. Builds a `GrowingRegion` from a cluster of one or more
+/// crossing tiles and iterates: try every strategy on the current
+/// region, grow, repeat. Returns the first successful solution, or
+/// `None` if every strategy failed within the growth budget.
+///
+/// `seeds` must be non-empty. The first seed is used as the
+/// representative tile for trace events and the `all_crossings`
+/// deferred-exit check; other seeds are included in the initial
+/// bbox but do not receive special treatment.
 #[allow(clippy::too_many_arguments)]
 pub fn solve_crossing(
-    initial_tile: (i32, i32),
+    seeds: &[(i32, i32)],
     initial_specs: &[&str],
     routed_paths: &FxHashMap<String, Vec<(i32, i32)>>,
     hard_obstacles: &FxHashSet<(i32, i32)>,
@@ -910,8 +934,10 @@ pub fn solve_crossing(
     // all consecutive crossings rather than stopping mid-run.
     all_crossings: &FxHashSet<(i32, i32)>,
 ) -> Option<JunctionSolution> {
-    let mut region = GrowingRegion::from_crossing(
-        initial_tile,
+    assert!(!seeds.is_empty(), "solve_crossing: seeds must be non-empty");
+    let initial_tile = seeds[0];
+    let mut region = GrowingRegion::from_crossings(
+        seeds,
         initial_specs,
         routed_paths,
         hard_obstacles,
