@@ -161,34 +161,39 @@ pub fn walk_affected(paths: &[AffectedPath<'_>], shadow: &ShadowView) -> WalkRes
 }
 
 fn walk_single(path: &AffectedPath<'_>, shadow: &ShadowView) -> Result<(), WalkBreak> {
-    let Some(&start) = path.tiles.first() else {
+    let Some(&path_start) = path.tiles.first() else {
         return Ok(());
     };
     let Some(&end) = path.tiles.last() else {
         return Ok(());
     };
 
-    // Entry must exist and carry the right item. (Reachability BFS
-    // alone wouldn't distinguish "entry empty" from "exit unreachable",
-    // and the entry tile is always SAT/router-owned so missing/wrong
-    // there is genuinely the strategy's fault.)
-    let Some(entry) = shadow.get(start) else {
+    // Find the first tile on the path whose shadow entity carries the
+    // right item. SAT may have legitimately reassigned the path's
+    // leading tile(s) — e.g. replaced the trunk's first surface belt
+    // with an iron-plate UG input because copper now tunnels past
+    // this point via an earlier UG pair. That's fine as long as the
+    // item reaches the path somewhere and flows through to `end`.
+    //
+    // If the item never appears anywhere on the path, the SAT solution
+    // really does drop it — that's MissingEntity at the original start.
+    let start = path
+        .tiles
+        .iter()
+        .copied()
+        .find(|&t| {
+            shadow
+                .get(t)
+                .map(|e| e.carries.as_deref() == Some(path.item))
+                .unwrap_or(false)
+        });
+    let Some(start) = start else {
         return Err(WalkBreak {
             segment_id: path.segment_id.to_string(),
-            tile: start,
+            tile: path_start,
             reason: BreakReason::MissingEntity,
         });
     };
-    if entry.carries.as_deref() != Some(path.item) {
-        return Err(WalkBreak {
-            segment_id: path.segment_id.to_string(),
-            tile: start,
-            reason: BreakReason::ItemMismatch {
-                expected: path.item.into(),
-                actual: entry.carries.clone(),
-            },
-        });
-    }
 
     if start == end {
         return Ok(());
@@ -631,6 +636,79 @@ mod tests {
             result.is_passed(),
             "SAT detour around obstacle should pass reachability, got {result:?}"
         );
+    }
+
+    #[test]
+    fn passes_when_path_start_is_sat_reassigned() {
+        // The junction (3,18) iter-1 variant-east case: trunk:copper-cable
+        // starts at (3,18), but SAT put an iron-plate UG-in there because
+        // copper now tunnels from (3,17) UG-in → (3,19) UG-out, bridging
+        // past (3,18). The walker used to reject at (3,18) because the
+        // entry-tile item-match ran before BFS. With the fix, it walks
+        // forward to the first copper tile on the path and BFSes from
+        // there.
+        let existing = vec![
+            // Downstream of the zone — still copper surface belts.
+            belt(3, 20, EntityDirection::South, "copper-cable"),
+            belt(3, 21, EntityDirection::South, "copper-cable"),
+        ];
+        let released: FxHashSet<(i32, i32)> = [(3, 17), (3, 18), (3, 19)].into_iter().collect();
+        let proposed = vec![
+            ug_in(3, 17, EntityDirection::South, "copper-cable"),
+            ug_in(3, 18, EntityDirection::East, "iron-plate"),
+            ug_out(3, 19, EntityDirection::South, "copper-cable"),
+        ];
+        let shadow = ShadowView::build(&existing, &released, &proposed);
+
+        // trunk:copper-cable:3 path as recorded by the ghost router.
+        // First tile is (3,18) — now iron-plate — but copper is still
+        // reachable via the UG corridor at (3,17) → (3,19).
+        let tiles = vec![(3, 18), (3, 19), (3, 20), (3, 21)];
+        let copper = AffectedPath {
+            segment_id: "trunk:copper-cable:3",
+            tiles: &tiles,
+            item: "copper-cable",
+        };
+        let result = walk_affected(&[copper], &shadow);
+        assert!(
+            result.is_passed(),
+            "walker must tolerate SAT reassigning the path's leading tile(s) when the item still flows; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn fails_when_item_missing_from_entire_path() {
+        // If SAT's proposal genuinely drops the item — no surface belt,
+        // no UG pair — every tile on the path is missing or mis-itemed,
+        // and the walker must reject with MissingEntity at the path's
+        // original start tile.
+        let released: FxHashSet<(i32, i32)> = [(3, 17), (3, 18), (3, 19)].into_iter().collect();
+        let proposed = vec![
+            // SAT took over these tiles but dropped copper entirely —
+            // only iron belts, no copper anywhere on the path.
+            belt(3, 17, EntityDirection::South, "iron-plate"),
+            belt(3, 18, EntityDirection::South, "iron-plate"),
+            belt(3, 19, EntityDirection::South, "iron-plate"),
+        ];
+        let shadow = ShadowView::build(&[], &released, &proposed);
+        let tiles = vec![(3, 17), (3, 18), (3, 19)];
+        let copper = AffectedPath {
+            segment_id: "trunk:copper-cable:3",
+            tiles: &tiles,
+            item: "copper-cable",
+        };
+        match walk_affected(&[copper], &shadow) {
+            WalkResult::Broken { breaks } => {
+                assert_eq!(breaks.len(), 1);
+                assert_eq!(breaks[0].tile, (3, 17));
+                assert!(
+                    matches!(breaks[0].reason, BreakReason::MissingEntity),
+                    "got {:?}",
+                    breaks[0].reason
+                );
+            }
+            r => panic!("expected Broken(MissingEntity), got {r:?}"),
+        }
     }
 
     #[test]

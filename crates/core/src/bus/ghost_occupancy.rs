@@ -385,13 +385,16 @@ impl Occupancy {
     ///
     /// Returns the number of claims released.
     ///
-    /// Releases ghost surface and trunk/tapoff permanent entities in `zone`.
+    /// Releases ghost surface and bus-structure Permanent entities in `zone`.
+    /// "Bus structure" means `trunk:`, `tapoff:`, and `balancer:` segments —
+    /// all of them part of the main bus the junction solver is allowed to
+    /// reroute within its grown bbox.
     ///
     /// `preserve_trunk_tiles`: when `Some`, tiles in this set are kept even
-    /// if they carry a trunk/tapoff Permanent claim — use this to preserve
-    /// 1-tile trunk stubs that the crossing zone solution routes around
-    /// underground rather than replacing. `None` releases all trunk entities
-    /// in the zone (original behaviour).
+    /// if they carry a bus-structure Permanent claim — use this to preserve
+    /// 1-tile stubs that the crossing zone solution routes around
+    /// underground rather than replacing. `None` releases all bus-structure
+    /// entities in the zone (original behaviour).
     ///
     /// GhostSurface entities are always fully released within the zone.
     ///
@@ -420,7 +423,13 @@ impl Occupancy {
                             .get(*entity_idx)
                             .and_then(|e| e.segment_id.as_deref());
                         let Some(seg) = seg else { return false; };
-                        if !seg.starts_with("trunk:") && !seg.starts_with("tapoff:") {
+                        // Only release main-bus structure: trunk, tapoff,
+                        // balancer. Everything else (row entities, poles,
+                        // machines) is off-limits to the junction solver.
+                        if !seg.starts_with("trunk:")
+                            && !seg.starts_with("tapoff:")
+                            && !seg.starts_with("balancer:")
+                        {
                             return false;
                         }
                         // Release UNLESS this tile is in the preserve set.
