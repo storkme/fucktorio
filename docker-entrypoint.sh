@@ -33,12 +33,6 @@ cd "$REPO_DIR"
 # Install steps (from CLAUDE.md)
 # ---------------------------------------------------------------------------
 
-echo "--- uv sync ---"
-uv sync
-
-echo "--- maturin develop (PyO3 A* extension) ---"
-uvx maturin develop --manifest-path crates/pyo3-bindings/Cargo.toml
-
 echo "--- wasm-pack (WASM bundle for web app) ---"
 wasm-pack build crates/wasm-bindings --target web \
     --out-dir "$REPO_DIR/web/src/wasm-pkg"

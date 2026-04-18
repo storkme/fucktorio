@@ -14,10 +14,6 @@ RUN echo "node ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/node
 # Switch to non-root user (required by --dangerously-skip-permissions)
 USER node
 
-# uv — manages Python version + deps (matches project conventions in CLAUDE.md)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/node/.local/bin:$PATH"
-
 # Rust (needed for PyO3 A* pathfinder)
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/home/node/.cargo/bin:$PATH"
