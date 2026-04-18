@@ -397,7 +397,7 @@ fn tier1_iron_gear_wheel_20s() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "Iron-plate IN moves to splitter (2,9) interior + copper IN to splitter (3,9) interior. SAT iter 1 defers, iter 2 satisfies but the reachability walker rejects (SAT routes both iron and copper UG corridors through (3,10) but the result doesn't reach iron's exit at (5,10) in the shadow's belt graph — likely because SAT's UG model allows physically-impossible crossing UG corridors that don't actually carry items in the validated layout). Iter 3+ UNSAT because copper-cable's trunk path is fully Permanent — no SAT-routable tiles. Needs (a) cluster-participation rewrite to drop fully-Permanent specs, and (b) investigate the iter 2 SAT solution's iron-plate flow (likely a missing 'no two UG corridors crossing at one tile' encoder clause)."]
+#[ignore = "Crossing-zone item-isolation is now FIXED — SAT routes iron-plate underground east through (2,10)→(5,10), and copper-cable underground south through (3,10)→(3,12). 0 validation errors. 4 warnings remain: (1) UG-sideload at (2,10) because the iron-plate splitter at (1,9)/(2,9) feeds (2,10) perpendicular to its East-facing UG-in — only one lane loads, fixable only by giving the iron tap more horizontal space before the UG entry; (2-4) three input-rate-delivery warnings on the second EC machine row (y=19) — a separate copper supply-chain issue unrelated to the crossing zone."]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit() {
     let inputs: FxHashSet<String> = ["iron-plate", "copper-plate"]

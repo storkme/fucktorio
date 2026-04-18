@@ -429,6 +429,12 @@ fn opposite(dir: EntityDirection) -> EntityDirection {
 ///
 /// Algorithm: downstream BFS from all input boundaries ∩ upstream BFS from
 /// all output boundaries.  Keep only entities in both reachable sets.
+///
+/// For interior boundaries the boundary tile itself is `forced_empty`
+/// (no SAT entity), so the BFS seeds from the in-zone *neighbor* — the
+/// tile the encoder's interior arm actually constrains. For an interior
+/// input the neighbor is `boundary + dir_delta(direction)`; for an
+/// interior output it's `boundary + dir_delta(opposite(direction))`.
 fn prune_dangling_sat_entities(
     entities: Vec<PlacedEntity>,
     boundaries: &[ZoneBoundary],
@@ -444,13 +450,30 @@ fn prune_dangling_sat_entities(
         .map(|(i, e)| ((e.x, e.y), i))
         .collect();
 
+    // Map a boundary to the actual in-zone tile that holds the SAT
+    // entity feeding (for inputs) or sinking (for outputs) the spec's
+    // flow. Perimeter boundaries: that's the boundary tile itself.
+    // Interior boundaries: the in-zone neighbor along the flow axis.
+    let bfs_start = |b: &ZoneBoundary| -> (i32, i32) {
+        if b.interior {
+            let (dx, dy) = if b.is_input {
+                dir_delta(b.direction)
+            } else {
+                dir_delta(opposite(b.direction))
+            };
+            (b.x + dx, b.y + dy)
+        } else {
+            (b.x, b.y)
+        }
+    };
+
     // ---- downstream BFS (input → output direction) ----
 
     let mut reachable_from_input: FxHashSet<(i32, i32)> = FxHashSet::default();
     let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
 
     for b in boundaries.iter().filter(|b| b.is_input) {
-        let t = (b.x, b.y);
+        let t = bfs_start(b);
         if reachable_from_input.insert(t) {
             queue.push_back(t);
         }
@@ -472,7 +495,7 @@ fn prune_dangling_sat_entities(
     let mut reachable_to_output: FxHashSet<(i32, i32)> = FxHashSet::default();
 
     for b in boundaries.iter().filter(|b| !b.is_input) {
-        let t = (b.x, b.y);
+        let t = bfs_start(b);
         if reachable_to_output.insert(t) {
             queue.push_back(t);
         }
@@ -760,5 +783,88 @@ mod tests {
             &placed,
         );
         assert_eq!(result, None);
+    }
+
+    // -- Prune behaviour with interior boundaries ---------------------------
+
+    fn ug_in(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
+        PlacedEntity {
+            name: "fast-underground-belt".into(),
+            x,
+            y,
+            direction: dir,
+            carries: Some(item.into()),
+            io_type: Some("input".into()),
+            ..Default::default()
+        }
+    }
+
+    fn ug_out(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
+        PlacedEntity {
+            name: "fast-underground-belt".into(),
+            x,
+            y,
+            direction: dir,
+            carries: Some(item.into()),
+            io_type: Some("output".into()),
+            ..Default::default()
+        }
+    }
+
+    /// Reproduces the iter-2 tier2 SAT solution and pipes it through
+    /// `prune_dangling_sat_entities` exactly as the strategy does.
+    /// The boundaries are interior on both inputs (iron-plate at (2,9),
+    /// copper-cable at (3,9)) — their tiles are forced_empty, so a
+    /// naive BFS that starts at `(b.x, b.y)` never advances and ALL
+    /// entities get pruned even though they form valid input→output
+    /// flows via UG corridors. The fix is to seed the BFS from the
+    /// in-zone neighbour for interior boundaries.
+    #[test]
+    fn test_prune_keeps_interior_boundary_paths() {
+        let entities = vec![
+            ug_in(2, 10, EntityDirection::East, "iron-plate"),
+            ug_out(5, 10, EntityDirection::East, "iron-plate"),
+            ug_in(3, 10, EntityDirection::South, "copper-cable"),
+            ug_out(3, 12, EntityDirection::South, "copper-cable"),
+        ];
+        let boundaries = vec![
+            ZoneBoundary {
+                x: 3, y: 9,
+                direction: EntityDirection::South,
+                item: "copper-cable".into(),
+                is_input: true,
+                interior: true,
+            },
+            ZoneBoundary {
+                x: 3, y: 12,
+                direction: EntityDirection::South,
+                item: "copper-cable".into(),
+                is_input: false,
+                interior: false,
+            },
+            ZoneBoundary {
+                x: 2, y: 9,
+                direction: EntityDirection::South,
+                item: "iron-plate".into(),
+                is_input: true,
+                interior: true,
+            },
+            ZoneBoundary {
+                x: 5, y: 10,
+                direction: EntityDirection::East,
+                item: "iron-plate".into(),
+                is_input: false,
+                interior: false,
+            },
+        ];
+
+        let pruned = prune_dangling_sat_entities(entities.clone(), &boundaries, 6, 1, 8);
+        // All 4 UG endpoints must survive — they're the SAT-resolved
+        // crossing for both specs and form valid input→output paths.
+        assert_eq!(
+            pruned.len(),
+            4,
+            "interior-boundary specs should retain their UG endpoints; got {pruned:#?}"
+        );
     }
 }
