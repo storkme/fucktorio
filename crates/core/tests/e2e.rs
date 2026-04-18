@@ -421,7 +421,7 @@ fn tier2_electronic_circuit() {
 }
 
 #[test]
-#[ignore = "ghost-mode: dead-ends + UG pair distance violations on full ore chain"]
+#[ignore = "belt-item-isolation: 6 adjacent-tile item-mix errors on full ore chain"]
 #[ntest::timeout(10000)]
 fn tier2_electronic_circuit_from_ore() {
     let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
