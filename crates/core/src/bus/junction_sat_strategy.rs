@@ -219,6 +219,21 @@ fn physical_feeder_hit(
 /// Replaces `walk_entry_to_perimeter` + `splitter_topology_boundaries` +
 /// `belt_topology_boundaries` + the dedup step with a unified walk that
 /// produces no duplicates by construction.
+///
+/// **Reliance on ghost-routed layout**: unlike the previous design, this walk
+/// does not consult the `SpecCrossing` list directly. It assumes ghost routing
+/// has already stamped entities along every spec's path *or* that neighbouring
+/// stamped entities implicitly constrain the uncovered tiles (e.g. a belt
+/// flowing north into a FREE spec-exit tile at y−1 forces SAT to stay
+/// compatible with that flow even if the exit tile itself has no entity).
+/// An experimentally-added debug-assert confirmed both modes occur in the
+/// active e2e corpus: sometimes the stamped entity is at the spec tile,
+/// sometimes it's one step away and SAT bridges the gap via adjacency. If a
+/// future change introduces a participating spec whose entire FREE-in-bbox
+/// path is unstamped, SAT will silently solve that region without constraint
+/// and produce a layout that ignores the spec. Consider re-adding the
+/// debug-assert (previously at the call site, removed once it proved too
+/// strict for the current corpus) if you suspect this class of bug.
 fn topology_boundaries(
     placed_entities: &[PlacedEntity],
     bbox: &Rect,
@@ -797,18 +812,6 @@ mod tests {
         assert_eq!(result.len(), 2, "full path should be untouched");
     }
 
-    // -- Interior-boundary helpers ------------------------------------------
-
-    fn make_splitter(x: i32, y: i32, dir: EntityDirection) -> PlacedEntity {
-        PlacedEntity {
-            name: "splitter".into(),
-            x,
-            y,
-            direction: dir,
-            ..Default::default()
-        }
-    }
-
     // -- Prune behaviour with interior boundaries ---------------------------
 
     fn ug_in(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
@@ -897,17 +900,6 @@ mod tests {
     fn make_surface_belt(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
         PlacedEntity {
             name: "fast-transport-belt".into(),
-            x,
-            y,
-            direction: dir,
-            carries: Some(item.into()),
-            ..Default::default()
-        }
-    }
-
-    fn make_splitter_at(x: i32, y: i32, dir: EntityDirection, item: &str) -> PlacedEntity {
-        PlacedEntity {
-            name: "fast-splitter".into(),
             x,
             y,
             direction: dir,
