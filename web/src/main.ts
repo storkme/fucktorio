@@ -3,9 +3,9 @@ import type { Graphics } from "pixi.js";
 import { createApp, WORLD_SIZE } from "./renderer/app";
 import { drawGrid } from "./renderer/grid";
 import { drawGraph } from "./renderer/graph";
-import { initEntityIcons, renderLayout, setItemColoring, setRateOverlay, itemColor, TILE_PX } from "./renderer/entities";
+import { initEntityIcons, renderLayout, setItemColoring, itemColor, TILE_PX } from "./renderer/entities";
 import { createSelectionController, type SelectionController } from "./renderer/selection";
-import { renderSidebar, type DisplayToggles } from "./ui/sidebar";
+import { renderSidebar } from "./ui/sidebar";
 import { initCorpusPanel } from "./ui/corpus";
 import { renderLanding } from "./ui/landing";
 import {
@@ -100,7 +100,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   // --- Modules ---
   const overlayControls = createOverlayPanel(container);
-  const { debugCb, stepCb, valCb, regionsCb, soloRegionsCb, ghostTilesCb, updateCoords } = overlayControls;
+  const { debugCb, colorCb, stepCb, valCb, regionsCb, soloRegionsCb, ghostTilesCb } = overlayControls;
 
   const inspector = createInspector(container);
 
@@ -148,18 +148,17 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   // Click-to-inspect removed; pass no-op to renderLayout.
   const onSelect = (_entity: PlacedEntity | null): void => {};
 
+  let hoveredEntity: PlacedEntity | null = null;
   function onHover(entity: PlacedEntity | null): void {
-    inspector.onHover(entity);
+    hoveredEntity = entity;
+    inspector.onHover(entity, entity?.x, entity?.y);
   }
 
-  // --- Sidebar toggles (populated via onDisplayToggles callback) ---
-  let colorCb: HTMLInputElement;
-  let rateCb: HTMLInputElement;
+  // --- Sidebar toggles ---
 
   let soloRegionsActive = false;
   let soloSavedState: {
     colorChecked: boolean;
-    rateChecked: boolean;
     valChecked: boolean;
     regionsChecked: boolean;
     entityAlpha: number;
@@ -475,13 +474,14 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   }
 
   app.canvas.addEventListener("pointermove", (e) => {
+    if (hoveredEntity) return;
     const rect = app.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     const world = viewport.toWorld(sx, sy);
     const tx = Math.floor(world.x / TILE_PX);
     const ty = Math.floor(world.y / TILE_PX);
-    updateCoords(tx, ty);
+    inspector.onHover(null, tx, ty);
   });
 
   // Click handling for SAT regions + junction zones. Junction click
@@ -727,23 +727,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       startStreaming,
     }, {
       getDebugMode: () => debugCb.checked,
-      onDisplayToggles: (toggles: DisplayToggles) => {
-        colorCb = toggles.colorCb;
-        rateCb = toggles.rateCb;
-
-        colorCb.addEventListener("change", () => {
-          setItemColoring(colorCb.checked);
-          if (!colorCb.checked) {
-            legendEl.style.display = "none";
-          } else if (lastLayout) {
-            renderLayoutOnCanvas(lastLayout);
-          }
-        });
-        rateCb.addEventListener("change", () => {
-          setRateOverlay(rateCb.checked);
-          if (lastLayout) renderLayoutOnCanvas(lastLayout);
-        });
-      },
     });
 
     // Wire overlay panel toggles
@@ -755,6 +738,14 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       updateGhostTilesOverlay();
     });
     ghostTilesCb.addEventListener("change", updateGhostTilesOverlay);
+    colorCb.addEventListener("change", () => {
+      setItemColoring(colorCb.checked);
+      if (!colorCb.checked) {
+        legendEl.style.display = "none";
+      } else if (lastLayout) {
+        renderLayoutOnCanvas(lastLayout);
+      }
+    });
     stepCb.addEventListener("change", () => {
       stepThrough.reset();
       updateTraceOverlay();
@@ -767,7 +758,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         soloRegionsActive = true;
         soloSavedState = {
           colorChecked: colorCb.checked,
-          rateChecked: rateCb.checked,
           valChecked: valCb.checked,
           regionsChecked: regionsCb.checked,
           entityAlpha: entityLayer.alpha,
@@ -780,11 +770,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
         if (colorCb.checked) {
           colorCb.checked = false;
           setItemColoring(false);
-          if (lastLayout) renderLayoutOnCanvas(lastLayout);
-        }
-        if (rateCb.checked) {
-          rateCb.checked = false;
-          setRateOverlay(false);
           if (lastLayout) renderLayoutOnCanvas(lastLayout);
         }
         if (valCb.checked) {
@@ -810,11 +795,6 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
           if (colorCb.checked !== soloSavedState.colorChecked) {
             colorCb.checked = soloSavedState.colorChecked;
             setItemColoring(colorCb.checked);
-            if (lastLayout) renderLayoutOnCanvas(lastLayout);
-          }
-          if (rateCb.checked !== soloSavedState.rateChecked) {
-            rateCb.checked = soloSavedState.rateChecked;
-            setRateOverlay(rateCb.checked);
             if (lastLayout) renderLayoutOnCanvas(lastLayout);
           }
 

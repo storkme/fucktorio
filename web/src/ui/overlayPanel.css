@@ -14,12 +14,6 @@
   user-select: none;
 }
 
-.overlay-coords {
-  color: #aaa;
-  font: 11px monospace;
-  pointer-events: none;
-}
-
 .overlay-toggle label {
   display: flex;
   align-items: center;
