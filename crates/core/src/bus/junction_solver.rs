@@ -1191,6 +1191,34 @@ enum TryOutcome {
     Continue,
 }
 
+/// Scan the boundary list for a tile that carries more than one
+/// distinct item. Such a tile is provably unroutable — one belt holds
+/// one item type — so the region has to grow until the conflict sits
+/// in the interior rather than on the perimeter/at a boundary. Returns
+/// the offending tile coords and the sorted unique items at it.
+///
+/// Cheap: single pass, allocates one small map. Runs once per
+/// iter/variant before we consider any strategy.
+fn find_item_conflict(
+    boundaries: &[crate::trace::BoundarySnapshot],
+) -> Option<(i32, i32, Vec<String>)> {
+    use rustc_hash::FxHashMap;
+    let mut by_tile: FxHashMap<(i32, i32), Vec<String>> = FxHashMap::default();
+    for b in boundaries {
+        let items = by_tile.entry((b.x, b.y)).or_default();
+        if !items.iter().any(|i| i == &b.item) {
+            items.push(b.item.clone());
+        }
+    }
+    for ((x, y), mut items) in by_tile {
+        if items.len() > 1 {
+            items.sort();
+            return Some((x, y, items));
+        }
+    }
+    None
+}
+
 /// Snapshot the iteration, run every strategy on the region, and apply
 /// the walker veto. Mirrors the original in-loop body so the outer
 /// growth loop can call it per-iter *and* per-variant.
@@ -1217,6 +1245,13 @@ fn try_solve_on_region(
         &region.encountered,
         ctx.placed_entities,
     );
+    // Item-conflict fast-fail: a single boundary tile can carry at
+    // most one item (a belt holds one item type). If two distinct
+    // specs land boundaries on the same (x,y) with different items,
+    // SAT is provably UNSAT regardless of strategy. Skip every strategy
+    // for this iter and let growth expand outward to put the conflict
+    // in the interior (where SAT can route around it via UG tunnels).
+    let conflict = find_item_conflict(&boundaries);
     let mut tiles: Vec<(i32, i32)> = region.tiles.iter().copied().collect();
     tiles.sort();
     let mut forbidden: Vec<(i32, i32)> = region.forbidden_tiles.iter().copied().collect();
@@ -1241,6 +1276,20 @@ fn try_solve_on_region(
         participating: region.participating.clone(),
         encountered: region.encountered.clone(),
     });
+
+    if let Some((cx, cy, items)) = conflict {
+        trace::emit(TraceEvent::JunctionStrategyAttempt {
+            seed_x: ctx.initial_tile.0,
+            seed_y: ctx.initial_tile.1,
+            iter,
+            variant: variant_tag.clone(),
+            strategy: "item-conflict-check".to_string(),
+            outcome: "Skipped".to_string(),
+            detail: format!("({cx},{cy}) carries [{}]", items.join(", ")),
+            elapsed_us: 0,
+        });
+        return TryOutcome::Continue;
+    }
 
     let strategy_ctx = JunctionStrategyContext {
         junction: &junction,

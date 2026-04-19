@@ -1509,8 +1509,49 @@ pub fn route_bus_ghost(
         // the solver explicitly promises to replace. Without it,
         // uniformly-grown bboxes wipe out unrelated trunk/splitter
         // entities just because they sit inside the rectangle.
-        let proposed_tiles: rustc_hash::FxHashSet<(i32, i32)> =
+        let mut proposed_tiles: rustc_hash::FxHashSet<(i32, i32)> =
             sol.entities.iter().map(|e| (e.x, e.y)).collect();
+        // Expand `proposed_tiles` to include the interior tiles of every
+        // UG pair in the solution. SAT places an entity at the UG-in
+        // and UG-out endpoints only — the tiles between them are
+        // "tunneled" through underground, so any pre-existing trunk or
+        // ghost-stamped surface belt at those interior tiles is now
+        // dead geometry and must be released by the cleanup below.
+        // Without this, those interior tiles land in `preserve_trunk_tiles`
+        // (because SAT didn't touch them explicitly) and SAT's tunnel
+        // co-exists with leftover surface belts — "floating belts" that
+        // the validator catches as adjacent-item mismatches.
+        let ug_pair_interiors: Vec<(i32, i32)> = sol
+            .entities
+            .iter()
+            .filter(|e| e.io_type.as_deref() == Some("input"))
+            .flat_map(|ug_in| {
+                let (dx, dy) = match ug_in.direction {
+                    EntityDirection::North => (0i32, -1i32),
+                    EntityDirection::East => (1, 0),
+                    EntityDirection::South => (0, 1),
+                    EntityDirection::West => (-1, 0),
+                };
+                let mut interior: Vec<(i32, i32)> = Vec::new();
+                for dist in 1..=max_reach {
+                    let (ox, oy) = (ug_in.x + dx * dist, ug_in.y + dy * dist);
+                    let paired = sol.entities.iter().any(|e| {
+                        e.x == ox
+                            && e.y == oy
+                            && e.io_type.as_deref() == Some("output")
+                            && e.direction == ug_in.direction
+                    });
+                    if paired {
+                        for d in 1..dist {
+                            interior.push((ug_in.x + dx * d, ug_in.y + dy * d));
+                        }
+                        break;
+                    }
+                }
+                interior
+            })
+            .collect();
+        proposed_tiles.extend(ug_pair_interiors);
         let preserve_trunk_tiles: rustc_hash::FxHashSet<(i32, i32)> =
             (0..release_rect.h as i32)
                 .flat_map(|dy| {
