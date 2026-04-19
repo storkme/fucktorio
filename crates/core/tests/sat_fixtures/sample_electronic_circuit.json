@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "sample_electronic_circuit",
+  "notes": "Minimal solvable SAT zone: a single copper-cable belt running east through a 2×1 zone. Modelled after a tap-off crossing in the electronic-circuit bus; kept deliberately tiny so it exercises the fixture schema without hiding complexity behind a large zone.",
+  "source_url": "http://localhost:5173/?item=electronic-circuit&rate=20&machine=assembling-machine-1&belt=transport-belt",
+  "seed": [7, 68],
+  "bbox": { "x": 7, "y": 68, "w": 2, "h": 1 },
+  "forbidden": [],
+  "belt_tier": "transport-belt",
+  "max_reach": 4,
+  "boundaries": [
+    { "x": 7, "y": 68, "dir": "East", "item": "copper-cable", "in": true,  "interior": false },
+    { "x": 8, "y": 68, "dir": "East", "item": "copper-cable", "in": false, "interior": false }
+  ],
+  "expected": {
+    "mode": "solve"
+  }
+}

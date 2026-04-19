@@ -63,7 +63,11 @@ export function createJunctionDebugger(
   terminalBtn.className = "jd-step-btn jd-terminal-btn";
   terminalBtn.textContent = "\u21ba terminal";
   terminalBtn.title = "jump to default (terminal) iteration";
-  stepper.append(prevBtn, stepLabel, nextBtn, terminalBtn);
+  const fixtureBtn = document.createElement("button");
+  fixtureBtn.className = "jd-step-btn";
+  fixtureBtn.textContent = "\u29c9"; // ⧉
+  fixtureBtn.title = "Copy as fixture JSON";
+  stepper.append(prevBtn, stepLabel, nextBtn, terminalBtn, fixtureBtn);
 
   // Overlay toggles sit on their own row so the stepper stays readable
   // at narrow widths. SAT entities are useful by default (that's what
@@ -232,6 +236,15 @@ export function createJunctionDebugger(
   });
   satToggle.addEventListener("change", render);
   ghostToggle.addEventListener("change", render);
+  fixtureBtn.addEventListener("click", () => {
+    if (!currentCluster) return;
+    const json = buildFixtureJson(
+      currentCluster,
+      currentCluster.iterations[currentIter],
+      currentTrace,
+    );
+    flashAndCopy(fixtureBtn, json);
+  });
 
   // Capture-phase keyboard handler so we win the race against any
   // bubble-phase global shortcuts (e.g. stepThrough's ArrowLeft/Right).
@@ -794,3 +807,106 @@ function renderNearby(cluster: JunctionCluster): HTMLDetailsElement {
 
 // Provide a typed getter for terminalIteration's return when needed elsewhere.
 void terminalIteration;
+
+// -----------------------------------------------------------------------
+// Copy-as-fixture helpers
+// -----------------------------------------------------------------------
+
+/** UG max reach by belt tier — yellow 4, red 6, blue 8. */
+const BELT_UG_REACH: Record<string, number> = {
+  "transport-belt": 4,
+  "fast-transport-belt": 6,
+  "express-transport-belt": 8,
+};
+
+/**
+ * Build a fixture JSON string for the given cluster + iteration. The
+ * caller is responsible for copying it to the clipboard via `flashAndCopy`.
+ */
+function buildFixtureJson(
+  cluster: JunctionCluster,
+  it: JunctionIteration | undefined,
+  trace: readonly TraceEvent[] | null,
+): string {
+  const seed = cluster.seed;
+  const bbox = it?.bbox ?? { x: seed.x, y: seed.y, w: 1, h: 1 };
+  const iterIndex = it?.iter ?? 0;
+
+  // Derive belt tier and max_reach from SAT invocation data when
+  // available; fall back to sensible defaults.
+  const beltTier: string = it?.sat?.belt_tier ?? "transport-belt";
+  const maxReach: number = it?.sat?.max_reach ?? (BELT_UG_REACH[beltTier] ?? 4);
+
+  // Map effective boundaries to the fixture schema.
+  const boundaries = effectiveBoundaries(it ?? {
+    iter: 0,
+    variant: "",
+    bbox,
+    tiles: [],
+    forbidden: [],
+    boundaries: [],
+    participating: [],
+    encountered: [],
+    attempts: [],
+    sat: null,
+    veto: null,
+  }).map((b) => ({
+    x: b.x,
+    y: b.y,
+    dir: b.direction as string,
+    item: b.item,
+    in: b.is_input,
+    ...(b.interior ? { interior: true } : {}),
+  }));
+
+  // Ghost paths near the bbox (informational context).
+  const ghostPaths = (it && trace)
+    ? ghostPathsNearBbox(trace, bbox, 2).map((p) => ({
+        item: p.item,
+        spec_key: p.specKey,
+        tiles: p.tiles,
+      }))
+    : [];
+
+  const fixture: Record<string, unknown> = {
+    version: 1,
+    name: `fixture_${seed.x}_${seed.y}_iter${iterIndex}`,
+    notes: "",
+    source_url: window.location.href,
+    seed: [seed.x, seed.y],
+    bbox: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+    forbidden: it?.forbidden ?? [],
+    belt_tier: beltTier,
+    max_reach: maxReach,
+    boundaries,
+    expected: { mode: "solve" },
+    ...(ghostPaths.length > 0 ? { context: { ghost_paths: ghostPaths } } : {}),
+  };
+
+  return JSON.stringify(fixture, null, 2);
+}
+
+/**
+ * Write `text` to the clipboard and briefly flash `btn` green to signal
+ * success. Falls back to `prompt()` when the Clipboard API is unavailable
+ * (non-HTTPS, browser policy, etc.).
+ */
+function flashAndCopy(btn: HTMLButtonElement, text: string): void {
+  const original = btn.textContent ?? "";
+  const succeed = () => {
+    btn.textContent = "✓";
+    btn.style.color = "#9f9";
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.style.color = "";
+    }, 1200);
+  };
+  const fallback = () => {
+    prompt("Copy fixture JSON (Ctrl+A, Ctrl+C):", text);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(succeed, fallback);
+  } else {
+    fallback();
+  }
+}
