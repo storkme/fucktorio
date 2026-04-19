@@ -131,33 +131,50 @@ pub fn validate(
     solver_result: Option<&SolverResult>,
     layout_style: LayoutStyle,
 ) -> Result<Vec<ValidationIssue>, ValidationError> {
-    let mut issues: Vec<ValidationIssue> = Vec::new();
+    use rayon::prelude::*;
 
-    issues.extend(check_power_coverage(layout_result));
-    issues.extend(check_pole_network_connectivity(layout_result));
-    issues.extend(inserters::check_inserter_chains(layout_result, solver_result));
-    issues.extend(inserters::check_inserter_direction(layout_result));
-    issues.extend(check_pipe_isolation(layout_result));
-    issues.extend(check_fluid_port_connectivity(layout_result, layout_style));
-    issues.extend(check_belt_connectivity(layout_result, solver_result));
-    issues.extend(check_belt_flow_path(layout_result, solver_result, layout_style));
-    issues.extend(belt_structural::check_entity_overlaps(layout_result));
-    issues.extend(belt_structural::check_belt_throughput(layout_result));
-    issues.extend(belt_structural::check_output_belt_coverage(layout_result, solver_result));
-    if layout_style == LayoutStyle::Spaghetti {
-        issues.extend(check_belt_network_topology(layout_result, solver_result));
-    }
-    issues.extend(check_belt_junctions(layout_result));
-    issues.extend(check_underground_belt_pairs(layout_result));
-    issues.extend(check_underground_belt_sideloading(layout_result));
-    issues.extend(check_underground_belt_entry_sideload(layout_result));
-    issues.extend(belt_structural::check_belt_dead_ends(layout_result));
-    issues.extend(belt_structural::check_belt_loops(layout_result));
-    issues.extend(belt_structural::check_belt_item_isolation(layout_result));
-    issues.extend(belt_structural::check_belt_inserter_conflict(layout_result));
-    issues.extend(check_belt_flow_reachability(layout_result, solver_result, layout_style));
-    issues.extend(belt_structural::check_lane_throughput(layout_result, solver_result));
-    issues.extend(check_input_rate_delivery(layout_result, solver_result));
+    let layout = layout_result;
+    let solver = solver_result;
+
+    // Individual validation checks must NOT call `trace::emit` — the
+    // trace collector is thread-local, so events raised from a rayon
+    // worker thread would either panic (if the thread-local isn't
+    // initialised there) or silently vanish. The only trace emit from
+    // this function is the terminal `ValidationCompleted` below, which
+    // runs on the caller's thread after `par_iter` collects. If you
+    // ever need per-check tracing, gather the data into the returned
+    // `ValidationIssue` list and emit once from here.
+    let checks: Vec<Box<dyn Fn() -> Vec<ValidationIssue> + Send + Sync>> = vec![
+        Box::new(|| check_power_coverage(layout)),
+        Box::new(|| check_pole_network_connectivity(layout)),
+        Box::new(|| inserters::check_inserter_chains(layout, solver)),
+        Box::new(|| inserters::check_inserter_direction(layout)),
+        Box::new(|| check_pipe_isolation(layout)),
+        Box::new(|| check_fluid_port_connectivity(layout, layout_style)),
+        Box::new(|| check_belt_connectivity(layout, solver)),
+        Box::new(|| check_belt_flow_path(layout, solver, layout_style)),
+        Box::new(|| belt_structural::check_entity_overlaps(layout)),
+        Box::new(|| belt_structural::check_belt_throughput(layout)),
+        Box::new(|| belt_structural::check_output_belt_coverage(layout, solver)),
+        Box::new(|| if layout_style == LayoutStyle::Spaghetti {
+            check_belt_network_topology(layout, solver)
+        } else {
+            vec![]
+        }),
+        Box::new(|| check_belt_junctions(layout)),
+        Box::new(|| check_underground_belt_pairs(layout)),
+        Box::new(|| check_underground_belt_sideloading(layout)),
+        Box::new(|| check_underground_belt_entry_sideload(layout)),
+        Box::new(|| belt_structural::check_belt_dead_ends(layout)),
+        Box::new(|| belt_structural::check_belt_loops(layout)),
+        Box::new(|| belt_structural::check_belt_item_isolation(layout)),
+        Box::new(|| belt_structural::check_belt_inserter_conflict(layout)),
+        Box::new(|| check_belt_flow_reachability(layout, solver, layout_style)),
+        Box::new(|| belt_structural::check_lane_throughput(layout, solver)),
+        Box::new(|| check_input_rate_delivery(layout, solver)),
+    ];
+
+    let issues: Vec<ValidationIssue> = checks.par_iter().flat_map(|f| f()).collect();
 
     let error_count = issues.iter().filter(|i| i.severity == Severity::Error).count();
     let warning_count = issues.iter().filter(|i| i.severity == Severity::Warning).count();
