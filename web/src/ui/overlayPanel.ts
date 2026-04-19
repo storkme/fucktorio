@@ -10,6 +10,7 @@ export interface OverlayPanelControls {
   valCb: HTMLInputElement;
   regionsCb: HTMLInputElement;
   soloRegionsCb: HTMLInputElement;
+  ghostTilesCb: HTMLInputElement;
 }
 
 function makeToggle(parent: HTMLElement, label: string, checked = false): HTMLInputElement {
@@ -47,6 +48,7 @@ export function createOverlayPanel(container: HTMLElement): OverlayPanelControls
   const stepCb = makeToggle(subPanel, "Step-through", state.stepThrough);
   const valCb = makeToggle(subPanel, "Validation", state.validation);
   const regionsCb = makeToggle(subPanel, "SAT Zones", state.satZones);
+  const ghostTilesCb = makeToggle(subPanel, "Ghost tiles", state.ghostTiles);
   const soloRegionsCb = makeToggle(subPanel, "Solo regions", state.soloRegions);
   panel.appendChild(subPanel);
 
@@ -55,6 +57,18 @@ export function createOverlayPanel(container: HTMLElement): OverlayPanelControls
   debugCb.addEventListener("change", () => {
     subPanel.style.display = debugCb.checked ? "flex" : "none";
     debugState.set({ master: debugCb.checked });
+  });
+
+  // Persist the SAT Zones + Ghost tiles toggles alongside the master
+  // Debug flag so a mid-session reload keeps those overlays visible.
+  // Only user-initiated flips (change events) write to storage;
+  // programmatic overrides like solo-mode save/restore deliberately
+  // don't fire a change event and so won't persist.
+  regionsCb.addEventListener("change", () => {
+    debugState.set({ satZones: regionsCb.checked });
+  });
+  ghostTilesCb.addEventListener("change", () => {
+    debugState.set({ ghostTiles: ghostTilesCb.checked });
   });
 
   return {
@@ -71,5 +85,6 @@ export function createOverlayPanel(container: HTMLElement): OverlayPanelControls
     valCb,
     regionsCb,
     soloRegionsCb,
+    ghostTilesCb,
   };
 }

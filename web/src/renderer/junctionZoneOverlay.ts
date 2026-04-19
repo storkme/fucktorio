@@ -66,7 +66,8 @@ export function renderJunctionZoneOverlay(
     rect.rect(pxX, pxY, pxW, pxH).stroke();
     layer.addChild(rect);
 
-    // Seed-coord label top-left
+    // Seed-coord label top-left. The name is the single most
+    // important identifier so it owns the prime real-estate.
     const label = new Text({
       text: `Junction (${cluster.seed.x},${cluster.seed.y})`,
       style: LABEL_STYLE,
@@ -75,13 +76,15 @@ export function renderJunctionZoneOverlay(
     label.y = pxY + 2;
     layer.addChild(label);
 
-    // Outcome status pill top-right
+    // Outcome status pill bottom-left — moved off the top row so
+    // narrow bboxes don't clash with the name label. Bottom-right
+    // stays clear for the inline debug panel when a zone is selected.
     const pill = new Text({
       text: pillText(cluster),
       style: PILL_STYLE,
     });
-    pill.x = pxX + pxW - pill.width - 3;
-    pill.y = pxY + 2;
+    pill.x = pxX + 3;
+    pill.y = pxY + pxH - pill.height - 2;
     layer.addChild(pill);
 
     hits.push({ cluster, pxX, pxY, pxW, pxH });

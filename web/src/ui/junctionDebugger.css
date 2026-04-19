@@ -1,17 +1,105 @@
-/* Junction debugger modal. Dark monospace, layered over the canvas. */
+/* Junction debugger — two pieces:
+ *
+ *   .jd-inline  — small control anchored to the selected SAT zone.
+ *                 Always visible while a zone is selected.
+ *   .jd-modal   — big detail panel, opt-in via the ⓘ button or the
+ *                 `i` key. Has its own backdrop so clicks outside it
+ *                 dismiss the modal without deselecting the zone.
+ *
+ * Shared styling (pill colours, stepper buttons, section/row tokens)
+ * lives once at the bottom so both pieces look the same. */
 
-.jd-backdrop {
+/* ---------- Inline control (anchored to bbox) ------------------------- */
+
+.jd-inline {
+  position: absolute;
+  display: none;
+  flex-direction: column;
+  width: 200px;
+  background: #1a1a1aee;
+  color: #e0e0e0;
+  font: 10px monospace;
+  border-radius: 3px;
+  border: 1px solid #333;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  z-index: 20;
+  backdrop-filter: blur(2px);
+}
+.jd-inline.jd-open { display: flex; }
+
+.jd-inline-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  background: #222;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+.jd-inline .jd-title {
+  font-weight: 600;
+  color: #eee;
+  font-size: 10px;
+  /* Truncate long coords gracefully when the zone has big numbers. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jd-inline .jd-status-pill {
+  flex: 0 0 auto;
+  font-size: 9px;
+  padding: 0 4px;
+}
+.jd-inline-btn {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 0 5px;
+  font: 10px monospace;
+  cursor: pointer;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+.jd-inline-btn:hover { background: #333; color: #fff; }
+.jd-inline-btn--flash {
+  background: #2a5a2a !important;
+  color: #cfc !important;
+}
+.jd-inline .jd-close {
+  font-size: 13px;
+  padding: 0 3px;
+}
+
+.jd-inline-summary {
+  padding: 3px 6px 4px;
+  line-height: 1.35;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jd-inline-summary-row--ok   { color: #aef; }
+.jd-inline-summary-row--warn { color: #fc9; }
+.jd-inline-summary-row--fail { color: #f88; }
+.jd-inline-summary-row--dim  { color: #888; }
+
+/* ---------- Modal backdrop + container -------------------------------- */
+
+.jd-modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  z-index: 19;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 29;
   display: none;
+  pointer-events: auto;
 }
-.jd-backdrop.jd-open { display: block; }
+.jd-modal-backdrop.jd-open { display: block; }
 
 .jd-modal {
   position: absolute;
-  top: 40px;
+  top: 32px;
   left: 50%;
   transform: translateX(-50%);
   background: #1a1a1a;
@@ -19,26 +107,29 @@
   font: 11px monospace;
   border-radius: 4px;
   border: 1px solid #333;
-  z-index: 20;
-  width: min(780px, 95vw);
-  max-height: calc(100% - 80px);
+  z-index: 30;
+  width: 640px;
+  max-width: 90vw;
+  max-height: calc(100% - 64px);
   display: none;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
 }
 .jd-modal.jd-open { display: flex; }
 
-.jd-titlebar {
+.jd-modal .jd-titlebar {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
   background: #222;
   border-bottom: 1px solid #333;
-  cursor: move;
   user-select: none;
   flex-shrink: 0;
 }
+
+/* ---------- Shared tokens (pill, stepper, close, detail, footer) ------ */
+
 .jd-title {
   font-weight: 600;
   color: #eee;
@@ -53,267 +144,56 @@
 .jd-status-pill.jd-solved { color: #aef; background: rgba(58, 160, 74, 0.18); }
 .jd-status-pill.jd-capped { color: #fc9; background: rgba(212, 160, 58, 0.18); }
 .jd-status-pill.jd-open   { color: #f88; background: rgba(192, 64, 64, 0.18); }
+
 .jd-close {
   cursor: pointer;
   color: #888;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   padding: 0 4px;
-  margin-left: auto;
 }
 .jd-close:hover { color: #eee; }
 
 .jd-stepper {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 3px;
+  padding: 3px 5px;
   background: #1e1e1e;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid #2a2a2a;
   flex-shrink: 0;
 }
 .jd-step-btn {
   background: #2a2a2a;
   border: 1px solid #444;
   color: #ccc;
-  padding: 2px 10px;
+  padding: 0 5px;
   cursor: pointer;
-  border-radius: 3px;
-  font: 11px monospace;
+  border-radius: 2px;
+  font: 10px monospace;
 }
 .jd-step-btn:hover:not(:disabled) { background: #333; color: #fff; }
-.jd-step-btn:disabled { opacity: 0.4; cursor: default; }
+.jd-step-btn:disabled { opacity: 0.35; cursor: default; }
 .jd-step-label {
-  padding: 0 8px;
+  padding: 0 4px;
   color: #bbb;
-}
-.jd-terminal-btn { margin-left: auto; }
-
-.jd-toggle-row {
-  display: flex;
-  gap: 16px;
-  padding: 4px 10px;
-  background: #1e1e1e;
-  border-bottom: 1px solid #333;
-  flex-shrink: 0;
-  font-size: 10px;
-  color: #bbb;
-}
-.jd-toggle-row label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  user-select: none;
-}
-.jd-toggle-row input[type="checkbox"] { margin: 0; }
-
-.jd-body {
-  display: flex;
-  gap: 12px;
-  padding: 10px;
-  overflow: hidden;
+  white-space: nowrap;
   flex: 1 1 auto;
-  min-height: 0;
-}
-
-.jd-minimap-wrap {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-.jd-minimap {
-  --cell: 24px;
-  display: grid;
-  gap: 1px;
-  background: #0f0f0f;
-  padding: 6px;
-  border: 1px solid #333;
-  border-radius: 3px;
-}
-.jd-cell {
-  width: var(--cell);
-  height: var(--cell);
-  position: relative;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(var(--cell) * 0.55);
-  color: #eee;
-  cursor: pointer;
-}
-.jd-cell--margin { background: #141414; }
-.jd-cell--interior { background: #2a2a2a; }
-.jd-cell--forbidden {
-  background-image: repeating-linear-gradient(
-    45deg,
-    #5a3a3a 0 3px,
-    #2a1a1a 3px 6px
-  );
-}
-.jd-cell--seed {
-  outline: 2px solid #4ac;
-  outline-offset: -2px;
-  z-index: 1;
-}
-/* Edge markers: highlight one side of a cell with a coloured bar and
- * direction chevrons, instead of outlining the whole cell. The chevrons
- * always point in the flow direction; the bar sits on the entry edge
- * for inputs and the exit edge for outputs, so the flow physically
- * "crosses" the highlighted edge. */
-.jd-edge {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2;
-  pointer-events: none;
-  font-size: calc(var(--cell) * 0.42);
-  font-weight: 900;
-  letter-spacing: -0.08em;
-  text-shadow: 0 0 2px #000;
-  line-height: 1;
-}
-/* Horizontal edges: full width across the top/bottom */
-.jd-edge--top,
-.jd-edge--bottom {
-  left: 0;
-  right: 0;
-  height: calc(var(--cell) * 0.36);
-}
-.jd-edge--top { top: 0; }
-.jd-edge--bottom { bottom: 0; }
-/* Vertical edges: full height down the left/right; chevrons written
- * vertically so they still read as arrows along the edge. */
-.jd-edge--left,
-.jd-edge--right {
-  top: 0;
-  bottom: 0;
-  width: calc(var(--cell) * 0.36);
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  letter-spacing: -0.12em;
-}
-.jd-edge--left { left: 0; }
-.jd-edge--right { right: 0; }
-/* IN boundaries (items entering the zone) — green */
-.jd-edge--in {
-  background: linear-gradient(rgba(64, 200, 96, 0.85), rgba(64, 200, 96, 0.45));
-  color: #eaffea;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55);
-}
-.jd-edge--in.jd-edge--left,
-.jd-edge--in.jd-edge--right {
-  background: linear-gradient(to right, rgba(64, 200, 96, 0.85), rgba(64, 200, 96, 0.45));
-}
-/* OUT boundaries (items leaving the zone) — red/orange */
-.jd-edge--out {
-  background: linear-gradient(rgba(240, 96, 64, 0.85), rgba(240, 96, 64, 0.45));
-  color: #ffe6d8;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55);
-}
-.jd-edge--out.jd-edge--left,
-.jd-edge--out.jd-edge--right {
-  background: linear-gradient(to right, rgba(240, 96, 64, 0.85), rgba(240, 96, 64, 0.45));
-}
-/* Interior boundaries (flow through a Permanent entity like a splitter
- * body) — dashed outline so they're visually distinct from perimeter. */
-.jd-edge--interior {
-  border: 1px dashed rgba(255, 255, 255, 0.55);
-  box-sizing: border-box;
-}
-.jd-cell--break {
-  outline: 3px solid #f0f;
-  outline-offset: -3px;
-  z-index: 3;
-}
-.jd-cell__glyph {
-  font-weight: bold;
-  text-shadow: 0 0 2px #000;
-  line-height: 1;
-}
-.jd-cell__label {
-  position: absolute;
-  bottom: 0;
-  right: 1px;
-  font-size: calc(var(--cell) * 0.32);
-  color: #fff;
-  text-shadow: 0 0 2px #000;
-  line-height: 1;
-  pointer-events: none;
-}
-
-/* SAT-proposed entity glyph — directional chevron / UG triangle /
- * splitter bar, tinted by carried item via --entity-color. Sits above
- * the ghost dot but below boundary edge markers so the boundaries
- * still read clearly when both overlays are on. */
-.jd-cell__sat-entity {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1;
-  font-size: calc(var(--cell) * 0.62);
-  line-height: 1;
-  color: var(--entity-color, #ddd);
-  text-shadow: 0 0 2px #000, 0 0 2px #000;
-  pointer-events: none;
-  font-weight: 700;
-}
-.jd-cell__sat-entity--ug-in  { opacity: 0.95; }
-.jd-cell__sat-entity--ug-out { opacity: 0.95; }
-.jd-cell__sat-entity--splitter {
-  /* Tilt the bar to read as "splitter body" rather than a minus sign. */
-  font-size: calc(var(--cell) * 0.8);
-  letter-spacing: -0.1em;
-}
-
-/* Ghost-path overlay: a low-opacity strip of item-colored pips near the
- * cell centre. Multiple pips on one tile = a crossing — which is the
- * whole reason to enable this overlay. */
-.jd-cell__ghost-dot {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  gap: 1px;
-  opacity: 0.45;
-  pointer-events: none;
-  z-index: 0;
-}
-.jd-cell__ghost-pip {
-  display: inline-block;
-  width: calc(var(--cell) * 0.2);
-  height: calc(var(--cell) * 0.2);
-  border-radius: 1px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-}
-
-.jd-legend {
-  margin-top: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  text-align: center;
   font-size: 10px;
-  color: #aaa;
 }
-.jd-legend-swatch {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  vertical-align: middle;
-  margin-right: 3px;
-  border: 1px solid #333;
-}
+/* In the modal the stepper is wider and the detail button sits on
+ * the right; inline hides that since the detail button is in the head. */
+.jd-modal .jd-stepper { padding: 4px 8px; gap: 6px; }
+.jd-modal .jd-step-btn { padding: 1px 8px; font-size: 11px; }
+.jd-modal .jd-step-label { font-size: 11px; padding: 0 6px; }
+.jd-terminal-btn { margin-left: 0; }
 
 .jd-detail {
   flex: 1 1 auto;
   overflow-y: auto;
   min-width: 0;
-  padding-right: 4px;
+  padding: 10px 10px 10px 10px;
 }
 .jd-detail details {
   margin-bottom: 10px;
@@ -349,8 +229,6 @@
 .jd-row--dim { color: #888; }
 .jd-row--fail { color: #f88; }
 .jd-row--pass { color: #9f9; }
-.jd-row--click { cursor: pointer; }
-.jd-row--click:hover { background: #2a2a2a; }
 .jd-spec-drop { text-decoration: line-through; opacity: 0.6; }
 
 .jd-footer {

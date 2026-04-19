@@ -4,6 +4,7 @@ export interface DebugState {
   validation: boolean;
   satZones: boolean;
   soloRegions: boolean;
+  ghostTiles: boolean;
 }
 
 type Subscriber = (state: DebugState) => void;
@@ -14,6 +15,7 @@ let state: DebugState = {
   validation: false,
   satZones: false,
   soloRegions: false,
+  ghostTiles: false,
 };
 
 const subs: Subscriber[] = [];
@@ -21,7 +23,14 @@ const subs: Subscriber[] = [];
 export function create(): void {
   const fromParam = new URLSearchParams(window.location.search).get("debug") === "1";
   const fromStorage = localStorage.getItem("fk-debug") === "1";
-  state = { ...state, master: fromParam || fromStorage };
+  const satFromStorage = localStorage.getItem("fk-sat-zones") === "1";
+  const ghostFromStorage = localStorage.getItem("fk-ghost-tiles") === "1";
+  state = {
+    ...state,
+    master: fromParam || fromStorage,
+    satZones: satFromStorage,
+    ghostTiles: ghostFromStorage,
+  };
 }
 
 export function get(): DebugState {
@@ -32,6 +41,12 @@ export function set(patch: Partial<DebugState>): void {
   state = { ...state, ...patch };
   if ("master" in patch) {
     localStorage.setItem("fk-debug", patch.master ? "1" : "0");
+  }
+  if ("satZones" in patch) {
+    localStorage.setItem("fk-sat-zones", patch.satZones ? "1" : "0");
+  }
+  if ("ghostTiles" in patch) {
+    localStorage.setItem("fk-ghost-tiles", patch.ghostTiles ? "1" : "0");
   }
   for (const cb of subs) cb(state);
 }

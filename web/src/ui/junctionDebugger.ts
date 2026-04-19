@@ -1,23 +1,53 @@
-// Junction debugger modal — click a SAT zone, step through the
-// junction solver's iterations. Reads cluster records produced by
-// junctionTrace.ts.
+// Junction debugger UI — two pieces, staged by how much context the
+// user wants:
+//
+//   1. `jd-inline`  — small control anchored next to the selected SAT
+//                     zone. Title, status pill, stepper, one-line
+//                     summary, and a "details" button. Always shown
+//                     while a zone is selected.
+//
+//   2. `jd-modal`   — large detail panel (Summary / Participating /
+//                     Boundaries / SAT stats / Veto / Nearby). Opens
+//                     only when the user hits the details button; has
+//                     its own backdrop so clicks outside close the
+//                     modal but keep the inline + selection.
+//
+// Consumer integration (main.ts):
+//   - `onChange(state)` fires on open/iter-change/close so the PIXI
+//     SAT overlay can update and the entity layer can be dimmed.
+//
+// Keyboard (active while inline OR modal is open):
+//   Esc     — close modal if open, else deselect
+//   ←/→     — step through every (iter, variant) slot linearly
+//   w/s     — jump prev/next iter primary (skips variants)
+//   a/d     — cycle variants within the current iter
+//   Home/End— first/last slot
+//   i       — toggle the details modal
 
 import type { Viewport } from "pixi-viewport";
 import type {
   BoundarySnapshot,
-  SatProposedEntity,
   TraceEvent,
 } from "../wasm-pkg/fucktorio_wasm.js";
-import { TILE_PX, itemColor } from "../renderer/entities";
+import { TILE_PX } from "../renderer/entities";
 import {
   formatFeeder,
   ghostPathsNearBbox,
   terminalIteration,
-  type GhostPathRecord,
   type JunctionCluster,
   type JunctionIteration,
 } from "./junctionTrace";
 import "./junctionDebugger.css";
+
+export interface JunctionSelectionState {
+  cluster: JunctionCluster;
+  iter: JunctionIteration;
+  trace: readonly TraceEvent[] | null;
+}
+
+export interface JunctionDebuggerOptions {
+  onChange: (state: JunctionSelectionState | null) => void;
+}
 
 export interface JunctionDebuggerControls {
   open(cluster: JunctionCluster, trace?: readonly TraceEvent[]): void;
@@ -28,24 +58,35 @@ export interface JunctionDebuggerControls {
 export function createJunctionDebugger(
   container: HTMLElement,
   viewport: Viewport,
+  options: JunctionDebuggerOptions,
 ): JunctionDebuggerControls {
-  // ----- DOM ---------------------------------------------------------------
-  const backdrop = document.createElement("div");
-  backdrop.className = "jd-backdrop";
+  // ----- Inline control (always visible while a zone is selected) ----------
+  const inline = document.createElement("div");
+  inline.className = "jd-inline";
 
-  const modal = document.createElement("div");
-  modal.className = "jd-modal";
-
-  const titleBar = document.createElement("div");
-  titleBar.className = "jd-titlebar";
+  const inlineHead = document.createElement("div");
+  inlineHead.className = "jd-inline-head";
   const title = document.createElement("span");
   title.className = "jd-title";
   const pill = document.createElement("span");
   pill.className = "jd-status-pill";
-  const close = document.createElement("span");
-  close.className = "jd-close";
-  close.textContent = "\u00d7";
-  titleBar.append(title, pill, close);
+  const detailsBtn = document.createElement("button");
+  detailsBtn.className = "jd-inline-btn jd-inline-details-btn";
+  detailsBtn.textContent = "\u2139"; // information source glyph
+  detailsBtn.title = "Show details (i)";
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "jd-inline-btn jd-inline-copy-btn";
+  copyBtn.textContent = "\u29c9"; // two joined squares — "copy" glyph
+  copyBtn.title = "Copy debug dump to clipboard";
+  const fixtureBtn = document.createElement("button");
+  fixtureBtn.className = "jd-inline-btn jd-inline-fixture-btn";
+  fixtureBtn.textContent = "\u26ab"; // black circle — "fixture" glyph (distinct from ⎘)
+  fixtureBtn.title = "Copy as SAT-fixture JSON";
+  const closeInline = document.createElement("span");
+  closeInline.className = "jd-close";
+  closeInline.textContent = "\u00d7";
+  closeInline.title = "Deselect (Esc)";
+  inlineHead.append(title, pill, copyBtn, fixtureBtn, detailsBtn, closeInline);
 
   const stepper = document.createElement("div");
   stepper.className = "jd-stepper";
@@ -61,105 +102,93 @@ export function createJunctionDebugger(
   nextBtn.title = "next iteration (\u2192)";
   const terminalBtn = document.createElement("button");
   terminalBtn.className = "jd-step-btn jd-terminal-btn";
-  terminalBtn.textContent = "\u21ba terminal";
+  terminalBtn.textContent = "\u21ba";
   terminalBtn.title = "jump to default (terminal) iteration";
-  const fixtureBtn = document.createElement("button");
-  fixtureBtn.className = "jd-step-btn";
-  fixtureBtn.textContent = "\u29c9"; // ⧉
-  fixtureBtn.title = "Copy as fixture JSON";
-  stepper.append(prevBtn, stepLabel, nextBtn, terminalBtn, fixtureBtn);
+  stepper.append(prevBtn, stepLabel, nextBtn, terminalBtn);
 
-  // Overlay toggles sit on their own row so the stepper stays readable
-  // at narrow widths. SAT entities are useful by default (that's what
-  // you're debugging); ghost paths are loud, so off by default.
-  const toggleRow = document.createElement("div");
-  toggleRow.className = "jd-toggle-row";
-  const satToggle = document.createElement("input");
-  satToggle.type = "checkbox";
-  satToggle.checked = true;
-  satToggle.id = "jd-toggle-sat";
-  const satLabel = document.createElement("label");
-  satLabel.htmlFor = satToggle.id;
-  satLabel.append(satToggle, document.createTextNode(" SAT entities"));
-  const ghostToggle = document.createElement("input");
-  ghostToggle.type = "checkbox";
-  ghostToggle.checked = false;
-  ghostToggle.id = "jd-toggle-ghost";
-  const ghostLabel = document.createElement("label");
-  ghostLabel.htmlFor = ghostToggle.id;
-  ghostLabel.append(ghostToggle, document.createTextNode(" Ghost paths"));
-  toggleRow.append(satLabel, ghostLabel);
+  const summaryLine = document.createElement("div");
+  summaryLine.className = "jd-inline-summary";
 
-  const body = document.createElement("div");
-  body.className = "jd-body";
-  const minimapWrap = document.createElement("div");
-  minimapWrap.className = "jd-minimap-wrap";
-  const minimap = document.createElement("div");
-  minimap.className = "jd-minimap";
-  const legend = buildLegend();
-  minimapWrap.append(minimap, legend);
+  inline.append(inlineHead, stepper, summaryLine);
+  container.append(inline);
+
+  // ----- Modal (opt-in details) --------------------------------------------
+  const modalBackdrop = document.createElement("div");
+  modalBackdrop.className = "jd-modal-backdrop";
+
+  const modal = document.createElement("div");
+  modal.className = "jd-modal";
+
+  const modalHead = document.createElement("div");
+  modalHead.className = "jd-titlebar";
+  const modalTitle = document.createElement("span");
+  modalTitle.className = "jd-title";
+  modalTitle.textContent = "Junction details";
+  const modalPill = document.createElement("span");
+  modalPill.className = "jd-status-pill";
+  const closeModal = document.createElement("span");
+  closeModal.className = "jd-close";
+  closeModal.textContent = "\u00d7";
+  closeModal.title = "Close details (Esc)";
+  modalHead.append(modalTitle, modalPill, closeModal);
+
   const detail = document.createElement("div");
   detail.className = "jd-detail";
-  body.append(minimapWrap, detail);
 
-  const footer = document.createElement("div");
-  footer.className = "jd-footer";
-  footer.textContent = "Esc to close · \u2190/\u2192 step · Home/End first/last · click tile to pan";
+  const modalFooter = document.createElement("div");
+  modalFooter.className = "jd-footer";
+  modalFooter.textContent =
+    "Esc close · \u2190/\u2192 step all · w/s iter · a/d variant · Home/End first/last";
 
-  modal.append(titleBar, stepper, toggleRow, body, footer);
-  container.append(backdrop, modal);
-
-  // ----- Draggable titlebar ------------------------------------------------
-  {
-    let dragging = false;
-    let offsetX = 0;
-    let offsetY = 0;
-    titleBar.addEventListener("pointerdown", (e) => {
-      if ((e.target as HTMLElement) === close) return;
-      dragging = true;
-      const rect = modal.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-      titleBar.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-    titleBar.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      modal.style.left = `${e.clientX - offsetX}px`;
-      modal.style.top = `${e.clientY - offsetY}px`;
-      modal.style.transform = "none";
-    });
-    titleBar.addEventListener("pointerup", () => {
-      dragging = false;
-    });
-  }
+  modal.append(modalHead, detail, modalFooter);
+  container.append(modalBackdrop, modal);
 
   // ----- State -------------------------------------------------------------
   let currentCluster: JunctionCluster | null = null;
   let currentIter = 0;
-  // Full layout trace for ghost-path extraction. Passed in by `open` so
-  // the debugger stays agnostic to how the trace was fetched.
   let currentTrace: readonly TraceEvent[] | null = null;
-  // Memoized ghost paths per iter bbox — keyed by `${x},${y},${w},${h}`.
-  let ghostPathCache: Map<string, GhostPathRecord[]> = new Map();
+  let modalVisible = false;
 
   function open(cluster: JunctionCluster, trace?: readonly TraceEvent[]): void {
     currentCluster = cluster;
     currentTrace = trace ?? null;
-    ghostPathCache = new Map();
     currentIter = cluster.defaultIterIndex;
-    backdrop.classList.add("jd-open");
-    modal.classList.add("jd-open");
+    inline.classList.add("jd-open");
     render();
-    panToCurrentBbox();
+    updateInlinePosition();
+    // Don't call panToCurrentBbox here — the user already picked where
+    // they wanted to look by clicking the zone. Only pan if the bbox
+    // is actually off-screen (see panIfOffscreen below).
+    panIfOffscreen();
   }
 
-  function closeModal(): void {
+  function closeAll(): void {
+    if (!currentCluster) return;
+    hideModal();
     currentCluster = null;
     currentTrace = null;
-    ghostPathCache = new Map();
-    backdrop.classList.remove("jd-open");
+    inline.classList.remove("jd-open");
+    options.onChange(null);
+  }
+
+  function showModal(): void {
+    if (!currentCluster || modalVisible) return;
+    modalVisible = true;
+    modalBackdrop.classList.add("jd-open");
+    modal.classList.add("jd-open");
+    renderModal();
+  }
+
+  function hideModal(): void {
+    if (!modalVisible) return;
+    modalVisible = false;
+    modalBackdrop.classList.remove("jd-open");
     modal.classList.remove("jd-open");
+  }
+
+  function toggleModal(): void {
+    if (modalVisible) hideModal();
+    else showModal();
   }
 
   function isOpen(): boolean {
@@ -172,28 +201,125 @@ export function createJunctionDebugger(
     if (clamped === currentIter) return;
     currentIter = clamped;
     render();
-    panToCurrentBbox();
+    updateInlinePosition();
+    panIfOffscreen();
   }
 
-  function panToCurrentBbox(): void {
+  /**
+   * Only re-centre the viewport if the current bbox is entirely
+   * outside the visible area. Lets the user keep their framing when
+   * clicking a zone they're already looking at, while still bringing
+   * off-screen zones into view (e.g. when stepping to a larger iter
+   * whose growth pushed the bbox out of frame).
+   */
+  function panIfOffscreen(): void {
     if (!currentCluster) return;
     const it = currentCluster.iterations[currentIter];
     if (!it) return;
+    const leftScreen = viewport.toScreen(it.bbox.x * TILE_PX, it.bbox.y * TILE_PX);
+    const rightScreen = viewport.toScreen(
+      (it.bbox.x + it.bbox.w) * TILE_PX,
+      (it.bbox.y + it.bbox.h) * TILE_PX,
+    );
+    const rect = container.getBoundingClientRect();
+    const offscreen =
+      rightScreen.x < 0 ||
+      leftScreen.x > rect.width ||
+      rightScreen.y < 0 ||
+      leftScreen.y > rect.height;
+    if (!offscreen) return;
     const cx = (it.bbox.x + it.bbox.w / 2) * TILE_PX;
     const cy = (it.bbox.y + it.bbox.h / 2) * TILE_PX;
     viewport.moveCenter(cx, cy);
   }
 
-  function ghostPathsForIter(it: JunctionIteration): GhostPathRecord[] {
-    if (!currentTrace) return [];
-    const key = `${it.bbox.x},${it.bbox.y},${it.bbox.w},${it.bbox.h}`;
-    let cached = ghostPathCache.get(key);
-    if (!cached) {
-      cached = ghostPathsNearBbox(currentTrace, it.bbox, 1);
-      ghostPathCache.set(key, cached);
+  // ----- w/s iter · a/d variant navigation --------------------------------
+
+  function iterGroups(): Map<number, number[]> {
+    const groups = new Map<number, number[]>();
+    const c = currentCluster;
+    if (!c) return groups;
+    for (let i = 0; i < c.iterations.length; i++) {
+      const it = c.iterations[i];
+      const list = groups.get(it.iter) ?? [];
+      list.push(i);
+      groups.set(it.iter, list);
     }
-    return cached;
+    return groups;
   }
+
+  function jumpIter(delta: number): void {
+    if (!currentCluster) return;
+    const groups = iterGroups();
+    const iters = Array.from(groups.keys()).sort((a, b) => a - b);
+    const cur = currentCluster.iterations[currentIter].iter;
+    const idx = iters.indexOf(cur);
+    const next = iters[Math.max(0, Math.min(iters.length - 1, idx + delta))];
+    const indices = groups.get(next) ?? [];
+    const primaryIdx = indices.find(
+      (i) => currentCluster!.iterations[i].variant === "",
+    );
+    setIter(primaryIdx ?? indices[0] ?? currentIter);
+  }
+
+  function cycleVariant(delta: number): void {
+    if (!currentCluster) return;
+    const groups = iterGroups();
+    const cur = currentCluster.iterations[currentIter].iter;
+    const indices = groups.get(cur) ?? [];
+    if (indices.length <= 1) return;
+    const pos = indices.indexOf(currentIter);
+    const nextPos = (pos + delta + indices.length) % indices.length;
+    setIter(indices[nextPos]);
+  }
+
+  // ----- Inline positioning (anchored to world-space bbox) ----------------
+
+  /**
+   * Anchor the inline panel just below the bbox, right-aligned with
+   * the bbox's right edge. That is:
+   *   - panel.right = bbox.right
+   *   - panel.top   = bbox.bottom
+   * If the panel would overflow the container bottom, flip above the
+   * bbox (panel.bottom = bbox.top). If it would overflow the right
+   * edge (because the bbox is near the right wall and the panel is
+   * wider than the bbox), shift it leftward to stay visible.
+   */
+  function updateInlinePosition(): void {
+    if (!currentCluster) return;
+    const it = currentCluster.iterations[currentIter];
+    if (!it) return;
+    const rect = container.getBoundingClientRect();
+    const w = inline.offsetWidth || 200;
+    const h = inline.offsetHeight || 70;
+
+    const bboxRight = (it.bbox.x + it.bbox.w) * TILE_PX;
+    const bboxBottom = (it.bbox.y + it.bbox.h) * TILE_PX;
+    const bboxTop = it.bbox.y * TILE_PX;
+    const brScreen = viewport.toScreen(bboxRight, bboxBottom);
+    const trScreen = viewport.toScreen(bboxRight, bboxTop);
+
+    // Preferred: below the bbox, right-aligned with its right edge.
+    let left = brScreen.x - w;
+    let top = brScreen.y;
+
+    // Flip above if we'd overflow the bottom.
+    if (top + h > rect.height - 4) {
+      top = trScreen.y - h;
+    }
+    // Clamp horizontally so the panel never escapes the container.
+    left = Math.max(4, Math.min(left, rect.width - w - 4));
+    top = Math.max(4, Math.min(top, rect.height - h - 4));
+
+    inline.style.left = `${left}px`;
+    inline.style.top = `${top}px`;
+  }
+
+  viewport.on("moved", updateInlinePosition);
+  viewport.on("zoomed", updateInlinePosition);
+  window.addEventListener("resize", updateInlinePosition);
+
+  // ----- Render -----------------------------------------------------------
 
   function render(): void {
     if (!currentCluster) return;
@@ -202,40 +328,44 @@ export function createJunctionDebugger(
 
     title.textContent = `Junction (${c.seed.x},${c.seed.y})`;
     pill.className = `jd-status-pill jd-${c.outcome.kind.toLowerCase()}`;
-    pill.textContent = pillText(c);
+    pill.textContent = outcomePill(c);
 
     const n = c.iterations.length;
     const variantSuffix = it && it.variant ? ` · ${it.variant}` : "";
-    stepLabel.textContent = `iter ${it ? it.iter : "-"}${variantSuffix} · ${currentIter + 1} / ${n}`;
+    stepLabel.textContent = `iter ${it ? it.iter : "-"}${variantSuffix} · ${currentIter + 1}/${n}`;
     prevBtn.disabled = currentIter <= 0;
     nextBtn.disabled = currentIter >= n - 1;
     terminalBtn.disabled = currentIter === c.defaultIterIndex;
 
-    const overlays: OverlayOptions = {
-      showSatEntities: satToggle.checked,
-      showGhostPaths: ghostToggle.checked,
-      ghostPaths: it && ghostToggle.checked ? ghostPathsForIter(it) : [],
-    };
-    // Hide the ghost-paths toggle entirely when we have no trace to
-    // extract from — keeps the UI honest about which overlays are
-    // actually wired.
-    ghostLabel.style.display = currentTrace ? "" : "none";
-    renderMinimap(minimap, c, it, overlays);
+    summaryLine.innerHTML = "";
+    for (const line of inlineSummaryLines(c, it)) {
+      const row = document.createElement("div");
+      row.className = `jd-inline-summary-row jd-inline-summary-row--${line.tone}`;
+      row.textContent = line.text;
+      summaryLine.appendChild(row);
+    }
+
+    if (modalVisible) renderModal();
+
+    if (it) {
+      options.onChange({ cluster: c, iter: it, trace: currentTrace });
+    }
+  }
+
+  function renderModal(): void {
+    if (!currentCluster) return;
+    const c = currentCluster;
+    const it = c.iterations[currentIter];
+    modalPill.className = `jd-status-pill jd-${c.outcome.kind.toLowerCase()}`;
+    modalPill.textContent = outcomePill(c);
+    modalTitle.textContent = `Junction (${c.seed.x},${c.seed.y})`;
     renderDetail(detail, c, it);
   }
 
   // ----- Wiring ------------------------------------------------------------
-  close.addEventListener("click", closeModal);
-  backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) closeModal();
-  });
-  prevBtn.addEventListener("click", () => setIter(currentIter - 1));
-  nextBtn.addEventListener("click", () => setIter(currentIter + 1));
-  terminalBtn.addEventListener("click", () => {
-    if (currentCluster) setIter(currentCluster.defaultIterIndex);
-  });
-  satToggle.addEventListener("change", render);
-  ghostToggle.addEventListener("change", render);
+  closeInline.addEventListener("click", closeAll);
+  detailsBtn.addEventListener("click", toggleModal);
+  copyBtn.addEventListener("click", copyDebugDump);
   fixtureBtn.addEventListener("click", () => {
     if (!currentCluster) return;
     const json = buildFixtureJson(
@@ -245,268 +375,256 @@ export function createJunctionDebugger(
     );
     flashAndCopy(fixtureBtn, json);
   });
+  closeModal.addEventListener("click", hideModal);
+  modalBackdrop.addEventListener("click", hideModal);
 
-  // Capture-phase keyboard handler so we win the race against any
-  // bubble-phase global shortcuts (e.g. stepThrough's ArrowLeft/Right).
+  function copyDebugDump(): void {
+    if (!currentCluster) return;
+    const dump = buildDebugDump(currentCluster, currentIter);
+    const json = JSON.stringify(
+      dump,
+      (_k, v) => (typeof v === "bigint" ? String(v) : v),
+      2,
+    );
+    // Try the modern clipboard API; fall back to a textarea for older
+    // contexts (insecure http, etc.).
+    const done = (ok: boolean) => {
+      const original = copyBtn.textContent;
+      copyBtn.textContent = ok ? "\u2713" : "!";
+      copyBtn.classList.add("jd-inline-btn--flash");
+      window.setTimeout(() => {
+        copyBtn.textContent = original;
+        copyBtn.classList.remove("jd-inline-btn--flash");
+      }, 900);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(json).then(
+        () => done(true),
+        () => done(false),
+      );
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = json;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        done(true);
+      } catch {
+        done(false);
+      }
+      document.body.removeChild(ta);
+    }
+  }
+
+  prevBtn.addEventListener("click", () => setIter(currentIter - 1));
+  nextBtn.addEventListener("click", () => setIter(currentIter + 1));
+  terminalBtn.addEventListener("click", () => {
+    if (currentCluster) setIter(currentCluster.defaultIterIndex);
+  });
+
   document.addEventListener(
     "keydown",
     (e) => {
       if (!isOpen()) return;
       const tag = (e.target as HTMLElement | null)?.tagName?.toUpperCase();
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "Escape") {
-        closeModal();
+      const key = e.key;
+      const consume = () => {
         e.stopImmediatePropagation();
         e.preventDefault();
-      } else if (e.key === "ArrowLeft") {
+      };
+      if (key === "Escape") {
+        // Staged close: modal first, then the whole debugger.
+        if (modalVisible) hideModal();
+        else closeAll();
+        consume();
+      } else if (key === "ArrowLeft") {
         setIter(currentIter - 1);
-        e.stopImmediatePropagation();
-        e.preventDefault();
-      } else if (e.key === "ArrowRight") {
+        consume();
+      } else if (key === "ArrowRight") {
         setIter(currentIter + 1);
-        e.stopImmediatePropagation();
-        e.preventDefault();
-      } else if (e.key === "Home") {
+        consume();
+      } else if (key === "Home") {
         setIter(0);
-        e.stopImmediatePropagation();
-        e.preventDefault();
-      } else if (e.key === "End" && currentCluster) {
+        consume();
+      } else if (key === "End" && currentCluster) {
         setIter(currentCluster.iterations.length - 1);
-        e.stopImmediatePropagation();
-        e.preventDefault();
+        consume();
+      } else if (key === "w" || key === "W") {
+        jumpIter(-1);
+        consume();
+      } else if (key === "s" || key === "S") {
+        jumpIter(+1);
+        consume();
+      } else if (key === "a" || key === "A") {
+        cycleVariant(-1);
+        consume();
+      } else if (key === "d" || key === "D") {
+        cycleVariant(+1);
+        consume();
+      } else if (key === "i" || key === "I") {
+        toggleModal();
+        consume();
       }
     },
     { capture: true },
   );
 
-  // Click-in-minimap pan is wired inside renderMinimap (per-cell listener).
-  void panFromCell; // silence until used
-
-  function panFromCell(tx: number, ty: number): void {
-    viewport.moveCenter((tx + 0.5) * TILE_PX, (ty + 0.5) * TILE_PX);
-  }
-
-  function attachCellPan(cell: HTMLDivElement, tx: number, ty: number): void {
-    cell.addEventListener("click", () => panFromCell(tx, ty));
-  }
-
-  // Expose the attach helper to renderMinimap via closure.
-  (minimap as unknown as { __attachPan: typeof attachCellPan }).__attachPan = attachCellPan;
-
-  return { open, close: closeModal, isOpen };
+  return { open, close: closeAll, isOpen };
 }
 
 // -----------------------------------------------------------------------
-// Rendering helpers
+// Summary helpers
 // -----------------------------------------------------------------------
 
-function pillText(cluster: JunctionCluster): string {
+/**
+ * Compact debug dump for sharing a specific cluster+iter with the
+ * investigator. The focus is **boundaries** — that's the primary
+ * signal for understanding why a solve succeeded or failed. Everything
+ * else (full tile lists, proposed entities, SAT clauses, nearby
+ * stamped summary) is trimmed away.
+ *
+ * Per-iter we keep: bbox, variant, stripped boundaries, attempts,
+ * veto, and a tiny SAT summary (satisfied / vars / clauses / time).
+ * Per-boundary we keep: x, y, direction, item, is_input, interior,
+ * plus a one-line feeder stringification when present.
+ */
+function buildDebugDump(cluster: JunctionCluster, currentIter: number): unknown {
+  const stripFeeder = (f: { entity_name: string; entity_x: number; entity_y: number; direction: string } | undefined) =>
+    f ? `${f.entity_name}@(${f.entity_x},${f.entity_y}) ${f.direction}` : undefined;
+  const stripBoundary = (b: {
+    x: number;
+    y: number;
+    direction: string;
+    item: string;
+    is_input: boolean;
+    interior: boolean;
+    spec_key: string;
+    external_feeder?: { entity_name: string; entity_x: number; entity_y: number; direction: string };
+  }): Record<string, unknown> => {
+    const out: Record<string, unknown> = {
+      x: b.x,
+      y: b.y,
+      dir: b.direction,
+      item: b.item,
+      in: b.is_input,
+    };
+    if (b.interior) out.interior = true;
+    if (b.spec_key) out.spec = b.spec_key;
+    const f = stripFeeder(b.external_feeder);
+    if (f) out.feeder = f;
+    return out;
+  };
+  const iterations = cluster.iterations.map((it, idx) => {
+    const bs = it.sat?.boundaries ?? it.boundaries;
+    const row: Record<string, unknown> = {
+      idx,
+      iter: it.iter,
+      bbox: it.bbox,
+      boundaries: bs.map(stripBoundary),
+      attempts: it.attempts.map((a) => ({
+        strategy: a.strategy,
+        outcome: a.outcome,
+        ...(a.detail ? { detail: a.detail } : {}),
+      })),
+    };
+    if (it.variant) row.variant = it.variant;
+    if (it.veto) row.veto = it.veto;
+    if (it.sat) {
+      row.sat = {
+        satisfied: it.sat.satisfied,
+        vars: it.sat.variables,
+        clauses: it.sat.clauses,
+        solveUs: it.sat.solve_time_us,
+      };
+    }
+    return row;
+  });
+  return {
+    url: window.location.href,
+    ts: new Date().toISOString(),
+    currentIterIndex: currentIter,
+    seed: cluster.seed,
+    outcome: cluster.outcome,
+    participating: cluster.participating.map((p) => ({
+      key: p.key,
+      item: p.item,
+      start: [p.initial_tile_x, p.initial_tile_y],
+    })),
+    iterations,
+  };
+}
+
+function outcomePill(cluster: JunctionCluster): string {
   switch (cluster.outcome.kind) {
     case "Solved":
-      return `Solved · ${cluster.outcome.strategy} · ${cluster.outcome.regionTiles} tiles`;
+      return `Solved · ${cluster.outcome.regionTiles}t`;
     case "Capped":
-      return `Capped · ${cluster.outcome.iters} iter · ${cluster.outcome.reason}`;
+      return `Capped · ${cluster.outcome.iters} iter`;
     case "Open":
       return "Open";
   }
 }
 
-function buildLegend(): HTMLDivElement {
-  const l = document.createElement("div");
-  l.className = "jd-legend";
-  const rows: [string, string][] = [
-    ["#2a2a2a", "bbox interior"],
-    ["repeating-linear-gradient(45deg,#5a3a3a 0 3px,#2a1a1a 3px 6px)", "forbidden"],
-    ["transparent", "in ◀ / out ▶ border"],
-  ];
-  for (const [bg, label] of rows) {
-    const span = document.createElement("span");
-    const sw = document.createElement("span");
-    sw.className = "jd-legend-swatch";
-    sw.style.background = bg;
-    if (label.includes("border")) {
-      sw.style.background = "#2a2a2a";
-      sw.style.borderLeft = "2px solid #4f4";
-      sw.style.borderRight = "2px solid #f44";
-    }
-    span.append(sw, document.createTextNode(label));
-    l.appendChild(span);
-  }
-  return l;
+interface SummaryLine {
+  text: string;
+  tone: "ok" | "warn" | "fail" | "dim";
 }
 
 /**
- * Prefer the SAT-invocation's boundary list when SAT ran this iter —
- * those reflect the strategy-level modifications (interior-boundary
- * detection, physical-feeder direction overrides) that SAT actually
- * reasoned about. Fall back to the raw growth-iteration boundaries
- * when no SAT strategy fired.
+ * Single most-informative line about this particular iter. Prefers
+ * the per-iter "why didn't it work" signal (veto / last failed
+ * attempt) over the cluster-level outcome so stepping actually
+ * surfaces new info. Falls back to the cluster outcome when the iter
+ * has nothing specific to say.
  */
-function effectiveBoundaries(it: JunctionIteration): BoundarySnapshot[] {
-  return it.sat?.boundaries ?? it.boundaries;
-}
-
-interface OverlayOptions {
-  showSatEntities: boolean;
-  showGhostPaths: boolean;
-  ghostPaths: readonly GhostPathRecord[];
-}
-
-function renderMinimap(
-  el: HTMLDivElement,
+function inlineSummaryLines(
   cluster: JunctionCluster,
   it: JunctionIteration | undefined,
-  overlays: OverlayOptions,
-): void {
-  el.innerHTML = "";
-  if (!it) return;
-
-  const margin = 1; // 1-tile pad on each side
-  const gridW = it.bbox.w + margin * 2;
-  const gridH = it.bbox.h + margin * 2;
-  const origin = { x: it.bbox.x - margin, y: it.bbox.y - margin };
-
-  // Cell size: clamp 12..24 based on the larger dimension
-  const maxDim = Math.max(gridW, gridH);
-  const cellPx = Math.max(12, Math.min(24, Math.floor(280 / Math.max(maxDim, 1))));
-
-  el.style.setProperty("--cell", `${cellPx}px`);
-  el.style.gridTemplateColumns = `repeat(${gridW}, var(--cell))`;
-
-  const tilesIn = new Set(it.tiles.map(([x, y]) => `${x},${y}`));
-  const forbiddenIn = new Set(it.forbidden.map(([x, y]) => `${x},${y}`));
-  const boundaryByTile = new Map<string, BoundarySnapshot>();
-  for (const b of effectiveBoundaries(it)) boundaryByTile.set(`${b.x},${b.y}`, b);
-
-  // SAT-proposed entities (pre-prune). Indexed by tile so the per-cell
-  // loop can overlay a glyph without scanning the list each time.
-  const satByTile = new Map<string, SatProposedEntity>();
-  if (overlays.showSatEntities && it.sat?.proposed_entities) {
-    for (const e of it.sat.proposed_entities) {
-      satByTile.set(`${e.x},${e.y}`, e);
+): SummaryLine[] {
+  if (it) {
+    if (it.veto) {
+      return [{
+        text: `veto · ${truncate(it.veto.broken_segment, 22)} @ (${it.veto.break_tile_x},${it.veto.break_tile_y})`,
+        tone: "warn",
+      }];
+    }
+    const lastWin = it.attempts.find((a) => a.outcome === "Solved");
+    if (lastWin) {
+      return [{ text: `${lastWin.strategy} ok · ${lastWin.elapsedUs}µs`, tone: "ok" }];
+    }
+    const lastFail = [...it.attempts].reverse().find((a) => a.outcome !== "Solved");
+    if (lastFail) {
+      const detail = lastFail.detail ? ` · ${truncate(lastFail.detail, 28)}` : "";
+      return [{
+        text: `${lastFail.strategy} → ${truncate(lastFail.outcome, 12)}${detail}`,
+        tone: "fail",
+      }];
     }
   }
-
-  // Ghost-path items per tile. A single tile can sit on multiple ghost
-  // paths (the crossings we care about); record every item that touches
-  // it so we can hint at the conflict visually.
-  const ghostItemsByTile = new Map<string, string[]>();
-  if (overlays.showGhostPaths) {
-    for (const p of overlays.ghostPaths) {
-      for (const [tx, ty] of p.tiles) {
-        const key = `${tx},${ty}`;
-        const list = ghostItemsByTile.get(key) ?? [];
-        if (!list.includes(p.item)) list.push(p.item);
-        ghostItemsByTile.set(key, list);
-      }
-    }
+  switch (cluster.outcome.kind) {
+    case "Solved":
+      return [{ text: `solved @ iter ${cluster.outcome.growthIter}`, tone: "ok" }];
+    case "Capped":
+      return [{ text: `cap: ${truncate(cluster.outcome.reason, 32)}`, tone: "fail" }];
+    case "Open":
+      return [{ text: "open — never terminated", tone: "warn" }];
   }
+}
 
-  const attach = (el as unknown as { __attachPan?: (c: HTMLDivElement, tx: number, ty: number) => void })
-    .__attachPan;
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1)}\u2026`;
+}
 
-  for (let gy = 0; gy < gridH; gy++) {
-    for (let gx = 0; gx < gridW; gx++) {
-      const tx = origin.x + gx;
-      const ty = origin.y + gy;
-      const key = `${tx},${ty}`;
-      const cell = document.createElement("div");
-      cell.className = "jd-cell";
-      cell.dataset.tx = String(tx);
-      cell.dataset.ty = String(ty);
+// -----------------------------------------------------------------------
+// Detail-panel rendering (only drawn when the modal is open)
+// -----------------------------------------------------------------------
 
-      const inBbox = tilesIn.has(key);
-      if (inBbox) {
-        cell.classList.add("jd-cell--interior");
-      } else {
-        cell.classList.add("jd-cell--margin");
-      }
-
-      if (forbiddenIn.has(key)) cell.classList.add("jd-cell--forbidden");
-
-      if (tx === cluster.seed.x && ty === cluster.seed.y) {
-        cell.classList.add("jd-cell--seed");
-      }
-
-      // Ghost-path dot sits at the back of the stack so SAT glyphs and
-      // boundary markers still read on top. Multiple items on the same
-      // tile stack as a tiny row of colored squares — that's exactly
-      // the crossing conflict the user wants to see.
-      const ghostItems = ghostItemsByTile.get(key);
-      if (ghostItems && ghostItems.length > 0) {
-        const dot = document.createElement("span");
-        dot.className = "jd-cell__ghost-dot";
-        // Paint each item as a ~4px colored square stacked horizontally.
-        for (const item of ghostItems) {
-          const pip = document.createElement("span");
-          pip.className = "jd-cell__ghost-pip";
-          pip.style.background = colorHex(item);
-          pip.title = `ghost path · ${item}`;
-          dot.appendChild(pip);
-        }
-        cell.appendChild(dot);
-      }
-
-      const sat = satByTile.get(key);
-      if (sat) {
-        const glyph = document.createElement("span");
-        glyph.className = ["jd-cell__sat-entity", satEntityKindClass(sat)]
-          .filter(Boolean)
-          .join(" ");
-        glyph.style.setProperty("--entity-color", colorHex(sat.carries ?? ""));
-        glyph.textContent = satGlyph(sat);
-        glyph.title = `SAT · ${sat.name}${sat.carries ? ` · ${sat.carries}` : ""} · ${sat.direction}${sat.io_type ? ` · ${sat.io_type}` : ""}`;
-        cell.appendChild(glyph);
-      }
-
-      if (it.veto && it.veto.break_tile_x === tx && it.veto.break_tile_y === ty) {
-        cell.classList.add("jd-cell--break");
-        const mark = document.createElement("span");
-        mark.className = "jd-cell__glyph";
-        mark.textContent = "!";
-        mark.style.color = "#f6f";
-        cell.appendChild(mark);
-      }
-
-      const b = boundaryByTile.get(key);
-      if (b) {
-        // Highlight the *edge* where flow crosses, not the whole cell.
-        // For an IN boundary: items enter the cell coming from the
-        // side opposite the flow direction, so we mark that edge. For
-        // an OUT boundary: items exit the cell through the edge on
-        // the flow-direction side.
-        const edge = boundaryEdge(b.is_input, b.direction);
-        const marker = document.createElement("span");
-        marker.className = [
-          "jd-edge",
-          `jd-edge--${edge}`,
-          b.is_input ? "jd-edge--in" : "jd-edge--out",
-          b.interior ? "jd-edge--interior" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        // Chevrons always point in the flow direction. Repeated glyphs
-        // ride along the edge so direction reads cleanly even at 12px
-        // cells.
-        marker.textContent = dirGlyph(b.direction).repeat(3);
-        cell.appendChild(marker);
-        const label = document.createElement("span");
-        label.className = "jd-cell__label";
-        label.textContent = itemAbbr(b.item);
-        cell.appendChild(label);
-        cell.title = `${b.is_input ? "IN" : "OUT"} (${b.x},${b.y}) ${b.direction} ${b.item}${
-          b.spec_key ? ` · ${b.spec_key}` : ""
-        }${b.interior ? " · interior" : ""}${
-          b.external_feeder ? ` · feeder ${formatFeeder(b.external_feeder)}` : ""
-        }`;
-      } else if (inBbox) {
-        cell.title = `(${tx},${ty})`;
-      }
-
-      if (attach) attach(cell, tx, ty);
-      el.appendChild(cell);
-    }
-  }
+function effectiveBoundaries(it: JunctionIteration): BoundarySnapshot[] {
+  return it.sat?.boundaries ?? it.boundaries;
 }
 
 function dirGlyph(dir: string): string {
@@ -517,83 +635,6 @@ function dirGlyph(dir: string): string {
     case "West": return "\u2190";
     default: return "?";
   }
-}
-
-/**
- * Which edge of the boundary's cell the flow actually crosses.
- * Inputs cross the edge OPPOSITE the flow direction (items come from
- * that side); outputs cross the edge MATCHING the flow direction
- * (items leave toward that side).
- */
-function boundaryEdge(
-  isInput: boolean,
-  dir: string,
-): "top" | "right" | "bottom" | "left" {
-  const map: Record<string, "top" | "right" | "bottom" | "left"> = isInput
-    ? { North: "bottom", East: "left", South: "top", West: "right" }
-    : { North: "top", East: "right", South: "bottom", West: "left" };
-  return map[dir] ?? "top";
-}
-
-function itemAbbr(item: string): string {
-  // Use the first alpha chars of each hyphen-segment, max 2 chars
-  const parts = item.split("-");
-  if (parts.length === 1) return parts[0].slice(0, 2);
-  return (parts[0][0] ?? "") + (parts[1][0] ?? "");
-}
-
-function colorHex(item: string): string {
-  // itemColor returns 0xRRGGBB; pad to six hex chars.
-  const n = itemColor(item) >>> 0;
-  return "#" + n.toString(16).padStart(6, "0");
-}
-
-/**
- * Classify a SAT-proposed entity for CSS — surface belts, UG-in / UG-out,
- * splitter. Non-belt entities (poles, inserters) fall into the generic
- * class and get a `?` glyph so they're at least visible.
- */
-function satEntityKindClass(e: SatProposedEntity): string {
-  if (e.name.includes("underground-belt")) {
-    return e.io_type === "input"
-      ? "jd-cell__sat-entity--ug-in"
-      : "jd-cell__sat-entity--ug-out";
-  }
-  if (e.name.includes("splitter")) return "jd-cell__sat-entity--splitter";
-  if (e.name.includes("transport-belt")) return "jd-cell__sat-entity--belt";
-  return "jd-cell__sat-entity--other";
-}
-
-/**
- * Single-char glyph for the cell. Surface belts get a directional
- * chevron; UG-in shows a filled triangle pointing into the ground
- * (flow direction); UG-out shows an outline triangle pointing out
- * (flow direction); splitters get a thick bar. Everything falls back
- * to a dot so we don't render a blank cell.
- */
-function satGlyph(e: SatProposedEntity): string {
-  const kind = satEntityKindClass(e);
-  if (kind === "jd-cell__sat-entity--ug-in") {
-    // Filled triangle in flow direction to read as "diving under".
-    switch (e.direction) {
-      case "North": return "\u25b2"; // ▲
-      case "East":  return "\u25b6"; // ▶
-      case "South": return "\u25bc"; // ▼
-      case "West":  return "\u25c0"; // ◀
-    }
-  }
-  if (kind === "jd-cell__sat-entity--ug-out") {
-    // Open triangle to distinguish from UG-in.
-    switch (e.direction) {
-      case "North": return "\u25b3"; // △
-      case "East":  return "\u25b7"; // ▷
-      case "South": return "\u25bd"; // ▽
-      case "West":  return "\u25c1"; // ◁
-    }
-  }
-  if (kind === "jd-cell__sat-entity--splitter") return "\u25ac"; // ▬
-  if (kind === "jd-cell__sat-entity--belt") return dirGlyph(e.direction);
-  return "\u00b7"; // middle dot fallback
 }
 
 function renderDetail(
@@ -615,7 +656,10 @@ function renderDetail(
   }
 }
 
-function section(title: string, open: boolean = true): { details: HTMLDetailsElement; bodyEl: HTMLDivElement } {
+function section(
+  title: string,
+  open: boolean = true,
+): { details: HTMLDetailsElement; bodyEl: HTMLDivElement } {
   const details = document.createElement("details");
   if (open) details.open = true;
   const summary = document.createElement("summary");
@@ -805,7 +849,6 @@ function renderNearby(cluster: JunctionCluster): HTMLDetailsElement {
   return details;
 }
 
-// Provide a typed getter for terminalIteration's return when needed elsewhere.
 void terminalIteration;
 
 // -----------------------------------------------------------------------

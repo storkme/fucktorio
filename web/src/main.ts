@@ -18,6 +18,8 @@ import { renderTraceOverlay, getTracePhases, eventsUpToPhase, type TraceEvent, t
 import { renderValidationOverlay } from "./renderer/validationOverlay";
 import { renderRegionOverlayDetailed, type RegionOverlayItem } from "./renderer/regionOverlay";
 import { renderJunctionZoneOverlay } from "./renderer/junctionZoneOverlay";
+import { createSatZoneOverlay } from "./renderer/satZoneOverlay";
+import { renderGhostTilesOverlay } from "./renderer/ghostTilesOverlay";
 import { groupJunctionClusters, type JunctionCluster } from "./ui/junctionTrace";
 import { createJunctionDebugger } from "./ui/junctionDebugger";
 import * as debugState from "./state/debugState";
@@ -98,7 +100,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   // --- Modules ---
   const overlayControls = createOverlayPanel(container);
-  const { debugCb, stepCb, valCb, regionsCb, soloRegionsCb, updateCoords } = overlayControls;
+  const { debugCb, stepCb, valCb, regionsCb, soloRegionsCb, ghostTilesCb, updateCoords } = overlayControls;
 
   const inspector = createInspector(container);
 
@@ -108,12 +110,39 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     updateValidationOverlay();
   });
 
-  const junctionDebugger = createJunctionDebugger(container, viewport);
+  // Detailed PIXI overlay for the selected SAT zone. Added to the
+  // viewport (not entityLayer) so the entityLayer-dim on select
+  // doesn't drag the overlay down with it.
+  const satZoneOverlay = createSatZoneOverlay();
+
+  // Last-known selection. Used by the canvas pointerdown handler to
+  // check whether a click landed outside the current bbox (→ deselect).
+  let selectedJunction: { bboxX: number; bboxY: number; bboxW: number; bboxH: number } | null = null;
+
+  const junctionDebugger = createJunctionDebugger(container, viewport, {
+    onChange: (state) => {
+      satZoneOverlay.update(state);
+      if (state) {
+        // Dim everything else so the SAT overlay pops. The overlay
+        // itself lives on the viewport, not entityLayer, so it stays
+        // at full brightness.
+        entityLayer.alpha = 0.35;
+        const b = state.iter.bbox;
+        selectedJunction = { bboxX: b.x, bboxY: b.y, bboxW: b.w, bboxH: b.h };
+      } else {
+        entityLayer.alpha = 1;
+        selectedJunction = null;
+      }
+    },
+  });
 
   setupSnapshotDropZone(container, (snap) => snapshotMode.load(snap));
 
   const entityLayer = new Container();
   viewport.addChild(entityLayer);
+  // SAT-zone detail overlay sits above the entity layer so the bbox,
+  // boundary bars, and item icons always read on top of the belts.
+  viewport.addChild(satZoneOverlay.layer);
   viewport.moveCenter(WORLD_SIZE / 2, WORLD_SIZE / 2);
 
   // Click-to-inspect removed; pass no-op to renderLayout.
@@ -269,6 +298,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   let regionHitTest: ((wx: number, wy: number) => RegionOverlayItem | null) | null = null;
   let junctionOverlayLayer: Container | null = null;
   let junctionHitTest: ((wx: number, wy: number) => JunctionCluster | null) | null = null;
+  let ghostTilesLayer: Container | null = null;
 
   function panToTile(x: number, y: number): void {
     viewport.moveCenter(x * TILE_PX + TILE_PX / 2, y * TILE_PX + TILE_PX / 2);
@@ -327,6 +357,22 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     valCircleMap = result.circleMap;
     issuesDialog.setCircleMap(valCircleMap);
     issuesDialog.populate(cachedValidationIssues, debugCb.checked, valCb.checked);
+  }
+
+  function updateGhostTilesOverlay(): void {
+    if (ghostTilesLayer) {
+      viewport.removeChild(ghostTilesLayer);
+      ghostTilesLayer.destroy({ children: true });
+      ghostTilesLayer = null;
+    }
+    if (!debugCb.checked || !ghostTilesCb.checked || !lastLayout) return;
+    const layer = renderGhostTilesOverlay(lastLayout.trace);
+    if (!layer) return;
+    ghostTilesLayer = layer;
+    // Attach below the entity layer so belts/machines read on top of
+    // the cyan wash. `addChildAt(layer, 0)` puts it at the bottom of
+    // the viewport's z-order.
+    viewport.addChildAt(ghostTilesLayer, 0);
   }
 
   function updateRegionOverlay(): void {
@@ -439,8 +485,9 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
   });
 
   // Click handling for SAT regions + junction zones. Junction click
-  // takes precedence: it opens the step-through modal. Non-junction
-  // regions fall through to the legacy pan-to-center behaviour.
+  // takes precedence: it opens the step-through modal. When a zone is
+  // already selected, a click outside its bbox deselects it — matches
+  // the "selected thing dims everything else" UX convention.
   app.canvas.addEventListener("pointerdown", (e) => {
     if (!regionsCb.checked) return;
     if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
@@ -450,6 +497,24 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     if (jc) {
       junctionDebugger.open(jc, lastLayout?.trace);
       return;
+    }
+    // Clicked off any junction zone. If a zone is currently selected
+    // and the click wasn't on its (possibly-grown) bbox either, close
+    // the debugger. We check the stored selection bbox because the
+    // hit-test above uses the terminal bbox, which may differ from
+    // the current iter's bbox.
+    if (selectedJunction) {
+      const wx = world.x / TILE_PX;
+      const wy = world.y / TILE_PX;
+      const inside =
+        wx >= selectedJunction.bboxX &&
+        wy >= selectedJunction.bboxY &&
+        wx < selectedJunction.bboxX + selectedJunction.bboxW &&
+        wy < selectedJunction.bboxY + selectedJunction.bboxH;
+      if (!inside) {
+        junctionDebugger.close();
+        return;
+      }
     }
     const it = regionHitTest?.(world.x, world.y) ?? null;
     if (it) {
@@ -567,6 +632,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     updateTraceOverlay();
     updateValidationOverlay();
     updateRegionOverlay();
+    updateGhostTilesOverlay();
     const w = layout.width ?? 0;
     const h = layout.height ?? 0;
     if (w > 0 && h > 0) {
@@ -686,7 +752,9 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
       updateTraceOverlay();
       updateValidationOverlay();
       updateRegionOverlay();
+      updateGhostTilesOverlay();
     });
+    ghostTilesCb.addEventListener("change", updateGhostTilesOverlay);
     stepCb.addEventListener("change", () => {
       stepThrough.reset();
       updateTraceOverlay();
