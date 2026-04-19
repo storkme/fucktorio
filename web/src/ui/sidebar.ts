@@ -114,14 +114,6 @@ export interface SidebarParams {
 /** Callbacks the sidebar can use to read canvas overlay state. */
 export interface SidebarOptions {
   getDebugMode?: () => boolean;
-  /** Called after the sidebar creates its display toggles. */
-  onDisplayToggles?: (toggles: DisplayToggles) => void;
-}
-
-/** Controls exposed for the display toggle checkboxes. */
-export interface DisplayToggles {
-  colorCb: HTMLInputElement;
-  rateCb: HTMLInputElement;
 }
 
 export function renderSidebar(
@@ -293,41 +285,6 @@ export function renderSidebar(
   );
   valSection.style.display = "none";
   inner.appendChild(valSection);
-
-  // ==================== DISPLAY ====================
-  const { section: displaySection, body: displayBody } = makeSection(
-    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M4.05 4.05l1.41 1.41M10.54 10.54l1.41 1.41M4.05 11.95l1.41-1.41M10.54 5.46l1.41-1.41"/></svg>`,
-    "Display",
-  );
-
-  const togglesWrap = document.createElement("div");
-  togglesWrap.className = "sb-toggles";
-
-  const colorCb = document.createElement("input");
-  colorCb.type = "checkbox";
-  colorCb.checked = false;
-  const colorToggle = document.createElement("label");
-  colorToggle.className = "sb-toggle";
-  colorToggle.appendChild(colorCb);
-  colorToggle.appendChild(document.createTextNode("Item colours"));
-  togglesWrap.appendChild(colorToggle);
-
-  const rateCb = document.createElement("input");
-  rateCb.type = "checkbox";
-  rateCb.checked = false;
-  const rateToggle = document.createElement("label");
-  rateToggle.className = "sb-toggle";
-  rateToggle.appendChild(rateCb);
-  rateToggle.appendChild(document.createTextNode("Rates"));
-  togglesWrap.appendChild(rateToggle);
-
-  displayBody.appendChild(togglesWrap);
-  // Mark display section so snapshot mode doesn't disable its controls
-  displaySection.setAttribute("data-snapshot-keep", "");
-  inner.appendChild(displaySection);
-
-  // Expose toggles to main.ts
-  options?.onDisplayToggles?.({ colorCb, rateCb });
 
   el.appendChild(inner);
 

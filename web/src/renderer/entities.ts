@@ -101,9 +101,6 @@ function hslToHex(h: number, s: number, l: number): number {
 let itemColoringEnabled = true;
 export function setItemColoring(enabled: boolean): void { itemColoringEnabled = enabled; }
 
-let rateOverlayEnabled = false;
-export function setRateOverlay(enabled: boolean): void { rateOverlayEnabled = enabled; }
-
 /** Per-recipe input/output flows for machine overlays. */
 interface RecipeFlows {
   inputs: { item: string; rate: number }[];
@@ -904,17 +901,6 @@ export function renderLayout(
 
     g.x = (entity.x ?? 0) * TILE_PX;
     g.y = (entity.y ?? 0) * TILE_PX;
-
-    // Rate overlay: small text label on belt/inserter entities with a rate
-    if (rateOverlayEnabled && entity.rate != null) {
-      const rateText = new Text({
-        text: entity.rate.toFixed(1),
-        style: { fontSize: 8, fill: 0xffffff, align: "center" },
-      });
-      rateText.x = TILE_PX / 2 - rateText.width / 2;
-      rateText.y = TILE_PX / 2 - rateText.height / 2;
-      g.addChild(rateText);
-    }
 
     // Make every entity interactive for hover + click
     g.eventMode = "static";

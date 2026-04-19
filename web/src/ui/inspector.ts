@@ -2,7 +2,7 @@ import type { PlacedEntity } from "../engine";
 import { niceName, getRecipeFlows, isBeltEntity, type HighlightController } from "../renderer/entities";
 
 export interface InspectorControls {
-  onHover(entity: PlacedEntity | null): void;
+  onHover(entity: PlacedEntity | null, tileX?: number, tileY?: number): void;
   setHighlightController(ctrl: HighlightController | null): void;
   setTooltipOverride(text: string | null): void;
 }
@@ -24,7 +24,7 @@ export function createInspector(container: HTMLElement): InspectorControls {
     return `<img src="${import.meta.env.BASE_URL}icons/${slug}.png" width="${size}" height="${size}" style="vertical-align:middle;margin-right:3px;image-rendering:pixelated" onerror="this.style.display='none'">`;
   }
 
-  function onHover(entity: PlacedEntity | null): void {
+  function onHover(entity: PlacedEntity | null, tileX?: number, tileY?: number): void {
     if (tooltipOverride !== null) return;
     if (entity) {
       const dirArrow: Record<string, string> = { North: "\u2191", East: "\u2192", South: "\u2193", West: "\u2190" };
@@ -42,7 +42,7 @@ export function createInspector(container: HTMLElement): InspectorControls {
         }
       }
       if (entity.segment_id) html += `<br><span style="color:#9cdcfe">${entity.segment_id}</span>`;
-      html += `<br>pos: ${entity.x ?? 0}, ${entity.y ?? 0}`;
+      html += `<br><span style="color:#888">(${entity.x ?? 0}, ${entity.y ?? 0})</span>`;
       tooltip.innerHTML = html;
       tooltip.style.display = "block";
 
@@ -53,6 +53,10 @@ export function createInspector(container: HTMLElement): InspectorControls {
           highlightCtrl.highlightItem(highlightCtrl.chainKey(entity));
         }
       }
+    } else if (tileX !== undefined && tileY !== undefined) {
+      tooltip.innerHTML = `<span style="color:#888">(${tileX}, ${tileY})</span>`;
+      tooltip.style.display = "block";
+      if (highlightCtrl) highlightCtrl.clearHighlight();
     } else {
       tooltip.style.display = "none";
       if (highlightCtrl) highlightCtrl.clearHighlight();

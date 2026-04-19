@@ -2,10 +2,10 @@ import * as debugState from "../state/debugState";
 import "./overlayPanel.css";
 
 export interface OverlayPanelControls {
-  updateCoords(x: number, y: number): void;
   /** Check the master Debug toggle and reveal its sub-panel. */
   setDebugEnabled(on: boolean): void;
   debugCb: HTMLInputElement;
+  colorCb: HTMLInputElement;
   stepCb: HTMLInputElement;
   valCb: HTMLInputElement;
   regionsCb: HTMLInputElement;
@@ -33,13 +33,9 @@ export function createOverlayPanel(container: HTMLElement): OverlayPanelControls
   const panel = document.createElement("div");
   panel.className = "overlay-panel";
 
-  const coordsEl = document.createElement("div");
-  coordsEl.className = "overlay-coords";
-  coordsEl.textContent = "x:\u2013 y:\u2013";
-  panel.appendChild(coordsEl);
-
   const state = debugState.get();
   const debugCb = makeToggle(panel, "Debug", state.master);
+  const colorCb = makeToggle(panel, "Item colours", false);
 
   const subPanel = document.createElement("div");
   subPanel.className = "overlay-sub-panel";
@@ -72,15 +68,13 @@ export function createOverlayPanel(container: HTMLElement): OverlayPanelControls
   });
 
   return {
-    updateCoords(x: number, y: number): void {
-      coordsEl.textContent = `x:${x} y:${y}`;
-    },
     setDebugEnabled(on: boolean): void {
       debugCb.checked = on;
       subPanel.style.display = on ? "flex" : "none";
       debugState.set({ master: on });
     },
     debugCb,
+    colorCb,
     stepCb,
     valCb,
     regionsCb,
