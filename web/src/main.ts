@@ -520,6 +520,7 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
 
   function renderLayoutOnCanvas(layout: LayoutResult): void {
     lastLayout = layout;
+    (window as unknown as { __layout?: LayoutResult }).__layout = layout;
     stepThrough.reset();
     snapshotActive = false;
     prevSnapshotEntities = null;

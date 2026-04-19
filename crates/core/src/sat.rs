@@ -290,6 +290,64 @@ fn emit_at_most_k_clauses(
     }
 }
 
+/// Sinz sequential counter for "at most K of these literals are true".
+/// Allocates `(n-1) * K` auxiliary vars (starting at `*aux_counter`)
+/// and `O(n·K)` clauses. Safe for n up to a few hundred and K up to a
+/// few dozen — well within varisat's comfort zone for our zone sizes.
+///
+/// Returns early on trivial cases (`k >= n`: no constraint; `k == 0`:
+/// force every literal false).
+///
+/// Reference: Sinz 2005, "Towards an optimal CNF encoding of Boolean
+/// cardinality constraints". We use the "at-least-j-so-far" encoding
+/// `s[i][j]` meaning "at least j+1 of lits[0..=i] are true".
+fn encode_sinz_at_most_k(cnf: &mut Cnf, lits: &[Lit], k: u32, aux_counter: &mut u32) {
+    let n = lits.len();
+    let k = k as usize;
+    if n == 0 || k >= n {
+        return;
+    }
+    if k == 0 {
+        for &lit in lits {
+            cnf.add(&[!lit]);
+        }
+        return;
+    }
+
+    // s[i][j] = "at least j+1 of lits[0..=i] are true", i ∈ [0, n-1], j ∈ [0, k-1].
+    let mut s: Vec<Vec<Var>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut row = Vec::with_capacity(k);
+        for _ in 0..k {
+            row.push(Var::from_index(*aux_counter as usize));
+            *aux_counter += 1;
+        }
+        s.push(row);
+    }
+
+    // i = 0: lit_0 → s[0][0]; s[0][j>0] forced false (only one lit processed).
+    cnf.add(&[!lits[0], s[0][0].positive()]);
+    for &aux in &s[0][1..] {
+        cnf.add(&[aux.negative()]);
+    }
+
+    // i ∈ [1, n-1]: chain the counters.
+    for i in 1..n {
+        // lit_i → s[i][0]
+        cnf.add(&[!lits[i], s[i][0].positive()]);
+        // s[i-1][0] → s[i][0]   (monotone in i)
+        cnf.add(&[s[i - 1][0].negative(), s[i][0].positive()]);
+        for j in 1..k {
+            // s[i-1][j] → s[i][j]   (monotone)
+            cnf.add(&[s[i - 1][j].negative(), s[i][j].positive()]);
+            // lit_i ∧ s[i-1][j-1] → s[i][j]   (cascading)
+            cnf.add(&[!lits[i], s[i - 1][j - 1].negative(), s[i][j].positive()]);
+        }
+        // lit_i ∧ s[i-1][k-1] → ⊥   (forbid the (k+1)-th true)
+        cnf.add(&[!lits[i], s[i - 1][k - 1].negative()]);
+    }
+}
+
 impl CrossingEncoder {
 
     /// Build the full CNF formula.
@@ -340,6 +398,43 @@ impl CrossingEncoder {
         self.encode_boundaries(&mut cnf, zone);
         self.encode_ug_budget(&mut cnf, max_ug_ins);
         cnf
+    }
+
+    /// Add clauses forbidding the total weighted cost of the solution
+    /// from exceeding `cap`. Weights mirror `junction_cost`:
+    ///   - every surface belt tile:       1
+    ///   - every `is_ug_in`:              5
+    ///   - every `is_ug_out`:             5
+    ///
+    /// Encoded by multiplicity-expansion + Sinz sequential counter:
+    /// each UG var contributes 5 copies of itself to the flat literal
+    /// list, each belt var 1 copy. Auxiliary vars are allocated from
+    /// `aux_counter` (updated in place so the caller can track the
+    /// final var count for stats).
+    ///
+    /// No-op when `cap` is larger than the theoretical maximum (no
+    /// constraint possible) — but that check is left to the caller;
+    /// the Sinz encoder itself returns early on `k >= n`.
+    fn encode_cost_cap(&self, cnf: &mut Cnf, cap: u32, aux_counter: &mut u32) {
+        // Flat-list literals: one Lit per unit of weight. Keeping the
+        // ordering deterministic (belts first, then UG-ins, then
+        // UG-outs, in row-major tile order) so varisat's CDCL sees a
+        // stable clause sequence across descent iterations.
+        let mut flat: Vec<Lit> = Vec::new();
+        for t in &self.tiles {
+            flat.push(t.is_belt.positive());
+        }
+        for t in &self.tiles {
+            for _ in 0..5 {
+                flat.push(t.is_ug_in.positive());
+            }
+        }
+        for t in &self.tiles {
+            for _ in 0..5 {
+                flat.push(t.is_ug_out.positive());
+            }
+        }
+        encode_sinz_at_most_k(cnf, &flat, cap, aux_counter);
     }
 
     /// Cap the number of `is_ug_in` entities in the solution. Used to
@@ -1344,6 +1439,82 @@ pub fn solve_crossing_zone_with_stats(
     (Some(entities), stats)
 }
 
+/// Like `solve_crossing_zone_with_stats` but with an extra hard
+/// constraint: the total weighted cost of the solution must not exceed
+/// `cost_cap`. Cost weights mirror `junction_cost`:
+///   - surface belt tile = 1
+///   - underground-belt input = 5
+///   - underground-belt output = 5
+///
+/// Used by the SAT cost-descent loop in `junction_sat_strategy`: after
+/// a first successful solve produces layout with cost C, this function
+/// gets called with `cost_cap = C - 1` to look for a cheaper layout.
+/// UNSAT from this call means the current layout is optimal at this
+/// cap.
+///
+/// When `cost_cap` is `None` behaviour is identical to
+/// `solve_crossing_zone_with_stats`.
+pub fn solve_crossing_zone_with_cost_cap(
+    zone: &CrossingZone,
+    max_ug_reach: u32,
+    belt_tier: &str,
+    max_ug_ins: Option<u32>,
+    cost_cap: Option<u32>,
+) -> (Option<Vec<PlacedEntity>>, CrossingZoneStats) {
+    let Some(cap) = cost_cap else {
+        return solve_crossing_zone_with_stats(zone, max_ug_reach, belt_tier, max_ug_ins);
+    };
+
+    let item_names: Vec<String> = {
+        let mut names: Vec<String> = zone.boundaries.iter().map(|b| b.item.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+
+    let encoder = CrossingEncoder::new(zone.width, zone.height, item_names);
+    let mut cnf = encoder.encode(zone, max_ug_reach, max_ug_ins);
+
+    let mut aux_counter = encoder.total_vars;
+    encoder.encode_cost_cap(&mut cnf, cap, &mut aux_counter);
+
+    let variables = aux_counter;
+    let clauses = cnf.count;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
+
+    let mut solver = Solver::new();
+    solver.add_formula(&cnf.formula);
+
+    let sat_result = solver.solve();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let solve_time_us = start.elapsed().as_micros() as u64;
+    #[cfg(target_arch = "wasm32")]
+    let solve_time_us = 0u64;
+
+    let stats = CrossingZoneStats {
+        variables,
+        clauses,
+        solve_time_us,
+        zone_width: zone.width,
+        zone_height: zone.height,
+    };
+
+    let Ok(sat) = sat_result else {
+        return (None, stats);
+    };
+    if !sat {
+        return (None, stats);
+    }
+
+    let model: Vec<Lit> = solver.model().unwrap_or_default().to_vec();
+    let entities = encoder.extract_solution(&model, zone, belt_tier);
+
+    (Some(entities), stats)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1400,6 +1571,50 @@ mod tests {
                 },
             ],
             forced_empty: vec![],
+        }
+    }
+
+    /// Solve the same 3×3 zone twice. First without a cost cap to get
+    /// the solver's "natural" cost C. Then with `cost_cap = C` (must
+    /// still be SAT) and `cost_cap = C - 1` (must be UNSAT, or at
+    /// worst return a solution whose cost is strictly less than C).
+    /// Round-trips the weighted-AMK encoder + descent semantics.
+    #[test]
+    fn test_cost_cap_roundtrip() {
+        use crate::bus::junction_cost::solution_cost;
+
+        let zone = simple_crossing_zone(3, 3);
+
+        // Baseline: no cap.
+        let (baseline_ents, _) =
+            solve_crossing_zone_with_cost_cap(&zone, 4, "transport-belt", None, None);
+        let baseline = baseline_ents.expect("3×3 must be solvable uncapped");
+        let c0 = solution_cost(&baseline);
+        assert!(c0 > 0, "cost should be positive; got {c0}");
+
+        // Cap at baseline cost: must remain SAT (same or equivalent
+        // layout).
+        let (eq_ents, _) = solve_crossing_zone_with_cost_cap(
+            &zone, 4, "transport-belt", None, Some(c0),
+        );
+        let eq = eq_ents.expect("SAT under cap=c0 must produce a layout");
+        let c1 = solution_cost(&eq);
+        assert!(
+            c1 <= c0,
+            "cap=c0 yielded cost {c1} > baseline {c0} — weight mismatch"
+        );
+
+        // Cap at c0 - 1: either UNSAT (c0 was optimal) or a strictly
+        // cheaper layout. Anything else means the encoder under-counts.
+        let (cheap_ents, _) = solve_crossing_zone_with_cost_cap(
+            &zone, 4, "transport-belt", None, c0.checked_sub(1),
+        );
+        if let Some(ents) = cheap_ents {
+            let c2 = solution_cost(&ents);
+            assert!(
+                c2 < c0,
+                "cap=c0-1 returned a layout with cost {c2} >= baseline {c0}"
+            );
         }
     }
 

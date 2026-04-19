@@ -136,6 +136,23 @@ pub fn build_bus_layout(
         });
     }
 
+    // DIAGNOSTIC: dump the solver/row/lane fingerprint so native and
+    // WASM runs can be compared side-by-side. Captures dependency_order
+    // (solver output), row y-spans (placer output), and lane x-columns
+    // (lane_planner output). If any of these diverge between targets,
+    // everything downstream (ghost routing, junctions) will too.
+    crate::trace::emit(crate::trace::TraceEvent::PipelineDiagnostics {
+        dep_order: solver_result.dependency_order.clone(),
+        rows: row_spans
+            .iter()
+            .map(|r| format!("{},{},{}", r.spec.recipe, r.y_start, r.y_end))
+            .collect(),
+        lanes: lanes
+            .iter()
+            .map(|l| format!("{},{},{:.2},{}", l.item, l.x, l.rate, l.is_fluid))
+            .collect(),
+    });
+
     // Place power poles from machine positions before routing so the router
     // sees them as hard obstacles. The occupied set reserves row-entity tiles
     // AND planned fluid-lane columns so poles don't land where the router

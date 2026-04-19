@@ -420,6 +420,33 @@ fn tier2_electronic_circuit() {
     assert_round_trip(&result);
 }
 
+/// Snapshot-dump helper matching the dev-server URL:
+///   ?item=electronic-circuit&rate=15&machine=assembling-machine-1&in=iron-ore,copper-ore&belt=transport-belt
+///
+/// Ignored (doesn't assert no-errors — the ore chain still has the same
+/// item-mix issues as `tier2_electronic_circuit_from_ore`). Its only job
+/// is to produce a `.fls` snapshot we can extract fixture zones from:
+///
+///   FUCKTORIO_DUMP_SNAPSHOTS=1 cargo test --manifest-path crates/core/Cargo.toml \
+///       --test e2e fixture_source_ec_15s_am1_yellow_from_ore -- --exact --ignored
+#[test]
+#[ignore]
+#[ntest::timeout(30000)]
+fn fixture_source_ec_15s_am1_yellow_from_ore() {
+    let inputs: FxHashSet<String> = ["iron-ore", "copper-ore"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let _ = run_e2e(
+        "fixture_source_ec_15s_am1_yellow_from_ore",
+        "electronic-circuit",
+        15.0,
+        "assembling-machine-1",
+        Some("transport-belt"),
+        &inputs,
+    );
+}
+
 #[test]
 #[ignore = "belt-item-isolation: 6 adjacent-tile item-mix errors on full ore chain"]
 #[ntest::timeout(10000)]

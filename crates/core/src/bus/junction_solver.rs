@@ -850,6 +850,13 @@ pub struct JunctionSolution {
     /// `JunctionSolved` trace event with the strategy name.
     #[allow(dead_code)]
     pub strategy_name: &'static str,
+    /// Spec keys whose paths this strategy claims authority over. The
+    /// ghost-router uses this to release every tile of every participating
+    /// spec that falls inside `footprint`, so stale ghost-surface belts
+    /// from the pre-solve A* don't leak into the final entity list.
+    /// Empty for strategies whose footprint is narrow enough that residue
+    /// can't form (e.g. the perpendicular 1×3 template).
+    pub participating: Vec<String>,
 }
 
 /// Context passed to every strategy call. A struct so fields can be
@@ -998,13 +1005,33 @@ pub fn solve_crossing(
     };
 
     for iter in 0..MAX_GROWTH_ITERS {
-        // Attempt 1: the current region as-is.
-        match try_solve_on_region(&region, iter, None, &solve_ctx) {
-            TryOutcome::Solved(sol) => return Some(sol),
-            TryOutcome::Continue => {}
+        // Collect every walker-valid candidate across the primary
+        // region and the four single-side expansions. The cheapest by
+        // `junction_cost::solution_cost` wins — no early-return on
+        // first-success, so a primary-region UG-heavy layout can be
+        // beaten by a cheaper variant-east surface layout. Only if
+        // every variant fails do we fall through to uniform growth.
+        //
+        // Variants run sequentially (SAT on these zones is low-ms) and
+        // order is fixed so the trace is deterministic.
+        let mut candidates: Vec<(u32, JunctionSolution, String)> = Vec::new();
+
+        if let TryOutcome::Solved(sol) =
+            try_solve_on_region(&region, iter, None, &solve_ctx)
+        {
+            let c = crate::bus::junction_cost::solution_cost(&sol.entities);
+            candidates.push((c, sol, String::new()));
         }
 
         if region.tile_count() >= MAX_REGION_TILES {
+            if let Some(best) = pick_cheapest_candidate(
+                &mut candidates,
+                initial_tile,
+                iter,
+                region.tile_count(),
+            ) {
+                return Some(best);
+            }
             trace::emit(TraceEvent::JunctionGrowthCapped {
                 tile_x: initial_tile.0,
                 tile_y: initial_tile.1,
@@ -1015,20 +1042,6 @@ pub fn solve_crossing(
             return None;
         }
 
-        // Attempt 2: try every +1 single-side expansion of the current
-        // region before committing to a larger uniform grow. For a 3×3
-        // zone this produces four 3×4 / 4×3 shapes, each strictly
-        // containing the current region. First walker-valid SAT solve
-        // wins. If all four variants fail, fall through to the uniform
-        // expansion below — which absorbs perpendicular trunks that a
-        // single-side grow wouldn't have touched.
-        //
-        // We run variants sequentially here (SAT on these zones is
-        // low-ms) and let the caller's usual trace events distinguish
-        // them by the bbox dimensions in `JunctionGrowthIteration`.
-        // TODO(parallel): swap to `std::thread::scope` once the trace
-        // framework aggregates across workers; for now sequential is
-        // simpler and deterministic.
         for (label, (left, top, right, bottom)) in SINGLE_SIDE_VARIANTS {
             let mut variant = region.clone();
             let changed = variant.expand_bbox(
@@ -1048,10 +1061,21 @@ pub fn solve_crossing(
             if variant.tile_count() > MAX_REGION_TILES {
                 continue;
             }
-            match try_solve_on_region(&variant, iter, Some(label), &solve_ctx) {
-                TryOutcome::Solved(sol) => return Some(sol),
-                TryOutcome::Continue => {}
+            if let TryOutcome::Solved(sol) =
+                try_solve_on_region(&variant, iter, Some(label), &solve_ctx)
+            {
+                let c = crate::bus::junction_cost::solution_cost(&sol.entities);
+                candidates.push((c, sol, (*label).to_string()));
             }
+        }
+
+        if let Some(best) = pick_cheapest_candidate(
+            &mut candidates,
+            initial_tile,
+            iter,
+            region.tile_count(),
+        ) {
+            return Some(best);
         }
 
         // Fallback: uniform +1 on all sides. Absorbs perpendicular
@@ -1091,14 +1115,57 @@ pub fn solve_crossing(
 }
 
 /// Four single-side +1 expansions. Each tuple is `(label, (left, top,
-/// right, bottom))`. Applied in a fixed order so iteration is
-/// deterministic — the solver picks the first walker-valid success.
+/// right, bottom))`. Applied in a fixed order so the trace event's
+/// `considered` list is deterministic — ties in cost resolve to the
+/// earliest candidate to appear.
 const SINGLE_SIDE_VARIANTS: &[(&str, (i32, i32, i32, i32))] = &[
     ("variant-west", (1, 0, 0, 0)),
     ("variant-north", (0, 1, 0, 0)),
     ("variant-east", (0, 0, 1, 0)),
     ("variant-south", (0, 0, 0, 1)),
 ];
+
+/// Pop the cheapest `JunctionSolution` from `candidates` (if any),
+/// emit the terminal trace events for the winner, and return it. On
+/// ties (same cost), the earliest candidate to have been pushed wins.
+/// Returns `None` when the candidate list is empty.
+fn pick_cheapest_candidate(
+    candidates: &mut Vec<(u32, JunctionSolution, String)>,
+    initial_tile: (i32, i32),
+    iter: usize,
+    region_tiles: usize,
+) -> Option<JunctionSolution> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let considered: Vec<(String, u32)> = candidates
+        .iter()
+        .map(|(c, _, label)| (label.clone(), *c))
+        .collect();
+    // `min_by_key` is stable in std: on equal keys the first one wins.
+    let winner_idx = candidates
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, (c, _, _))| *c)
+        .map(|(i, _)| i)?;
+    let (winner_cost, winner_sol, winner_label) = candidates.swap_remove(winner_idx);
+    trace::emit(TraceEvent::JunctionVariantChosen {
+        tile_x: initial_tile.0,
+        tile_y: initial_tile.1,
+        iter,
+        variant: winner_label.clone(),
+        cost: winner_cost,
+        considered,
+    });
+    trace::emit(TraceEvent::JunctionSolved {
+        tile_x: initial_tile.0,
+        tile_y: initial_tile.1,
+        strategy: winner_sol.strategy_name.to_string(),
+        growth_iter: iter,
+        region_tiles,
+    });
+    Some(winner_sol)
+}
 
 /// Immutable references threaded through the growth loop. Extracted so
 /// `try_solve_on_region` can be called per-iter and per-variant without
@@ -1298,14 +1365,18 @@ fn try_solve_on_region(
             detail: format!("{} entities placed", sol.entities.len()),
             elapsed_us,
         });
-        // JunctionSolved stays with the plain strategy name — terminal
-        // event for the whole cluster, no variant to disambiguate.
-        trace::emit(TraceEvent::JunctionSolved {
+        // Candidate accepted for this variant — the caller compares
+        // it against the other variants' candidates by cost and emits
+        // the terminal `JunctionSolved` for the winner only.
+        let cost = crate::bus::junction_cost::solution_cost(&sol.entities);
+        trace::emit(TraceEvent::JunctionCandidateSolved {
             tile_x: ctx.initial_tile.0,
             tile_y: ctx.initial_tile.1,
             strategy: strategy.name().to_string(),
             growth_iter: iter,
+            variant: variant_tag.clone(),
             region_tiles: region.tile_count(),
+            cost,
         });
         return TryOutcome::Solved(sol);
     }

@@ -27,7 +27,9 @@ use crate::bus::junction::{BeltTier, Rect, SpecOrigin};
 use crate::bus::junction_solver::{JunctionSolution, JunctionStrategy, JunctionStrategyContext};
 use crate::common::{is_splitter, is_surface_belt, is_ug_belt, splitter_second_tile, ug_max_reach};
 use crate::models::{EntityDirection, PlacedEntity};
-use crate::sat::{solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary};
+use crate::sat::{
+    solve_crossing_zone_with_cost_cap, solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary,
+};
 use crate::trace::{self, BoundarySnapshot, ExternalFeederSnapshot, SatProposedEntity, TraceEvent};
 
 /// A feeder/consumer tile candidate found adjacent to a spec entry/exit.
@@ -57,22 +59,42 @@ pub struct SatConstraints {
     ///   crossings, tight turns), keeping everything else on the
     ///   surface.
     pub max_ug_ins: Option<u32>,
+    /// Max iterations of the post-solve cost-descent loop. After SAT
+    /// finds a first layout with cost C, the loop re-solves with
+    /// `cost ≤ C-1` up to this many times. 0 disables descent.
+    pub cost_descent_max_iters: u8,
+    /// Wall-clock budget (ms) for the descent loop, checked between
+    /// iterations. Prevents pathological zones from blocking the
+    /// solver for too long.
+    pub cost_descent_budget_ms: u32,
 }
 
 impl SatConstraints {
     /// Unrestricted — matches the original SAT behaviour.
     pub const fn unrestricted() -> Self {
-        Self { max_ug_ins: None }
+        Self {
+            max_ug_ins: None,
+            cost_descent_max_iters: 4,
+            cost_descent_budget_ms: 50,
+        }
     }
 
     /// Hard-forbid underground-belt entities.
     pub const fn surface_only() -> Self {
-        Self { max_ug_ins: Some(0) }
+        Self {
+            max_ug_ins: Some(0),
+            cost_descent_max_iters: 4,
+            cost_descent_budget_ms: 50,
+        }
     }
 
     /// Cap the number of UG corridors at `n`.
     pub const fn max_ug_ins(n: u32) -> Self {
-        Self { max_ug_ins: Some(n) }
+        Self {
+            max_ug_ins: Some(n),
+            cost_descent_max_iters: 4,
+            cost_descent_budget_ms: 50,
+        }
     }
 }
 
@@ -754,10 +776,63 @@ impl JunctionStrategy for SatStrategy {
             entities_raw,
             proposed_entities,
         });
-        let entities = entities_opt?;
+        let mut best = entities_opt?;
+        let mut best_cost = crate::bus::junction_cost::solution_cost(&best);
+
+        // Cost descent: re-solve with a tighter cost cap until either
+        // UNSAT (current best is optimal at this cap), wall-clock
+        // budget runs out, or iter limit. Descent operates on RAW
+        // SAT output so the cap we compute lines up with what the
+        // encoder sees; pruning happens once at the end.
+        #[cfg(not(target_arch = "wasm32"))]
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.constraints.cost_descent_budget_ms as u64);
+
+        for descent_iter in 0..self.constraints.cost_descent_max_iters {
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            let Some(cap) = best_cost.checked_sub(1) else {
+                break; // cost already zero — nothing to tighten
+            };
+            let (next_opt, next_stats) = solve_crossing_zone_with_cost_cap(
+                &zone,
+                max_reach,
+                belt_name,
+                self.constraints.max_ug_ins,
+                Some(cap),
+            );
+            let next_sat = next_opt.is_some();
+            trace::emit(TraceEvent::SatCostDescent {
+                seed_x,
+                seed_y,
+                iter,
+                variant: ctx.growth_variant.to_string(),
+                descent_iter,
+                cap,
+                satisfied: next_sat,
+                solve_time_us: next_stats.solve_time_us,
+            });
+            match next_opt {
+                Some(ents) => {
+                    let c = crate::bus::junction_cost::solution_cost(&ents);
+                    if c < best_cost {
+                        best = ents;
+                        best_cost = c;
+                    } else {
+                        // Encoder said SAT but cost didn't drop — safety
+                        // bail. Shouldn't happen if weights are in sync
+                        // with `junction_cost::solution_cost`.
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
 
         let pruned = prune_dangling_sat_entities(
-            entities,
+            best,
             &boundaries,
             max_reach,
             zone.x,
@@ -773,6 +848,7 @@ impl JunctionStrategy for SatStrategy {
                 h: zone.height,
             },
             strategy_name: self.name(),
+            participating: ctx.region.participating.clone(),
         })
     }
 }

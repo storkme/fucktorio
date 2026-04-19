@@ -326,6 +326,33 @@ pub enum TraceEvent {
         boundary_count: usize,
     },
 
+    // Emitted after a junction solution is stamped and ghost-surface
+    // tiles belonging to participating specs are evicted from inside
+    // the footprint. `participating_count` is the number of specs the
+    // strategy claimed authority over; `released_count` is how many
+    // ghost tiles the release call actually evicted (may include
+    // ghosts from earlier phases that still held a GhostSurface claim).
+    GhostResidueCleared {
+        zone_x: i32,
+        zone_y: i32,
+        zone_w: u32,
+        zone_h: u32,
+        participating_count: usize,
+        released_count: usize,
+    },
+
+    // Sync-gap assertion. After a junction solution is stamped, any
+    // `ghost:*` entity still in the local entity list whose (x,y)
+    // sits inside the footprint is a leaked ghost — the release set
+    // missed it, or a new code path pushes it after the sync. Never
+    // fires on a healthy pipeline; its presence in a snapshot is the
+    // signal to investigate.
+    GhostResidueLeaked {
+        zone_x: i32,
+        zone_y: i32,
+        leaked_tiles: Vec<(i32, i32)>,
+    },
+
     // Emitted by `try_bridge` in ghost_router.rs whenever a per-tile
     // perpendicular template rejection happens. One event per failed
     // bridge attempt, so a fully-rejected perpendicular crossing emits
@@ -339,16 +366,65 @@ pub enum TraceEvent {
         reason: String,
     },
 
+    // DIAGNOSTIC: fires once per `build_bus_layout` run, after row
+    // placement + lane planning. Captures a compact fingerprint of the
+    // layout's geometric decisions so we can compare native-vs-WASM
+    // output and pin down where target-dependent iteration order
+    // leaks into the pipeline. Not used by any renderer; purely for
+    // root-causing reproducibility bugs.
+    PipelineDiagnostics {
+        /// Solver's dependency_order in iteration order.
+        dep_order: Vec<String>,
+        /// Row layout fingerprint, row-index order. Each entry packs
+        /// `recipe,y_start,y_end` into a single string so the trace
+        /// serialises cleanly through `tsify_next` (which chokes on
+        /// heterogeneous tuples in `Vec`).
+        rows: Vec<String>,
+        /// Bus lane layout fingerprint, lane-order. Each entry packs
+        /// `item,x,rate,is_fluid`.
+        lanes: Vec<String>,
+    },
+
     // Emitted by `junction_solver::solve_crossing` when a strategy
-    // accepts the junction. `growth_iter` is the region-growth iteration
-    // at which the strategy fired (0 = initial 1-tile crossing, no
-    // growth yet).
+    // accepts the junction and its solution is chosen as the winner for
+    // this growth iteration. Terminal event — at most one per cluster.
     JunctionSolved {
         tile_x: i32,
         tile_y: i32,
         strategy: String,
         growth_iter: usize,
         region_tiles: usize,
+    },
+
+    // Emitted once per variant whose strategy produces a walker-valid
+    // solution. Multiple candidates per iter are expected — the cost
+    // score decides which one `JunctionSolved` will ship. The loser
+    // candidates exist only in the trace, not in the final layout.
+    JunctionCandidateSolved {
+        tile_x: i32,
+        tile_y: i32,
+        strategy: String,
+        growth_iter: usize,
+        /// `""` for the primary attempt on the current region,
+        /// `"variant-west"` / `-north` / `-east` / `-south` for the
+        /// speculative single-side expansions.
+        variant: String,
+        region_tiles: usize,
+        cost: u32,
+    },
+
+    // Emitted at the point `solve_crossing` picks the cheapest candidate
+    // across all variants of a single growth iter. `considered` is the
+    // full `(variant_label, cost)` list the selector chose from, in the
+    // order candidates were produced — the debugger uses it to show why
+    // a particular variant won and what the alternatives cost.
+    JunctionVariantChosen {
+        tile_x: i32,
+        tile_y: i32,
+        iter: usize,
+        variant: String,
+        cost: u32,
+        considered: Vec<(String, u32)>,
     },
     // Emitted when the growth loop gives up: either frontier exhausted
     // (all participating belts fully consumed) or tile cap hit.
@@ -448,6 +524,24 @@ pub enum TraceEvent {
     /// replay a single SAT solve in isolation (outside the larger
     /// junction solver). Complements JunctionStrategyAttempt with
     /// SAT-specific numbers.
+    // Emitted once per cost-descent iteration in the SAT strategy.
+    // `descent_iter` is 0-indexed; `cap` is the hard cost cap used
+    // on that attempt. `satisfied=true` means SAT found a layout
+    // within the cap (descent continues with a tighter cap);
+    // `satisfied=false` means UNSAT (descent halts, prior best is
+    // optimal at this cap). Terminal: at most `cost_descent_max_iters`
+    // per winning SAT invocation.
+    SatCostDescent {
+        seed_x: i32,
+        seed_y: i32,
+        iter: usize,
+        variant: String,
+        descent_iter: u8,
+        cap: u32,
+        satisfied: bool,
+        solve_time_us: u64,
+    },
+
     SatInvocation {
         seed_x: i32,
         seed_y: i32,

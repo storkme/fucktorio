@@ -1523,18 +1523,38 @@ pub fn route_bus_ghost(
         // spec path. Ghost entities belonging to non-participating specs
         // (e.g. a copper-cable tap whose path runs through the zone bbox
         // but is NOT being rerouted) must stay so the belt chain is intact.
-        let releasable_ghost_tiles: rustc_hash::FxHashSet<(i32, i32)> = keys_at_tile
+        //
+        // The authoritative participating set comes from the solver on
+        // `sol.participating`, not from `keys_at_tile` — the latter is
+        // built from specs touching the original cluster seeds, so after
+        // region growth it can miss participating specs whose path only
+        // enters the footprint via the grown bbox. Using the solver's
+        // list closes that gap and keeps I3's minimum-authority rule
+        // honest.
+        let participating_keys: rustc_hash::FxHashSet<&str> = sol
+            .participating
             .iter()
-            .filter_map(|k| routed_paths.get(*k))
-            .flatten()
-            .filter(|&&t| release_rect.contains(t.0, t.1))
-            .copied()
+            .map(String::as_str)
             .collect();
-        occupancy.release_for_pertile_template(
+        let releasable_ghost_tiles: rustc_hash::FxHashSet<(i32, i32)> = routed_paths
+            .iter()
+            .filter(|(k, _)| participating_keys.contains(k.as_str()))
+            .flat_map(|(_, path)| path.iter().copied())
+            .filter(|&t| release_rect.contains(t.0, t.1))
+            .collect();
+        let released_count = occupancy.release_for_pertile_template(
             &release_rect,
             Some(&releasable_ghost_tiles),
             Some(&preserve_trunk_tiles),
         );
+        trace::emit(trace::TraceEvent::GhostResidueCleared {
+            zone_x: release_rect.x,
+            zone_y: release_rect.y,
+            zone_w: release_rect.w,
+            zone_h: release_rect.h,
+            participating_count: participating_keys.len(),
+            released_count,
+        });
         for ent in sol.entities {
             let tile = (ent.x, ent.y);
             if occupancy.is_hard_obstacle(tile) {
@@ -1566,6 +1586,33 @@ pub fn route_bus_ghost(
                     );
                 });
             entities.push(ent);
+        }
+        // Sync-gap assertion. Any ghost entity for a participating spec
+        // that still holds a GhostSurface claim inside the footprint is
+        // a leak — `releasable_ghost_tiles` should have covered every
+        // tile on every participating path. Non-participating ghost
+        // entities are expected to persist by design (foreign trunks),
+        // so they don't count.
+        let leaked_tiles: Vec<(i32, i32)> = entities
+            .iter()
+            .filter(|e| {
+                let Some(seg) = e.segment_id.as_deref() else { return false; };
+                let Some(spec_key) = seg.strip_prefix("ghost:") else { return false; };
+                if !release_rect.contains(e.x, e.y) { return false; }
+                if !participating_keys.contains(spec_key) { return false; }
+                matches!(
+                    occupancy.claim_at((e.x, e.y)),
+                    Some(crate::bus::ghost_occupancy::Claim::GhostSurface { .. })
+                )
+            })
+            .map(|e| (e.x, e.y))
+            .collect();
+        if !leaked_tiles.is_empty() {
+            trace::emit(trace::TraceEvent::GhostResidueLeaked {
+                zone_x: release_rect.x,
+                zone_y: release_rect.y,
+                leaked_tiles,
+            });
         }
         template_count += 1;
     }
@@ -2383,6 +2430,7 @@ impl JunctionStrategy for PerpendicularTemplateStrategy {
                 h: zone.h,
             },
             strategy_name: self.name(),
+            participating: ctx.region.participating.clone(),
         })
     }
 }

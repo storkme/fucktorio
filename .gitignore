@@ -22,9 +22,14 @@ target/
 external/*
 !external/README.md
 
-# Playwright CLI artifacts
+# Playwright CLI / MCP artifacts
 .playwright-cli/
 web/.playwright-cli/
+.playwright-mcp/
+web/.playwright-mcp/
+
+# Environment-local secrets
+.env
 
 # Web app
 web/node_modules/

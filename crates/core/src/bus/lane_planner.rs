@@ -8,6 +8,7 @@
 //! contract this module upholds.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::models::SolverResult;
@@ -183,10 +184,15 @@ pub fn plan_bus_lanes(
         }
     }
 
-    // Intermediate items (solid AND fluid).
-    let mut item_to_producers: FxHashMap<String, Vec<usize>> = FxHashMap::default();
-    let mut item_to_rate: FxHashMap<String, f64> = FxHashMap::default();
-    let mut item_is_fluid: FxHashMap<String, bool> = FxHashMap::default();
+    // Intermediate items (solid AND fluid). `item_to_producers` is iterated
+    // below in lane-push order, which determines bus column assignment — so
+    // it must be a `BTreeMap` for deterministic, cross-platform iteration.
+    // The other two are lookup-only, but kept as `BTreeMap` for consistency
+    // and future-proofing: the cost is trivial at this size and the rule
+    // "iterate → BTreeMap" is easier to apply blanket than to audit per use.
+    let mut item_to_producers: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut item_to_rate: BTreeMap<String, f64> = BTreeMap::new();
+    let mut item_is_fluid: BTreeMap<String, bool> = BTreeMap::new();
 
     for (idx, rs) in row_spans.iter().enumerate() {
         for out in &rs.spec.outputs {
