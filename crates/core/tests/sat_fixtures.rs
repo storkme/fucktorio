@@ -11,109 +11,10 @@
 //! See `tests/sat_fixtures/README.md` for the fixture schema and
 //! workflow for adding new fixtures.
 
-use fucktorio_core::models::EntityDirection;
-use fucktorio_core::sat::{solve_crossing_zone_with_stats, CrossingZone, ZoneBoundary};
-use serde::Deserialize;
+use fucktorio_core::bus::junction_cost::solution_cost;
+use fucktorio_core::fixture::{build_zone, Fixture};
+use fucktorio_core::sat::solve_crossing_zone_with_stats;
 use std::path::Path;
-
-// ---------------------------------------------------------------------------
-// Fixture schema types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct Fixture {
-    version: u32,
-    name: String,
-    #[allow(dead_code)]
-    notes: Option<String>,
-    #[allow(dead_code)]
-    source_url: Option<String>,
-    #[allow(dead_code)]
-    seed: [i32; 2],
-    bbox: FixtureBbox,
-    #[serde(default)]
-    forbidden: Vec<[i32; 2]>,
-    belt_tier: String,
-    max_reach: u32,
-    boundaries: Vec<FixtureBoundary>,
-    expected: FixtureExpected,
-    /// Informational only in v1 — carried along but not consumed.
-    #[allow(dead_code)]
-    context: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureBbox {
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureBoundary {
-    x: i32,
-    y: i32,
-    dir: String,
-    item: String,
-    #[serde(rename = "in")]
-    is_input: bool,
-    #[serde(default)]
-    interior: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureExpected {
-    mode: String,
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn parse_direction(dir: &str) -> EntityDirection {
-    match dir {
-        "North" => EntityDirection::North,
-        "East" => EntityDirection::East,
-        "South" => EntityDirection::South,
-        "West" => EntityDirection::West,
-        other => panic!("unknown direction in fixture: {other:?}"),
-    }
-}
-
-fn build_zone(fixture: &Fixture) -> CrossingZone {
-    let boundaries: Vec<ZoneBoundary> = fixture
-        .boundaries
-        .iter()
-        .map(|b| ZoneBoundary {
-            x: b.x,
-            y: b.y,
-            direction: parse_direction(&b.dir),
-            item: b.item.clone(),
-            is_input: b.is_input,
-            interior: b.interior,
-        })
-        .collect();
-
-    let forced_empty: Vec<(i32, i32)> = fixture
-        .forbidden
-        .iter()
-        .map(|&[x, y]| (x, y))
-        .collect();
-
-    CrossingZone {
-        x: fixture.bbox.x,
-        y: fixture.bbox.y,
-        width: fixture.bbox.w,
-        height: fixture.bbox.h,
-        boundaries,
-        forced_empty,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test
-// ---------------------------------------------------------------------------
 
 #[test]
 fn sat_fixtures() {
@@ -171,22 +72,34 @@ fn sat_fixtures() {
             solve_crossing_zone_with_stats(&zone, fixture.max_reach, belt_name, None);
 
         match fixture.expected.mode.as_str() {
-            "solve" => {
-                if result.is_none() {
+            "solve" => match result {
+                None => {
                     failures.push(format!(
                         "{} ({}): expected solve, got None (UNSAT)",
                         fixture.name, filename
                     ));
-                } else {
+                }
+                Some(entities) => {
+                    let actual_cost = solution_cost(&entities);
+                    if let Some(max_cost) = fixture.expected.max_cost {
+                        if actual_cost > max_cost {
+                            failures.push(format!(
+                                "{} ({}): solver cost {actual_cost} exceeds fixture max_cost {max_cost}",
+                                fixture.name, filename
+                            ));
+                            continue;
+                        }
+                    }
                     eprintln!(
-                        "  PASS  {} ({}) — solved with {} entities",
+                        "  PASS  {} ({}) — solved with {} entities, cost {}",
                         fixture.name,
                         filename,
-                        result.unwrap().len()
+                        entities.len(),
+                        actual_cost
                     );
                     passed += 1;
                 }
-            }
+            },
             "no_solve" => {
                 if let Some(entities) = result {
                     failures.push(format!(

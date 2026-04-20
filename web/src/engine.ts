@@ -1,6 +1,7 @@
 import type {
   SolverResult,
   LayoutResult,
+  PlacedEntity,
   ValidationIssue,
   TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
@@ -20,6 +21,24 @@ export type {
   ValidationIssue,
   TraceEvent,
 } from "./wasm-pkg/fucktorio_wasm.js";
+
+/**
+ * Result shape for `engine.solveFixture` — mirrors the
+ * `SolveFixtureResponse` in `crates/wasm-bindings/src/lib.rs`.
+ */
+export interface SolveFixtureResult {
+  entities: PlacedEntity[];
+  cost: number;
+  stats: SatStats;
+}
+
+export interface SatStats {
+  variables: number;
+  clauses: number;
+  solve_time_us: number;
+  zone_width: number;
+  zone_height: number;
+}
 
 type WorkerResponse =
   | { id: number; ok: true; result: unknown }
@@ -215,6 +234,26 @@ function validateLayout(
   return call<ValidationIssue[]>({ method: "validateLayout", layout, solverResult });
 }
 
+/**
+ * Solve a SAT-zone fixture, optionally pinning a set of painted
+ * entities as solver assumptions. Resolves to `null` when the solver
+ * returns UNSAT or when any pin was rejected (out of bounds, on a
+ * forbidden tile, unsupported entity, item not in the fixture).
+ *
+ * Used by the F2 SAT-zone editor to drive the live validity indicator
+ * and the ghost-completion overlay (`entities \ pins`).
+ */
+function solveFixture(
+  fixtureJson: string,
+  pins: PlacedEntity[],
+): Promise<SolveFixtureResult | null> {
+  return call<SolveFixtureResult | null>({
+    method: "solveFixture",
+    fixtureJson,
+    pinsJson: JSON.stringify(pins),
+  });
+}
+
 export function parseBlueprint(bpString: string): Promise<LayoutResult> {
   return call<LayoutResult>({ method: "parseBlueprint", bp: bpString });
 }
@@ -229,6 +268,7 @@ export type Engine = {
   exportBlueprint: typeof exportBlueprint;
   defaultMachineForItem: typeof defaultMachineForItem;
   validateLayout: typeof validateLayout;
+  solveFixture: typeof solveFixture;
 };
 
 export function getEngine(): Engine {
@@ -242,5 +282,6 @@ export function getEngine(): Engine {
     exportBlueprint,
     defaultMachineForItem,
     validateLayout,
+    solveFixture,
   };
 }

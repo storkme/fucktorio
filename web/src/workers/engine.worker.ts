@@ -1,6 +1,7 @@
 import wasmInit, {
   init,
   solve,
+  solve_fixture,
   all_producible_items,
   all_producer_machines,
   default_machine_for_item,
@@ -39,7 +40,8 @@ type Request =
       layout: LayoutResult;
       solverResult: SolverResult | null;
     }
-  | { id: number; method: "parseBlueprint"; bp: string };
+  | { id: number; method: "parseBlueprint"; bp: string }
+  | { id: number; method: "solveFixture"; fixtureJson: string; pinsJson: string };
 
 let ready: Promise<void> | null = null;
 
@@ -126,6 +128,9 @@ self.onmessage = async (e: MessageEvent<Request>) => {
         break;
       case "parseBlueprint":
         result = parse_blueprint(req.bp);
+        break;
+      case "solveFixture":
+        result = solve_fixture(req.fixtureJson, req.pinsJson);
         break;
     }
     post(req.id, true, result);

@@ -1,0 +1,106 @@
+/* SAT-zone editor styles. Mounted inside the inline junction debugger
+ * panel; expects the parent .jd-inline to be position: relative. */
+
+.jd-inline.jd-edit-mode .jd-title {
+  color: #f3d36b;
+}
+.jd-inline.jd-edit-mode {
+  border-color: #f3d36b66;
+  box-shadow: 0 0 0 1px #f3d36b33, 0 6px 22px rgba(0, 0, 0, 0.55);
+}
+
+.se-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 6px;
+  border-top: 1px solid #ffffff14;
+  align-items: center;
+}
+
+.se-toolbar button,
+.se-toolbar select {
+  background: #1f2024;
+  color: #d8d8d8;
+  border: 1px solid #ffffff1f;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+.se-toolbar button:hover {
+  background: #2a2c33;
+}
+
+.se-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.se-tool {
+  min-width: 22px;
+  text-align: center;
+}
+
+.se-tool-active {
+  background: #3b4256 !important;
+  border-color: #5e7cc7 !important;
+  color: #fff;
+}
+
+.se-dir {
+  min-width: 22px;
+  text-align: center;
+}
+
+.se-item-label {
+  font-size: 11px;
+  color: #aaa;
+  padding: 0 4px;
+}
+
+.se-accept {
+  background: #233c2c !important;
+  border-color: #4f7d5b !important;
+  color: #d4f0d8 !important;
+}
+
+.se-accept:disabled {
+  background: #1f2024 !important;
+  border-color: #ffffff1f !important;
+  color: #d8d8d8 !important;
+}
+
+.se-export {
+  border-color: #5e7cc7 !important;
+}
+
+.se-done {
+  margin-left: 2px;
+}
+
+/* Status dot in inline head. */
+.jd-inline-head .se-status {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  font-size: 14px;
+  margin-left: 6px;
+  cursor: help;
+}
+
+.se-status.ok {
+  color: #5fd06f;
+}
+.se-status.solving {
+  color: #f3d36b;
+}
+.se-status.invalid {
+  color: #e25e5e;
+}
+.se-status.idle {
+  color: #888;
+}

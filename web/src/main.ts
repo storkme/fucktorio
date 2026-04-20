@@ -22,6 +22,7 @@ import { createSatZoneOverlay } from "./renderer/satZoneOverlay";
 import { renderGhostTilesOverlay } from "./renderer/ghostTilesOverlay";
 import { groupJunctionClusters, type JunctionCluster } from "./ui/junctionTrace";
 import { createJunctionDebugger } from "./ui/junctionDebugger";
+import { createSatEditor } from "./ui/satEditor";
 import * as debugState from "./state/debugState";
 import { createOverlayPanel } from "./ui/overlayPanel";
 import { createIssuesDialog } from "./ui/issuesDialog";
@@ -123,17 +124,35 @@ async function initGenerator(engine: ReturnType<typeof getEngine>): Promise<void
     onChange: (state) => {
       satZoneOverlay.update(state);
       if (state) {
-        // Dim everything else so the SAT overlay pops. The overlay
-        // itself lives on the viewport, not entityLayer, so it stays
-        // at full brightness.
-        entityLayer.alpha = 0.35;
+        // Dim everything else so the SAT overlay pops. Edit mode dims
+        // further (handled by the editor itself).
+        entityLayer.alpha = satEditor.isActive() ? 0.2 : 0.35;
         const b = state.iter.bbox;
         selectedJunction = { bboxX: b.x, bboxY: b.y, bboxW: b.w, bboxH: b.h };
       } else {
         entityLayer.alpha = 1;
         selectedJunction = null;
+        // If the user deselects the zone while editing, exit cleanly.
+        if (satEditor.isActive()) satEditor.exit();
       }
     },
+    onEditRequested: (state) => {
+      entityLayer.alpha = 0.2;
+      satEditor.enter(state);
+    },
+  });
+
+  // Phase F SAT-zone editor — owns the painted + ghost PIXI layers,
+  // toolbar inside the inline panel, hotkeys, and SAT-with-pins
+  // validity loop. Created after junctionDebugger so the controls
+  // reference is available, but the dependency the other way (jd
+  // calling editor) flows through the onEditRequested callback above.
+  const satEditor = createSatEditor({
+    viewport,
+    canvas: app.canvas as HTMLCanvasElement,
+    engine,
+    jd: junctionDebugger,
+    satZoneOverlayLayer: satZoneOverlay.layer,
   });
 
   setupSnapshotDropZone(container, (snap) => snapshotMode.load(snap));

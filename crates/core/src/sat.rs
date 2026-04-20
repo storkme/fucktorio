@@ -1272,6 +1272,76 @@ impl CrossingEncoder {
 
     // -- Solution extraction ------------------------------------------------
 
+    /// Translate one painted entity into the SAT literals that, when
+    /// assumed positive, force the solver to place that entity at that
+    /// tile. Returns false if the pin can't be applied — out of bounds,
+    /// on a forced-empty tile, an entity type the SAT encoder doesn't
+    /// model, or an item not in the zone's boundary set. The caller
+    /// should treat a false return as "reject the whole solve" because
+    /// the pin would have made the formula UNSAT-by-construction
+    /// anyway.
+    fn pin_to_literals(
+        &self,
+        pin: &PlacedEntity,
+        zone: &CrossingZone,
+        out: &mut Vec<Lit>,
+    ) -> bool {
+        let lx = pin.x - zone.x;
+        let ly = pin.y - zone.y;
+        if !self.in_bounds(lx, ly) {
+            return false;
+        }
+        let (lx, ly) = (lx as u32, ly as u32);
+
+        if zone
+            .forced_empty
+            .iter()
+            .any(|&(fx, fy)| fx == pin.x && fy == pin.y)
+        {
+            return false;
+        }
+
+        let t = self.tiles[self.idx(lx, ly)];
+
+        let type_var = match (pin.name.as_str(), pin.io_type.as_deref()) {
+            ("transport-belt" | "fast-transport-belt" | "express-transport-belt", _) => t.is_belt,
+            (
+                "underground-belt" | "fast-underground-belt" | "express-underground-belt",
+                Some("input"),
+            ) => t.is_ug_in,
+            (
+                "underground-belt" | "fast-underground-belt" | "express-underground-belt",
+                Some("output"),
+            ) => t.is_ug_out,
+            _ => return false,
+        };
+
+        out.push(type_var.positive());
+        out.push(t.out_dir[entity_dir_to_idx(pin.direction)].positive());
+
+        // Binary-encoded item bits. The encoder's exclusivity clauses
+        // force the bits not pinned here to flip naturally; we pin both
+        // 0s and 1s so the assumption uniquely identifies the carried
+        // item.
+        if self.n_item_bits > 0 {
+            let Some(item_name) = pin.carries.as_deref() else {
+                return false;
+            };
+            let Some(item_idx) = self.item_names.iter().position(|n| n == item_name) else {
+                return false;
+            };
+            for b in 0..self.n_item_bits as usize {
+                if (item_idx >> b) & 1 == 1 {
+                    out.push(t.item_bits[b].positive());
+                } else {
+                    out.push(t.item_bits[b].negative());
+                }
+            }
+        }
+
+        true
+    }
+
     fn extract_solution(
         &self,
         model: &[Lit],
@@ -1486,6 +1556,92 @@ pub fn solve_crossing_zone_with_cost_cap(
 
     let mut solver = Solver::new();
     solver.add_formula(&cnf.formula);
+
+    let sat_result = solver.solve();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let solve_time_us = start.elapsed().as_micros() as u64;
+    #[cfg(target_arch = "wasm32")]
+    let solve_time_us = 0u64;
+
+    let stats = CrossingZoneStats {
+        variables,
+        clauses,
+        solve_time_us,
+        zone_width: zone.width,
+        zone_height: zone.height,
+    };
+
+    let Ok(sat) = sat_result else {
+        return (None, stats);
+    };
+    if !sat {
+        return (None, stats);
+    }
+
+    let model: Vec<Lit> = solver.model().unwrap_or_default().to_vec();
+    let entities = encoder.extract_solution(&model, zone, belt_tier);
+
+    (Some(entities), stats)
+}
+
+/// Like `solve_crossing_zone_with_stats` but with a set of painted
+/// entities that must appear in the solution. Each pin is translated
+/// into a positive SAT literal via `CrossingEncoder::pin_to_literals`
+/// and passed to varisat as an assumption. SAT must produce a model
+/// that includes every pinned tile.
+///
+/// Returns `(None, stats)` if any pin is invalid (out of bounds, on
+/// a forced-empty tile, unknown entity type, item not in the zone's
+/// boundary item set) — this matches the contract of "user paint
+/// is malformed" being indistinguishable from UNSAT for the caller.
+///
+/// Used by the F2 SAT-zone editor to validate partial paints and
+/// render ghost completions: the returned entity list contains the
+/// pinned entities + any solver-added ones; the caller diffs against
+/// the input pins to know which are SAT's contribution.
+pub fn solve_crossing_zone_with_pins(
+    zone: &CrossingZone,
+    pins: &[PlacedEntity],
+    max_ug_reach: u32,
+    belt_tier: &str,
+    max_ug_ins: Option<u32>,
+) -> (Option<Vec<PlacedEntity>>, CrossingZoneStats) {
+    let item_names: Vec<String> = {
+        let mut names: Vec<String> = zone.boundaries.iter().map(|b| b.item.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+
+    let encoder = CrossingEncoder::new(zone.width, zone.height, item_names);
+    let cnf = encoder.encode(zone, max_ug_reach, max_ug_ins);
+
+    let variables = encoder.total_vars;
+    let clauses = cnf.count;
+
+    let mut assumptions: Vec<Lit> = Vec::new();
+    for pin in pins {
+        if !encoder.pin_to_literals(pin, zone, &mut assumptions) {
+            return (
+                None,
+                CrossingZoneStats {
+                    variables,
+                    clauses,
+                    solve_time_us: 0,
+                    zone_width: zone.width,
+                    zone_height: zone.height,
+                },
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
+
+    let mut solver = Solver::new();
+    solver.add_formula(&cnf.formula);
+    solver.assume(&assumptions);
 
     let sat_result = solver.solve();
 

@@ -8,10 +8,14 @@
 //! Exposed functions: `init`, `solve`, `layout`, `export_blueprint`, `validate`,
 //! `get_all_items`, `get_recipes_for_item`, `parse_blueprint`.
 
-use fucktorio_core::models::{LayoutResult, SolverResult};
+use fucktorio_core::models::{LayoutResult, PlacedEntity, SolverResult};
 use fucktorio_core::validate::{self, LayoutStyle, ValidationIssue};
-use fucktorio_core::{blueprint, blueprint_parser, bus::layout::build_bus_layout, recipe_db, solver};
+use fucktorio_core::{
+    blueprint, blueprint_parser, bus::junction_cost::solution_cost,
+    bus::layout::build_bus_layout, fixture as fixture_mod, recipe_db, sat, solver,
+};
 use rustc_hash::FxHashSet;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -113,6 +117,70 @@ pub fn export_blueprint(layout_result: LayoutResult, label: String) -> String {
 #[wasm_bindgen]
 pub fn parse_blueprint(bp_string: &str) -> Result<LayoutResult, JsError> {
     blueprint_parser::parse_blueprint_string(bp_string).map_err(|e| JsError::new(&e))
+}
+
+/// Response shape for `solve_fixture`. Serialised via
+/// `serde_wasm_bindgen` — the TS side mirrors this in `engine.ts`.
+#[derive(Serialize)]
+struct SolveFixtureResponse {
+    entities: Vec<PlacedEntity>,
+    cost: u32,
+    stats: SolveFixtureStats,
+}
+
+#[derive(Serialize)]
+struct SolveFixtureStats {
+    variables: u32,
+    clauses: u32,
+    solve_time_us: u64,
+    zone_width: u32,
+    zone_height: u32,
+}
+
+/// Solve a SAT-zone fixture, optionally with a set of painted entities
+/// pinned as assumptions. Returns `null` (JS) on UNSAT or invalid pins.
+///
+/// `fixture_json` — JSON matching the v1 fixture schema (see
+/// `crates/core/src/fixture.rs`).
+/// `pins_json` — JSON array of `PlacedEntity` to assume; `"[]"` for an
+/// unconstrained solve.
+///
+/// Used by the F2 SAT-zone editor to (a) validate the user's painted
+/// state and (b) render a ghost-completion overlay showing how SAT
+/// would extend the paint.
+#[wasm_bindgen]
+pub fn solve_fixture(fixture_json: &str, pins_json: &str) -> Result<JsValue, JsError> {
+    let fixture: fixture_mod::Fixture = serde_json::from_str(fixture_json)
+        .map_err(|e| JsError::new(&format!("fixture parse: {e}")))?;
+    let pins: Vec<PlacedEntity> = serde_json::from_str(pins_json)
+        .map_err(|e| JsError::new(&format!("pins parse: {e}")))?;
+
+    let zone = fixture_mod::build_zone(&fixture);
+    let (result, stats) = sat::solve_crossing_zone_with_pins(
+        &zone,
+        &pins,
+        fixture.max_reach,
+        &fixture.belt_tier,
+        None,
+    );
+
+    let Some(entities) = result else {
+        return Ok(JsValue::NULL);
+    };
+
+    let response = SolveFixtureResponse {
+        cost: solution_cost(&entities),
+        entities,
+        stats: SolveFixtureStats {
+            variables: stats.variables,
+            clauses: stats.clauses,
+            solve_time_us: stats.solve_time_us,
+            zone_width: stats.zone_width,
+            zone_height: stats.zone_height,
+        },
+    };
+
+    serde_wasm_bindgen::to_value(&response).map_err(|e| JsError::new(&e.to_string()))
 }
 
 #[wasm_bindgen]

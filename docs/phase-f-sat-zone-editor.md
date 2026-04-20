@@ -47,34 +47,70 @@ is worthless without this.
 
 ## Slices
 
-### F1 — WASM `solve_fixture` binding
+### F1 — Rust SAT-with-pins API + WASM binding
 
-Expose the existing Rust SAT API to the web side so the editor can
-re-solve the current painted state and show the user what SAT would
-do. No UI changes in this slice — just plumbing.
+Expose a SAT-with-pins entry point so the editor can ask "given my
+painted entities as forced assumptions, complete a valid layout."
+This is the engine for both the live validity indicator and the
+ghost-completion overlay in F2.
 
-New binding in `crates/wasm-bindings/src/lib.rs`:
+New Rust function in `crates/core/src/sat.rs`, alongside
+`solve_crossing_zone_with_stats`:
+
+```rust
+pub fn solve_crossing_zone_with_pins(
+    zone: &CrossingZone,
+    pins: &[PlacedEntity],
+    max_ug_reach: u32,
+    belt_tier: &str,
+    max_ug_ins: Option<u32>,
+) -> (Option<Vec<PlacedEntity>>, CrossingZoneStats)
+```
+
+Implementation: build the existing CNF encoding for `zone`, then
+for each `PlacedEntity` in `pins` look up the SAT variable for the
+(tile, entity-kind, direction) tuple and pass it as a varisat
+assumption (positive literal). Pins outside the bbox or on
+forbidden tiles cause an early-return `(None, stats)` so the
+caller knows the pins were ill-formed. The decoded result includes
+the pinned entities + any solver-added ones; the caller diffs
+against `pins` to identify what SAT contributed.
+
+Also factor `Fixture` / `FixtureExpected` / `FixtureBoundary` /
+`build_zone` out of `crates/core/tests/sat_fixtures.rs` into a
+public `crates/core/src/fixture.rs` so the test harness, the WASM
+binding, and the editor share one schema. While doing the
+extraction, add `max_cost: Option<u32>` to `FixtureExpected` and
+wire the assertion described in the F2 §Test-harness update below.
+
+New WASM binding in `crates/wasm-bindings/src/lib.rs`:
 
 ```rust
 #[wasm_bindgen]
-pub fn solve_fixture(fixture_json: &str) -> Result<JsValue, JsValue> {
-    // parse -> construct CrossingZone + constraints
-    // call solve_crossing_zone_with_stats
-    // return { entities: Vec<PlacedEntity>, cost: u32, stats: {...} } or null
+pub fn solve_fixture(
+    fixture_json: &str,
+    pins_json: &str, // serialised Vec<PlacedEntity>; "[]" for unpinned solve
+) -> Result<JsValue, JsError> {
+    // parse fixture + pins, call solve_crossing_zone_with_pins,
+    // return { entities, cost, stats } or null
 }
 ```
 
-Consumed by `web/src/engine.ts` as a new method:
+Consumed by `web/src/engine.ts`:
 
 ```ts
-solveFixture(json: string): Promise<{ entities: PlacedEntity[]; cost: number; stats: SatStats } | null>
+solveFixture(
+  json: string,
+  pins: PlacedEntity[],
+): Promise<{ entities: PlacedEntity[]; cost: number; stats: SatStats } | null>
 ```
 
 #### Acceptance
 
 - [ ] `cargo build --target wasm32-unknown-unknown --manifest-path crates/wasm-bindings/Cargo.toml` produces a bundle with the new export
 - [ ] `npx tsc --noEmit` in `web/` clean after the `engine.ts` method is added
-- [ ] Small integration smoke test: feed `sample_electronic_circuit.json` to `solveFixture`, assert a non-null result with `cost == 2` (two surface belts)
+- [ ] Unit test: pin a known belt from `sample_electronic_circuit.json`'s solution, expect SAT to return a solution including it; pin a belt at a forbidden tile, expect `None`
+- [ ] Smoke check: feed `sample_electronic_circuit.json` to `solveFixture` with empty pins, assert a non-null result with `cost == 2` (two surface belts)
 
 ### F2 — Edit mode on the existing canvas
 
@@ -119,7 +155,7 @@ panel (decide at impl time based on screen real estate). Contents:
 - Brush direction: N/E/S/W indicator, rotatable via `R`
 - Item override: dropdown populated from the bbox's boundary items
   (painted belts carry this)
-- Actions: Run SAT (live preview), Revert, Export Fixture, Done
+- Actions: Accept completion, Revert, Export Fixture, Done
 
 Hotkeys mirror the toolbar plus muscle-memory shortcuts:
 
@@ -127,7 +163,7 @@ Hotkeys mirror the toolbar plus muscle-memory shortcuts:
 - `R` — rotate brush, AND while dragging, toggle the L-shape bend direction
 - `Q` — pipette; pick the tool + direction from the tile under cursor
 - `[` / `]` — prev/next item in the fixture's boundary item list
-- `P` — run SAT on current painted state (live preview)
+- `Enter` (or `A`) — accept the SAT-suggested ghost completion (only valid when the live indicator is green)
 - `Ctrl+Z` / `Ctrl+Shift+Z` — undo / redo (in-memory stack; lost on reload)
 - `Esc` — exit edit mode (prompt to discard unsaved changes)
 
@@ -181,22 +217,83 @@ Edge cases:
 - Obstacle run of length 0 (i.e. no obstacles): just a belt run, no
   UGs needed.
 
-#### Live preview — run SAT on painted state
+#### Continuous validation + ghost completion
 
-Hotkey `P` (or toolbar "Run SAT" button):
+The editor doesn't ping-pong on a hotkey. Instead it runs a
+two-tier validity check on every edit and renders SAT's chosen
+completion of the user's paint as a ghost overlay. This means the
+user can paint a partial spine (e.g. trunk + UGs) and immediately
+see how SAT would fill in the rest — the dominant pain today is
+non-straight tap-offs, and the user can solve them neatly by
+hand-placing the spine and letting SAT do the awkward bits.
 
-1. Serialise the current edit layer to a fixture JSON (same shape as
-   Phase E export).
-2. Call `engine.solveFixture(json)` from F1.
-3. If result is non-null: replace the edit layer with the solver's
-   entities, show a banner: "SAT replaced your layout · cost {N} (yours
-   was {M})". Undo restores the user's painted state.
-4. If null: show "SAT could not solve your setup" banner. No change to
-   layer. Usually means the user erased an IN/OUT-connecting path.
+**Tier 1 — TS-side structural** (sub-ms, runs synchronously on
+every edit / drag-commit):
 
-This closes the loop — user paints, sees what SAT does with the same
-constraints, iterates. Key insight: the editor becomes a ping-pong
-between "here's my idea" and "here's SAT's interpretation."
+- All painted entities inside the bbox.
+- No painted entity on a `forbidden` tile.
+- No two painted entities at the same `(x, y)`.
+- All UG-in / UG-out pairs match (same direction axis, same item,
+  within `max_reach + 1` apart, no other UG pair of the same item
+  between them).
+
+If Tier 1 fails: status indicator goes red, reason is recorded for
+hover-tooltip use, no SAT call dispatched.
+
+**Tier 2 — SAT-with-pins** (debounced ~300ms after the last edit;
+only fires if Tier 1 passed):
+
+1. Status indicator flips to amber (solving).
+2. Serialise the current painted layer + the fixture JSON (same
+   shape as Phase E export).
+3. Call `engine.solveFixture(json, paintedEntities)` from F1. The
+   web side passes the painted entities as SAT *assumptions* —
+   varisat must produce a satisfying assignment that includes
+   every painted belt/UG.
+4. **SAT** → status green; render `entities \ paintedEntities` as
+   a ghost-style overlay (lower alpha + outline tint) showing what
+   SAT would add to complete the layout. Cost shown next to the
+   indicator.
+5. **UNSAT** → status red, reason "SAT cannot complete this
+   layout". Common while the user is mid-paint (the in/out path
+   isn't connected yet). The reason is hidden by default — hover
+   the indicator to see it.
+
+In-flight SAT requests are superseded by newer edits via a
+request-id epoch (cancel-on-stale).
+
+#### Accept ghost completion
+
+When the indicator is green, the toolbar's **Accept** button (or
+hotkey `Enter` / `A`) promotes the ghost overlay into the painted
+layer in one undo-able step. After accepting, the painted layer is
+already a complete SAT solution — there are no more ghosts to show
+and `your cost == solver cost`.
+
+#### Validity indicator + disabled actions
+
+A small status dot lives in the inline panel head next to the
+title:
+
+- 🟢 valid · cost {N} / yours {M}
+- 🟡 solving…
+- 🔴 invalid
+
+Hovering the dot surfaces the failure reason as a tooltip. Mid-
+paint UNSAT is the common case (e.g. "belt not connected"), so
+showing the reason in the panel chrome by default is too noisy —
+the dot stays compact and the user reaches for it only when they
+care.
+
+While the indicator is not green, **Export Fixture**, **Copy
+fixture JSON**, and **Accept completion** are all disabled. The
+fixture would otherwise fail its own check on first test run — it's
+cheaper to block at source than after a failing CI run.
+
+This closes the loop — the user paints partial layouts, watches
+SAT propose completions in real time, accepts them when good,
+iterates when not. Key insight: SAT is a co-pilot filling gaps, not
+an opponent producing alternative solutions.
 
 #### Export Fixture
 
@@ -240,9 +337,10 @@ if let Some(max_cost) = fixture.expected.max_cost {
 }
 ```
 
-Add `max_cost: Option<u32>` to the `Expected` struct in that file. When
-absent (all current fixtures), no quality assertion — only the
-mode-based check runs.
+The `max_cost: Option<u32>` field is added to `FixtureExpected`
+when it moves into the shared `crates/core/src/fixture.rs` module
+in F1. When absent (all current fixtures), no quality assertion —
+only the mode-based check runs.
 
 #### F2 acceptance
 
@@ -251,8 +349,11 @@ mode-based check runs.
 - [ ] Drag with an L-bend, R toggles bend direction live
 - [ ] Drag over a 2-tile obstacle auto-forms a UG pair at the boundary
 - [ ] Drag over a 10-tile obstacle with yellow belts (max_reach=4) refuses + flashes red
-- [ ] `P` live-preview replaces the layer with SAT's output
-- [ ] `Ctrl+Z` restores previous state
+- [ ] Live indicator goes green within ~300ms of a valid edit; ghost layer outlines SAT's chosen completion
+- [ ] Hovering a red indicator surfaces the failure reason; the reason is hidden otherwise
+- [ ] Accept (button or Enter) promotes the ghost layer into the painted layer in one undo-able step
+- [ ] Export / Copy / Accept buttons are disabled while the indicator is not green
+- [ ] `Ctrl+Z` restores previous state (including post-Accept)
 - [ ] Export produces a fixture JSON that re-loads via Phase E's test harness
 - [ ] Fixture with `expected.max_cost` set fails the test if solver exceeds it, passes if solver matches or beats it
 
@@ -261,8 +362,11 @@ mode-based check runs.
 Once F1 + F2 land, the workflow is:
 
 1. Run the app, spot a zone where SAT's output looks wasteful.
-2. Click the zone → Edit → paint what you *think* the right layout is.
-3. `P` to see what SAT does with the same constraints. Adjust.
+2. Click the zone → Edit → paint the parts you care about (often the
+   trunk + UGs you want straight).
+3. Live indicator turns green within ~300ms; ghost overlay shows
+   how SAT would complete the rest. Accept if good, paint more if
+   not.
 4. Export → drop the JSON in `crates/core/tests/sat_fixtures/`.
 5. `cargo test sat_fixtures` locks the bar in. If a future solver
    change increases cost on that zone, CI catches it.

@@ -47,12 +47,34 @@ export interface JunctionSelectionState {
 
 export interface JunctionDebuggerOptions {
   onChange: (state: JunctionSelectionState | null) => void;
+  /**
+   * Fired when the user clicks the inline panel's "Edit" button
+   * (Phase F SAT-zone editor). The current selection is passed in.
+   * Implementations should mount the editor UI, register hotkeys,
+   * and call back into `setEditMode(true|false)` so the panel can
+   * show edit-state styling and disable certain controls.
+   */
+  onEditRequested?: (state: JunctionSelectionState) => void;
 }
 
 export interface JunctionDebuggerControls {
   open(cluster: JunctionCluster, trace?: readonly TraceEvent[]): void;
   close(): void;
   isOpen(): boolean;
+  /**
+   * The inline panel's root element. Exposed so the SAT-zone editor
+   * can append a toolbar row, add an indicator dot, and tint the
+   * title bar via CSS classes.
+   */
+  inlineEl: HTMLElement;
+  /** Current selection (cluster + iter + trace), or null. */
+  getSelection(): JunctionSelectionState | null;
+  /**
+   * Toggle the inline panel's edit-mode CSS class. While true the
+   * fixture-export and copy buttons are disabled; the editor owns
+   * those flows from inside the toolbar instead.
+   */
+  setEditMode(active: boolean): void;
 }
 
 export function createJunctionDebugger(
@@ -82,11 +104,15 @@ export function createJunctionDebugger(
   fixtureBtn.className = "jd-inline-btn jd-inline-fixture-btn";
   fixtureBtn.textContent = "\u26ab"; // black circle — "fixture" glyph (distinct from ⎘)
   fixtureBtn.title = "Copy as SAT-fixture JSON";
+  const editBtn = document.createElement("button");
+  editBtn.className = "jd-inline-btn jd-inline-edit-btn";
+  editBtn.textContent = "\u270e"; // ✎ pencil
+  editBtn.title = "Edit this SAT zone (Phase F)";
   const closeInline = document.createElement("span");
   closeInline.className = "jd-close";
   closeInline.textContent = "\u00d7";
   closeInline.title = "Deselect (Esc)";
-  inlineHead.append(title, pill, copyBtn, fixtureBtn, detailsBtn, closeInline);
+  inlineHead.append(title, pill, copyBtn, fixtureBtn, editBtn, detailsBtn, closeInline);
 
   const stepper = document.createElement("div");
   stepper.className = "jd-stepper";
@@ -375,8 +401,31 @@ export function createJunctionDebugger(
     );
     flashAndCopy(fixtureBtn, json);
   });
+  editBtn.addEventListener("click", () => {
+    if (!currentCluster || !options.onEditRequested) return;
+    const it = currentCluster.iterations[currentIter];
+    if (!it) return;
+    options.onEditRequested({ cluster: currentCluster, iter: it, trace: currentTrace });
+  });
   closeModal.addEventListener("click", hideModal);
   modalBackdrop.addEventListener("click", hideModal);
+
+  function getSelection(): JunctionSelectionState | null {
+    if (!currentCluster) return null;
+    const it = currentCluster.iterations[currentIter];
+    if (!it) return null;
+    return { cluster: currentCluster, iter: it, trace: currentTrace };
+  }
+
+  function setEditMode(active: boolean): void {
+    inline.classList.toggle("jd-edit-mode", active);
+    // Fixture export + copy paths are owned by the editor toolbar
+    // while editing — their buttons here would write the in-row
+    // unmodified state, which contradicts the painted layer.
+    fixtureBtn.disabled = active;
+    copyBtn.disabled = active;
+    editBtn.disabled = active;
+  }
 
   function copyDebugDump(): void {
     if (!currentCluster) return;
@@ -473,7 +522,14 @@ export function createJunctionDebugger(
     { capture: true },
   );
 
-  return { open, close: closeAll, isOpen };
+  return {
+    open,
+    close: closeAll,
+    isOpen,
+    inlineEl: inline,
+    getSelection,
+    setEditMode,
+  };
 }
 
 // -----------------------------------------------------------------------
@@ -856,7 +912,7 @@ void terminalIteration;
 // -----------------------------------------------------------------------
 
 /** UG max reach by belt tier — yellow 4, red 6, blue 8. */
-const BELT_UG_REACH: Record<string, number> = {
+export const BELT_UG_REACH: Record<string, number> = {
   "transport-belt": 4,
   "fast-transport-belt": 6,
   "express-transport-belt": 8,
@@ -865,11 +921,21 @@ const BELT_UG_REACH: Record<string, number> = {
 /**
  * Build a fixture JSON string for the given cluster + iteration. The
  * caller is responsible for copying it to the clipboard via `flashAndCopy`.
+ *
+ * Phase F editor passes `extra` to embed `expected.max_cost` (computed
+ * from the painted layer) and `painted.entities` for human reference.
  */
-function buildFixtureJson(
+export interface FixtureExtra {
+  maxCost?: number;
+  paintedEntities?: unknown[];
+  name?: string;
+}
+
+export function buildFixtureJson(
   cluster: JunctionCluster,
   it: JunctionIteration | undefined,
   trace: readonly TraceEvent[] | null,
+  extra?: FixtureExtra,
 ): string {
   const seed = cluster.seed;
   const bbox = it?.bbox ?? { x: seed.x, y: seed.y, w: 1, h: 1 };
@@ -911,9 +977,12 @@ function buildFixtureJson(
       }))
     : [];
 
+  const expected: Record<string, unknown> = { mode: "solve" };
+  if (extra?.maxCost !== undefined) expected.max_cost = extra.maxCost;
+
   const fixture: Record<string, unknown> = {
     version: 1,
-    name: `fixture_${seed.x}_${seed.y}_iter${iterIndex}`,
+    name: extra?.name ?? `fixture_${seed.x}_${seed.y}_iter${iterIndex}`,
     notes: "",
     source_url: window.location.href,
     seed: [seed.x, seed.y],
@@ -922,8 +991,9 @@ function buildFixtureJson(
     belt_tier: beltTier,
     max_reach: maxReach,
     boundaries,
-    expected: { mode: "solve" },
+    expected,
     ...(ghostPaths.length > 0 ? { context: { ghost_paths: ghostPaths } } : {}),
+    ...(extra?.paintedEntities ? { painted: { entities: extra.paintedEntities } } : {}),
   };
 
   return JSON.stringify(fixture, null, 2);
